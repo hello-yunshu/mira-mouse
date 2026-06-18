@@ -1,0 +1,31 @@
+name: Device support request
+description: Submit evidence for one exact model, firmware, and connection
+body:
+  - type: markdown
+    attributes:
+      value: "Never paste a full serial number or unredacted log. Manufacturer name alone is not a support claim."
+  - type: input
+    id: model
+    attributes: { label: Exact model }
+    validations: { required: true }
+  - type: input
+    id: ids
+    attributes: { label: VID/PID }
+    validations: { required: true }
+  - type: input
+    id: firmware
+    attributes: { label: Firmware version }
+    validations: { required: true }
+  - type: dropdown
+    id: connection
+    attributes: { label: Connection, options: [USB, Wireless receiver, Bluetooth] }
+    validations: { required: true }
+  - type: input
+    id: system
+    attributes: { label: Operating system }
+    validations: { required: true }
+  - type: textarea
+    id: evidence
+    attributes: { label: Evidence and redacted diagnostics }
+    validations: { required: true }
+

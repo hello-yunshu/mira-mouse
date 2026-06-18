@@ -1,0 +1,37 @@
+name: Preview Packages
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: preview-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  unsigned-preview:
+    strategy: { fail-fast: false, matrix: { os: [macos-14, windows-2022, ubuntu-22.04] } }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - run: rustup toolchain install stable --profile minimal
+      - name: Install Linux libraries
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+      - name: Build unsigned preview
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$RUNNER_OS" in
+            macOS) rustup target add aarch64-apple-darwin x86_64-apple-darwin; npm exec tauri build -- --target universal-apple-darwin ;;
+            Windows) npm exec tauri build -- --bundles nsis ;;
+            Linux) npm exec tauri build -- --bundles appimage,deb,rpm ;;
+          esac
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: unsigned-preview-${{ runner.os }}
+          path: target/**/bundle/**
+          retention-days: 7
+          if-no-files-found: error

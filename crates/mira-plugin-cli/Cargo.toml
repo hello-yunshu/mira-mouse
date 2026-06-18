@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+[package]
+name = "mira-plugin-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "mira-plugin"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+hex.workspace = true
+mira-plugin-api = { path = "../mira-plugin-api" }
+mira-plugin-runtime = { path = "../mira-plugin-runtime" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+walkdir.workspace = true
+zip.workspace = true
+

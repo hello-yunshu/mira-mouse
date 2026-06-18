@@ -1,0 +1,23 @@
+name: Maintenance
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run: { description: 'List candidates without deleting', required: true, default: true, type: boolean }
+permissions: { actions: write, contents: read }
+jobs:
+  completed-runs:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - env: { GH_TOKEN: '${{ github.token }}', REPO: '${{ github.repository }}', DRY_RUN: '${{ inputs.dry_run }}' }
+        run: |
+          set -euo pipefail
+          cutoff="$(date -u -d '90 days ago' +%s)"
+          gh api --paginate "repos/$REPO/actions/runs?status=completed&per_page=100" --jq '.workflow_runs[] | [.id,.created_at,.conclusion,.head_branch] | @tsv' |
+          while IFS=$'\t' read -r id created conclusion branch; do
+            test "$(date -u -d "$created" +%s)" -lt "$cutoff" || continue
+            printf '%s\t%s\t%s\t%s\n' "$id" "$created" "$conclusion" "$branch" | tee -a candidates.txt
+            if test "$DRY_RUN" = false; then gh api --method DELETE "repos/$REPO/actions/runs/$id"; fi
+          done
+          { echo '### Maintenance candidates'; cat candidates.txt 2>/dev/null || echo 'None'; } >> "$GITHUB_STEP_SUMMARY"
+

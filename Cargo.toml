@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+[workspace]
+resolver = "2"
+members = [
+  "crates/mira-core",
+  "crates/mira-plugin-api",
+  "crates/mira-plugin-runtime",
+  "crates/mira-plugin-cli",
+  "crates/mira-testkit",
+  "src-tauri",
+  "xtask",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+rust-version = "1.82"
+
+[workspace.dependencies]
+anyhow = "1.0.95"
+clap = { version = "4.5.23", features = ["derive"] }
+ed25519-dalek = "2.1.1"
+hex = "0.4.3"
+semver = { version = "1.0.24", features = ["serde"] }
+serde = { version = "1.0.217", features = ["derive"] }
+serde_json = "1.0.134"
+sha2 = "0.10.8"
+tempfile = "3.14.0"
+thiserror = "2.0.9"
+walkdir = "2.5.0"
+zip = { version = "2.2.2", default-features = false, features = ["deflate"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
