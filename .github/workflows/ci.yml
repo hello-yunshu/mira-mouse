@@ -1,0 +1,51 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  frontend:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - run: npm run lint && npm run typecheck && npm test && npm run build
+      - run: npm run check:boundaries && npm run check:structured
+  rust:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Install host libraries
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+      - run: rustup toolchain install stable --profile minimal --component rustfmt,clippy
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
+      - run: cargo build --workspace --release --locked
+  configuration:
+    strategy: { fail-fast: false, matrix: { os: [macos-14, windows-2022, ubuntu-22.04] } }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Parse release configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          node -e "JSON.parse(require('fs').readFileSync('plugins.lock.json'));JSON.parse(require('fs').readFileSync('src-tauri/tauri.conf.json'))"
+      - name: Evidence summary
+        shell: bash
+        run: echo 'Configuration parsed; platform package and hardware status are not implied.' >> "$GITHUB_STEP_SUMMARY"
+

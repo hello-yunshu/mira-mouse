@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:mira:schema:plugins-lock:v1",
+  "title": "Mira Plugin Lock v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "releaseReady", "plugins"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "releaseReady": { "type": "boolean" },
+    "plugins": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["pluginId", "repository", "releaseTag", "version", "asset", "sha256", "publisherKeyId", "pluginApi", "cachePath", "bundleByDefault"],
+        "properties": {
+          "pluginId": { "type": "string" },
+          "repository": { "type": "string" },
+          "releaseTag": { "type": "string" },
+          "version": { "type": "string" },
+          "asset": { "type": "string", "pattern": "^[^/]+\\.mira-plugin$" },
+          "sha256": { "type": "string" },
+          "publisherKeyId": { "type": "string" },
+          "pluginApi": { "type": "string" },
+          "cachePath": { "type": "string" },
+          "bundleByDefault": { "type": "boolean" }
+        }
+      }
+    }
+  }
+}
