@@ -25,4 +25,6 @@ tauri-plugin-autostart = "2"
 tauri-plugin-single-instance = "2"
 mira-core = { path = "../crates/mira-core" }
 mira-plugin-runtime = { path = "../crates/mira-plugin-runtime" }
+ed25519-dalek = { workspace = true }
+hex = { workspace = true }
 

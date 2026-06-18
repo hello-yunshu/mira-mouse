@@ -4,12 +4,12 @@
   "plugins": [
     {
       "pluginId": "mira.amaster",
-      "repository": "BLOCKED_USER_OWNER/mira-mouse-plugins",
+      "repository": "hello-yunshu/mira-mouse-plugins",
       "releaseTag": "amaster-v1.0.0",
       "version": "1.0.0",
       "asset": "mira-amaster-1.0.0.mira-plugin",
       "sha256": "BLOCKED_RELEASE_ASSET_SHA256",
-      "publisherKeyId": "BLOCKED_PUBLISHER_KEY_ID",
+      "publisherKeyId": "mira-plugins-2026-001",
       "pluginApi": ">=1.0.0 <2.0.0",
       "cachePath": "BLOCKED_VERIFIED_CACHE_PATH",
       "bundleByDefault": true
