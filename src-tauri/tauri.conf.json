@@ -16,7 +16,7 @@
   "bundle": {
     "active": true,
     "targets": ["dmg", "nsis", "appimage", "deb", "rpm"],
-    "resources": ["resources/plugins/*"],
+    "resources": [],
     "fileAssociations": [{ "ext": ["mira-plugin"], "name": "Mira Plugin", "description": "Declarative Mira device plugin", "role": "Editor" }],
     "macOS": { "minimumSystemVersion": "12.0", "signingIdentity": "-" },
     "windows": { "webviewInstallMode": { "type": "downloadBootstrapper", "silent": true }, "nsis": { "installMode": "currentUser" } },
