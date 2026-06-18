@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: CC0-1.0
+# Copy to project-metadata.toml only after replacing values with verified identity data.
+github_owner = ""
+main_repository_url = ""
+plugin_repository_url = ""
+github_profile_url = ""
+x_profile_url = ""
+telegram_profile_url = ""
+developer_display_name = ""
+copyright_holder = ""
+

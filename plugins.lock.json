@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "releaseReady": false,
+  "plugins": [
+    {
+      "pluginId": "mira.amaster",
+      "repository": "BLOCKED_USER_OWNER/mira-mouse-plugins",
+      "releaseTag": "amaster-v1.0.0",
+      "version": "1.0.0",
+      "asset": "mira-amaster-1.0.0.mira-plugin",
+      "sha256": "BLOCKED_RELEASE_ASSET_SHA256",
+      "publisherKeyId": "BLOCKED_PUBLISHER_KEY_ID",
+      "pluginApi": ">=1.0.0 <2.0.0",
+      "cachePath": "BLOCKED_VERIFIED_CACHE_PATH",
+      "bundleByDefault": true
+    },
+    {
+      "pluginId": "mira.example-mock",
+      "repository": "mira-mouse-plugins",
+      "releaseTag": "v1.0.0-test",
+      "version": "1.0.0",
+      "asset": "mira-example-mock-1.0.0.mira-plugin",
+      "sha256": "33a0fc66a8a55845d1cda56a6f06587d83c227892dd25e4792e64bce778a9f9a",
+      "publisherKeyId": "TEST-ONLY-mira-plugins",
+      "pluginApi": ">=1.0.0 <2.0.0",
+      "cachePath": "src-tauri/resources/plugins/mira-example-mock-1.0.0.mira-plugin",
+      "bundleByDefault": false
+    }
+  ]
+}
+

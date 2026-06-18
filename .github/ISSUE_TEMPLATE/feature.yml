@@ -1,0 +1,12 @@
+name: Feature request
+description: Propose a core product improvement
+body:
+  - type: textarea
+    id: problem
+    attributes: { label: Problem, description: "Describe the user need without private device identifiers." }
+    validations: { required: true }
+  - type: textarea
+    id: outcome
+    attributes: { label: Desired outcome }
+    validations: { required: true }
+

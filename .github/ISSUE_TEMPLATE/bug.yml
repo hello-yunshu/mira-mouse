@@ -1,0 +1,22 @@
+name: Bug report
+description: Report a reproducible Mira core or UI defect
+body:
+  - type: markdown
+    attributes:
+      value: "Remove serial numbers, unique identifiers, paths containing names, and sensitive logs before submitting."
+  - type: input
+    id: version
+    attributes: { label: Mira version }
+    validations: { required: true }
+  - type: input
+    id: system
+    attributes: { label: Operating system and version }
+    validations: { required: true }
+  - type: textarea
+    id: steps
+    attributes: { label: Steps to reproduce }
+    validations: { required: true }
+  - type: textarea
+    id: redacted
+    attributes: { label: Redacted diagnostics, description: "Do not paste full serial numbers or unredacted logs." }
+
