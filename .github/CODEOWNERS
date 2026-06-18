@@ -1,0 +1,4 @@
+# Maintainer identity is blocked until config/project-metadata.toml is supplied.
+# Before publication, protect this file, workflows, Cargo.lock, package-lock.json,
+# plugins.lock.json, trust roots, updater settings, and release configuration.
+

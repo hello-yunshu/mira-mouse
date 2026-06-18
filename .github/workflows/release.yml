@@ -1,0 +1,68 @@
+name: Release
+on:
+  push:
+    tags: ['app/v*']
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  gate:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    outputs: { version: '${{ steps.meta.outputs.version }}' }
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - id: meta
+        env: { RELEASE_TAG: '${{ github.ref_name }}' }
+        run: |
+          set -euo pipefail
+          node -e "const l=require('./plugins.lock.json');if(!l.releaseReady)throw Error('plugins.lock.json is not release-ready')"
+          version="${RELEASE_TAG#app/v}"
+          test "$version" = "$(node -p "require('./package.json').version")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+  build:
+    needs: gate
+    strategy: { fail-fast: false, matrix: { os: [macos-14, windows-2022, ubuntu-22.04] } }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - run: rustup toolchain install stable --profile minimal
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+      - name: Build unsigned community packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$RUNNER_OS" in
+            macOS) rustup target add aarch64-apple-darwin x86_64-apple-darwin; npm exec tauri build -- --target universal-apple-darwin ;;
+            Windows) npm exec tauri build -- --bundles nsis ;;
+            Linux) npm exec tauri build -- --bundles appimage,deb,rpm ;;
+          esac
+          find target -type f -path '*/bundle/*' -print0 | xargs -0 shasum -a 256 > SHA256SUMS.txt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-${{ runner.os }}
+          path: |
+            target/**/bundle/**
+            SHA256SUMS.txt
+          retention-days: 7
+          if-no-files-found: error
+  attest-and-draft:
+    needs: [gate, build]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    permissions: { contents: write, id-token: write, attestations: write }
+    environment: release
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with: { path: release-assets, pattern: release-*, merge-multiple: true }
+      - uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3 peeled commit
+        with: { subject-path: 'release-assets/**/*' }
+      - env: { GH_TOKEN: '${{ github.token }}', TAG: '${{ github.ref_name }}' }
+        run: gh release create "$TAG" release-assets/**/* --draft --verify-tag --title "Mira ${TAG#app/v}" --notes "Unsigned community draft. Platform signing, notarization, updater signing, and hardware verification are separate evidence states."
