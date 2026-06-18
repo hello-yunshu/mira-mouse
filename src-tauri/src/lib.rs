@@ -18,8 +18,12 @@ const PRODUCTION_PUBLIC_KEY_HEX: &str =
 fn production_trust_store() -> TrustStore {
     let mut trust = TrustStore::default();
     let bytes = hex::decode(PRODUCTION_PUBLIC_KEY_HEX).expect("invalid hex in production pubkey");
-    let key = VerifyingKey::from_bytes(&bytes.try_into().expect("production pubkey must be 32 bytes"))
-        .expect("invalid production ed25519 pubkey");
+    let key = VerifyingKey::from_bytes(
+        &bytes
+            .try_into()
+            .expect("production pubkey must be 32 bytes"),
+    )
+    .expect("invalid production ed25519 pubkey");
     trust.0.insert(PRODUCTION_KEY_ID.to_string(), key);
     trust
 }
