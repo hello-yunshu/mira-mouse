@@ -3,6 +3,11 @@ message: "If you use Mira in research, cite this software release."
 title: "Mira Mouse"
 type: software
 version: 0.1.0
-date-released: "2026-06-18"
+date-released: "2026-06-19"
 license: AGPL-3.0-or-later
-abstract: "An unofficial declarative-plugin mouse settings client."
+abstract: "An unofficial declarative-plugin mouse settings client for macOS, Windows, and Linux."
+authors:
+  - name: "云云舒"
+    alias: "hello-yunshu"
+repository-code: "https://github.com/hello-yunshu/mira-mouse"
+url: "https://github.com/hello-yunshu/mira-mouse"

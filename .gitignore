@@ -4,7 +4,6 @@
 /target/
 /src-tauri/resources/plugins/
 /AMasterDriver_v1.0.6_unpacked_reverse_bundle/
-/config/project-metadata.toml
 *.key
 *.pem
 *.p12

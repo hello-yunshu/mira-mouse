@@ -10,18 +10,19 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "windows": [{ "title": "Mira", "width": 980, "height": 720, "minWidth": 640, "minHeight": 540, "transparent": false }],
+    "macOSPrivateApi": true,
+    "windows": [{ "title": "Mira", "width": 500, "height": 667, "minWidth": 400, "minHeight": 533, "transparent": true, "decorations": true, "titleBarStyle": "Overlay", "hiddenTitle": true, "visible": false }],
     "security": { "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:" }
   },
   "bundle": {
     "active": true,
     "targets": ["dmg", "nsis", "appimage", "deb", "rpm"],
-    "resources": [],
+    "resources": ["resources/plugins/mira-amaster-1.2.0.mira-plugin"],
     "fileAssociations": [{ "ext": ["mira-plugin"], "name": "Mira Plugin", "description": "Declarative Mira device plugin", "role": "Editor" }],
     "macOS": { "minimumSystemVersion": "12.0", "signingIdentity": "-" },
     "windows": { "webviewInstallMode": { "type": "downloadBootstrapper", "silent": true }, "nsis": { "installMode": "currentUser" } },
     "linux": { "appimage": { "bundleMediaFramework": false } }
   },
-  "plugins": { "updater": { "active": false, "endpoints": [], "dialog": false } }
+  "plugins": { "updater": { "active": true, "endpoints": ["https://github.com/hello-yunshu/mira-mouse/releases/latest/download/latest.json"], "dialog": true, "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEJGMTVEOEZDRUI0MTVBMkMKUldRc1drSHIvTmdWdnpsaThmK3F6d0s2QXBhVWJvRUFvRnBEd0RJUXlDWHBhRmROdUdERm5GaEgK" } }
 }
 
