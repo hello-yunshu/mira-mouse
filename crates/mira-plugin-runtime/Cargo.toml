@@ -9,6 +9,8 @@ rust-version.workspace = true
 [dependencies]
 ed25519-dalek.workspace = true
 hex.workspace = true
+hidapi = "2.6"
+mira-core = { path = "../mira-core" }
 mira-plugin-api = { path = "../mira-plugin-api" }
 semver.workspace = true
 serde.workspace = true

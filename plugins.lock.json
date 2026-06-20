@@ -5,13 +5,13 @@
     {
       "pluginId": "mira.amaster",
       "repository": "hello-yunshu/mira-mouse-plugins",
-      "releaseTag": "amaster-v1.0.0",
-      "version": "1.0.0",
-      "asset": "mira-amaster-1.0.0.mira-plugin",
-      "sha256": "BLOCKED_RELEASE_ASSET_SHA256",
+      "releaseTag": "amaster-v1.2.0",
+      "version": "1.2.0",
+      "asset": "mira-amaster-1.2.0.mira-plugin",
+      "sha256": "c908b32565463708f7e735b6dab2ab380af7713913f4c216be84bb1c15ddb944",
       "publisherKeyId": "mira-plugins-2026-001",
       "pluginApi": ">=1.0.0 <2.0.0",
-      "cachePath": "BLOCKED_VERIFIED_CACHE_PATH",
+      "cachePath": "../mira-mouse-plugins/dist/mira-amaster-1.2.0.mira-plugin",
       "bundleByDefault": true
     },
     {
@@ -28,4 +28,3 @@
     }
   ]
 }
-

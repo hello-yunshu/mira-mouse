@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import type { ThemeMode } from './types';
+import { setTheme } from '@tauri-apps/api/app';
 
 export function themeAccent(color?: string): string {
-  if (!color || !/^#[0-9a-f]{6}$/i.test(color)) return 'oklch(72% 0.025 285)';
+  if (!color || !/^#[0-9a-f]{6}$/i.test(color)) return '#D8B0B7';
+  if (color.toUpperCase() === '#D8B0B7') return '#D8B0B7';
   const r = Number.parseInt(color.slice(1, 3), 16) / 255;
   const g = Number.parseInt(color.slice(3, 5), 16) / 255;
   const b = Number.parseInt(color.slice(5, 7), 16) / 255;
@@ -16,5 +18,5 @@ export function themeAccent(color?: string): string {
 export function applyTheme(mode: ThemeMode, accent?: string): void {
   document.documentElement.dataset.theme = mode;
   document.documentElement.style.setProperty('--accent', themeAccent(accent));
+  void setTheme(mode === 'system' ? null : mode).catch(() => {});
 }
-
