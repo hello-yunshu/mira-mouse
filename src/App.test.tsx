@@ -9,13 +9,30 @@ describe('Mira shell', () => {
     expect(screen.getByText('未发现受支持的鼠标')).toBeInTheDocument();
     expect(screen.queryByText(/0 DPI|--%/)).not.toBeInTheDocument();
   });
+  it('shows native-style window controls in the Windows web preview', () => {
+    window.history.pushState({}, '', '?platform=windows');
+    render(<App />);
+    expect(screen.getByRole('button', { name: '最小化窗口' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '最大化窗口' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '关闭窗口' })).toBeInTheDocument();
+    window.history.pushState({}, '', '/');
+  });
   it('renders capability data and labels the application-layer link', () => {
     render(<App />);
     fireEvent.click(screen.getByText('打开 Fixture 演示'));
-    expect(screen.getByText('82%')).toBeInTheDocument();
-    expect(screen.getByText('1000 DPI')).toBeInTheDocument();
-    expect(screen.getByText(/不是接收器原生功能/)).toBeInTheDocument();
-    expect(screen.getByText('fixture-verified')).toBeInTheDocument();
+    expect(document.documentElement.style.getPropertyValue('--accent')).toBe('#D8B0B7');
+    expect(screen.getAllByText('82%')).toHaveLength(2);
+    expect(screen.getByLabelText('当前 DPI：1000')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('tab', { name: '灯光' }));
+    expect(screen.getByText(/分别读取，互不混用/)).toBeInTheDocument();
+    expect(screen.queryByText('fixture-verified')).not.toBeInTheDocument();
+    expect(document.querySelector('[data-animation="realtime-deformation"]')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '全部读取信息' }));
+    expect(screen.getByRole('dialog', { name: '全部读取信息' })).toBeInTheDocument();
+    expect(screen.getByText('传感器与连接')).toBeInTheDocument();
+    expect(screen.getByText('按键映射')).toBeInTheDocument();
+    expect(screen.getByText('接收器灯光固件')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '关闭设备详情' }));
+    expect(screen.queryByRole('dialog', { name: '全部读取信息' })).not.toBeInTheDocument();
   });
 });
-
