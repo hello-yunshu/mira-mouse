@@ -13,7 +13,7 @@ Planned community downloads use these stable names:
 - Windows: `Mira_<version>_x64-setup-unsigned.exe`
 - Linux: `Mira_<version>_x86_64.AppImage`, `mira_<version>_amd64.deb`, `mira-<version>-1.x86_64.rpm`
 
-Unsigned community packages will carry Gatekeeper or SmartScreen warnings. Verify the SHA-256 published with the GitHub Release. There is currently no public download URL because the repository owner and release have not been supplied.
+Unsigned community packages will carry Gatekeeper or SmartScreen warnings. Verify the SHA-256 published with the GitHub Release. Community downloads will be published at https://github.com/hello-yunshu/mira-mouse/releases.
 
 The default product is designed to bundle only a locked `mira.amaster` baseline from the separate Mira Mouse Plugins Release. Logitech and Razer experiments are never bundled by default. Actual model support must appear in a hardware evidence matrix before it is described as compatible.
 

@@ -1,27 +1,25 @@
-<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
-# Mira Execution Plan
+# Mira 执行计划（当前会话）
 
-Updated: 2026-06-18
+## 目标
 
-This plan applies the evidence labels required by the implementation prompt. A phase continues when an external dependency is blocked.
+在本会话内完成 AMaster / 怒喵兼容设备的 2.4G 无线接收器、USB 直连和蓝牙连接的识别与只读数据读取；补齐插件仓库结构和文档；并真实构建 macOS 产物。
 
-| Phase | Deliverable | Exit evidence | Status |
-|---|---|---|---|
-| 0 | Two repositories, identity, research inventory, threat and license notes | Files and environment probes | in-progress: both repositories initialized; GitHub owner/URLs and copyright metadata still blocked |
-| 1 | Core contracts, package verifier, bounded DSL, mock UI | Unit and malicious-package tests | in-progress: source present and formatted; Rust tests blocked by crates.io fetch timeouts |
-| 2 | AMaster read-only plugin and fixtures in plugin repository | Offline fixture tests only | in-progress: plugin repository and fixtures exist; signed release blocked by production key |
-| 3 | Locked plugin sync and bundled baseline | Deterministic package and offline sync tests | partial: TEST-ONLY signed `mira.example-mock` in lock; `mira.amaster` still has `BLOCKED_*` placeholders; `cargo xtask` cannot build locally |
-| 4 | Low-risk writes | Read-modify-write plus hardware readback | blocked: no hardware; writes disabled |
-| 5 | Profiles, notifications, tray favorites, night mode | Core unit/UI tests | in-progress: only core primitives and mock UI exist |
-| 6 | Logitech/Razer experimental descriptors | Read-only, model-specific evidence | in-progress: descriptors exist in plugin repository; no signed release or hardware verification |
-| 7 | CI, packages, release verification, legal/community docs | Host build plus CI configuration checks | in-progress: CI/YAML/docs present; Rust/native build blocked by network; no remotes configured |
+## 已交付
 
-## Execution order
+1. **协议研究**：读取 `AMasterDriver_v1.0.6_unpacked_reverse_bundle/analysis/AMasterDriver_v1.0.6_reverse_analysis.md` 与 `DONGLE_LIGHTING_CONFIRMATION.md`，梳理 protocol-a（VID `0x3151`）与 AM35（VID `0x0E8D`）的命令、字段映射、校验和接收器转发流程。
+2. **双仓库结构**：创建 `mira-mouse-plugins/` 并在其中建立 `plugins/amaster/` 插件源码。
+3. **插件格式**：为 `mira.amaster` 提供 `plugin.json`、`devices.json`、`protocol/{transports,commands,parsers,workflows}.json`。
+4. **运行时协议驱动**：在 `crates/mira-plugin-runtime/src/protocol.rs` 按 family 分发，实现 protocol-a 的电池、DPI 全档位、回报率、固件、灯光颜色读取，以及接收器轮询。
+5. **USB / 2.4G 支持**：`devices.json` 已包含 protocol-a-direct（USB）和 protocol-a-receiver（2.4G）以及 am35-direct / am35-receiver。
+6. **蓝牙**：标记为 `blocked`，因为当前反编译资料未提供蓝牙 HID 的 VID/PID 与接口证据。
+7. **前端**：`DeviceSnapshot` 扩展 `dpiStages`、`evidence`；UI 按能力动态渲染电量、DPI 档位、回报率、Profile、灯光。
+8. **构建**：成功生成 `target/release/bundle/dmg/Mira_0.1.0_aarch64.dmg`。
+9. **测试**：`cargo test --workspace`、`npm run lint`、`npm run typecheck` 全部通过。
 
-1. Establish repository and evidence boundaries.
-2. Implement versioned, brand-neutral contracts and deterministic tooling.
-3. Build a capability-driven React shell using mock data only at an explicit test boundary.
-4. Put all device facts and fixtures in `mira-mouse-plugins`.
-5. Exercise validate, test, pack, inspect, and locked sync failure paths.
-6. Run every locally available formatter, test, parser, boundary, and build check.
-7. Re-read the specification and publish the exact residual blockers in the final report.
+## 阻塞 / 后续
+
+- 蓝牙 HID 识别缺少硬件证据；需真机捕获蓝牙配对后的 VID/PID/usage。
+- AM35 协议为 `source-confirmed` 但未 `hardware-verified`；写入能力全部关闭。
+- 首次启动若从 DMG 直接运行，可能需要用户授予 macOS Input Monitoring 权限；当前仅验证了从终端启动时的 HID 访问。
+- Windows / Linux 产物未在当前 macOS 宿主机构建。
+- 正式 Apple Developer / Windows 代码签名 / Linux GPG / Updater 签名凭据未提供，标记 `blocked`。

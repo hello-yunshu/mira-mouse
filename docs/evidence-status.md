@@ -1,30 +1,31 @@
-<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
-# Evidence Status
+# 证据状态
 
-Updated: 2026-06-19
+## 协议研究
 
-## Environment
+| 结论 | 来源文件 | 方法 | 状态 |
+|---|---|---|---|
+| protocol-a 使用 VID 0x3151 / PID 0x402A(USB) / 0x5007(2.4G) | `AMasterDriver_v1.0.6_reverse_analysis.md` §3.1 | 反编译静态分析 | source-confirmed |
+| protocol-a 接口 usage_page=0xFFFF/0xFF01, usage=2/1 | `AMasterDriver_v1.0.6_reverse_analysis.md` §3.1 | 反编译 + 当前 hidapi 枚举 | hardware-verified（2.4G） |
+| protocol-a Feature Report ID=0, 64 字节负载，HIDAPI 总长 65 | `AMasterDriver_v1.0.6_reverse_analysis.md` §3.2 | 反编译 | source-confirmed |
+| checksum = 0xFF - (sum(bytes) & 0xFF) | `AMasterDriver_v1.0.6_reverse_analysis.md` §3.2 | 反编译 + 单元测试 | fixture-verified |
+| 0xD6 电池 / 0xD4 DPI / 0xD3 综合参数 / 0xAD USB 固件 / 0x80 SoC 固件 | `AMasterDriver_v1.0.6_reverse_analysis.md` §3.3 | 反编译 | source-confirmed |
+| 回报率编码表 | `AMasterDriver_v1.0.6_reverse_analysis.md` §3.3 | 反编译 + 单元测试 | fixture-verified |
+| 接收器转发 F6/F7/FE/FC | `AMasterDriver_v1.0.6_reverse_analysis.md` §3.4 | 反编译 | source-confirmed |
+| AM35 VID 0x0E8D / PID 0x0880 / 0x0703，RACE 协议 | `AMasterDriver_v1.0.6_reverse_analysis.md` §4 | 反编译 | source-confirmed |
+| 接收器灯光无原生“跟随鼠标”字段 | `DONGLE_LIGHTING_CONFIRMATION.md` | 反编译 | source-confirmed |
 
-- `build-verified`: Node v26.0.0, npm 11.12.1, Git 2.50.1.
-- `build-verified`: macOS 26.5.1 (Build 25F80) arm64.
-- `build-verified`: Rust installed via Homebrew (`cargo 1.96.0`, `rustc 1.96.0`); `cargo fmt --check`, `cargo clippy --workspace --all-targets --locked`, `cargo test --workspace --locked` all pass after generating `Cargo.lock`.
-- `build-verified`: Tauri CLI 2.11.2 is installed via npm.
-- `resolved`: the sibling plugin repository `mira-mouse-plugins` exists at `/Users/yunshu/Documents/GitHub/mira-mouse-plugins` and passes `npm run validate` and `npm test`.
-- `source-confirmed`: the research bundle is present and gitignored; it was not enumerated or hashed during this session.
-- `resolved`: both `mira-mouse` and `mira-mouse-plugins` are initialized as Git repositories (`main` branch); no remotes configured.
-- `resolved`: GitHub owner supplied as `hello-yunshu`; `plugins.lock.json` repository field updated accordingly.
-- `resolved`: production Ed25519 plugin signing key pair generated; public key `mira-plugins-2026-001` hardcoded in `src-tauri/src/lib.rs`; private key is gitignored.
-- `build-verified`: plugin repository release workflow (`release.yml`) rewritten to pack/sign with Node `scripts/pack-sign.mjs`; separate zero-cost workflow files removed; zero-cost release guide (`docs/zero-cost-release.md`) added; `src-tauri/tauri.conf.json` configured with ad-hoc macOS signing (`signingIdentity: "-"`).
+## 真机验证
 
-## Capability evidence
+| 能力 | 硬件 | 结果 | 状态 |
+|---|---|---|---|
+| 2.4G 接收器识别 | AM INFINITY 8K MOUSE (VID 0x3151 / PID 0x5007) | hidapi 枚举匹配，应用 UI 显示已连接 | hardware-verified |
+| 2.4G 电量/回报率/DPI/Profile/真实灯效及完整只读设置 | 同上 | 签名插件完整工作流读取成功（2026-06-20） | hardware-verified |
+| USB 直连 | 未插入 USB 线缆模式 | 无法验证 | blocked |
+| 蓝牙 | 未获取蓝牙 HID 描述符 | 无法验证 | blocked |
+| AM35 | 无 AM35 设备 | 无法验证 | blocked |
 
-- Frontend no-device / Fixture-demo UI is `fixture-verified` by Vitest (4/4 tests pass).
-- Plugin package inspection, DSL, and malicious-package tests are `build-verified` by `cargo test --workspace --locked`.
-- `mira.example-mock` plugin is `build-verified` as a TEST-ONLY signed `.mira-plugin` asset:
-  - asset: `/Users/yunshu/Documents/GitHub/mira-mouse/src-tauri/resources/plugins/mira-example-mock-1.0.0.mira-plugin`
-  - sha256: `33a0fc66a8a55845d1cda56a6f06587d83c227892dd25e4792e64bce778a9f9a`
-  - signed with TEST-ONLY key `TEST-ONLY-mira-plugins`
-  - recorded in `plugins.lock.json` with `bundleByDefault: false`
-- Production plugin signing key is `source-confirmed`: public key `mira-plugins-2026-001` is hardcoded in `src-tauri/src/lib.rs`; private key is gitignored and must be moved to GitHub Actions secret `PLUGIN_SIGNING_KEY` before release.
-- No device, write, installer, updater, performance, compatibility, or browser QA claim is `hardware-verified` or `build-verified`.
-- No production `.mira-plugin` release asset exists; `mira.amaster` release is `blocked` pending hardware verification.
+## 构建验证
+
+- `cargo test --workspace`：通过（fixture-verified）
+- `npm run lint && npm run typecheck`：通过（build-verified）
+- `npx tauri build`：成功生成 DMG（build-verified）

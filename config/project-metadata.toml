@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: CC0-1.0
+# Verified developer identity for Mira Mouse.
+# Loaded by src-tauri/src/lib.rs to populate the About page contact links.
+github_owner = "hello-yunshu"
+main_repository_url = "https://github.com/hello-yunshu/mira-mouse"
+plugin_repository_url = "https://github.com/hello-yunshu/mira-mouse-plugins"
+github_profile_url = "https://github.com/hello-yunshu"
+x_profile_url = "https://x.com/yunyunyshu"
+telegram_profile_url = "https://t.me/yunyunshu"
+developer_display_name = "云云舒"
+copyright_holder = "云云舒"

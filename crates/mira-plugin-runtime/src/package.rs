@@ -48,11 +48,13 @@ pub fn canonical_json(bytes: &[u8]) -> Result<Vec<u8>, PackageError> {
     Ok(serde_json::to_vec(&sort(value))?)
 }
 
-pub fn inspect_package<R: Read + Seek>(
+/// Extract and verify a plugin package, returning both inspection metadata and the
+/// raw file map. Callers that only need the summary can use `inspect_package`.
+pub fn extract_package<R: Read + Seek>(
     reader: R,
     trust: &TrustStore,
     require_signature: bool,
-) -> Result<PackageInspection, PackageError> {
+) -> Result<(PackageInspection, BTreeMap<String, Vec<u8>>), PackageError> {
     let mut archive = ZipArchive::new(reader)?;
     if archive.len() > MAX_FILES {
         return Err(PackageError::Limit("file count"));
@@ -139,13 +141,22 @@ pub fn inspect_package<R: Read + Seek>(
         }
         None => false,
     };
-    Ok(PackageInspection {
+    let inspection = PackageInspection {
         plugin_id: manifest.plugin_id,
         version: manifest.version,
         evidence: format!("{:?}", manifest.evidence),
         signature_verified,
         file_count: files.len(),
-    })
+    };
+    Ok((inspection, files))
+}
+
+pub fn inspect_package<R: Read + Seek>(
+    reader: R,
+    trust: &TrustStore,
+    require_signature: bool,
+) -> Result<PackageInspection, PackageError> {
+    extract_package(reader, trust, require_signature).map(|(inspection, _)| inspection)
 }
 
 fn validate_path(name: &str) -> Result<(), PackageError> {
