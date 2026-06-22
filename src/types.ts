@@ -88,7 +88,7 @@ export interface AboutInfo {
 }
 
 export interface AppSettings {
-  theme: string;
+  theme: ThemeMode;
   autostart: boolean;
   startHidden: boolean;
   trayShowBatteryTitle: boolean;

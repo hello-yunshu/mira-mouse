@@ -88,7 +88,7 @@ impl PluginManifest {
                                         .is_some_and(|source| !source.is_empty())
                                     && item
                                         .get("options")
-                                        .map_or(true, |options| valid_options(options, 32))
+                                        .is_none_or(|options| valid_options(options, 32))
                             })
                         })
                 });

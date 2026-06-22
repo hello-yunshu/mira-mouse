@@ -123,6 +123,35 @@ mod tests {
             Ok(())
         }
     }
+
+    /// Mock that returns more bytes than requested, to test the OversizedRead guard.
+    struct OversizedMock;
+    impl Transport for OversizedMock {
+        fn write(&mut self, _: &[u8]) -> Result<(), String> {
+            Ok(())
+        }
+        fn read(&mut self, length: usize) -> Result<Vec<u8>, String> {
+            Ok(vec![0; length + 1])
+        }
+        fn delay(&mut self, _: u64) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    /// Mock that returns a fixed payload, for Expect tests.
+    struct FixedRead(Vec<u8>);
+    impl Transport for FixedRead {
+        fn write(&mut self, _: &[u8]) -> Result<(), String> {
+            Ok(())
+        }
+        fn read(&mut self, length: usize) -> Result<Vec<u8>, String> {
+            Ok(self.0[..length].to_vec())
+        }
+        fn delay(&mut self, _: u64) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
     #[test]
     fn enforces_delay_limit() {
         let workflow = Workflow {
@@ -134,6 +163,133 @@ mod tests {
         assert_eq!(
             execute_workflow(&workflow, &mut Mock, Limits::default()),
             Err(DslError::Limit("delay"))
+        );
+    }
+
+    /// A Write whose report exceeds `max_report_bytes` must be rejected.
+    #[test]
+    fn rejects_oversized_write() {
+        let big_report = vec![0u8; 1025];
+        let workflow = Workflow {
+            id: "big-write".into(),
+            operations: vec![Operation::Write { report: big_report }],
+        };
+        assert_eq!(
+            execute_workflow(&workflow, &mut Mock, Limits::default()),
+            Err(DslError::Limit("report bytes"))
+        );
+    }
+
+    /// A Read that returns more bytes than requested must trigger OversizedRead.
+    #[test]
+    fn rejects_oversized_read() {
+        let workflow = Workflow {
+            id: "oversized-read".into(),
+            operations: vec![Operation::Read { length: 4 }],
+        };
+        assert_eq!(
+            execute_workflow(&workflow, &mut OversizedMock, Limits::default()),
+            Err(DslError::OversizedRead)
+        );
+    }
+
+    /// Exceeding the max_reads limit must be rejected.
+    #[test]
+    fn rejects_too_many_reads() {
+        let ops: Vec<Operation> = (0..17).map(|_| Operation::Read { length: 1 }).collect();
+        let workflow = Workflow {
+            id: "many-reads".into(),
+            operations: ops,
+        };
+        assert_eq!(
+            execute_workflow(&workflow, &mut Mock, Limits::default()),
+            Err(DslError::Limit("reads"))
+        );
+    }
+
+    /// Exceeding the max_steps limit must be rejected before any I/O.
+    #[test]
+    fn rejects_too_many_steps() {
+        let ops: Vec<Operation> = (0..65)
+            .map(|_| Operation::Delay { milliseconds: 1 })
+            .collect();
+        let workflow = Workflow {
+            id: "many-steps".into(),
+            operations: ops,
+        };
+        assert_eq!(
+            execute_workflow(&workflow, &mut Mock, Limits::default()),
+            Err(DslError::Limit("steps"))
+        );
+    }
+
+    /// Expect must pass when the bytes at the given offset match.
+    #[test]
+    fn expect_matches_at_offset() {
+        let payload = vec![0x00, 0x01, 0x02, 0x03, 0x04];
+        let workflow = Workflow {
+            id: "expect-ok".into(),
+            operations: vec![
+                Operation::Read { length: 5 },
+                Operation::Expect {
+                    offset: 2,
+                    bytes: vec![0x02, 0x03],
+                },
+            ],
+        };
+        assert!(execute_workflow(&workflow, &mut FixedRead(payload), Limits::default()).is_ok());
+    }
+
+    /// Expect must fail when the bytes at the given offset don't match.
+    #[test]
+    fn expect_fails_on_mismatch() {
+        let payload = vec![0x00, 0x01, 0x02, 0x03, 0x04];
+        let workflow = Workflow {
+            id: "expect-fail".into(),
+            operations: vec![
+                Operation::Read { length: 5 },
+                Operation::Expect {
+                    offset: 2,
+                    bytes: vec![0xFF, 0xFF],
+                },
+            ],
+        };
+        assert_eq!(
+            execute_workflow(&workflow, &mut FixedRead(payload), Limits::default()),
+            Err(DslError::Expectation)
+        );
+    }
+
+    /// Expect at an offset that would overflow the read buffer must fail.
+    #[test]
+    fn expect_fails_on_overflow() {
+        let payload = vec![0x00, 0x01];
+        let workflow = Workflow {
+            id: "expect-overflow".into(),
+            operations: vec![
+                Operation::Read { length: 2 },
+                Operation::Expect {
+                    offset: 1,
+                    bytes: vec![0x01, 0x02, 0x03],
+                },
+            ],
+        };
+        assert_eq!(
+            execute_workflow(&workflow, &mut FixedRead(payload), Limits::default()),
+            Err(DslError::Expectation)
+        );
+    }
+
+    /// A read length exceeding `max_report_bytes` must be rejected.
+    #[test]
+    fn rejects_oversized_read_length() {
+        let workflow = Workflow {
+            id: "big-read".into(),
+            operations: vec![Operation::Read { length: 2048 }],
+        };
+        assert_eq!(
+            execute_workflow(&workflow, &mut Mock, Limits::default()),
+            Err(DslError::Limit("reads"))
         );
     }
 }

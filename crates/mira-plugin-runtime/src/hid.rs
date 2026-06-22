@@ -112,16 +112,28 @@ fn evidence_rank(evidence: &str) -> u8 {
 }
 
 fn descriptor_matches(info: &DeviceInfo, descriptor: &DeviceDescriptor) -> bool {
-    let vendor_match = descriptor
-        .vendor_id
-        .is_none_or(|vid| vid == info.vendor_id());
-    let product_match = descriptor
-        .product_id
-        .is_none_or(|pid| pid == info.product_id());
-    let usage_page_match = descriptor
-        .usage_page
-        .is_none_or(|up| up == info.usage_page());
-    let usage_match = descriptor.usage.is_none_or(|u| u == info.usage());
+    matches_descriptor(
+        info.vendor_id(),
+        info.product_id(),
+        info.usage_page(),
+        info.usage(),
+        descriptor,
+    )
+}
+
+/// Pure matching logic extracted from `descriptor_matches` for testability.
+/// Each descriptor field is optional: `None` means "match any value".
+fn matches_descriptor(
+    vendor_id: u16,
+    product_id: u16,
+    usage_page: u16,
+    usage: u16,
+    descriptor: &DeviceDescriptor,
+) -> bool {
+    let vendor_match = descriptor.vendor_id.is_none_or(|vid| vid == vendor_id);
+    let product_match = descriptor.product_id.is_none_or(|pid| pid == product_id);
+    let usage_page_match = descriptor.usage_page.is_none_or(|up| up == usage_page);
+    let usage_match = descriptor.usage.is_none_or(|u| u == usage);
     vendor_match && product_match && usage_page_match && usage_match
 }
 
@@ -188,10 +200,59 @@ pub fn parse_devices_json(bytes: &[u8]) -> Result<DevicesFile, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::evidence_rank;
+    use super::{evidence_rank, matches_descriptor, DeviceDescriptor};
 
     #[test]
     fn protocol_evidence_outranks_unverified_source_evidence() {
         assert!(evidence_rank("protocol-verified") > evidence_rank("source-confirmed"));
+    }
+
+    fn descriptor(
+        vendor_id: Option<u16>,
+        product_id: Option<u16>,
+        usage_page: Option<u16>,
+        usage: Option<u16>,
+    ) -> DeviceDescriptor {
+        DeviceDescriptor {
+            family: "test".into(),
+            vendor_id,
+            product_id,
+            usage_page,
+            usage,
+            connection: None,
+            evidence: None,
+            topology: Vec::new(),
+            transport: None,
+        }
+    }
+
+    #[test]
+    fn empty_descriptor_matches_any_device() {
+        let desc = descriptor(None, None, None, None);
+        assert!(matches_descriptor(0x1234, 0xC001, 0x0001, 0x0002, &desc));
+    }
+
+    #[test]
+    fn exact_vendor_product_match() {
+        let desc = descriptor(Some(0x1234), Some(0xC001), None, None);
+        assert!(matches_descriptor(0x1234, 0xC001, 0xFF, 0xFF, &desc));
+        assert!(!matches_descriptor(0x1234, 0xC002, 0xFF, 0xFF, &desc));
+        assert!(!matches_descriptor(0x5678, 0xC001, 0xFF, 0xFF, &desc));
+    }
+
+    #[test]
+    fn usage_page_and_usage_filter_interface() {
+        let desc = descriptor(Some(0x1234), None, Some(0x0001), Some(0x0002));
+        assert!(matches_descriptor(0x1234, 0xFFFF, 0x0001, 0x0002, &desc));
+        assert!(!matches_descriptor(0x1234, 0xFFFF, 0x0001, 0x0003, &desc));
+        assert!(!matches_descriptor(0x1234, 0xFFFF, 0x0002, 0x0002, &desc));
+    }
+
+    #[test]
+    fn vendor_only_match_ignores_product() {
+        let desc = descriptor(Some(0x1234), None, None, None);
+        assert!(matches_descriptor(0x1234, 0x0001, 0, 0, &desc));
+        assert!(matches_descriptor(0x1234, 0xFFFF, 0xFF, 0xFF, &desc));
+        assert!(!matches_descriptor(0x0000, 0x0001, 0, 0, &desc));
     }
 }
