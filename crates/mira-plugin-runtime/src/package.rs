@@ -36,6 +36,12 @@ struct Checksums {
     files: BTreeMap<String, String>,
 }
 
+/// Canonicalise a JSON document by recursively sorting object keys.
+///
+/// `serde_json::Map` defaults to `BTreeMap` (keys already sorted), so the
+/// object branch is a no-op in the current configuration. The recursive walk
+/// is kept so canonicalisation still holds if `preserve_order` is enabled in
+/// the future, and so array elements are normalised consistently.
 pub fn canonical_json(bytes: &[u8]) -> Result<Vec<u8>, PackageError> {
     fn sort(value: Value) -> Value {
         match value {
@@ -335,5 +341,123 @@ mod tests {
             inspect_package(Cursor::new(unsigned), &trust, true),
             Err(PackageError::Missing("META-INF/signature.ed25519"))
         ));
+    }
+
+    /// Build a zip archive from an explicit list of (name, bytes) entries.
+    /// Unlike `archive`, this does not add checksums or a signature, making
+    /// it suitable for testing low-level path/size validation.
+    fn raw_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut output = Cursor::new(Vec::new());
+        {
+            let mut zip = ZipWriter::new(&mut output);
+            let options =
+                SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+            for (name, bytes) in entries {
+                zip.start_file(name, options).unwrap();
+                zip.write_all(bytes).unwrap();
+            }
+            zip.finish().unwrap();
+        }
+        output.into_inner()
+    }
+
+    /// Path traversal attempts must be rejected before any file is read.
+    #[test]
+    fn rejects_path_traversal_entries() {
+        for bad_name in &[
+            "../escape.json",
+            "/absolute.json",
+            "back\\slash.json",
+            "protocol/..//escape.json",
+            "protocol/../escape.json",
+            "protocol/./nested.json",
+            "//double.json",
+        ] {
+            let bytes = raw_zip(&[(bad_name, b"{}")]);
+            let result = inspect_package(Cursor::new(bytes), &TrustStore::default(), false);
+            assert!(
+                matches!(result, Err(PackageError::UnsafePath(_))),
+                "expected UnsafePath for {bad_name}, got {result:?}"
+            );
+        }
+    }
+
+    /// Archives exceeding the 512-file limit must be rejected.
+    #[test]
+    fn rejects_too_many_files() {
+        // Use directory entries (cheaper than files) to exceed MAX_FILES.
+        // `archive.len()` counts all entries including directories.
+        let mut output = Cursor::new(Vec::new());
+        {
+            let mut zip = ZipWriter::new(&mut output);
+            let options =
+                SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+            for i in 0..=MAX_FILES {
+                zip.add_directory(format!("d{i}/"), options).unwrap();
+            }
+            zip.finish().unwrap();
+        }
+        let bytes = output.into_inner();
+        let result = inspect_package(Cursor::new(bytes), &TrustStore::default(), false);
+        assert!(
+            matches!(result, Err(PackageError::Limit("file count"))),
+            "expected file count limit, got {result:?}"
+        );
+    }
+
+    /// A single file exceeding the 4 MB per-file limit must be rejected.
+    #[test]
+    fn rejects_oversized_single_file() {
+        let big = vec![0u8; (MAX_FILE_BYTES + 1) as usize];
+        let bytes = raw_zip(&[("protocol/big.json", &big)]);
+        let result = inspect_package(Cursor::new(bytes), &TrustStore::default(), false);
+        assert!(
+            matches!(result, Err(PackageError::Limit("file size"))),
+            "expected file size limit, got {result:?}"
+        );
+    }
+
+    /// An unsigned archive with a valid manifest but wrong signing key
+    /// must fail signature verification, not silently accept.
+    #[test]
+    fn rejects_signature_with_wrong_key() {
+        let signing = SigningKey::from_bytes(&[7; 32]);
+        let wrong_key = SigningKey::from_bytes(&[99; 32]);
+        let manifest = manifest(Some("test-only-key"));
+        let checksums = serde_json::to_vec(&serde_json::json!({
+            "schemaVersion": 1,
+            "files": {
+                "plugin.json": hex::encode(Sha256::digest(&manifest))
+            }
+        }))
+        .unwrap();
+        // Sign with `wrong_key` but register `signing` in the trust store.
+        let mut message = canonical_json(&manifest).unwrap();
+        message.push(b'\n');
+        message.extend(canonical_json(&checksums).unwrap());
+        let signature = wrong_key.sign(&message).to_bytes().to_vec();
+        let bytes = raw_zip(&[
+            ("plugin.json", &manifest),
+            ("checksums.json", &checksums),
+            ("META-INF/signature.ed25519", &signature),
+        ]);
+        let mut trust = TrustStore::default();
+        trust
+            .0
+            .insert("test-only-key".into(), signing.verifying_key());
+        let result = inspect_package(Cursor::new(bytes), &trust, true);
+        assert!(
+            matches!(result, Err(PackageError::Signature)),
+            "expected Signature error, got {result:?}"
+        );
+    }
+
+    /// `canonical_json` must produce stable output regardless of key order
+    /// in the input, so that signature verification is deterministic.
+    #[test]
+    fn canonical_json_is_key_order_independent() {
+        let a = canonical_json(br#"{"b": 2, "a": 1}"#).unwrap();
+        let b = canonical_json(br#"{"a": 1, "b": 2}"#).unwrap();
+        assert_eq!(a, b);
     }
 }

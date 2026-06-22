@@ -166,7 +166,7 @@ select {
 }
 .platform-macos .device-column .app-title {
   top: -3px;
-  left: 32px;
+  left: 40px;
   text-align: left;
 }
 
@@ -204,7 +204,7 @@ select {
 /* app-title 左对齐，与 device-copy 文本开头对齐（left:32px 匹配 device-copy 的 padding-left） */
 .platform-windows .device-column .app-title {
   top: -7px;
-  left: 32px;
+  left: 40px;
   text-align: left;
 }
 
@@ -492,9 +492,9 @@ select {
   align-content: center;
 }
 .dpi-reading { grid-template-columns: 1fr; gap: 12px; }
-.primary-reading { display: inline-grid; grid-template-columns: auto auto; align-items: end; justify-content: center; column-gap: 6px; }
+.primary-reading { display: inline-grid; position: relative; }
 .primary-reading strong { font-size: 36px; line-height: .98; letter-spacing: -.05em; font-weight: 720; }
-.primary-reading em { color: var(--muted); font-size: 13px; font-style: normal; font-weight: 650; padding-bottom: 4px; }
+.primary-reading em { position: absolute; left: 100%; bottom: 4px; margin-left: -6px; color: var(--muted); font-size: 13px; font-style: normal; font-weight: 650; padding-bottom: 4px; white-space: nowrap; }
 .editable-reading {
   padding: 4px 12px;
   color: inherit;
@@ -573,7 +573,7 @@ select {
 }
 .dpi-stage-value:hover:not(:disabled) { color: inherit; background: rgb(127 120 140 / 10%); }
 .dpi-stage-value:disabled { opacity: .48; }
-.preview-message { position: absolute; inset-inline: 10px; bottom: 0; margin: 0; color: var(--muted); font-size: 10px; }
+.write-badge { position: absolute; top: 6px; left: 50%; transform: translateX(-50%); padding: 4px 10px; border-radius: 999px; background: color-mix(in oklch, var(--accent), transparent 70%); color: var(--muted); font-size: 11px; z-index: 2; pointer-events: none; }
 
 .mode-reading {
   gap: 2px;
@@ -583,9 +583,9 @@ select {
 .mode-reading > svg { width: 28px; height: 28px; color: var(--accent); margin-bottom: 2px; }
 .mode-reading > span { color: var(--muted); font-size: 12px; }
 .polling-reading { grid-template-columns: 1fr; gap: 10px; }
-.polling-rate { display: inline-grid; grid-template-columns: auto auto; align-items: end; justify-content: center; column-gap: 6px; color: inherit; }
+.polling-rate { display: inline-grid; position: relative; color: inherit; }
 .polling-rate strong { font-size: 28px; line-height: .98; letter-spacing: -.035em; font-weight: 720; }
-.polling-rate em { color: var(--muted); font-size: 13px; font-style: normal; font-weight: 650; padding-bottom: 3px; }
+.polling-rate em { position: absolute; left: 100%; bottom: 4px; margin-left: -6px; color: var(--muted); font-size: 13px; font-style: normal; font-weight: 650; padding-bottom: 3px; white-space: nowrap; }
 .mode-reading > p { max-width: 100%; margin: 4px 0 0; color: var(--muted); font-size: 11px; line-height: 1.45; }
 .plugin-control-reading { justify-content: center; }
 .plugin-segmented {

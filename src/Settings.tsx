@@ -4,11 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import type { AppSettings, BundledPluginInfo, AboutInfo, DiscoveredDevice, ThemeMode } from './types';
 import { Tooltip } from './Tooltip';
 import { notifyError } from './notify';
-
-function extractChannel(releaseTag: string): string | null {
-  const match = releaseTag.match(/-(test|beta|alpha|rc|dev|preview|canary)$/i);
-  return match ? match[1].toLowerCase() : null;
-}
+import { extractChannel, exportDiagnostics } from './plugin-utils';
 
 const DEFAULT_SETTINGS: AppSettings = {
   theme: 'system',
@@ -95,7 +91,7 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, onRefreshInterval
     const next = { ...settings, ...patch };
     setSettings(next);
     if (patch.theme && onThemeChange) onThemeChange(patch.theme as ThemeMode);
-    if (patch.refreshIntervalSeconds) onRefreshIntervalChange(patch.refreshIntervalSeconds);
+    if (patch.refreshIntervalSeconds != null) onRefreshIntervalChange(patch.refreshIntervalSeconds);
     if (previewMode) {
       setSaved(true);
       setTimeout(() => setSaved(false), 1500);
@@ -121,13 +117,16 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, onRefreshInterval
         setAutostartEnabled(enabled);
         update({ autostart: enabled });
       })
-      .catch(() => {});
+      .catch((error) => {
+        // 保持开关状态不变（未启用就是 false），并提示用户失败原因
+        setAutostartEnabled(!enabled);
+        notifyError('设置开机启动失败', String(error));
+      });
   }
 
-  function exportDiagnostics() {
-    invoke<unknown>('export_diagnostics')
-      .then((data) => setDiagnostics(JSON.stringify(data, null, 2)))
-      .catch((err) => notifyError('导出失败', String(err)));
+  async function handleExportDiagnostics() {
+    const result = await exportDiagnostics();
+    if (result !== undefined) setDiagnostics(result);
   }
 
   function scanDevices() {
@@ -183,18 +182,18 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, onRefreshInterval
             <SettingRow title="显示电量百分比" hint="鼠标图标仍会按电量填充，这里只控制旁边的数字">
               <Toggle checked={settings.trayShowBatteryTitle} onChange={(v) => update({ trayShowBatteryTitle: v })} label="显示电量百分比" />
             </SettingRow>
-            <SettingRow title="标题附带接收器电量" hint="托盘菜单中始终保留所有设备电量">
-              <Toggle checked={settings.trayIncludeReceiverBattery} onChange={(v) => update({ trayIncludeReceiverBattery: v })} label="标题附带接收器电量" disabled={!settings.trayShowBatteryTitle} />
-            </SettingRow>
-            <SettingRow title="菜单显示连接状态" hint="在托盘菜单中显示连接方式和设备名称">
-              <Toggle checked={settings.trayShowConnection} onChange={(v) => update({ trayShowConnection: v })} label="菜单显示连接状态" />
-            </SettingRow>
             <SettingRow title="托盘图标颜色" hint="白色适合深色菜单栏背景，黑色适合浅色背景，跟随主题自动切换">
               <select value={settings.trayIconColor} onChange={(e) => update({ trayIconColor: e.target.value })} aria-label="托盘图标颜色">
                 <option value="white">白色</option>
                 <option value="black">黑色</option>
                 <option value="auto">跟随主题</option>
               </select>
+            </SettingRow>
+            <SettingRow title="标题附带接收器电量" hint="托盘菜单中始终保留所有设备电量">
+              <Toggle checked={settings.trayIncludeReceiverBattery} onChange={(v) => update({ trayIncludeReceiverBattery: v })} label="标题附带接收器电量" disabled={!settings.trayShowBatteryTitle} />
+            </SettingRow>
+            <SettingRow title="菜单显示连接状态" hint="在托盘菜单中显示连接方式和设备名称">
+              <Toggle checked={settings.trayShowConnection} onChange={(v) => update({ trayShowConnection: v })} label="菜单显示连接状态" />
             </SettingRow>
           </section>
 
@@ -297,7 +296,7 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, onRefreshInterval
             <button className="secondary" onClick={scanDevices}>扫描</button>
           </SettingRow>
           <SettingRow title="导出诊断" hint="诊断数据已脱敏，不含序列号或 HID 负载">
-            <button className="secondary" onClick={exportDiagnostics}>导出诊断</button>
+            <button className="secondary" onClick={handleExportDiagnostics}>导出诊断</button>
           </SettingRow>
           {discovered.length > 0 && (
             <div className="plugin-list">
