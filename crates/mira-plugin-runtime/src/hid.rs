@@ -67,12 +67,12 @@ pub fn enumerate_matched_devices(
     api: &HidApi,
     plugins: &[(PackageInspection, DevicesFile, BTreeMap<String, Vec<u8>>)],
 ) -> Vec<MatchedDevice> {
-    let mut matches = Vec::new();
+    let mut matches: Vec<MatchedDevice> = Vec::new();
     for device in api.device_list() {
         for (inspection, devices, _) in plugins {
             for descriptor in &devices.devices {
                 if descriptor_matches(device, descriptor) {
-                    matches.push(MatchedDevice {
+                    let candidate = MatchedDevice {
                         plugin_id: inspection.plugin_id.clone(),
                         family: descriptor.family.clone(),
                         evidence: evidence_label(descriptor.evidence.as_deref()),
@@ -82,12 +82,33 @@ pub fn enumerate_matched_devices(
                         product_id: device.product_id(),
                         usage_page: device.usage_page(),
                         usage: device.usage(),
-                    });
+                    };
+                    if let Some(existing) = matches.iter_mut().find(|matched| {
+                        matched.plugin_id == candidate.plugin_id
+                            && matched.family == candidate.family
+                            && matched.path == candidate.path
+                    }) {
+                        if evidence_rank(&candidate.evidence) > evidence_rank(&existing.evidence) {
+                            *existing = candidate;
+                        }
+                    } else {
+                        matches.push(candidate);
+                    }
                 }
             }
         }
     }
     matches
+}
+
+fn evidence_rank(evidence: &str) -> u8 {
+    match evidence {
+        "hardware-verified" => 4,
+        "protocol-verified" => 3,
+        "source-confirmed" => 2,
+        "fixture-verified" => 1,
+        _ => 0,
+    }
 }
 
 fn descriptor_matches(info: &DeviceInfo, descriptor: &DeviceDescriptor) -> bool {
@@ -163,4 +184,14 @@ impl<'a> AmasterReader<'a> {
 /// Convenience: parse `devices.json` from plugin package bytes.
 pub fn parse_devices_json(bytes: &[u8]) -> Result<DevicesFile, String> {
     serde_json::from_slice(bytes).map_err(|e| format!("invalid devices.json: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::evidence_rank;
+
+    #[test]
+    fn protocol_evidence_outranks_unverified_source_evidence() {
+        assert!(evidence_rank("protocol-verified") > evidence_rank("source-confirmed"));
+    }
 }

@@ -2,7 +2,7 @@
 export type Evidence = 'source-confirmed' | 'fixture-verified' | 'build-verified' | 'hardware-verified' | 'inferred' | 'unknown' | 'blocked';
 export type ThemeMode = 'system' | 'light' | 'dark';
 export interface DpiStage { value: number; color: string; active: boolean; enabled: boolean }
-export interface DeviceBattery { id: string; label: string; percentage: number; charging: boolean }
+export interface DeviceBattery { id: string; label: string; percentage: number; charging?: boolean }
 export interface Lighting {
   enabled: boolean;
   mode: string;
@@ -19,17 +19,36 @@ export interface Lighting {
   receiverLightColor?: string;
 }
 export type DeviceCapabilities = Record<string, Record<string, unknown>>;
+export type PluginControl = 'Toggle' | 'Segmented' | 'Select' | 'Slider' | 'Number' | 'Color' | 'GradientStops' | 'DpiStages' | 'LightingZone' | 'ReadOnlyValue' | 'Action' | 'Info';
+export interface PluginCapability {
+  id: string;
+  control: PluginControl;
+  labelKey: string;
+  readOnly: boolean;
+  placements?: PluginCapabilityPlacement[];
+  metadata: Record<string, unknown>;
+}
+export interface PluginCapabilityPlacement {
+  region: 'hero' | 'control' | 'status' | 'details';
+  group?: string;
+  order: number;
+  span: number;
+  icon?: string;
+}
 export interface DeviceState {
   name: string;
   connection: 'USB' | '无线' | '蓝牙' | '虚拟';
   battery?: number;
-  charging: boolean;
+  charging?: boolean;
   batteries: DeviceBattery[];
   pollingRate?: number;
+  supportedPollingRates?: number[];
   profile?: string;
   dpiStages: DpiStage[];
   lighting?: Lighting;
   capabilities: DeviceCapabilities;
+  pluginCapabilities: PluginCapability[];
+  writableMutations: string[];
   evidence: Evidence;
   updatedAt: string;
 }
@@ -75,6 +94,7 @@ export interface AppSettings {
   trayShowBatteryTitle: boolean;
   trayIncludeReceiverBattery: boolean;
   trayShowConnection: boolean;
+  trayIconColor: string;
   lowBatteryThreshold: number;
   nightModeEnabled: boolean;
   nightModeStart: string;
@@ -87,14 +107,17 @@ export interface DeviceSnapshot {
   displayName: string;
   connection: 'usb' | 'wireless' | 'bluetooth' | 'virtual';
   batteryPercent?: number;
-  charging: boolean;
+  charging?: boolean;
   batteries?: DeviceBattery[];
   dpi?: number;
   dpiStages?: DpiStage[];
   pollingRateHz?: number;
+  supportedPollingRatesHz?: number[];
   profile?: string;
   confirmedLightColor?: string;
   capabilities?: DeviceCapabilities;
+  pluginCapabilities?: PluginCapability[];
+  writableMutations?: string[];
   evidence: Evidence;
 }
 

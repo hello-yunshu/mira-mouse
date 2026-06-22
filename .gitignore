@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: CC0-1.0
 /node_modules/
 /dist/
+/outputs/
 /target/
 /src-tauri/resources/plugins/
 /AMasterDriver_v1.0.6_unpacked_reverse_bundle/
@@ -13,4 +14,3 @@
 vite.config.d.ts
 vite.config.js
 /Mira_AI_IDE_Implementation_Prompt.md
-

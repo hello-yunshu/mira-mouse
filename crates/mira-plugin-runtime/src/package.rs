@@ -24,6 +24,8 @@ pub struct PackageInspection {
     pub version: String,
     pub evidence: String,
     pub signature_verified: bool,
+    pub writes_enabled: bool,
+    pub capabilities: Vec<mira_plugin_api::Capability>,
     pub file_count: usize,
 }
 
@@ -146,6 +148,8 @@ pub fn extract_package<R: Read + Seek>(
         version: manifest.version,
         evidence: format!("{:?}", manifest.evidence),
         signature_verified,
+        writes_enabled: manifest.writes_enabled,
+        capabilities: manifest.capabilities,
         file_count: files.len(),
     };
     Ok((inspection, files))
@@ -237,7 +241,12 @@ mod tests {
             "publisherKeyId": key_id,
             "evidence": "fixture-verified",
             "permissions": [],
-            "capabilities": [],
+            "capabilities": [{
+                "id": "mode",
+                "control": "Segmented",
+                "labelKey": "capability.mode",
+                "metadata": {"section": "control"}
+            }],
             "writesEnabled": false
         }))
         .unwrap()
@@ -301,6 +310,8 @@ mod tests {
         let result = inspect_package(Cursor::new(bytes), &trust, true).unwrap();
         assert_eq!(result.plugin_id, "mira.example");
         assert!(result.signature_verified);
+        assert_eq!(result.capabilities.len(), 1);
+        assert_eq!(result.capabilities[0].control.as_str(), "Segmented");
     }
 
     #[test]

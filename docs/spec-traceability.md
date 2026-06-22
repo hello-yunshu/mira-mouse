@@ -7,7 +7,7 @@
 | 1.3 硬边界 | 品牌 VID/PID 只在插件仓库 | `mira-mouse-plugins/plugins/amaster/devices.json` | 代码扫描无品牌常量 | build-verified |
 | 4.1 `.mira-plugin` 容器 | ZIP 容器、白名单、校验和、签名 | `crates/mira-plugin-runtime/src/package.rs` | `cargo test --workspace` | fixture-verified |
 | 4.3 `plugins.lock.json` | 固定插件 SHA-256 | `plugins.lock.json` | SHA 与资源文件一致 | build-verified |
-| 5.2 标准能力 | 电量、DPI、回报率、Profile、灯光只读 | `src/App.tsx`, `src/types.ts` | UI 渲染 | build-verified |
+| 5.2 标准能力 | 电量、DPI、回报率、Profile、灯光及受约束修改 | `src/App.tsx`, `src/types.ts` | UI 与 mutation 测试 | build-verified |
 | 6.2 protocol-a | VID 0x3151 / PID 0x402A(USB) / 0x5007(2.4G)，Feature Report，校验，命令 | `crates/mira-plugin-runtime/src/protocol.rs` | 单元测试 + 真机枚举 | hardware-verified（2.4G） |
 | 6.3 AM35 | VID 0x0E8D / PID 0x0880 / 0x0703，Output/Input Report | `mira-mouse-plugins/plugins/amaster/protocol/*.json` | 无硬件 | source-confirmed / blocked |
 | 8.1 主窗口 | 未连接提示、连接后状态 | `src/App.tsx` | 截图 | build-verified |
@@ -19,6 +19,6 @@
 
 - 蓝牙 HID 设备描述符：缺少证据，标记 `blocked`。
 - AM35 真机读取：标记 `blocked`。
-- 完整 Plugin DSL 解释器：当前使用 Rust 协议族驱动；DSL JSON 作为配置和文档，尚未由解释器执行。
-- 写入能力：全部关闭。
+- Plugin DSL 已执行声明式读取与读-改-写-回读 mutation；插件持有命令、字段、范围和断言，宿主仅提供受约束解释器。
+- protocol-a 当前 DPI 档、DPI 数值、回报率、鼠标字符灯和接收器灯光已开放；真机写入 smoke test 因鼠标离线待补。
 - 社区文件、Actions、REUSE、第三方许可清单：部分缺失，标记 `blocked`。

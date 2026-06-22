@@ -26,7 +26,68 @@
           "control": { "enum": ["Toggle", "Segmented", "Select", "Slider", "Number", "Color", "GradientStops", "DpiStages", "LightingZone", "ReadOnlyValue", "Action", "Info"] },
           "labelKey": { "type": "string", "minLength": 1 },
           "readOnly": { "type": "boolean", "default": false },
-          "metadata": { "type": "object" }
+          "placements": {
+            "type": "array",
+            "maxItems": 8,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["region"],
+              "properties": {
+                "region": { "enum": ["hero", "control", "status", "details"] },
+                "group": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+                "order": { "type": "integer", "minimum": -1000, "maximum": 1000, "default": 0 },
+                "span": { "type": "integer", "minimum": 1, "maximum": 3, "default": 1 },
+                "icon": { "enum": ["battery", "gauge", "wave", "lightbulb", "timer", "profile", "info", "settings"] }
+              }
+            }
+          },
+          "metadata": {
+            "type": "object",
+            "properties": {
+              "options": {
+                "type": "array",
+                "maxItems": 8,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["value", "label"],
+                  "properties": {
+                    "value": { "type": ["string", "number", "boolean"] },
+                    "label": { "type": "string", "minLength": 1, "maxLength": 48 }
+                  }
+                }
+              },
+              "summary": {
+                "type": "array",
+                "maxItems": 4,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["label", "source"],
+                  "properties": {
+                    "label": { "type": "string", "minLength": 1, "maxLength": 48 },
+                    "source": { "type": "string", "minLength": 1, "maxLength": 160 },
+                    "unit": { "type": "string", "maxLength": 16 },
+                    "format": { "type": "string", "maxLength": 32 },
+                    "options": {
+                      "type": "array",
+                      "maxItems": 32,
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["value", "label"],
+                        "properties": {
+                          "value": { "type": ["string", "number", "boolean"] },
+                          "label": { "type": "string", "minLength": 1, "maxLength": 48 }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
         }
       }
     },
