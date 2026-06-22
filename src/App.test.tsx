@@ -6,7 +6,7 @@ import App from './App';
 describe('Mira shell', () => {
   it('shows a quiet no-device state without stale numbers', () => {
     render(<App />);
-    expect(screen.getByText('未发现受支持的鼠标')).toBeInTheDocument();
+    expect(screen.getByText('没有找到支持的鼠标')).toBeInTheDocument();
     expect(screen.queryByText(/0 DPI|--%/)).not.toBeInTheDocument();
   });
   it('shows native-style window controls in the Windows web preview', () => {
@@ -22,7 +22,7 @@ describe('Mira shell', () => {
     fireEvent.click(screen.getByText('打开 Fixture 演示'));
     expect(document.documentElement.style.getPropertyValue('--accent')).toBe('#D8B0B7');
     expect(screen.getAllByText('82%')).toHaveLength(2);
-    expect(screen.getByLabelText('当前 DPI：1000')).toBeInTheDocument();
+    expect(screen.getByLabelText('当前 DPI：1000，点击编辑')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('tab', { name: '灯光' }));
     expect(screen.getByText(/分别读取，互不混用/)).toBeInTheDocument();
     expect(screen.queryByText('fixture-verified')).not.toBeInTheDocument();

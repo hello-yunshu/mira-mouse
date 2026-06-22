@@ -22,6 +22,29 @@ pub struct DeviceBattery {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct PluginCapability {
+    pub id: String,
+    pub control: String,
+    pub label_key: String,
+    pub read_only: bool,
+    #[serde(default)]
+    pub placements: Vec<PluginCapabilityPlacement>,
+    #[serde(default)]
+    pub metadata: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginCapabilityPlacement {
+    pub region: String,
+    pub group: Option<String>,
+    pub order: i32,
+    pub span: u8,
+    pub icon: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct DeviceSnapshot {
     pub display_name: String,
     pub connection: Connection,
@@ -32,9 +55,15 @@ pub struct DeviceSnapshot {
     pub dpi: Option<u16>,
     pub dpi_stages: Option<Vec<DpiStage>>,
     pub polling_rate_hz: Option<u16>,
+    #[serde(default, rename = "supportedPollingRatesHz")]
+    pub supported_polling_rates_hz: Option<Vec<u16>>,
     pub profile: Option<String>,
     pub confirmed_light_color: Option<String>,
     pub capabilities: BTreeMap<String, Value>,
+    #[serde(default)]
+    pub plugin_capabilities: Vec<PluginCapability>,
+    #[serde(default)]
+    pub writable_mutations: Vec<String>,
     pub evidence: String,
 }
 

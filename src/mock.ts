@@ -7,13 +7,16 @@ export const MOCK_DEVICE: DeviceState = {
     { id: 'mouse', label: '鼠标', percentage: 82, charging: false },
     { id: 'receiver', label: '接收器', percentage: 100, charging: false },
   ],
-  pollingRate: 1000, profile: 'Profile 1', evidence: 'fixture-verified', updatedAt: '刚刚',
+  pollingRate: 1000, supportedPollingRates: [125, 250, 500, 1000, 2000, 4000, 8000], profile: '配置 1', evidence: 'fixture-verified', updatedAt: '刚刚',
   dpiStages: [
     { value: 400, color: '#7ea7d8', enabled: true, active: false },
     { value: 800, color: '#9a8bd0', enabled: true, active: false },
     { value: 1000, color: '#bf7fa8', enabled: true, active: true },
     { value: 1600, color: '#d39378', enabled: true, active: false },
-    { value: 3200, color: '#7eb2a0', enabled: true, active: false },
+    { value: 2400, color: '#7eb2a0', enabled: true, active: false },
+    { value: 3200, color: '#a8c46a', enabled: true, active: false },
+    { value: 6400, color: '#c9a86c', enabled: true, active: false },
+    { value: 12800, color: '#c77a9a', enabled: true, active: false },
   ],
   lighting: {
     enabled: true, mode: '呼吸', color: '#D8B0B7', supportsSpeed: true, supportsBrightness: true, receiverLinked: true,
@@ -22,7 +25,7 @@ export const MOCK_DEVICE: DeviceState = {
   },
   capabilities: {
     battery: { percentage: 82, charging: false, valid: true },
-    dpi: { profile: 0, currentStage: 3, stageCount: 5, dpiX: [400, 800, 1000, 1600, 3200], dpiY: [400, 800, 1000, 1600, 3200], stageColors: ['#7ea7d8', '#9a8bd0', '#bf7fa8', '#d39378', '#7eb2a0'] },
+    dpi: { profile: 0, currentStage: 3, stageCount: 8, dpiX: [400, 800, 1000, 1600, 2400, 3200, 6400, 12800], dpiY: [400, 800, 1000, 1600, 2400, 3200, 6400, 12800], stageColors: ['#7ea7d8', '#9a8bd0', '#bf7fa8', '#d39378', '#7eb2a0', '#a8c46a', '#c9a86c', '#c77a9a'] },
     settings: { profile: 0, pollingRaw: 1, pollingRate: 1000, usbDebounce: 4, wirelessDebounce: 4, bluetoothDebounce: 4, rippleCorrection: true, angleSnap: false, motionSync: true, liftCutOff: 1, buttonChangeTime: 12, wheelToButton: 0, buttonToWheel: 0, bluetoothSleepValue: 600, wirelessSleepValue: 300, mouseLightStartColor: '#D8B0B7', mouseLightEndColor: '#D8B0B7', mouseLightEnabled: true },
     receiverLighting: { effect: 3, effectName: '霓虹', speed: 2, brightness: 70, option: 7, color: '#D8B0B7' },
     fps: { enabled: true },
@@ -34,4 +37,25 @@ export const MOCK_DEVICE: DeviceState = {
     receiverFirmwareLed: { versionRaw: 260 },
     buttonMappings: { '0x00': [1, 0, 0, 0], '0x01': [2, 0, 0, 0], '0x02': [3, 0, 0, 0], '0x03': [4, 0, 0, 0], '0x04': [5, 0, 0, 0], '0x0e': [14, 0, 0, 0], '0x0f': [15, 0, 0, 0] },
   },
+  pluginCapabilities: [
+    { id: 'battery', control: 'ReadOnlyValue', labelKey: 'capability.battery', readOnly: true, placements: [{ region: 'hero', order: 10, span: 1, icon: 'battery' }], metadata: {} },
+    { id: 'dpi', control: 'DpiStages', labelKey: 'capability.dpi', readOnly: false, placements: [{ region: 'control', group: 'performance', order: 10, span: 1, icon: 'gauge' }], metadata: { label: 'DPI', section: 'control', source: 'dpiStages', mutations: { select: 'set-dpi-stage', value: 'set-dpi-value' } } },
+    { id: 'polling-rate', control: 'Select', labelKey: 'capability.polling-rate', readOnly: false, placements: [{ region: 'control', group: 'polling', order: 20, span: 1, icon: 'wave' }], metadata: { label: '回报率', section: 'control', source: 'pollingRate', mutation: 'set-polling-rate', param: 'rate', unit: 'Hz', options: [125, 250, 500, 1000, 2000, 4000, 8000].map((value) => ({ value, label: `${value} Hz` })), summary: [{ label: '运动同步', source: 'capabilities.settings.motionSync' }, { label: '角度吸附', source: 'capabilities.settings.angleSnap' }, { label: '抬升高度', source: 'capabilities.settings.liftCutOff' }] } },
+    {
+      id: 'sleep-time', control: 'Number', labelKey: 'capability.sleep-time', readOnly: false,
+      placements: [{ region: 'status', order: 10, span: 1, icon: 'timer' }],
+      metadata: {
+        label: '休眠时间', section: 'status', status: true, format: 'sleep',
+        bindings: [
+          { when: { path: 'connection', eq: '蓝牙' }, label: '蓝牙休眠', source: 'capabilities.settings.bluetoothSleepValue', mutation: 'set-bluetooth-sleep-time', param: 'seconds' },
+          { when: { path: 'connection', eq: '无线' }, label: '2.4G 休眠', source: 'capabilities.settings.wirelessSleepValue', mutation: 'set-wireless-sleep-time', param: 'seconds' },
+          { when: { path: 'connection', eq: '虚拟' }, label: '2.4G 休眠', source: 'capabilities.settings.wirelessSleepValue', mutation: 'set-wireless-sleep-time', param: 'seconds' },
+        ],
+      },
+    },
+    { id: 'profile', control: 'ReadOnlyValue', labelKey: 'capability.profile', readOnly: true, placements: [{ region: 'status', order: 20, span: 1, icon: 'profile' }], metadata: { label: '配置文件', section: 'status', status: true, source: 'profile' } },
+    { id: 'lighting', control: 'LightingZone', labelKey: 'capability.lighting', readOnly: false, placements: [{ region: 'control', group: 'lighting', order: 30, span: 1, icon: 'lightbulb' }, { region: 'status', order: 30, span: 1, icon: 'lightbulb' }], metadata: { label: '灯光', section: 'control', status: true, source: 'lighting.mouseLightColor', mutations: { mouse: 'set-mouse-lighting', receiver: 'set-receiver-lighting' } } },
+    { id: 'firmware', control: 'ReadOnlyValue', labelKey: 'capability.firmware', readOnly: true, placements: [{ region: 'details', order: 10, span: 1, icon: 'info' }], metadata: {} },
+  ],
+  writableMutations: ['set-dpi-stage', 'set-dpi-value', 'set-polling-rate', 'set-mouse-lighting', 'set-receiver-lighting', 'set-wireless-sleep-time', 'set-bluetooth-sleep-time'],
 };
