@@ -102,7 +102,8 @@ function rgbToHex(rgb: unknown): string | undefined {
   if (!Array.isArray(rgb) || rgb.length < 3) return undefined;
   const [r, g, b] = rgb.map((v) => Number(v));
   if ([r, g, b].some((v) => Number.isNaN(v))) return undefined;
-  return `#${[r, g, b].map((v) => v.toString(16).padStart(2, '0')).join('')}`;
+  // 钳制到 [0, 255] 范围，避免负数或 >255 的值产生无效的 hex 字符串
+  return `#${[r, g, b].map((v) => Math.max(0, Math.min(255, Math.trunc(v))).toString(16).padStart(2, '0')).join('')}`;
 }
 
 function snapshotToState(snapshot: DeviceSnapshot): DeviceState {
@@ -141,7 +142,7 @@ function snapshotToState(snapshot: DeviceSnapshot): DeviceState {
     batteries: snapshot.batteries?.length ? snapshot.batteries : fallbackBatteries,
     pollingRate: snapshot.pollingRateHz,
     supportedPollingRates: snapshot.supportedPollingRatesHz ?? [125, 250, 500, 1000, 2000, 4000, 8000],
-    profile: snapshot.profile?.replace(/^Profile\s+/i, '配置 '),
+    profile: snapshot.profile ? `配置 ${snapshot.profile}` : undefined,
     evidence: snapshot.evidence,
     updatedAt: now,
     dpiStages: stages,
@@ -995,14 +996,13 @@ function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceCh
     params: Record<string, unknown>,
   ) => {
     setWriteBusy(true);
-    setPreviewMessage('正在写入并回读确认…');
     try {
       const snapshot = await invoke<DeviceSnapshot>('device_mutate', { mutation, params });
       onDeviceChange(snapshotToState(snapshot));
-      setPreviewMessage('已写入，回读确认一致。');
+      setPreviewMessage('已写入');
+      setTimeout(() => setPreviewMessage(''), 1500);
     } catch (error) {
       notifyError('写入失败', `界面已保留设备真实状态：${String(error)}`);
-      setPreviewMessage('');
     } finally {
       setWriteBusy(false);
     }
@@ -1232,6 +1232,7 @@ function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceCh
                 >接收器灯光</button>
               )}
             </div>
+            {supportsReceiverLighting && <p className="lighting-hint">鼠标与接收器灯光分别读取，互不混用。</p>}
             <div className="lighting-swatch" style={{ '--light-color': (
               activeLightingView === 'mouse' ? device.lighting?.mouseLightColor : device.lighting?.receiverLightColor
             ) ?? '#b87ab0' } as React.CSSProperties} />
@@ -1380,7 +1381,7 @@ function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceCh
             runMutation={runMutation}
           />
         ))}
-        {previewMessage && <p className="preview-message">{previewMessage}</p>}
+        {previewMessage && <span className="write-badge">{previewMessage}</span>}
         {editingSleep && sleepSetting && (
           <SleepEditModal
             label={sleepSetting.label}
@@ -1448,6 +1449,14 @@ export default function App() {
   const macPlatform = isMacPlatform();
   const windowsWebPreview = isWindowsWebPreview();
 
+  // 触发后台立即刷新设备状态，失败时通知用户
+  const refreshDevice = () => {
+    setDemoMode(false);
+    setDevice(undefined);
+    setRefreshNonce((value) => value + 1);
+    invoke('device_refresh').catch((error) => notifyError('刷新设备失败', String(error)));
+  };
+
   // 从后端加载已保存的主题设置
   useEffect(() => {
     if (pureWeb) return;
@@ -1456,7 +1465,7 @@ export default function App() {
         setTheme(settings.theme as ThemeMode);
         setRefreshIntervalSeconds(Math.min(60, Math.max(1, settings.refreshIntervalSeconds || 5)));
       })
-      .catch(() => {});
+      .catch((error) => console.warn('settings_get failed:', error));
   }, [pureWeb]);
 
   // 周期性从后端读取真实设备状态
@@ -1483,7 +1492,7 @@ export default function App() {
       setDevice(snapshot ? snapshotToState(snapshot) : undefined);
     }).then((un) => {
       unlisten = un;
-    }).catch(() => {});
+    }).catch((error) => console.warn('device-updated listener failed:', error));
 
     return () => {
       cancelled = true;
@@ -1491,7 +1500,9 @@ export default function App() {
     };
   }, [demoMode, refreshNonce]);
 
-  useEffect(() => applyTheme(theme, device?.lighting?.mouseLightColor ?? device?.lighting?.color), [theme, device]);
+  // 仅在主题或灯光颜色实际变化时重新应用，避免每次设备快照更新都触发
+  const themeColor = device?.lighting?.mouseLightColor ?? device?.lighting?.color;
+  useEffect(() => applyTheme(theme, themeColor), [theme, themeColor]);
 
   return <div className={`app-shell ${pureWeb ? 'web-preview' : ''} ${windowsPlatform ? 'platform-windows' : ''} ${macPlatform ? 'platform-macos' : ''} ${windowsWebPreview ? 'windows-web-preview' : ''}`}>
     {windowsWebPreview && <WindowsPreviewControls />}
@@ -1500,10 +1511,10 @@ export default function App() {
         <button className={`nav-link ${view === 'dashboard' ? 'active' : ''}`} onClick={() => setView('dashboard')}>设备</button>
         <button className={`nav-link ${view === 'settings' ? 'active' : ''}`} onClick={() => setView('settings')}>设置</button>
         <button className={`nav-link nav-about ${view === 'about' ? 'active' : ''}`} onClick={() => setView('about')} aria-label="关于 Mira"><Info weight="regular" /></button>
-        {demoMode && <button className="nav-link nav-exit" onClick={() => { setDemoMode(false); setDevice(undefined); setRefreshNonce((value) => value + 1); invoke('device_refresh').catch(() => {}); }} aria-label="退出演示" title="退出演示"><SignOut weight="regular" /></button>}
+        {demoMode && <button className="nav-link nav-exit" onClick={refreshDevice} aria-label="退出演示" title="退出演示"><SignOut weight="regular" /></button>}
       </div>
     </nav>
-    {view === 'dashboard' && (device ? <Dashboard device={device} onDeviceChange={setDevice} /> : <EmptyState onRefresh={() => { setDemoMode(false); setDevice(undefined); setRefreshNonce((value) => value + 1); invoke('device_refresh').catch(() => {}); }} onDemo={() => { setDemoMode(true); setDevice(MOCK_DEVICE); }} onOpenSettings={() => setView('settings')} />)}
+    {view === 'dashboard' && (device ? <Dashboard device={device} onDeviceChange={setDevice} /> : <EmptyState onRefresh={refreshDevice} onDemo={() => { setDemoMode(true); setDevice(MOCK_DEVICE); }} onOpenSettings={() => setView('settings')} />)}
     {view === 'settings' && <SettingsPage previewMode={pureWeb} onNavigateAbout={() => setView('about')} onThemeChange={setTheme} onRefreshIntervalChange={setRefreshIntervalSeconds} />}
     {view === 'about' && <AboutPage previewMode={pureWeb} onBack={() => setView('settings')} />}
   </div>;

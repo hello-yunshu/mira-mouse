@@ -20,7 +20,7 @@ const settings: AppSettings = {
 
 const snapshot: DeviceSnapshot = {
   displayName: 'AM INFINITY 8K MOUSE', connection: 'wireless', batteryPercent: 76,
-  charging: false, dpi: 1600, pollingRateHz: 1000, profile: 'Profile 1',
+  charging: false, dpi: 1600, pollingRateHz: 1000, profile: '1',
   batteries: [
     { id: 'mouse', label: '鼠标', percentage: 76, charging: false },
     { id: 'receiver', label: '接收器', percentage: 100, charging: false },
@@ -170,7 +170,7 @@ describe('real device snapshot mapping', () => {
     fireEvent.click(screen.getByRole('button', { name: '切换到第 1 档' }));
     await waitFor(() => expect(screen.getByLabelText('当前 DPI：800，点击编辑')).toBeInTheDocument());
     expect(invokeMock).toHaveBeenCalledWith('device_mutate', { mutation: 'set-dpi-stage', params: { stage: 1 } });
-    expect(screen.getByText('已写入，回读确认一致。')).toBeInTheDocument();
+    expect(screen.getByText('已写入')).toBeInTheDocument();
     expect(document.documentElement.style.getPropertyValue('--accent')).toContain('210');
     fireEvent.click(screen.getByRole('button', { name: /76%/ }));
     expect(screen.getByRole('region', { name: '设备电量' })).toHaveTextContent('鼠标76%');

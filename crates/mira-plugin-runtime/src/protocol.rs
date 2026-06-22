@@ -38,6 +38,15 @@ pub struct ProtocolContext<'a> {
 
 pub fn read_device(ctx: &ProtocolContext) -> Result<DeviceReading, String> {
     let package = ProtocolPackage::from_files(ctx.files)?;
+    read_device_with_package(&package, ctx)
+}
+
+/// Like `read_device` but reuses a pre-parsed `ProtocolPackage` to avoid
+/// re-parsing the JSON files on every call.
+pub fn read_device_with_package(
+    package: &ProtocolPackage,
+    ctx: &ProtocolContext,
+) -> Result<DeviceReading, String> {
     let workflow_id = format!("{}-read", ctx.family);
     let outputs = package.execute(ctx.api, ctx.path, &workflow_id)?;
     #[cfg(debug_assertions)]
@@ -57,7 +66,16 @@ pub fn execute_plugin_workflow(
 }
 
 pub fn writable_mutations(ctx: &ProtocolContext) -> Result<Vec<String>, String> {
-    Ok(ProtocolPackage::from_files(ctx.files)?.mutation_ids(ctx.family, Some(&ctx.outputs)))
+    let package = ProtocolPackage::from_files(ctx.files)?;
+    Ok(package.mutation_ids(ctx.family, Some(&ctx.outputs)))
+}
+
+/// Like `writable_mutations` but reuses a pre-parsed `ProtocolPackage`.
+pub fn writable_mutations_with_package(
+    package: &ProtocolPackage,
+    ctx: &ProtocolContext,
+) -> Result<Vec<String>, String> {
+    Ok(package.mutation_ids(ctx.family, Some(&ctx.outputs)))
 }
 
 pub fn mutate_device(
@@ -66,6 +84,16 @@ pub fn mutate_device(
     params: &Map<String, Value>,
 ) -> Result<Value, String> {
     let package = ProtocolPackage::from_files(ctx.files)?;
+    mutate_device_with_package(&package, ctx, mutation, params)
+}
+
+/// Like `mutate_device` but reuses a pre-parsed `ProtocolPackage`.
+pub fn mutate_device_with_package(
+    package: &ProtocolPackage,
+    ctx: &ProtocolContext,
+    mutation: &str,
+    params: &Map<String, Value>,
+) -> Result<Value, String> {
     let mutation_id = format!("{}-{mutation}", ctx.family);
     package.mutate(ctx.api, ctx.path, &mutation_id, params, &ctx.outputs)
 }

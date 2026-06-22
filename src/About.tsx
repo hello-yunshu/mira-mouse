@@ -4,8 +4,9 @@ import { invoke } from '@tauri-apps/api/core';
 import { check } from '@tauri-apps/plugin-updater';
 import type { AboutInfo } from './types';
 import { notifyError } from './notify';
+import { extractChannel, exportDiagnostics } from './plugin-utils';
 
-type UpdateState = 'idle' | 'checking' | 'up-to-date' | 'available';
+type UpdateState = 'idle' | 'checking' | 'up-to-date' | 'available' | 'downloading' | 'installed';
 
 const PREVIEW_INFO: AboutInfo = {
   name: 'Mira Mouse',
@@ -21,11 +22,6 @@ const PREVIEW_INFO: AboutInfo = {
   updaterActive: false,
 };
 
-function extractChannel(releaseTag: string): string | null {
-  const match = releaseTag.match(/-(test|beta|alpha|rc|dev|preview|canary)$/i);
-  return match ? match[1].toLowerCase() : null;
-}
-
 export function AboutPage({ onBack, previewMode = false }: { onBack: () => void; previewMode?: boolean }) {
   const [info, setInfo] = useState<AboutInfo | null>(previewMode ? PREVIEW_INFO : null);
   const [error, setError] = useState<string>('');
@@ -36,7 +32,11 @@ export function AboutPage({ onBack, previewMode = false }: { onBack: () => void;
     if (previewMode) return;
     invoke<AboutInfo>('about_info')
       .then(setInfo)
-      .catch((err) => setError(String(err)));
+      .catch((err) => {
+        const message = String(err);
+        notifyError('加载关于信息失败', message);
+        setError(message);
+      });
   }, [previewMode]);
 
   async function checkForUpdates() {
@@ -55,14 +55,29 @@ export function AboutPage({ onBack, previewMode = false }: { onBack: () => void;
     }
   }
 
-  function exportDiagnostics() {
+  async function installUpdate() {
+    setUpdateState('downloading');
+    try {
+      const update = await check();
+      if (!update) {
+        setUpdateState('up-to-date');
+        return;
+      }
+      await update.downloadAndInstall();
+      setUpdateState('installed');
+    } catch (err) {
+      setUpdateState('available');
+      notifyError('安装更新失败', String(err));
+    }
+  }
+
+  async function handleExportDiagnostics() {
     if (previewMode) {
       setDiagnostics(JSON.stringify({ mode: 'web-preview', privacy: 'sanitized' }, null, 2));
       return;
     }
-    invoke<unknown>('export_diagnostics')
-      .then((data) => setDiagnostics(JSON.stringify(data, null, 2)))
-      .catch((err) => notifyError('导出失败', String(err)));
+    const result = await exportDiagnostics();
+    if (result !== undefined) setDiagnostics(result);
   }
 
   if (error) {
@@ -180,12 +195,18 @@ export function AboutPage({ onBack, previewMode = false }: { onBack: () => void;
         {info.updaterActive && (
           <>
             <div className="contact-links">
-              <button className="secondary" onClick={checkForUpdates} disabled={updateState === 'checking'}>
+              <button className="secondary" onClick={checkForUpdates} disabled={updateState === 'checking' || updateState === 'downloading'}>
                 {updateState === 'checking' ? '检查中…' : '检查更新'}
               </button>
+              {updateState === 'up-to-date' && <span className="save-badge">已是最新</span>}
+              {updateState === 'available' && (
+                <button className="primary" onClick={installUpdate}>
+                  立即安装
+                </button>
+              )}
+              {updateState === 'installed' && <span className="save-badge">安装完成，请重启应用</span>}
             </div>
-            {updateState === 'up-to-date' && <p className="setting-hint">当前已是最新版本。</p>}
-            {updateState === 'available' && <p className="setting-hint">发现新版本，将在下次启动时提示安装。</p>}
+            {updateState === 'available' && <p className="setting-hint">点击"立即安装"下载并安装更新。</p>}
           </>
         )}
       </section>
@@ -216,7 +237,7 @@ export function AboutPage({ onBack, previewMode = false }: { onBack: () => void;
           未经你确认不上传任何数据。
         </p>
         <div className="contact-links">
-          <button className="secondary" onClick={exportDiagnostics}>导出诊断</button>
+          <button className="secondary" onClick={handleExportDiagnostics}>导出诊断</button>
         </div>
         {diagnostics && (
           <pre className="diagnostics-output">{diagnostics}</pre>

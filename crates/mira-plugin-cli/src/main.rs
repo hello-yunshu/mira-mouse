@@ -111,6 +111,9 @@ fn sign_package(package: &Path, key_hex: Option<&str>) -> Result<Vec<u8>> {
         if entry.is_dir() {
             continue;
         }
+        if forbidden_source(&name) {
+            bail!("forbidden plugin file in package: {name}");
+        }
         let mut bytes = Vec::new();
         entry.read_to_end(&mut bytes)?;
         files.insert(name, bytes);

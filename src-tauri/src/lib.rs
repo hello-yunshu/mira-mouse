@@ -3,8 +3,9 @@ use ed25519_dalek::VerifyingKey;
 use hidapi::HidApi;
 use mira_core::{DeviceSnapshot, LowBatteryCrossing, PluginCapability, PluginCapabilityPlacement};
 use mira_plugin_runtime::{
-    extract_package, hid, inspect_package, mutate_device, read_device, writable_mutations,
-    ConnectionKind, DeviceReading, PackageInspection, ProtocolContext, TrustStore,
+    extract_package, hid, inspect_package, mutate_device_with_package, read_device_with_package,
+    writable_mutations_with_package, ConnectionKind, DeviceReading, PackageInspection,
+    ProtocolContext, ProtocolPackage, TrustStore,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -77,6 +78,17 @@ struct SessionState {
     /// 检测到设备插拔、充电状态变化等事件后，进入短暂的 500ms 快速轮询窗口，
     /// 在不持续高频轮询的前提下，尽快捕获状态变化的收尾（例如充电结束）。
     settling_polls: Mutex<u8>,
+    /// 缓存应用设置，避免每次轮询都读磁盘。
+    /// 由 settings_set 命令和首次加载时更新。
+    cached_settings: Mutex<Option<AppSettings>>,
+    /// 缓存 HidApi 实例，避免每次设备读取/写入都重新枚举所有 HID 设备。
+    /// 调用方负责在持锁期间完成 HID 操作；device_io 锁已序列化大部分访问。
+    cached_hidapi: Mutex<Option<HidApi>>,
+    /// 缓存 inspect_bundled_plugins 结果。内置插件在构建时打包，运行时不变，
+    /// 因此只需计算一次（SHA-256 + 签名验证）。
+    cached_bundled_plugins: Mutex<Option<Vec<BundledPluginInfo>>>,
+    /// 缓存 load_software_profiles 结果。由 save_software_profiles 写入后失效。
+    cached_software_profiles: Mutex<Option<SoftwareProfileStore>>,
 }
 
 /// Send an immediate-refresh signal to the background reader thread.
@@ -104,7 +116,10 @@ fn note_state_change(state: &SessionState) {
 
 /// Update the cached snapshot and, if it actually changed, enable the settling burst.
 fn store_snapshot(state: &SessionState, snapshot: Option<DeviceSnapshot>) {
-    let mut guard = state.last_snapshot.lock().unwrap();
+    let mut guard = state
+        .last_snapshot
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let changed = guard.as_ref() != snapshot.as_ref();
     *guard = snapshot;
     drop(guard);
@@ -119,9 +134,11 @@ const PRODUCTION_KEY_ID: &str = "mira-plugins-2026-001";
 const PRODUCTION_PUBLIC_KEY_HEX: &str =
     "eb80fdde2dc7ba507b6c8afbbf5a7de82e6219967edf1914ddb979d5601d39b3";
 
-// Test packages are trusted in all builds for local development.
+// Test packages are trusted only in debug builds for local development.
 // Remove this before a production release.
+#[cfg(debug_assertions)]
 const TEST_KEY_ID: &str = "TEST-ONLY-mira-plugins";
+#[cfg(debug_assertions)]
 const TEST_PUBLIC_KEY_HEX: &str =
     "00d34dac6e039baada3d3d9aa65390f2887d09d73b396af8434ecb29c233d666";
 
@@ -137,6 +154,10 @@ fn production_trust_store() -> TrustStore {
         PRODUCTION_KEY_ID.to_string(),
         decode_key(PRODUCTION_PUBLIC_KEY_HEX),
     );
+    // Test packages are trusted only in debug builds for local development.
+    // Release builds must not trust the test key, otherwise anyone with the
+    // test private key could sign plugins that production users would accept.
+    #[cfg(debug_assertions)]
     trust
         .0
         .insert(TEST_KEY_ID.to_string(), decode_key(TEST_PUBLIC_KEY_HEX));
@@ -159,7 +180,7 @@ struct AboutInfo {
     updater_active: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct BundledPluginInfo {
     plugin_id: String,
@@ -204,14 +225,14 @@ struct AppSettings {
     telemetry_disabled: bool,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 struct SoftwareProfileStore {
     schema_version: u32,
     devices: BTreeMap<String, SoftwareProfile>,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 struct SoftwareProfile {
     mutations: BTreeMap<String, BTreeMap<String, serde_json::Value>>,
@@ -242,6 +263,9 @@ impl AppSettings {
         let defaults = Self::default();
         if !matches!(self.theme.as_str(), "system" | "light" | "dark") {
             self.theme = defaults.theme;
+        }
+        if !matches!(self.tray_icon_color.as_str(), "white" | "black" | "auto") {
+            self.tray_icon_color = defaults.tray_icon_color;
         }
         if !(5..=50).contains(&self.low_battery_threshold) {
             self.low_battery_threshold = defaults.low_battery_threshold;
@@ -288,6 +312,7 @@ mod settings_tests {
     fn invalid_saved_values_are_repaired() {
         let settings = AppSettings {
             theme: String::new(),
+            tray_icon_color: "blue".into(),
             low_battery_threshold: 0,
             refresh_interval_seconds: 0,
             night_mode_start: "99:99".into(),
@@ -480,6 +505,23 @@ fn inspect_bundled_plugins(app: &AppHandle, trust: &TrustStore) -> Vec<BundledPl
         .collect()
 }
 
+/// Return cached bundled plugin info, computing it once on first access.
+/// Bundled plugins are fixed at build time, so the SHA-256 and signature
+/// verification only need to run once for the app's lifetime.
+fn cached_bundled_plugins(app: &AppHandle) -> Vec<BundledPluginInfo> {
+    let state = app.state::<SessionState>();
+    if let Ok(mut cache) = state.cached_bundled_plugins.lock() {
+        if let Some(ref plugins) = *cache {
+            return plugins.clone();
+        }
+        let plugins = inspect_bundled_plugins(app, &production_trust_store());
+        *cache = Some(plugins.clone());
+        return plugins;
+    }
+    // Lock failed (poisoned) — compute directly without caching.
+    inspect_bundled_plugins(app, &production_trust_store())
+}
+
 /// Load all bundled plugin packages that can be verified and extract their
 /// `devices.json` descriptors. Used by the HID discovery path.
 fn load_bundled_plugin_devices(
@@ -544,39 +586,34 @@ fn load_bundled_plugin_devices(
 }
 
 fn load_contact_links() -> ContactLinks {
-    // Contact links are loaded from config/project-metadata.toml when provided.
-    // Until the user supplies verified GitHub/X/Telegram URLs, all entries remain None
-    // and the About page hides them per spec §10.2.
-    let path = PathBuf::from("config/project-metadata.toml");
-    if let Ok(text) = fs::read_to_string(&path) {
-        let mut github = None;
-        let mut x = None;
-        let mut telegram = None;
-        let mut developer_name = None;
-        let mut copyright = None;
-        for line in text.lines() {
-            let trimmed = line.trim();
-            if let Some(value) = trimmed.strip_prefix("main_repository_url = ") {
-                github = parse_toml_string(value);
-            } else if let Some(value) = trimmed.strip_prefix("x_profile_url = ") {
-                x = parse_toml_string(value);
-            } else if let Some(value) = trimmed.strip_prefix("telegram_profile_url = ") {
-                telegram = parse_toml_string(value);
-            } else if let Some(value) = trimmed.strip_prefix("developer_display_name = ") {
-                developer_name = parse_toml_string(value);
-            } else if let Some(value) = trimmed.strip_prefix("copyright_holder = ") {
-                copyright = parse_toml_string(value);
-            }
+    // Project metadata is part of the application build, so embedding it keeps
+    // development and packaged builds on the same path.
+    let text = include_str!("../../config/project-metadata.toml");
+    let mut github = None;
+    let mut x = None;
+    let mut telegram = None;
+    let mut developer_name = None;
+    let mut copyright = None;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if let Some(value) = trimmed.strip_prefix("main_repository_url = ") {
+            github = parse_toml_string(value);
+        } else if let Some(value) = trimmed.strip_prefix("x_profile_url = ") {
+            x = parse_toml_string(value);
+        } else if let Some(value) = trimmed.strip_prefix("telegram_profile_url = ") {
+            telegram = parse_toml_string(value);
+        } else if let Some(value) = trimmed.strip_prefix("developer_display_name = ") {
+            developer_name = parse_toml_string(value);
+        } else if let Some(value) = trimmed.strip_prefix("copyright_holder = ") {
+            copyright = parse_toml_string(value);
         }
-        ContactLinks {
-            github,
-            x,
-            telegram,
-            developer_name,
-            copyright,
-        }
-    } else {
-        ContactLinks::default()
+    }
+    ContactLinks {
+        github,
+        x,
+        telegram,
+        developer_name,
+        copyright,
     }
 }
 
@@ -613,6 +650,30 @@ fn load_settings(app: &AppHandle) -> AppSettings {
         .unwrap_or_default()
 }
 
+/// Return cached settings if available, otherwise load from disk and cache.
+/// The cache is populated on first access and updated whenever `settings_set`
+/// is called. This avoids reading `settings.json` from disk on every poll.
+fn cached_settings(app: &AppHandle) -> AppSettings {
+    let state = app.state::<SessionState>();
+    if let Ok(mut cache) = state.cached_settings.lock() {
+        if let Some(settings) = cache.as_ref() {
+            return settings.clone();
+        }
+        let settings = load_settings(app);
+        *cache = Some(settings.clone());
+        return settings;
+    }
+    // Lock failed (poisoned) — fall back to direct disk read.
+    load_settings(app)
+}
+
+/// Update the cached settings. Called by `settings_set` after a successful save.
+fn update_cached_settings(app: &AppHandle, settings: &AppSettings) {
+    if let Ok(mut cache) = app.state::<SessionState>().cached_settings.lock() {
+        *cache = Some(settings.clone());
+    }
+}
+
 fn save_settings(app: &AppHandle, settings: &AppSettings) -> Result<(), String> {
     let path = settings_path(app).ok_or_else(|| "config dir unavailable".to_string())?;
     if let Some(parent) = path.parent() {
@@ -642,6 +703,22 @@ fn load_software_profiles(app: &AppHandle) -> SoftwareProfileStore {
         })
 }
 
+/// Return cached software profiles, loading from disk on first access.
+/// The cache is invalidated by `save_software_profiles` so subsequent reads
+/// after a write always reflect the latest state.
+fn cached_software_profiles(app: &AppHandle) -> SoftwareProfileStore {
+    let state = app.state::<SessionState>();
+    if let Ok(mut cache) = state.cached_software_profiles.lock() {
+        if let Some(ref profiles) = *cache {
+            return profiles.clone();
+        }
+        let profiles = load_software_profiles(app);
+        *cache = Some(profiles.clone());
+        return profiles;
+    }
+    load_software_profiles(app)
+}
+
 fn save_software_profiles(app: &AppHandle, profiles: &SoftwareProfileStore) -> Result<(), String> {
     let path = software_profiles_path(app).ok_or_else(|| "config dir unavailable".to_string())?;
     if let Some(parent) = path.parent() {
@@ -651,7 +728,12 @@ fn save_software_profiles(app: &AppHandle, profiles: &SoftwareProfileStore) -> R
         .map_err(|error| format!("serialize device profiles: {error}"))?;
     let tmp = path.with_extension("json.tmp");
     fs::write(&tmp, text).map_err(|error| format!("write device profiles: {error}"))?;
-    fs::rename(&tmp, &path).map_err(|error| format!("commit device profiles: {error}"))
+    fs::rename(&tmp, &path).map_err(|error| format!("commit device profiles: {error}"))?;
+    // Update the cache so the next read doesn't hit the disk.
+    if let Ok(mut cache) = app.state::<SessionState>().cached_software_profiles.lock() {
+        *cache = Some(profiles.clone());
+    }
+    Ok(())
 }
 
 fn control_mode(reading: &DeviceReading) -> Option<u8> {
@@ -727,6 +809,19 @@ fn parse_connection(value: &str) -> mira_core::Connection {
     }
 }
 
+/// Parse a connection string and return both the semantic connection type and
+/// the runtime `ConnectionKind` used by the protocol engine.
+fn connection_kind(value: &str) -> (mira_core::Connection, ConnectionKind) {
+    let connection = parse_connection(value);
+    let kind = match connection {
+        mira_core::Connection::Usb => ConnectionKind::Usb,
+        mira_core::Connection::Wireless => ConnectionKind::Wireless,
+        mira_core::Connection::Bluetooth => ConnectionKind::Bluetooth,
+        mira_core::Connection::Virtual => ConnectionKind::Usb,
+    };
+    (connection, kind)
+}
+
 fn runtime_connection(value: ConnectionKind) -> mira_core::Connection {
     match value {
         ConnectionKind::Usb => mira_core::Connection::Usb,
@@ -757,6 +852,56 @@ fn display_name(
     )
 }
 
+/// Build a `DeviceSnapshot` from a `DeviceReading` and the matched plugin/device
+/// context. When `mutation_result` is provided, its `color` field is used as a
+/// fallback for `confirmed_light_color` (write path); otherwise the reading's
+/// `light_color` is used directly (read path).
+fn build_device_snapshot(
+    reading: DeviceReading,
+    inspection: &PackageInspection,
+    devices: &hid::DevicesFile,
+    device: &hid::MatchedDevice,
+    fallback_connection: mira_core::Connection,
+    writable_mutations: Vec<String>,
+    mutation_result: Option<&serde_json::Value>,
+) -> DeviceSnapshot {
+    let resolved_name = reading.display_name.unwrap_or_else(|| {
+        display_name(
+            &device.plugin_id,
+            &device.family,
+            &devices.hardware_verified_models,
+            &device.evidence,
+        )
+    });
+    let resolved_connection = reading
+        .connection
+        .map(runtime_connection)
+        .unwrap_or(fallback_connection);
+    let confirmed_light_color = reading.light_color.or_else(|| {
+        mutation_result
+            .and_then(|result| result.get("color"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+    });
+    DeviceSnapshot {
+        display_name: resolved_name,
+        connection: resolved_connection,
+        battery_percent: reading.battery_percent,
+        charging: reading.charging,
+        batteries: reading.batteries,
+        dpi: reading.dpi,
+        dpi_stages: reading.dpi_stages,
+        polling_rate_hz: reading.polling_rate_hz,
+        supported_polling_rates_hz: reading.supported_polling_rates_hz,
+        profile: reading.profile.map(|p| (p + 1).to_string()),
+        confirmed_light_color,
+        capabilities: reading.capabilities,
+        plugin_capabilities: plugin_capabilities(inspection),
+        writable_mutations,
+        evidence: device.evidence.clone(),
+    }
+}
+
 #[tauri::command]
 fn device_snapshot(state: tauri::State<'_, SessionState>) -> Option<DeviceSnapshot> {
     state.last_snapshot.lock().ok()?.as_ref().cloned()
@@ -772,29 +917,34 @@ fn device_refresh(state: tauri::State<'_, SessionState>) -> Result<(), String> {
     Ok(())
 }
 
+struct SoftwareProfileRuntime<'a> {
+    api: &'a HidApi,
+    connection: ConnectionKind,
+    files: &'a BTreeMap<String, Vec<u8>>,
+    package: &'a ProtocolPackage,
+}
+
 fn reapply_software_profile(
     app: &AppHandle,
     state: &SessionState,
-    api: &HidApi,
     device: &hid::MatchedDevice,
-    connection: ConnectionKind,
-    files: &BTreeMap<String, Vec<u8>>,
     reading: &DeviceReading,
     allowed: &[String],
+    runtime: &SoftwareProfileRuntime<'_>,
 ) -> Option<DeviceReading> {
     let key = software_profile_key(device, reading);
-    let profiles = load_software_profiles(app);
+    let profiles = cached_software_profiles(app);
     let profile = profiles.devices.get(&key)?;
     let already_applied = state.applied_software_profiles.lock().ok()?.contains(&key);
     if already_applied && control_mode(reading) == Some(2) {
         return None;
     }
     let context = ProtocolContext {
-        api,
+        api: runtime.api,
         path: &device.path,
         family: &device.family,
-        connection,
-        files,
+        connection: runtime.connection,
+        files: runtime.files,
         outputs: reading.capabilities.clone(),
     };
     let mut failed = false;
@@ -804,7 +954,9 @@ fn reapply_software_profile(
         && control_mode(reading) != Some(2)
     {
         let params = serde_json::Map::from_iter([("mode".into(), serde_json::json!(2))]);
-        if let Err(error) = mutate_device(&context, "set-control-mode", &params) {
+        if let Err(error) =
+            mutate_device_with_package(runtime.package, &context, "set-control-mode", &params)
+        {
             failed = true;
             eprintln!("[mira] unable to restore software control mode: {error}");
         }
@@ -817,7 +969,9 @@ fn reapply_software_profile(
                 continue;
             }
             let params = serde_json::Map::from_iter(params.clone());
-            if let Err(error) = mutate_device(&context, mutation, &params) {
+            if let Err(error) =
+                mutate_device_with_package(runtime.package, &context, mutation, &params)
+            {
                 failed = true;
                 eprintln!("[mira] unable to restore {mutation}: {error}");
             }
@@ -829,16 +983,31 @@ fn reapply_software_profile(
     if failed {
         None
     } else {
-        read_device(&ProtocolContext {
-            api,
-            path: &device.path,
-            family: &device.family,
-            connection,
-            files,
-            outputs: BTreeMap::new(),
-        })
+        read_device_with_package(
+            runtime.package,
+            &ProtocolContext {
+                api: runtime.api,
+                path: &device.path,
+                family: &device.family,
+                connection: runtime.connection,
+                files: runtime.files,
+                outputs: BTreeMap::new(),
+            },
+        )
         .ok()
     }
+}
+
+/// Outcome of a background device read, carried out of the locked section so
+/// disk I/O (load_settings) and UI work (update_tray, app.emit) can run without
+/// holding the device_io / plugins locks.
+enum DeviceReadOutcome {
+    /// Nothing to do (no plugins, HidApi failed, etc.) — skip silently.
+    Skip,
+    /// Device disconnected or read failed — clear the cached state.
+    Clear,
+    /// Read succeeded — publish the snapshot.
+    Ready(Box<DeviceSnapshot>),
 }
 
 /// Read the device once, update the cached snapshot, and emit `device-updated`.
@@ -852,126 +1021,136 @@ fn read_device_once(app: &AppHandle) {
     if let Ok(mut cache) = state.system_dark.lock() {
         *cache = Some(dark);
     }
-    let _io_guard = match state.device_io.lock() {
-        Ok(guard) => guard,
-        Err(_) => return,
-    };
-    let plugins_guard = match state.plugins.lock() {
-        Ok(guard) => guard,
-        Err(_) => return,
-    };
-    let Some(plugins) = plugins_guard.as_ref() else {
-        return;
-    };
-    if plugins.is_empty() {
-        return;
-    }
-    let Ok(api) = HidApi::new() else {
-        return;
-    };
-    let matched = hid::enumerate_matched_devices(&api, plugins);
-    #[cfg(debug_assertions)]
-    eprintln!("[mira] background: matched {} device(s)", matched.len());
-
-    let Some(first) = matched
-        .iter()
-        .find(|device| device_evidence_allows_writes(&device.evidence))
-        .or_else(|| matched.first())
-    else {
-        if let Ok(mut applied) = state.applied_software_profiles.lock() {
-            applied.clear();
+    // Lock scope: only HID I/O and snapshot construction. Disk reads, tray
+    // updates and event emission run after the locks are released so they
+    // cannot block discover_devices or other commands.
+    let outcome = (|| -> Option<DeviceReadOutcome> {
+        let _io_guard = state.device_io.lock().ok()?;
+        let plugins_guard = state.plugins.lock().ok()?;
+        let plugins = plugins_guard.as_ref()?;
+        if plugins.is_empty() {
+            return None;
         }
-        store_snapshot(&state, None);
-        let _ = app.emit("device-updated", Option::<DeviceSnapshot>::None);
-        let _ = update_tray(app, None, &load_settings(app));
-        return;
-    };
+        // Reuse the cached HidApi instance and refresh the device list to
+        // detect newly plugged/unplugged devices. This avoids re-enumerating
+        // all HID devices from scratch on every poll.
+        let mut hidapi_guard = state.cached_hidapi.lock().ok()?;
+        if hidapi_guard.is_none() {
+            *hidapi_guard = Some(HidApi::new().ok()?);
+        }
+        let cached_api = hidapi_guard.as_mut().unwrap();
+        let _ = cached_api.refresh_devices();
+        let api: &HidApi = cached_api;
+        let matched = hid::enumerate_matched_devices(api, plugins);
+        #[cfg(debug_assertions)]
+        eprintln!("[mira] background: matched {} device(s)", matched.len());
 
-    let Some((inspection, devices, plugin_files)) = plugins
-        .iter()
-        .find(|(inspection, _, _)| inspection.plugin_id == first.plugin_id)
-    else {
-        return;
-    };
+        let first = match matched
+            .iter()
+            .find(|device| device_evidence_allows_writes(&device.evidence))
+            .or_else(|| matched.first())
+        {
+            Some(device) => device,
+            None => return Some(DeviceReadOutcome::Clear),
+        };
 
-    let connection = parse_connection(&first.connection);
-    let kind = match connection {
-        mira_core::Connection::Usb => ConnectionKind::Usb,
-        mira_core::Connection::Wireless => ConnectionKind::Wireless,
-        mira_core::Connection::Bluetooth => ConnectionKind::Bluetooth,
-        mira_core::Connection::Virtual => ConnectionKind::Usb,
-    };
+        let (inspection, devices, plugin_files) = plugins
+            .iter()
+            .find(|(inspection, _, _)| inspection.plugin_id == first.plugin_id)?;
 
-    match read_device(&ProtocolContext {
-        api: &api,
-        path: &first.path,
-        family: &first.family,
-        connection: kind,
-        files: plugin_files,
-        outputs: BTreeMap::new(),
-    }) {
-        Ok(mut reading) => {
-            let writable_mutations = if inspection.signature_verified
-                && inspection.writes_enabled
-                && device_evidence_allows_writes(&first.evidence)
-            {
-                writable_mutations(&ProtocolContext {
-                    api: &api,
+        let (connection, kind) = connection_kind(&first.connection);
+
+        // Parse the protocol package once and reuse it for both read and
+        // writable_mutations to avoid re-parsing the JSON files twice per poll.
+        let package = ProtocolPackage::from_files(plugin_files).ok()?;
+        Some(
+            match read_device_with_package(
+                &package,
+                &ProtocolContext {
+                    api,
                     path: &first.path,
                     family: &first.family,
                     connection: kind,
                     files: plugin_files,
-                    outputs: reading.capabilities.clone(),
-                })
-                .unwrap_or_default()
-            } else {
-                Vec::new()
-            };
-            if let Some(updated) = reapply_software_profile(
-                app,
-                &state,
-                &api,
-                first,
-                kind,
-                plugin_files,
-                &reading,
-                &writable_mutations,
+                    outputs: BTreeMap::new(),
+                },
             ) {
-                reading = updated;
+                Ok(mut reading) => {
+                    let writable_mutations = if inspection.signature_verified
+                        && inspection.writes_enabled
+                        && device_evidence_allows_writes(&first.evidence)
+                    {
+                        writable_mutations_with_package(
+                            &package,
+                            &ProtocolContext {
+                                api,
+                                path: &first.path,
+                                family: &first.family,
+                                connection: kind,
+                                files: plugin_files,
+                                outputs: reading.capabilities.clone(),
+                            },
+                        )
+                        .unwrap_or_default()
+                    } else {
+                        Vec::new()
+                    };
+                    if let Some(updated) = reapply_software_profile(
+                        app,
+                        &state,
+                        first,
+                        &reading,
+                        &writable_mutations,
+                        &SoftwareProfileRuntime {
+                            api,
+                            connection: kind,
+                            files: plugin_files,
+                            package: &package,
+                        },
+                    ) {
+                        reading = updated;
+                    }
+                    let snapshot = build_device_snapshot(
+                        reading,
+                        inspection,
+                        devices,
+                        first,
+                        connection,
+                        writable_mutations,
+                        None,
+                    );
+                    DeviceReadOutcome::Ready(Box::new(snapshot))
+                }
+                Err(error) => {
+                    eprintln!(
+                        "[mira] background read failed for {}: {error}",
+                        first.family
+                    );
+                    DeviceReadOutcome::Clear
+                }
+            },
+        )
+    })()
+    .unwrap_or(DeviceReadOutcome::Skip);
+
+    // Post-lock: disk I/O, tray updates and event emission run without holding
+    // device_io or plugins locks so concurrent commands are not blocked.
+    match outcome {
+        DeviceReadOutcome::Skip => {}
+        DeviceReadOutcome::Clear => {
+            if let Ok(mut applied) = state.applied_software_profiles.lock() {
+                applied.clear();
             }
-            let resolved_name = reading.display_name.clone().unwrap_or_else(|| {
-                display_name(
-                    &first.plugin_id,
-                    &first.family,
-                    &devices.hardware_verified_models,
-                    &first.evidence,
-                )
-            });
-            let resolved_connection = reading
-                .connection
-                .map(runtime_connection)
-                .unwrap_or(connection);
-            let snapshot = DeviceSnapshot {
-                display_name: resolved_name,
-                connection: resolved_connection,
-                battery_percent: reading.battery_percent,
-                charging: reading.charging,
-                batteries: reading.batteries,
-                dpi: reading.dpi,
-                dpi_stages: reading.dpi_stages,
-                polling_rate_hz: reading.polling_rate_hz,
-                supported_polling_rates_hz: reading.supported_polling_rates_hz,
-                profile: reading.profile.map(|p| format!("Profile {}", p + 1)),
-                confirmed_light_color: reading.light_color,
-                capabilities: reading.capabilities,
-                plugin_capabilities: plugin_capabilities(inspection),
-                writable_mutations,
-                evidence: first.evidence.clone(),
-            };
+            store_snapshot(&state, None);
+            let _ = app.emit("device-updated", Option::<DeviceSnapshot>::None);
+            let _ = update_tray(app, None, &cached_settings(app));
+        }
+        DeviceReadOutcome::Ready(snapshot) => {
+            let snapshot = *snapshot;
             store_snapshot(&state, Some(snapshot.clone()));
             // 通知前端有新数据，前端通过事件监听更新，无需轮询
             let _ = app.emit("device-updated", &snapshot);
-            let settings = load_settings(app);
+            let settings = cached_settings(app);
             let _ = update_tray(app, Some(&snapshot), &settings);
             // 低电量跨阈值检测：充电时不触发，充电结束后若仍低于阈值才再次提醒
             let battery_value = if mouse_battery_charging(&snapshot) {
@@ -983,7 +1162,7 @@ fn read_device_once(app: &AppHandle) {
             let notify = state
                 .low_battery
                 .lock()
-                .unwrap()
+                .unwrap_or_else(|e| e.into_inner())
                 .update(battery_value, threshold);
             if notify {
                 if let Some(percent) = battery_value {
@@ -998,19 +1177,6 @@ fn read_device_once(app: &AppHandle) {
                         .show();
                 }
             }
-        }
-        Err(error) => {
-            if let Ok(mut applied) = state.applied_software_profiles.lock() {
-                applied.clear();
-            }
-            eprintln!(
-                "[mira] background read failed for {}: {error}",
-                first.family
-            );
-            // 读取失败时通知前端清空设备状态
-            store_snapshot(&state, None);
-            let _ = app.emit("device-updated", Option::<DeviceSnapshot>::None);
-            let _ = update_tray(app, None, &load_settings(app));
         }
     }
 }
@@ -1031,7 +1197,10 @@ fn read_device_once(app: &AppHandle) {
 ///   * 60 s when the window is hidden/minimized to tray.
 fn spawn_device_reader(app: AppHandle) {
     let (tx, rx) = std::sync::mpsc::channel::<()>();
-    *app.state::<SessionState>().refresh_tx.lock().unwrap() = Some(tx);
+    *app.state::<SessionState>()
+        .refresh_tx
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = Some(tx);
 
     std::thread::spawn(move || loop {
         read_device_once(&app);
@@ -1045,8 +1214,15 @@ fn spawn_device_reader(app: AppHandle) {
             .and_then(|window| window.is_visible().ok())
             .unwrap_or(false);
         let (connected, settling_now) = {
-            let connected = state.last_snapshot.lock().unwrap().is_some();
-            let mut settling = state.settling_polls.lock().unwrap();
+            let connected = state
+                .last_snapshot
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_some();
+            let mut settling = state
+                .settling_polls
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             let settling_now = if *settling > 0 {
                 *settling -= 1;
                 true
@@ -1060,7 +1236,9 @@ fn spawn_device_reader(app: AppHandle) {
         } else if !visible {
             std::time::Duration::from_secs(60)
         } else if connected {
-            std::time::Duration::from_secs(u64::from(load_settings(&app).refresh_interval_seconds))
+            std::time::Duration::from_secs(u64::from(
+                cached_settings(&app).refresh_interval_seconds,
+            ))
         } else {
             // No device connected: poll faster so plug-in is noticed quickly.
             std::time::Duration::from_secs(1)
@@ -1102,8 +1280,18 @@ fn discover_devices(
     if plugins.is_empty() {
         return Ok(Vec::new());
     }
-    let api = HidApi::new().map_err(|e| e.to_string())?;
-    let matched = hid::enumerate_matched_devices(&api, plugins);
+    // Reuse the cached HidApi instance and refresh the device list.
+    let mut hidapi_guard = state
+        .cached_hidapi
+        .lock()
+        .map_err(|_| "HidApi cache unavailable")?;
+    if hidapi_guard.is_none() {
+        *hidapi_guard = Some(HidApi::new().map_err(|e| e.to_string())?);
+    }
+    let cached_api = hidapi_guard.as_mut().unwrap();
+    let _ = cached_api.refresh_devices();
+    let api: &HidApi = cached_api;
+    let matched = hid::enumerate_matched_devices(api, plugins);
     Ok(matched
         .into_iter()
         .map(|d| DiscoveredDevice {
@@ -1111,26 +1299,18 @@ fn discover_devices(
             family: d.family,
             connection: d.connection,
             evidence: d.evidence,
-            path: d.path,
+            // 不暴露原始 HID 路径（macOS 上可能包含序列号），
+            // 用脱敏标识符替代，前端仅用作 React key。
+            path: format!(
+                "device-{:04x}-{:04x}-{:02x}-{:02x}",
+                d.vendor_id, d.product_id, d.usage_page, d.usage
+            ),
             vendor_id: d.vendor_id,
             product_id: d.product_id,
             usage_page: d.usage_page,
             usage: d.usage,
         })
         .collect())
-}
-
-#[tauri::command]
-fn can_install_update(state: tauri::State<'_, SessionState>) -> Result<(), String> {
-    if *state
-        .write_in_progress
-        .lock()
-        .map_err(|_| "transaction state unavailable")?
-    {
-        Err("A device write is still in progress".into())
-    } else {
-        Ok(())
-    }
 }
 
 struct WriteFlagGuard<'a>(&'a Mutex<bool>);
@@ -1169,7 +1349,7 @@ fn remember_software_profile(
         return Ok(());
     }
     let key = software_profile_key(device, reading);
-    let mut profiles = load_software_profiles(app);
+    let mut profiles = cached_software_profiles(app);
     if control_mode(reading) == Some(1) {
         profiles.devices.remove(&key);
         if let Ok(mut applied) = state.applied_software_profiles.lock() {
@@ -1204,9 +1384,9 @@ async fn device_mutate(
 ) -> Result<DeviceSnapshot, String> {
     // HID 写入/回读是阻塞式调用，必须放在独立线程中执行，否则主线程会被卡死。
     let (tx, rx) = std::sync::mpsc::channel();
-    let app = app.clone();
+    let worker_app = app.clone();
     std::thread::spawn(move || {
-        let result = device_mutate_blocking(&app, &mutation, &params);
+        let result = device_mutate_blocking(&worker_app, &mutation, &params);
         let _ = tx.send(result);
     });
     match rx.recv_timeout(std::time::Duration::from_secs(30)) {
@@ -1224,101 +1404,90 @@ fn device_mutate_blocking(
     params: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<DeviceSnapshot, String> {
     let state = app.state::<SessionState>();
-    let _write_guard = begin_device_write(&state)?;
-    let _io_guard = state
-        .device_io
-        .lock()
-        .map_err(|_| "device I/O state unavailable")?;
-    let plugins_guard = state.plugins.lock().map_err(|_| "state lock failed")?;
-    let plugins = plugins_guard.as_ref().ok_or("plugins not loaded")?;
-    let api = HidApi::new().map_err(|error| error.to_string())?;
-    let matched = hid::enumerate_matched_devices(&api, plugins);
-    let device = matched
-        .iter()
-        .find(|device| device_evidence_allows_writes(&device.evidence))
-        .or_else(|| matched.first())
-        .ok_or("supported device is not connected")?;
-    let (inspection, devices, files) = plugins
-        .iter()
-        .find(|(inspection, _, _)| inspection.plugin_id == device.plugin_id)
-        .ok_or("matched plugin is unavailable")?;
-    if !inspection.signature_verified || !inspection.writes_enabled {
-        return Err("the matched plugin is not trusted for device writes".into());
-    }
-    if !device_evidence_allows_writes(&device.evidence) {
-        return Err("device writes require verified protocol evidence".into());
-    }
+    // Lock scope: only HID I/O, snapshot construction and profile bookkeeping.
+    // Disk reads (load_settings), tray updates and event emission run after the
+    // locks are released so they cannot block discover_devices or reads.
+    let snapshot = {
+        let _write_guard = begin_device_write(&state)?;
+        let _io_guard = state
+            .device_io
+            .lock()
+            .map_err(|_| "device I/O state unavailable")?;
+        let plugins_guard = state.plugins.lock().map_err(|_| "state lock failed")?;
+        let plugins = plugins_guard.as_ref().ok_or("plugins not loaded")?;
+        // Reuse the cached HidApi instance and refresh the device list.
+        let mut hidapi_guard = state
+            .cached_hidapi
+            .lock()
+            .map_err(|_| "HidApi cache unavailable")?;
+        if hidapi_guard.is_none() {
+            *hidapi_guard = Some(HidApi::new().map_err(|e| e.to_string())?);
+        }
+        let cached_api = hidapi_guard.as_mut().unwrap();
+        let _ = cached_api.refresh_devices();
+        let api: &HidApi = cached_api;
+        let matched = hid::enumerate_matched_devices(api, plugins);
+        let device = matched
+            .iter()
+            .find(|device| device_evidence_allows_writes(&device.evidence))
+            .or_else(|| matched.first())
+            .ok_or("supported device is not connected")?;
+        let (inspection, devices, files) = plugins
+            .iter()
+            .find(|(inspection, _, _)| inspection.plugin_id == device.plugin_id)
+            .ok_or("matched plugin is unavailable")?;
+        if !inspection.signature_verified || !inspection.writes_enabled {
+            return Err("the matched plugin is not trusted for device writes".into());
+        }
+        if !device_evidence_allows_writes(&device.evidence) {
+            return Err("device writes require verified protocol evidence".into());
+        }
 
-    let connection = parse_connection(&device.connection);
-    let kind = match connection {
-        mira_core::Connection::Usb => ConnectionKind::Usb,
-        mira_core::Connection::Wireless => ConnectionKind::Wireless,
-        mira_core::Connection::Bluetooth => ConnectionKind::Bluetooth,
-        mira_core::Connection::Virtual => ConnectionKind::Usb,
-    };
-    let context = ProtocolContext {
-        api: &api,
-        path: &device.path,
-        family: &device.family,
-        connection: kind,
-        files,
-        outputs: BTreeMap::new(),
-    };
-    let allowed = writable_mutations(&context)?;
-    if !allowed.iter().any(|candidate| candidate == mutation) {
-        return Err(format!("unsupported device mutation {mutation}"));
-    }
-    let before = read_device(&context)?;
-    let mutate_context = ProtocolContext {
-        api: &api,
-        path: &device.path,
-        family: &device.family,
-        connection: kind,
-        files,
-        outputs: before.capabilities.clone(),
-    };
-    let mutation_result = mutate_device(&mutate_context, mutation, params)?;
-    let reading = read_device(&context)?;
-    remember_software_profile(app, &state, device, &reading, &allowed, mutation, params)?;
-    let resolved_name = reading.display_name.clone().unwrap_or_else(|| {
-        display_name(
-            &device.plugin_id,
-            &device.family,
-            &devices.hardware_verified_models,
-            &device.evidence,
+        let (connection, kind) = connection_kind(&device.connection);
+        // Parse the protocol package once and reuse it for writable_mutations,
+        // read_device, and mutate_device to avoid re-parsing the JSON files 4 times.
+        let package = ProtocolPackage::from_files(files)?;
+        let context = ProtocolContext {
+            api,
+            path: &device.path,
+            family: &device.family,
+            connection: kind,
+            files,
+            outputs: BTreeMap::new(),
+        };
+        let allowed = writable_mutations_with_package(&package, &context)?;
+        if !allowed.iter().any(|candidate| candidate == mutation) {
+            return Err(format!("unsupported device mutation {mutation}"));
+        }
+        let before = read_device_with_package(&package, &context)?;
+        let mutate_context = ProtocolContext {
+            api,
+            path: &device.path,
+            family: &device.family,
+            connection: kind,
+            files,
+            outputs: before.capabilities.clone(),
+        };
+        let mutation_result =
+            mutate_device_with_package(&package, &mutate_context, mutation, params)?;
+        let reading = read_device_with_package(&package, &context)?;
+        remember_software_profile(app, &state, device, &reading, &allowed, mutation, params)?;
+        build_device_snapshot(
+            reading,
+            inspection,
+            devices,
+            device,
+            connection,
+            allowed,
+            Some(&mutation_result),
         )
-    });
-    let resolved_connection = reading
-        .connection
-        .map(runtime_connection)
-        .unwrap_or(connection);
-    let snapshot = DeviceSnapshot {
-        display_name: resolved_name,
-        connection: resolved_connection,
-        battery_percent: reading.battery_percent,
-        charging: reading.charging,
-        batteries: reading.batteries,
-        dpi: reading.dpi,
-        dpi_stages: reading.dpi_stages,
-        polling_rate_hz: reading.polling_rate_hz,
-        supported_polling_rates_hz: reading.supported_polling_rates_hz,
-        profile: reading
-            .profile
-            .map(|profile| format!("Profile {}", profile + 1)),
-        confirmed_light_color: reading.light_color.or_else(|| {
-            mutation_result
-                .get("color")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string)
-        }),
-        capabilities: reading.capabilities,
-        plugin_capabilities: plugin_capabilities(inspection),
-        writable_mutations: allowed,
-        evidence: device.evidence.clone(),
     };
+
+    // Post-lock: disk I/O, tray updates and event emission run without holding
+    // device_io or plugins locks so concurrent reads are not blocked.
     store_snapshot(&state, Some(snapshot.clone()));
     let _ = app.emit("device-updated", &snapshot);
-    let _ = update_tray(app, Some(&snapshot), &load_settings(app));
+    let _ = update_tray(app, Some(&snapshot), &cached_settings(app));
     Ok(snapshot)
 }
 
@@ -1344,19 +1513,9 @@ fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn app_metadata(app: tauri::AppHandle) -> serde_json::Value {
-    let package = app.package_info();
-    serde_json::json!({
-        "name": package.name,
-        "version": package.version.to_string(),
-        "identifier": app.config().identifier,
-    })
-}
-
-#[tauri::command]
 fn about_info(app: tauri::AppHandle) -> Result<AboutInfo, String> {
     let package = app.package_info();
-    let bundled = inspect_bundled_plugins(&app, &production_trust_store());
+    let bundled = cached_bundled_plugins(&app);
     Ok(AboutInfo {
         name: package.name.to_string(),
         version: package.version.to_string(),
@@ -1380,7 +1539,16 @@ fn settings_get(app: tauri::AppHandle) -> Result<AppSettings, String> {
 #[tauri::command]
 fn settings_set(app: tauri::AppHandle, settings: AppSettings) -> Result<AppSettings, String> {
     let settings = settings.normalized();
+    let tray_icon_color_changed = cached_settings(&app).tray_icon_color != settings.tray_icon_color;
     save_settings(&app, &settings)?;
+    update_cached_settings(&app, &settings);
+    if tray_icon_color_changed {
+        // Force this settings change through to the native tray immediately,
+        // even if the cached icon variant drifted from the currently shown icon.
+        if let Ok(mut active_dark) = app.state::<SessionState>().tray_uses_dark.lock() {
+            *active_dark = None;
+        }
+    }
     let snapshot = app
         .state::<SessionState>()
         .last_snapshot
@@ -1395,7 +1563,7 @@ fn settings_set(app: tauri::AppHandle, settings: AppSettings) -> Result<AppSetti
 #[tauri::command]
 fn export_diagnostics(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     let package = app.package_info();
-    let bundled = inspect_bundled_plugins(&app, &production_trust_store());
+    let bundled = cached_bundled_plugins(&app);
     // Diagnostics are intentionally minimal and sanitized: no serial numbers,
     // no HID report payloads, no user device identifiers. Only app metadata,
     // platform, and bundled plugin verification status are included.
@@ -1493,59 +1661,72 @@ fn mouse_battery_charging(snapshot: &DeviceSnapshot) -> bool {
         .unwrap_or(snapshot.charging)
 }
 
+/// Battery level icons for each (dark, charging) combination.
+/// Index 0 = 0%, 1 = 10%, ..., 9 = 90%, 10 = 100%.
+/// `include_bytes!` requires string literals, so the 44 icons are expanded
+/// into four `const` arrays once; the lookup function then indexes by level.
+const TRAY_ICONS_LIGHT_CHARGING: [&[u8]; 11] = [
+    include_bytes!("../icons/tray-mouse-charging-levels/mouse-0.png"),
+    include_bytes!("../icons/tray-mouse-charging-levels/mouse-10.png"),
+    include_bytes!("../icons/tray-mouse-charging-levels/mouse-20.png"),
+    include_bytes!("../icons/tray-mouse-charging-levels/mouse-30.png"),
+    include_bytes!("../icons/tray-mouse-charging-levels/mouse-40.png"),
+    include_bytes!("../icons/tray-mouse-charging-levels/mouse-50.png"),
+    include_bytes!("../icons/tray-mouse-charging-levels/mouse-60.png"),
+    include_bytes!("../icons/tray-mouse-charging-levels/mouse-70.png"),
+    include_bytes!("../icons/tray-mouse-charging-levels/mouse-80.png"),
+    include_bytes!("../icons/tray-mouse-charging-levels/mouse-90.png"),
+    include_bytes!("../icons/tray-mouse-charging-levels/mouse-100.png"),
+];
+const TRAY_ICONS_DARK_CHARGING: [&[u8]; 11] = [
+    include_bytes!("../icons/tray-mouse-charging-levels-dark/mouse-0.png"),
+    include_bytes!("../icons/tray-mouse-charging-levels-dark/mouse-10.png"),
+    include_bytes!("../icons/tray-mouse-charging-levels-dark/mouse-20.png"),
+    include_bytes!("../icons/tray-mouse-charging-levels-dark/mouse-30.png"),
+    include_bytes!("../icons/tray-mouse-charging-levels-dark/mouse-40.png"),
+    include_bytes!("../icons/tray-mouse-charging-levels-dark/mouse-50.png"),
+    include_bytes!("../icons/tray-mouse-charging-levels-dark/mouse-60.png"),
+    include_bytes!("../icons/tray-mouse-charging-levels-dark/mouse-70.png"),
+    include_bytes!("../icons/tray-mouse-charging-levels-dark/mouse-80.png"),
+    include_bytes!("../icons/tray-mouse-charging-levels-dark/mouse-90.png"),
+    include_bytes!("../icons/tray-mouse-charging-levels-dark/mouse-100.png"),
+];
+const TRAY_ICONS_LIGHT: [&[u8]; 11] = [
+    include_bytes!("../icons/tray-mouse-levels/mouse-0.png"),
+    include_bytes!("../icons/tray-mouse-levels/mouse-10.png"),
+    include_bytes!("../icons/tray-mouse-levels/mouse-20.png"),
+    include_bytes!("../icons/tray-mouse-levels/mouse-30.png"),
+    include_bytes!("../icons/tray-mouse-levels/mouse-40.png"),
+    include_bytes!("../icons/tray-mouse-levels/mouse-50.png"),
+    include_bytes!("../icons/tray-mouse-levels/mouse-60.png"),
+    include_bytes!("../icons/tray-mouse-levels/mouse-70.png"),
+    include_bytes!("../icons/tray-mouse-levels/mouse-80.png"),
+    include_bytes!("../icons/tray-mouse-levels/mouse-90.png"),
+    include_bytes!("../icons/tray-mouse-levels/mouse-100.png"),
+];
+const TRAY_ICONS_DARK: [&[u8]; 11] = [
+    include_bytes!("../icons/tray-mouse-levels-dark/mouse-0.png"),
+    include_bytes!("../icons/tray-mouse-levels-dark/mouse-10.png"),
+    include_bytes!("../icons/tray-mouse-levels-dark/mouse-20.png"),
+    include_bytes!("../icons/tray-mouse-levels-dark/mouse-30.png"),
+    include_bytes!("../icons/tray-mouse-levels-dark/mouse-40.png"),
+    include_bytes!("../icons/tray-mouse-levels-dark/mouse-50.png"),
+    include_bytes!("../icons/tray-mouse-levels-dark/mouse-60.png"),
+    include_bytes!("../icons/tray-mouse-levels-dark/mouse-70.png"),
+    include_bytes!("../icons/tray-mouse-levels-dark/mouse-80.png"),
+    include_bytes!("../icons/tray-mouse-levels-dark/mouse-90.png"),
+    include_bytes!("../icons/tray-mouse-levels-dark/mouse-100.png"),
+];
+
 fn tray_icon_bytes(level: u8, dark: bool, charging: bool) -> &'static [u8] {
-    // include_bytes! requires a string literal, so each combination is expanded explicitly.
-    // Dark mode shows a white outline (tray-mouse-levels-dark/) and light mode a black
-    // outline (tray-mouse-levels/) so the battery icon stays readable on both backgrounds.
-    match (level, dark, charging) {
-        (0, true, true) => include_bytes!("../icons/tray-mouse-charging-levels-dark/mouse-0.png"),
-        (10, true, true) => include_bytes!("../icons/tray-mouse-charging-levels-dark/mouse-10.png"),
-        (20, true, true) => include_bytes!("../icons/tray-mouse-charging-levels-dark/mouse-20.png"),
-        (30, true, true) => include_bytes!("../icons/tray-mouse-charging-levels-dark/mouse-30.png"),
-        (40, true, true) => include_bytes!("../icons/tray-mouse-charging-levels-dark/mouse-40.png"),
-        (50, true, true) => include_bytes!("../icons/tray-mouse-charging-levels-dark/mouse-50.png"),
-        (60, true, true) => include_bytes!("../icons/tray-mouse-charging-levels-dark/mouse-60.png"),
-        (70, true, true) => include_bytes!("../icons/tray-mouse-charging-levels-dark/mouse-70.png"),
-        (80, true, true) => include_bytes!("../icons/tray-mouse-charging-levels-dark/mouse-80.png"),
-        (90, true, true) => include_bytes!("../icons/tray-mouse-charging-levels-dark/mouse-90.png"),
-        (0..=100, true, true) => {
-            include_bytes!("../icons/tray-mouse-charging-levels-dark/mouse-100.png")
-        }
-        (0, false, true) => include_bytes!("../icons/tray-mouse-charging-levels/mouse-0.png"),
-        (10, false, true) => include_bytes!("../icons/tray-mouse-charging-levels/mouse-10.png"),
-        (20, false, true) => include_bytes!("../icons/tray-mouse-charging-levels/mouse-20.png"),
-        (30, false, true) => include_bytes!("../icons/tray-mouse-charging-levels/mouse-30.png"),
-        (40, false, true) => include_bytes!("../icons/tray-mouse-charging-levels/mouse-40.png"),
-        (50, false, true) => include_bytes!("../icons/tray-mouse-charging-levels/mouse-50.png"),
-        (60, false, true) => include_bytes!("../icons/tray-mouse-charging-levels/mouse-60.png"),
-        (70, false, true) => include_bytes!("../icons/tray-mouse-charging-levels/mouse-70.png"),
-        (80, false, true) => include_bytes!("../icons/tray-mouse-charging-levels/mouse-80.png"),
-        (90, false, true) => include_bytes!("../icons/tray-mouse-charging-levels/mouse-90.png"),
-        (0..=100, false, true) => {
-            include_bytes!("../icons/tray-mouse-charging-levels/mouse-100.png")
-        }
-        (0, true, false) => include_bytes!("../icons/tray-mouse-levels-dark/mouse-0.png"),
-        (10, true, false) => include_bytes!("../icons/tray-mouse-levels-dark/mouse-10.png"),
-        (20, true, false) => include_bytes!("../icons/tray-mouse-levels-dark/mouse-20.png"),
-        (30, true, false) => include_bytes!("../icons/tray-mouse-levels-dark/mouse-30.png"),
-        (40, true, false) => include_bytes!("../icons/tray-mouse-levels-dark/mouse-40.png"),
-        (50, true, false) => include_bytes!("../icons/tray-mouse-levels-dark/mouse-50.png"),
-        (60, true, false) => include_bytes!("../icons/tray-mouse-levels-dark/mouse-60.png"),
-        (70, true, false) => include_bytes!("../icons/tray-mouse-levels-dark/mouse-70.png"),
-        (80, true, false) => include_bytes!("../icons/tray-mouse-levels-dark/mouse-80.png"),
-        (90, true, false) => include_bytes!("../icons/tray-mouse-levels-dark/mouse-90.png"),
-        (0..=100, true, false) => include_bytes!("../icons/tray-mouse-levels-dark/mouse-100.png"),
-        (0, false, false) => include_bytes!("../icons/tray-mouse-levels/mouse-0.png"),
-        (10, false, false) => include_bytes!("../icons/tray-mouse-levels/mouse-10.png"),
-        (20, false, false) => include_bytes!("../icons/tray-mouse-levels/mouse-20.png"),
-        (30, false, false) => include_bytes!("../icons/tray-mouse-levels/mouse-30.png"),
-        (40, false, false) => include_bytes!("../icons/tray-mouse-levels/mouse-40.png"),
-        (50, false, false) => include_bytes!("../icons/tray-mouse-levels/mouse-50.png"),
-        (60, false, false) => include_bytes!("../icons/tray-mouse-levels/mouse-60.png"),
-        (70, false, false) => include_bytes!("../icons/tray-mouse-levels/mouse-70.png"),
-        (80, false, false) => include_bytes!("../icons/tray-mouse-levels/mouse-80.png"),
-        (90, false, false) => include_bytes!("../icons/tray-mouse-levels/mouse-90.png"),
-        _ => include_bytes!("../icons/tray-mouse-levels/mouse-100.png"),
+    // `level` is pre-rounded to a multiple of 10 by the caller (0..=100).
+    // `min(10)` clamps any stray value to the 100% icon.
+    let index = (level / 10).min(10) as usize;
+    match (dark, charging) {
+        (true, true) => TRAY_ICONS_DARK_CHARGING[index],
+        (false, true) => TRAY_ICONS_LIGHT_CHARGING[index],
+        (true, false) => TRAY_ICONS_DARK[index],
+        (false, false) => TRAY_ICONS_LIGHT[index],
     }
 }
 
@@ -1771,7 +1952,7 @@ fn build_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         })
         .tooltip("Mira · 未连接受支持的鼠标")
         .build(app)?;
-    let settings = load_settings(app.handle());
+    let settings = cached_settings(app.handle());
     let snapshot = app
         .state::<SessionState>()
         .last_snapshot
@@ -1819,10 +2000,30 @@ pub fn run() {
             let plugins = load_bundled_plugin_devices(app.handle());
             #[cfg(debug_assertions)]
             eprintln!("[mira] loaded {} bundled plugin(s)", plugins.len());
-            *app.state::<SessionState>().plugins.lock().unwrap() = Some(plugins);
+            *app.state::<SessionState>()
+                .plugins
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(plugins);
 
-            if let Err(err) = build_tray(app) {
-                eprintln!(" tray setup failed: {err}");
+            // Retry tray setup a few times: on some platforms the tray is not
+            // ready immediately at startup and a single attempt fails silently.
+            let mut tray_ok = false;
+            for attempt in 1..=3 {
+                match build_tray(app) {
+                    Ok(()) => {
+                        tray_ok = true;
+                        break;
+                    }
+                    Err(err) => {
+                        eprintln!("[mira] tray setup attempt {attempt}/3 failed: {err}");
+                        std::thread::sleep(std::time::Duration::from_millis(200));
+                    }
+                }
+            }
+            if !tray_ok {
+                eprintln!(
+                    "[mira] tray setup failed after 3 attempts; tray icon will be unavailable"
+                );
             }
 
             // Listen for window events: focus triggers an immediate device read,
@@ -1863,7 +2064,7 @@ pub fn run() {
                                 .lock()
                                 .ok()
                                 .and_then(|guard| guard.clone());
-                            let settings = load_settings(&app_handle);
+                            let settings = cached_settings(&app_handle);
                             let _ = update_tray(&app_handle, snapshot.as_ref(), &settings);
                         }
                         _ => {}
@@ -1875,7 +2076,7 @@ pub fn run() {
             // This keeps `device_snapshot` instant — the UI never blocks on HID I/O.
             spawn_device_reader(app.handle().clone());
 
-            let start_hidden = load_settings(app.handle()).start_hidden;
+            let start_hidden = cached_settings(app.handle()).start_hidden;
             if let Some(window) = app.get_webview_window("main") {
                 if start_hidden {
                     if let Err(err) = window.hide() {
@@ -1885,7 +2086,7 @@ pub fn run() {
                     #[cfg(target_os = "macos")]
                     {
                         use tauri::ActivationPolicy;
-                        let _ = app.set_activation_policy(ActivationPolicy::Accessory);
+                        app.set_activation_policy(ActivationPolicy::Accessory);
                     }
                 } else {
                     if let Err(err) = window.show() {
@@ -1901,10 +2102,8 @@ pub fn run() {
             device_refresh,
             device_mutate,
             discover_devices,
-            can_install_update,
             autostart_state,
             set_autostart,
-            app_metadata,
             about_info,
             settings_get,
             settings_set,
