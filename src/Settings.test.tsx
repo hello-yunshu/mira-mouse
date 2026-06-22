@@ -32,6 +32,13 @@ describe('SettingsPage', () => {
     fireEvent.change(screen.getByRole('combobox', { name: '主题模式' }), { target: { value: 'dark' } });
     expect(onThemeChange).toHaveBeenCalledWith('dark');
     expect(screen.getByRole('switch', { name: '显示电量百分比' })).toBeChecked();
+    const batteryTitleRow = screen.getByRole('switch', { name: '显示电量百分比' }).closest('.setting-row');
+    const iconColorRow = screen.getByRole('combobox', { name: '托盘图标颜色' }).closest('.setting-row');
+    expect(batteryTitleRow?.nextElementSibling).toBe(iconColorRow);
+    fireEvent.change(screen.getByRole('combobox', { name: '托盘图标颜色' }), { target: { value: 'black' } });
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('settings_set', expect.objectContaining({
+      settings: expect.objectContaining({ trayIconColor: 'black' }),
+    })));
     fireEvent.click(screen.getByRole('switch', { name: '标题附带接收器电量' }));
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('settings_set', expect.objectContaining({
       settings: expect.objectContaining({ trayIncludeReceiverBattery: true }),

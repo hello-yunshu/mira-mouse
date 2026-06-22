@@ -163,6 +163,8 @@ enum TransportDefinition {
         write_length: usize,
         read_length: usize,
         strip_report_id_on_read: bool,
+        #[serde(default = "default_feature_delay_ms")]
+        feature_delay_ms: u64,
     },
     HidFeatureProxy {
         base_transport: String,
@@ -185,11 +187,25 @@ enum TransportDefinition {
         strip_report_id_on_read: bool,
         #[serde(default = "default_read_timeout_ms")]
         read_timeout_ms: i32,
+        #[serde(default = "default_read_retries")]
+        read_retries: u8,
     },
 }
 
 fn default_read_timeout_ms() -> i32 {
     500
+}
+
+/// Default delay between sending a feature report and reading the response.
+/// 10 ms matches the typical settling time for HID feature reports.
+fn default_feature_delay_ms() -> u64 {
+    10
+}
+
+/// Default number of read attempts for output/input exchanges before giving up.
+/// 8 retries with the configured `read_timeout_ms` covers brief device stalls.
+fn default_read_retries() -> u8 {
+    8
 }
 
 fn default_true() -> bool {
@@ -520,8 +536,13 @@ impl ProtocolPackage {
                 .and_then(|object| object.get(&definition.chunk_field))
                 .and_then(Value::as_array)
                 .ok_or_else(|| format!("memory workflow is missing {key}"))?;
-            let offset = (index * definition.chunk_size).min(size - definition.chunk_size);
-            for (target, byte) in memory[offset..]
+            // Use explicit [start, end) bounds so the final partial chunk does not
+            // overlap with the previous chunk. The old `offset.min(size - chunk_size)`
+            // formula rewrote the tail of the previous chunk when `size` was not a
+            // multiple of `chunk_size`.
+            let start = index * definition.chunk_size;
+            let end = (start + definition.chunk_size).min(size);
+            for (target, byte) in memory[start..end]
                 .iter_mut()
                 .zip(bytes.iter().filter_map(Value::as_u64))
             {
@@ -627,6 +648,28 @@ impl ProtocolPackage {
             ));
         }
         let params = validate_mutation_inputs(&mutation.inputs, params)?;
+        // Validate settle_ms before any I/O. The previous position (after the
+        // write command) allowed the device to be modified before the error
+        // was returned, skipping verification.
+        if mutation.settle_ms > 1_000 {
+            return Err(format!("mutation {mutation_id} settle delay exceeds limit"));
+        }
+        // Validate write strategy against command template before any I/O.
+        // The previous position (after the pre-read) allowed the device to be
+        // read (and memory to be read) before the contract mismatch was
+        // detected, wasting I/O and potentially leaving the device in an
+        // inconsistent state.
+        let write_command = self
+            .commands
+            .commands
+            .get(&mutation.write_command)
+            .ok_or_else(|| format!("missing command {}", mutation.write_command))?;
+        let preserves_response = write_command.request.base == RequestBase::ReadResponse;
+        if preserves_response != mutation.preserve_unknown {
+            return Err(format!(
+                "mutation {mutation_id} write strategy does not match its command template"
+            ));
+        }
         let memory_read = match &mutation.memory {
             Some(memory)
                 if output_value(ctx_outputs, &memory.available_when)
@@ -692,7 +735,7 @@ impl ProtocolPackage {
                     true,
                     None,
                 )
-                .map_err(|error| format!("mutation {mutation_id} verification command: {error}"))?;
+                .map_err(|error| format!("mutation {mutation_id} pre-read command: {error}"))?;
             self.parse_response(&mutation.read.parser, &response)
                 .map_err(|error| format!("mutation {mutation_id} pre-read: {error}"))?;
             response
@@ -702,17 +745,6 @@ impl ProtocolPackage {
             .write_transport
             .as_deref()
             .unwrap_or(&mutation.transport);
-        let write_command = self
-            .commands
-            .commands
-            .get(&mutation.write_command)
-            .ok_or_else(|| format!("missing command {}", mutation.write_command))?;
-        let preserves_response = write_command.request.base == RequestBase::ReadResponse;
-        if preserves_response != mutation.preserve_unknown {
-            return Err(format!(
-                "mutation {mutation_id} write strategy does not match its command template"
-            ));
-        }
 
         if let (Some(memory), Some((_, original))) = (&mutation.memory, &memory_read) {
             self.execute_memory_mutation(mutation_id, memory, &params, &mut session, original)?;
@@ -729,9 +761,6 @@ impl ProtocolPackage {
             false,
             Some(&before),
         )?;
-        if mutation.settle_ms > 1_000 {
-            return Err(format!("mutation {mutation_id} settle delay exceeds limit"));
-        }
         session.delay(mutation.settle_ms)?;
 
         let verify_transport = mutation
@@ -1011,6 +1040,12 @@ fn execute_with_candidates(
     ))
 }
 
+/// Rate-limited HID session. Each session is bounded by:
+/// - `MAX_REPORTS` (128): caps the total number of HID reports sent.
+/// - `MAX_DELAY_MS` (5_000): caps the cumulative delay, bounding wall-clock time.
+///
+/// Together these prevent a malicious plugin from flooding the device or
+/// holding the HID handle for too long.
 struct Session<'a> {
     package: &'a ProtocolPackage,
     device: HidDevice,
@@ -1140,6 +1175,8 @@ impl Session<'_> {
         let report = self
             .package
             .build_command(command, &BTreeMap::new(), None)?;
+        // Cap attempts at 32 to bound worst-case latency. Plugin authors who
+        // declare a higher value will still get at most 32 polls.
         for _ in 0..attempts.min(32) {
             let response = self.feature_exchange(transport, &report, true)?;
             if response.get(condition.offset) == Some(&condition.eq) {
@@ -1164,6 +1201,7 @@ impl Session<'_> {
             write_length,
             read_length,
             strip_report_id_on_read,
+            feature_delay_ms,
         }) = self.package.transports.transports.get(transport_id)
         else {
             return Err(format!("transport {transport_id} is not hid-feature"));
@@ -1184,7 +1222,7 @@ impl Session<'_> {
         if !expect_response {
             return Ok(Vec::new());
         }
-        self.delay(10)?;
+        self.delay(*feature_delay_ms)?;
         let mut response = vec![0u8; *read_length];
         let count = self
             .device
@@ -1209,6 +1247,7 @@ impl Session<'_> {
             read_length,
             strip_report_id_on_read,
             read_timeout_ms,
+            read_retries,
         }) = self.package.transports.transports.get(transport_id)
         else {
             return Err(format!("transport {transport_id} is not hid-output-input"));
@@ -1237,7 +1276,7 @@ impl Session<'_> {
             return Ok(Vec::new());
         }
 
-        for _ in 0..8 {
+        for _ in 0..*read_retries {
             let mut response = vec![0u8; *read_length];
             let count = self
                 .device
@@ -1247,7 +1286,11 @@ impl Session<'_> {
                 continue;
             }
             response.truncate(count);
-            if response.len() >= 6
+            // HID++ error responses reference payload[0..3]. Only evaluate
+            // these branches when the payload is long enough; otherwise a
+            // short payload (e.g. write_length < 4) would panic on indexing.
+            if payload.len() >= 3
+                && response.len() >= 6
                 && response[0] == 0x10
                 && response[1] == payload[0]
                 && response[2] == 0x8F
@@ -1262,7 +1305,8 @@ impl Session<'_> {
             if *strip_report_id_on_read {
                 response.remove(0);
             }
-            if response.len() >= 5
+            if payload.len() >= 3
+                && response.len() >= 5
                 && response[1] == 0xFF
                 && response[2] == payload[1]
                 && response[3] == payload[2]
@@ -1726,6 +1770,7 @@ fn parse_field(field: &FieldDefinition, response: &[u8]) -> Result<Value, String
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::OnceLock;
 
     #[test]
     fn parses_supported_field_kinds() {
@@ -1947,6 +1992,250 @@ mod tests {
         assert_eq!(
             rates,
             vec![Value::from(1000), Value::from(500), Value::from(250)]
+        );
+    }
+
+    /// Build a `ProtocolPackage` from raw JSON file contents for testing.
+    fn build_test_package(
+        commands: &str,
+        parsers: &str,
+        transports: &str,
+        workflows: &str,
+    ) -> ProtocolPackage {
+        let mut files = BTreeMap::new();
+        files.insert(
+            "protocol/commands.json".into(),
+            commands.as_bytes().to_vec(),
+        );
+        files.insert("protocol/parsers.json".into(), parsers.as_bytes().to_vec());
+        files.insert(
+            "protocol/transports.json".into(),
+            transports.as_bytes().to_vec(),
+        );
+        files.insert(
+            "protocol/workflows.json".into(),
+            workflows.as_bytes().to_vec(),
+        );
+        ProtocolPackage::from_files(&files).unwrap()
+    }
+
+    /// Shared `HidApi` instance for tests. `HidApi::new()` enumerates all HID
+    /// devices and can crash (SIGTRAP) if called multiple times on macOS;
+    /// `OnceLock` ensures it is initialised only once.
+    static TEST_HID_API: OnceLock<HidApi> = OnceLock::new();
+    fn test_hid_api() -> &'static HidApi {
+        TEST_HID_API.get_or_init(|| HidApi::new().unwrap())
+    }
+
+    /// `mutate` must reject unknown mutation ids before touching the device.
+    #[test]
+    fn mutate_rejects_missing_mutation() {
+        let package = build_test_package(
+            r#"{"schemaVersion": 1, "commands": {}}"#,
+            r#"{"schemaVersion": 1, "parsers": {}}"#,
+            r#"{"schemaVersion": 1, "transports": {}}"#,
+            r#"{"schemaVersion": 1, "workflows": {}, "mutations": {}}"#,
+        );
+        let api = test_hid_api();
+        let outputs = BTreeMap::new();
+        let result = package.mutate(api, "test-path", "nonexistent", &Map::new(), &outputs);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("missing mutation"));
+    }
+
+    /// `mutate` must honor `skipIfZero` and reject the mutation without I/O.
+    #[test]
+    fn mutate_rejects_when_skip_if_zero_matches() {
+        let workflows = r#"{
+            "schemaVersion": 1,
+            "workflows": {},
+            "mutations": {
+                "test-set-dpi": {
+                    "transport": "feature",
+                    "inputs": {},
+                    "skipIfZero": [{"output": "dpi", "field": "value"}],
+                    "read": {"command": "read-dpi", "parser": "dpi", "params": {}},
+                    "writeCommand": "write-dpi",
+                    "preserveUnknown": false,
+                    "verify": {"command": "verify-dpi", "parser": "dpi", "params": {}, "assertions": []}
+                }
+            }
+        }"#;
+        let package = build_test_package(
+            r#"{"schemaVersion": 1, "commands": {}}"#,
+            r#"{"schemaVersion": 1, "parsers": {}}"#,
+            r#"{"schemaVersion": 1, "transports": {}}"#,
+            workflows,
+        );
+        let api = test_hid_api();
+        let outputs = BTreeMap::from([("dpi".into(), serde_json::json!({"value": 0}))]);
+        let result = package.mutate(api, "test-path", "test-set-dpi", &Map::new(), &outputs);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not available on this device"));
+    }
+
+    /// `mutate` must reject `settleMs` exceeding the 1-second safety limit.
+    #[test]
+    fn mutate_rejects_excessive_settle_ms() {
+        let workflows = r#"{
+            "schemaVersion": 1,
+            "workflows": {},
+            "mutations": {
+                "test-set-dpi": {
+                    "transport": "feature",
+                    "inputs": {},
+                    "read": {"command": "read-dpi", "parser": "dpi", "params": {}},
+                    "writeCommand": "write-dpi",
+                    "preserveUnknown": false,
+                    "settleMs": 2000,
+                    "verify": {"command": "verify-dpi", "parser": "dpi", "params": {}, "assertions": []}
+                }
+            }
+        }"#;
+        let package = build_test_package(
+            r#"{"schemaVersion": 1, "commands": {}}"#,
+            r#"{"schemaVersion": 1, "parsers": {}}"#,
+            r#"{"schemaVersion": 1, "transports": {}}"#,
+            workflows,
+        );
+        let api = test_hid_api();
+        let outputs = BTreeMap::new();
+        let result = package.mutate(api, "test-path", "test-set-dpi", &Map::new(), &outputs);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("settle delay exceeds limit"));
+    }
+
+    /// `mutate` must reject when the write command is missing from commands.json.
+    #[test]
+    fn mutate_rejects_missing_write_command() {
+        let workflows = r#"{
+            "schemaVersion": 1,
+            "workflows": {},
+            "mutations": {
+                "test-set-dpi": {
+                    "transport": "feature",
+                    "inputs": {},
+                    "read": {"command": "read-dpi", "parser": "dpi", "params": {}},
+                    "writeCommand": "write-dpi",
+                    "preserveUnknown": false,
+                    "verify": {"command": "verify-dpi", "parser": "dpi", "params": {}, "assertions": []}
+                }
+            }
+        }"#;
+        let package = build_test_package(
+            r#"{"schemaVersion": 1, "commands": {}}"#,
+            r#"{"schemaVersion": 1, "parsers": {}}"#,
+            r#"{"schemaVersion": 1, "transports": {}}"#,
+            workflows,
+        );
+        let api = test_hid_api();
+        let outputs = BTreeMap::new();
+        let result = package.mutate(api, "test-path", "test-set-dpi", &Map::new(), &outputs);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("missing command"));
+    }
+
+    /// `mutate` must reject when `preserveUnknown` doesn't match the write
+    /// command's `base` field (ReadResponse vs Zero).
+    #[test]
+    fn mutate_rejects_write_strategy_mismatch() {
+        let commands = r#"{
+            "schemaVersion": 1,
+            "commands": {
+                "write-dpi": {
+                    "request": {
+                        "length": 7,
+                        "base": "read-response",
+                        "bytes": []
+                    }
+                }
+            }
+        }"#;
+        let workflows = r#"{
+            "schemaVersion": 1,
+            "workflows": {},
+            "mutations": {
+                "test-set-dpi": {
+                    "transport": "feature",
+                    "inputs": {},
+                    "read": {"command": "read-dpi", "parser": "dpi", "params": {}},
+                    "writeCommand": "write-dpi",
+                    "preserveUnknown": false,
+                    "verify": {"command": "verify-dpi", "parser": "dpi", "params": {}, "assertions": []}
+                }
+            }
+        }"#;
+        let package = build_test_package(
+            commands,
+            r#"{"schemaVersion": 1, "parsers": {}}"#,
+            r#"{"schemaVersion": 1, "transports": {}}"#,
+            workflows,
+        );
+        let api = test_hid_api();
+        let outputs = BTreeMap::new();
+        let result = package.mutate(api, "test-path", "test-set-dpi", &Map::new(), &outputs);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .contains("write strategy does not match"));
+    }
+
+    /// `mutate` must accept a consistent write strategy (base=zero +
+    /// preserveUnknown=false) and proceed to I/O, where it fails on the
+    /// nonexistent device path — proving validation passed.
+    #[test]
+    fn mutate_accepts_consistent_write_strategy() {
+        let commands = r#"{
+            "schemaVersion": 1,
+            "commands": {
+                "write-dpi": {
+                    "request": {
+                        "length": 7,
+                        "base": "zero",
+                        "bytes": []
+                    }
+                }
+            }
+        }"#;
+        let workflows = r#"{
+            "schemaVersion": 1,
+            "workflows": {},
+            "mutations": {
+                "test-set-dpi": {
+                    "transport": "feature",
+                    "inputs": {},
+                    "read": {"command": "read-dpi", "parser": "dpi", "params": {}},
+                    "writeCommand": "write-dpi",
+                    "preserveUnknown": false,
+                    "verify": {"command": "verify-dpi", "parser": "dpi", "params": {}, "assertions": []}
+                }
+            }
+        }"#;
+        let package = build_test_package(
+            commands,
+            r#"{"schemaVersion": 1, "parsers": {}}"#,
+            r#"{"schemaVersion": 1, "transports": {}}"#,
+            workflows,
+        );
+        let api = test_hid_api();
+        let outputs = BTreeMap::new();
+        let result = package.mutate(
+            api,
+            "nonexistent-path",
+            "test-set-dpi",
+            &Map::new(),
+            &outputs,
+        );
+        // Validation passed; the error should be from I/O (open_path), not validation.
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            !err.contains("write strategy"),
+            "should not fail on validation: {err}"
+        );
+        assert!(
+            !err.contains("missing command"),
+            "should not fail on validation: {err}"
         );
     }
 }
