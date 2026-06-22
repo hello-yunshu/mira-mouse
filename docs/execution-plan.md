@@ -2,7 +2,7 @@
 
 ## 目标
 
-在本会话内完成 AMaster / 怒喵兼容设备的 2.4G 无线接收器、USB 直连和蓝牙连接的识别与只读数据读取；补齐插件仓库结构和文档；并真实构建 macOS 产物。
+完成 AMaster / 怒喵兼容设备的识别、只读数据读取，以及 protocol-a 低风险参数修改；保持协议归插件、界面归宿主；并真实构建 macOS 产物。
 
 ## 已交付
 
@@ -15,11 +15,13 @@
 7. **前端**：`DeviceSnapshot` 扩展 `dpiStages`、`evidence`；UI 按能力动态渲染电量、DPI 档位、回报率、Profile、灯光。
 8. **构建**：成功生成 `target/release/bundle/dmg/Mira_0.1.0_aarch64.dmg`。
 9. **测试**：`cargo test --workspace`、`npm run lint`、`npm run typecheck` 全部通过。
+10. **低风险写入**：插件声明当前 DPI 档、单档 DPI、回报率、鼠标字符灯和接收器灯光的读-改-写-回读事务；宿主通用解释器负责范围、互斥、超时与断言，UI 仅提交业务参数并支持撤销。
 
 ## 阻塞 / 后续
 
 - 蓝牙 HID 识别缺少硬件证据；需真机捕获蓝牙配对后的 VID/PID/usage。
-- AM35 协议为 `source-confirmed` 但未 `hardware-verified`；写入能力全部关闭。
+- AM35 协议为 `source-confirmed` 但未 `hardware-verified`；AM35 写入能力全部关闭。
+- protocol-a 写入已通过 fixture/build 验证；最终 no-op 真机 smoke test 因接收器持续报告鼠标离线而未执行。
 - 首次启动若从 DMG 直接运行，可能需要用户授予 macOS Input Monitoring 权限；当前仅验证了从终端启动时的 HID 访问。
 - Windows / Linux 产物未在当前 macOS 宿主机构建。
 - 正式 Apple Developer / Windows 代码签名 / Linux GPG / Updater 签名凭据未提供，标记 `blocked`。

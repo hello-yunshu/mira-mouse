@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use crate::engine::ProtocolPackage;
 use hidapi::HidApi;
-use serde_json::Value;
+use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -13,12 +13,15 @@ pub enum ConnectionKind {
 
 #[derive(Debug, Default, Clone)]
 pub struct DeviceReading {
+    pub display_name: Option<String>,
+    pub connection: Option<ConnectionKind>,
     pub battery_percent: Option<u8>,
     pub charging: bool,
     pub batteries: Vec<mira_core::DeviceBattery>,
     pub dpi: Option<u16>,
     pub dpi_stages: Option<Vec<mira_core::DpiStage>>,
     pub polling_rate_hz: Option<u16>,
+    pub supported_polling_rates_hz: Option<Vec<u16>>,
     pub profile: Option<u8>,
     pub light_color: Option<String>,
     pub capabilities: BTreeMap<String, Value>,
@@ -30,6 +33,7 @@ pub struct ProtocolContext<'a> {
     pub family: &'a str,
     pub connection: ConnectionKind,
     pub files: &'a BTreeMap<String, Vec<u8>>,
+    pub outputs: BTreeMap<String, Value>,
 }
 
 pub fn read_device(ctx: &ProtocolContext) -> Result<DeviceReading, String> {
@@ -41,14 +45,83 @@ pub fn read_device(ctx: &ProtocolContext) -> Result<DeviceReading, String> {
         "[mira] plugin workflow {workflow_id}: {}",
         serde_json::to_string(&outputs).unwrap_or_else(|_| "<serialization failed>".into())
     );
-    Ok(standard_reading(outputs))
+    let capabilities = package.capabilities().cloned();
+    Ok(standard_reading(outputs, capabilities))
 }
 
-fn standard_reading(outputs: BTreeMap<String, Value>) -> DeviceReading {
+pub fn execute_plugin_workflow(
+    ctx: &ProtocolContext,
+    workflow_id: &str,
+) -> Result<BTreeMap<String, Value>, String> {
+    ProtocolPackage::from_files(ctx.files)?.execute(ctx.api, ctx.path, workflow_id)
+}
+
+pub fn writable_mutations(ctx: &ProtocolContext) -> Result<Vec<String>, String> {
+    Ok(ProtocolPackage::from_files(ctx.files)?.mutation_ids(ctx.family, Some(&ctx.outputs)))
+}
+
+pub fn mutate_device(
+    ctx: &ProtocolContext,
+    mutation: &str,
+    params: &Map<String, Value>,
+) -> Result<Value, String> {
+    let package = ProtocolPackage::from_files(ctx.files)?;
+    let mutation_id = format!("{}-{mutation}", ctx.family);
+    package.mutate(ctx.api, ctx.path, &mutation_id, params, &ctx.outputs)
+}
+
+fn standard_reading(
+    outputs: BTreeMap<String, Value>,
+    capabilities: Option<Value>,
+) -> DeviceReading {
     let mut reading = DeviceReading {
         capabilities: outputs.clone(),
         ..DeviceReading::default()
     };
+
+    // Prefer device-reported rates from the protocol; fall back to the static
+    // plugin manifest so the UI always receives a supported list.
+    if let Some(rates) = object(&outputs, "reportRateList")
+        .and_then(|value| value.get("supportedRates"))
+        .and_then(Value::as_array)
+    {
+        let rates: Vec<u16> = rates
+            .iter()
+            .filter_map(|value| value.as_u64().and_then(|rate| u16::try_from(rate).ok()))
+            .collect();
+        if !rates.is_empty() {
+            reading.supported_polling_rates_hz = Some(rates);
+        }
+    }
+
+    if reading.supported_polling_rates_hz.is_none() {
+        if let Some(caps) = capabilities.as_ref().and_then(Value::as_object) {
+            if let Some(rates) = caps.get("pollingRatesHz").and_then(Value::as_array) {
+                let rates: Vec<u16> = rates
+                    .iter()
+                    .filter_map(|value| value.as_u64().and_then(|rate| u16::try_from(rate).ok()))
+                    .collect();
+                if !rates.is_empty() {
+                    reading.supported_polling_rates_hz = Some(rates);
+                }
+            }
+        }
+    }
+
+    reading.display_name = object(&outputs, "deviceName")
+        .and_then(|device| device.get("name"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    reading.connection = object(&outputs, "device")
+        .or_else(|| object(&outputs, "featureIndexDeviceInfo"))
+        .and_then(|device| device.get("connection"))
+        .and_then(Value::as_str)
+        .and_then(|connection| match connection {
+            "usb" => Some(ConnectionKind::Usb),
+            "wireless" | "wireless-receiver" => Some(ConnectionKind::Wireless),
+            "bluetooth" => Some(ConnectionKind::Bluetooth),
+            _ => None,
+        });
 
     if let Some(battery) = object(&outputs, "battery") {
         reading.battery_percent =
@@ -96,43 +169,90 @@ fn standard_reading(outputs: BTreeMap<String, Value>) -> DeviceReading {
         }
     }
 
+    reading.profile = crate::onboard_profiles::active_profile_index(&outputs);
+
+    // If the plugin already emitted a structured "profile" capability, keep it.
+    // Otherwise, when 0x8101 Profile Management outputs are present, normalize
+    // them into a single capability object so the UI does not need to know the
+    // exact workflow output names.
+    if object(&outputs, "profile").is_none()
+        && (crate::onboard_profiles::profile_count(&outputs).is_some()
+            || crate::onboard_profiles::profile_management_info(&outputs).is_some())
+    {
+        let mut profile = serde_json::Map::new();
+        if let Some(current) = reading.profile {
+            profile.insert("current".into(), json!(current));
+        }
+        if let Some(count) = crate::onboard_profiles::profile_count(&outputs) {
+            profile.insert("count".into(), json!(count));
+        }
+        if let Some(info) = crate::onboard_profiles::profile_management_info(&outputs) {
+            profile.insert(
+                "management".to_string(),
+                json!({
+                    "featureVersion": info.feature_version,
+                    "maxProfileCount": info.max_profile_count,
+                    "profileNameLength": info.profile_name_length,
+                }),
+            );
+        }
+        reading
+            .capabilities
+            .insert("profile".into(), Value::Object(profile));
+    }
+
     if let Some(dpi) = object(&outputs, "dpi") {
-        reading.profile = number(dpi, "profile").and_then(|value| u8::try_from(value).ok());
         let current = number(dpi, "currentStage").and_then(|value| usize::try_from(value).ok());
-        let count = number(dpi, "stageCount")
-            .and_then(|value| usize::try_from(value).ok())
-            .unwrap_or(0)
-            .min(8);
         let values = array(dpi, "dpiX");
         let colors = array(dpi, "stageColors");
-        let stages: Vec<_> = (0..count)
-            .filter_map(|index| {
-                let value = values?
-                    .get(index)?
-                    .as_u64()
-                    .and_then(|value| u16::try_from(value).ok())?;
-                let color = colors?.get(index)?.as_str()?.to_string();
-                Some(mira_core::DpiStage {
-                    value,
-                    color,
-                    enabled: true,
-                    active: current == Some(index + 1),
+        if let Some(values) = values {
+            // Array-based DPI stages (e.g. AMaster protocol A).
+            let count = number(dpi, "stageCount")
+                .and_then(|value| usize::try_from(value).ok())
+                .unwrap_or(values.len())
+                .min(8);
+            let stages: Vec<_> = (0..count)
+                .filter_map(|index| {
+                    let value = values
+                        .get(index)?
+                        .as_u64()
+                        .and_then(|value| u16::try_from(value).ok())?;
+                    let color = colors
+                        .and_then(|colors| colors.get(index)?.as_str())
+                        .unwrap_or("#9a8bd0")
+                        .to_string();
+                    Some(mira_core::DpiStage {
+                        value,
+                        color,
+                        enabled: true,
+                        active: current.map(|c| c == index + 1).unwrap_or(index == 0),
+                    })
                 })
-            })
-            .collect();
-        reading.dpi = stages
-            .iter()
-            .find(|stage| stage.active)
-            .map(|stage| stage.value);
-        if !stages.is_empty() {
-            reading.dpi_stages = Some(stages);
+                .collect();
+            reading.dpi = stages
+                .iter()
+                .find(|stage| stage.active)
+                .map(|stage| stage.value);
+            if !stages.is_empty() {
+                reading.dpi_stages = Some(stages);
+            }
+        } else if let Some(value) = number(dpi, "dpiValue") {
+            // Single-value DPI (e.g. HID++ 2.0 AdjustableDPI). The DSL parser
+            // returns one DPI value for the active stage; expose it as a single
+            // stage so the UI can render and edit it without a stage list.
+            if let Ok(value) = u16::try_from(value) {
+                reading.dpi = Some(value);
+                reading.dpi_stages = Some(vec![mira_core::DpiStage {
+                    value,
+                    color: "#9a8bd0".into(),
+                    enabled: true,
+                    active: true,
+                }]);
+            }
         }
     }
 
     if let Some(settings) = object(&outputs, "settings") {
-        reading.profile = number(settings, "profile")
-            .and_then(|value| u8::try_from(value).ok())
-            .or(reading.profile);
         reading.polling_rate_hz =
             number(settings, "pollingRate").and_then(|value| u16::try_from(value).ok());
     }
@@ -200,7 +320,7 @@ mod tests {
             ),
             ("mouseEffect".into(), json!({"color": "#AABBCC"})),
         ]);
-        let reading = standard_reading(outputs);
+        let reading = standard_reading(outputs, None);
         assert_eq!(reading.battery_percent, Some(83));
         assert_eq!(reading.batteries.len(), 1);
         assert_eq!(reading.dpi, Some(800));
@@ -221,11 +341,25 @@ mod tests {
                 json!({"mouseBattery": 75, "receiverBattery": 100}),
             ),
         ]);
-        let reading = standard_reading(outputs);
+        let reading = standard_reading(outputs, None);
         assert_eq!(reading.batteries.len(), 2);
         assert_eq!(reading.batteries[0].label, "鼠标");
         assert_eq!(reading.batteries[1].label, "接收器");
         assert_eq!(reading.batteries[1].percentage, 100);
+    }
+
+    #[test]
+    fn normalizes_plugin_reported_identity() {
+        let outputs = BTreeMap::from([
+            (
+                "device".into(),
+                json!({"deviceIndex": 1, "connection": "wireless"}),
+            ),
+            ("deviceName".into(), json!({"name": "G705 Mouse"})),
+        ]);
+        let reading = standard_reading(outputs, None);
+        assert_eq!(reading.display_name.as_deref(), Some("G705 Mouse"));
+        assert_eq!(reading.connection, Some(ConnectionKind::Wireless));
     }
 
     #[test]
@@ -237,7 +371,62 @@ mod tests {
             ),
             ("receiverLighting".into(), json!({"color": "#4BBFB1"})),
         ]);
-        let reading = standard_reading(outputs);
+        let reading = standard_reading(outputs, None);
         assert_eq!(reading.light_color.as_deref(), Some("#FB223C"));
+    }
+
+    #[test]
+    fn single_value_dpi_produces_one_active_stage() {
+        // HID++ 2.0 AdjustableDPI returns one DPI value for the active stage.
+        // The runtime should expose it as a single-stage list so the UI can
+        // render and edit it without a full stage array.
+        let outputs = BTreeMap::from([("dpi".into(), json!({"dpiValue": 1600, "stageIndex": 0}))]);
+        let reading = standard_reading(outputs, None);
+        assert_eq!(reading.dpi, Some(1600));
+        let stages = reading.dpi_stages.expect("dpi stages");
+        assert_eq!(stages.len(), 1);
+        assert!(stages[0].active);
+        assert_eq!(stages[0].value, 1600);
+    }
+
+    #[test]
+    fn dpi_array_falls_back_to_default_color_when_missing() {
+        // Plugins that don't expose per-stage colors should still produce
+        // usable stages — the UI replaces the placeholder color later.
+        let outputs =
+            BTreeMap::from([("dpi".into(), json!({"stageCount": 2, "dpiX": [400, 800]}))]);
+        let reading = standard_reading(outputs, None);
+        let stages = reading.dpi_stages.expect("dpi stages");
+        assert_eq!(stages.len(), 2);
+        assert_eq!(stages[0].color, "#9a8bd0");
+    }
+
+    #[test]
+    fn reads_supported_polling_rates_from_report_rate_list() {
+        // rateListFlags = 0b00001011 means 1 ms (1000), 2 ms (500), and 8 ms (125) are supported.
+        let outputs = BTreeMap::from([
+            (
+                "reportRateList".into(),
+                json!({"rateListFlags": 0x0B, "supportedRates": [1000, 500, 125]}),
+            ),
+            ("settings".into(), json!({"pollingRate": 500})),
+        ]);
+        let reading = standard_reading(outputs, None);
+        assert_eq!(reading.polling_rate_hz, Some(500));
+        assert_eq!(
+            reading.supported_polling_rates_hz,
+            Some(vec![1000, 500, 125])
+        );
+    }
+
+    #[test]
+    fn falls_back_polling_rates_to_capabilities() {
+        let outputs = BTreeMap::from([("settings".into(), json!({"pollingRate": 1000}))]);
+        let capabilities = Some(json!({"pollingRatesHz": [125, 250, 500, 1000]}));
+        let reading = standard_reading(outputs, capabilities);
+        assert_eq!(
+            reading.supported_polling_rates_hz,
+            Some(vec![125, 250, 500, 1000])
+        );
     }
 }

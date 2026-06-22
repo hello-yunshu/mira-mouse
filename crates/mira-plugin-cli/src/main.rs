@@ -1,18 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
+use ed25519_dalek::{Signer, SigningKey};
 use mira_plugin_api::PluginManifest;
-use mira_plugin_runtime::{inspect_package, TrustStore};
+use mira_plugin_runtime::{canonical_json, inspect_package, TrustStore};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     fs,
-    io::Write,
+    io::{Cursor, Read, Write},
     path::{Path, PathBuf},
 };
 use walkdir::WalkDir;
-use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
+use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
 
 #[derive(Parser)]
 #[command(
@@ -44,6 +45,10 @@ enum Command {
     },
     Sign {
         package: PathBuf,
+        #[arg(long)]
+        key_hex: Option<String>,
+        #[arg(long)]
+        output: Option<PathBuf>,
     },
     New {
         plugin_id: String,
@@ -53,17 +58,125 @@ enum Command {
 
 fn main() -> Result<()> {
     match Cli::parse().command {
-        Command::Validate { path } => { validate_dir(&path)?; println!("valid: {}", path.display()); }
-        Command::Test { path } => { validate_dir(&path)?; validate_fixtures(&path)?; println!("fixture-verified: {}", path.display()); }
-        Command::Pack { path, output } => { pack(&path, &output)?; println!("packed: {}", output.display()); }
-        Command::Inspect { package, require_signature } => {
-            let file = fs::File::open(&package)?;
-            println!("{}", serde_json::to_string_pretty(&inspect_package(file, &TrustStore::default(), require_signature)?)?);
+        Command::Validate { path } => {
+            validate_dir(&path)?;
+            println!("valid: {}", path.display());
         }
-        Command::Sign { .. } => bail!("production signing requires an externally configured protected key; no key was supplied"),
+        Command::Test { path } => {
+            validate_dir(&path)?;
+            validate_fixtures(&path)?;
+            println!("fixture-verified: {}", path.display());
+        }
+        Command::Pack { path, output } => {
+            pack(&path, &output)?;
+            println!("packed: {}", output.display());
+        }
+        Command::Inspect {
+            package,
+            require_signature,
+        } => {
+            let file = fs::File::open(&package)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&inspect_package(
+                    file,
+                    &TrustStore::default(),
+                    require_signature
+                )?)?
+            );
+        }
+        Command::Sign {
+            package,
+            key_hex,
+            output,
+        } => {
+            let signed_bytes = sign_package(&package, key_hex.as_deref())?;
+            let out_path = output.unwrap_or_else(|| package.clone());
+            fs::write(&out_path, &signed_bytes)?;
+            println!("signed: {}", out_path.display());
+        }
         Command::New { plugin_id, path } => scaffold(&plugin_id, &path)?,
     }
     Ok(())
+}
+
+fn sign_package(package: &Path, key_hex: Option<&str>) -> Result<Vec<u8>> {
+    let file = fs::File::open(package)?;
+    let mut archive = ZipArchive::new(file)?;
+
+    let mut files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index)?;
+        let name = entry.name().to_string();
+        if entry.is_dir() {
+            continue;
+        }
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes)?;
+        files.insert(name, bytes);
+    }
+
+    let signing_key = match key_hex {
+        Some(hex_str) => {
+            let bytes = hex::decode(hex_str)?;
+            let array: [u8; 32] = bytes
+                .as_slice()
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("key must be 32 bytes"))?;
+            SigningKey::from_bytes(&array)
+        }
+        None => {
+            use rand::RngCore;
+            let mut secret = [0u8; 32];
+            rand::rngs::OsRng.fill_bytes(&mut secret);
+            println!("private key: {}", hex::encode(secret));
+            SigningKey::from_bytes(&secret)
+        }
+    };
+
+    let verifying_key = signing_key.verifying_key();
+    let public_hex = hex::encode(verifying_key.to_bytes());
+    println!("public key: {}", public_hex);
+
+    files.remove("checksums.json");
+    files.remove("META-INF/signature.ed25519");
+
+    let manifest_bytes = files
+        .get("plugin.json")
+        .ok_or_else(|| anyhow::anyhow!("missing plugin.json"))?
+        .clone();
+
+    let checksums = Checksums {
+        schema_version: 1,
+        files: files
+            .iter()
+            .map(|(name, bytes)| (name.clone(), hex::encode(Sha256::digest(bytes))))
+            .collect(),
+    };
+    let checksums_bytes = serde_json::to_vec_pretty(&checksums)?;
+
+    let mut message = canonical_json(&manifest_bytes)?;
+    message.push(b'\n');
+    message.extend(canonical_json(&checksums_bytes)?);
+    let signature = signing_key.sign(&message).to_bytes().to_vec();
+
+    let mut output = Cursor::new(Vec::new());
+    {
+        let mut zip = ZipWriter::new(&mut output);
+        let options = SimpleFileOptions::default()
+            .compression_method(CompressionMethod::Deflated)
+            .unix_permissions(0o644);
+        for (name, bytes) in &files {
+            zip.start_file(name, options)?;
+            zip.write_all(bytes)?;
+        }
+        zip.start_file("checksums.json", options)?;
+        zip.write_all(&checksums_bytes)?;
+        zip.start_file("META-INF/signature.ed25519", options)?;
+        zip.write_all(&signature)?;
+        zip.finish()?;
+    }
+    Ok(output.into_inner())
 }
 
 fn validate_dir(path: &Path) -> Result<PluginManifest> {

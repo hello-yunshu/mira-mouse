@@ -3,6 +3,12 @@ import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import type { AppSettings, BundledPluginInfo, AboutInfo, DiscoveredDevice, ThemeMode } from './types';
 import { Tooltip } from './Tooltip';
+import { notifyError } from './notify';
+
+function extractChannel(releaseTag: string): string | null {
+  const match = releaseTag.match(/-(test|beta|alpha|rc|dev|preview|canary)$/i);
+  return match ? match[1].toLowerCase() : null;
+}
 
 const DEFAULT_SETTINGS: AppSettings = {
   theme: 'system',
@@ -11,6 +17,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   trayShowBatteryTitle: true,
   trayIncludeReceiverBattery: false,
   trayShowConnection: true,
+  trayIconColor: 'white',
   lowBatteryThreshold: 20,
   nightModeEnabled: false,
   nightModeStart: '22:00',
@@ -56,17 +63,17 @@ function Toggle({ checked, onChange, label, disabled = false }: { checked: boole
   );
 }
 
-export function SettingsPage({ onNavigateAbout, onThemeChange, onRefreshIntervalChange }: { onNavigateAbout: () => void; onThemeChange: (theme: ThemeMode) => void; onRefreshIntervalChange: (seconds: number) => void }) {
+export function SettingsPage({ onNavigateAbout, onThemeChange, onRefreshIntervalChange, previewMode = false }: { onNavigateAbout: () => void; onThemeChange: (theme: ThemeMode) => void; onRefreshIntervalChange: (seconds: number) => void; previewMode?: boolean }) {
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [autostartEnabled, setAutostartEnabled] = useState(false);
   const [plugins, setPlugins] = useState<BundledPluginInfo[]>([]);
   const [diagnostics, setDiagnostics] = useState<string>('');
   const [discovered, setDiscovered] = useState<DiscoveredDevice[]>([]);
   const [saved, setSaved] = useState(false);
-  const [saveError, setSaveError] = useState('');
   const [tab, setTab] = useState<SettingsTab>('general');
 
   useEffect(() => {
+    if (previewMode) return;
     invoke<AppSettings>('settings_get')
       .then((loaded) => {
         // 与默认值合并，避免后端字段缺失导致受控输入变为 undefined
@@ -82,24 +89,33 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, onRefreshInterval
     invoke<AboutInfo>('about_info')
       .then((info) => setPlugins(info.bundledPlugins ?? []))
       .catch(() => setPlugins([]));
-  }, [onRefreshIntervalChange, onThemeChange]);
+  }, [onRefreshIntervalChange, onThemeChange, previewMode]);
 
   function update(patch: Partial<AppSettings>) {
     const next = { ...settings, ...patch };
     setSettings(next);
     if (patch.theme && onThemeChange) onThemeChange(patch.theme as ThemeMode);
     if (patch.refreshIntervalSeconds) onRefreshIntervalChange(patch.refreshIntervalSeconds);
-    setSaveError('');
+    if (previewMode) {
+      setSaved(true);
+      setTimeout(() => setSaved(false), 1500);
+      return;
+    }
     invoke<AppSettings>('settings_set', { settings: next })
       .then((savedSettings) => {
         setSettings(savedSettings);
         setSaved(true);
         setTimeout(() => setSaved(false), 1500);
       })
-      .catch((error) => setSaveError(`保存失败：${String(error)}`));
+      .catch((error) => notifyError('保存失败', String(error)));
   }
 
   function toggleAutostart(enabled: boolean) {
+    if (previewMode) {
+      setAutostartEnabled(enabled);
+      update({ autostart: enabled });
+      return;
+    }
     invoke('set_autostart', { enabled })
       .then(() => {
         setAutostartEnabled(enabled);
@@ -111,13 +127,13 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, onRefreshInterval
   function exportDiagnostics() {
     invoke<unknown>('export_diagnostics')
       .then((data) => setDiagnostics(JSON.stringify(data, null, 2)))
-      .catch((err) => setDiagnostics(`导出失败：${err}`));
+      .catch((err) => notifyError('导出失败', String(err)));
   }
 
   function scanDevices() {
     invoke<DiscoveredDevice[]>('discover_devices')
       .then(setDiscovered)
-      .catch((err) => setDiagnostics(`扫描失败：${err}`));
+      .catch((err) => notifyError('扫描失败', String(err)));
   }
 
   return (
@@ -129,7 +145,6 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, onRefreshInterval
         </div>
         {saved && <span className="save-badge">已保存</span>}
       </header>
-      {saveError && <p className="settings-error" role="alert">{saveError}</p>}
 
       <nav className="sub-nav" aria-label="设置分类">
         {TABS.map((t) => (
@@ -149,7 +164,7 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, onRefreshInterval
           <section className="card settings-section">
             <div className="card-title"><h2>主题</h2></div>
             <SettingRow title="主题模式" hint="跟随系统会自动适配浅色或深色">
-              <select value={settings.theme} onChange={(e) => update({ theme: e.target.value as ThemeMode })}>
+              <select value={settings.theme} onChange={(e) => update({ theme: e.target.value as ThemeMode })} aria-label="主题模式">
                 <option value="system">跟随系统</option>
                 <option value="light">浅色</option>
                 <option value="dark">深色</option>
@@ -174,11 +189,18 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, onRefreshInterval
             <SettingRow title="菜单显示连接状态" hint="在托盘菜单中显示连接方式和设备名称">
               <Toggle checked={settings.trayShowConnection} onChange={(v) => update({ trayShowConnection: v })} label="菜单显示连接状态" />
             </SettingRow>
+            <SettingRow title="托盘图标颜色" hint="白色适合深色菜单栏背景，黑色适合浅色背景，跟随主题自动切换">
+              <select value={settings.trayIconColor} onChange={(e) => update({ trayIconColor: e.target.value })} aria-label="托盘图标颜色">
+                <option value="white">白色</option>
+                <option value="black">黑色</option>
+                <option value="auto">跟随主题</option>
+              </select>
+            </SettingRow>
           </section>
 
           <section className="card settings-section">
             <div className="card-title"><h2>轮询</h2></div>
-            <SettingRow title={`刷新间隔：${settings.refreshIntervalSeconds} 秒`} hint="设备状态轮询间隔">
+            <SettingRow title={`刷新间隔：${settings.refreshIntervalSeconds} 秒`} hint="窗口可见时的兜底轮询间隔；事件触发时立即读取，窗口隐藏时自动降为 60 秒">
               <input
                 type="range"
                 min={1}
@@ -197,9 +219,9 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, onRefreshInterval
           <section className="card settings-section">
             <div className="card-title">
               <h2>电量提醒</h2>
-              <Tooltip label="低电量提醒：仅在电量跨过阈值时提醒一次，不会反复弹窗。"><button className="icon-button">?</button></Tooltip>
+              <Tooltip label="低电量提醒：仅在电量跨过阈值时提醒一次，不会反复弹窗。"><button className="icon-button" aria-label="低电量提醒说明">?</button></Tooltip>
             </div>
-            <SettingRow title={`低电量阈值：${settings.lowBatteryThreshold}%`} hint="保存提醒阈值；系统通知接入前不会弹出通知">
+            <SettingRow title={`低电量阈值：${settings.lowBatteryThreshold}%`} hint="电量跨过阈值时通过系统通知提醒一次，充电期间不提醒">
               <input
                 type="range"
                 min={5}
@@ -214,9 +236,9 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, onRefreshInterval
           <section className="card settings-section">
             <div className="card-title">
               <h2>安静灯光</h2>
-              <Tooltip label="夜间模式：按时间降低或关闭灯光，并在关闭后可靠恢复原状态。"><button className="icon-button">?</button></Tooltip>
+              <Tooltip label="夜间模式：按时间降低或关闭灯光，并在关闭后可靠恢复原状态。"><button className="icon-button" aria-label="安静灯光说明">?</button></Tooltip>
             </div>
-            <SettingRow title="启用夜间模式" hint="当前设备插件只读，灯光定时写入暂不可用">
+            <SettingRow title="启用夜间模式" hint="当前版本尚未实现灯光定时调度">
               <Toggle checked={false} onChange={() => {}} label="启用夜间模式" disabled />
             </SettingRow>
           </section>
@@ -242,20 +264,24 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, onRefreshInterval
             <p className="setting-hint">未发现已安装插件。正式安装包默认携带 mira.amaster。</p>
           ) : (
             <div className="plugin-list">
-              {plugins.map((plugin) => (
-                <div key={plugin.pluginId} className="plugin-item">
-                  <div>
-                    <strong>{plugin.pluginId}</strong>
-                    <span className="setting-hint">v{plugin.version} · {plugin.releaseTag}</span>
+              {plugins.map((plugin) => {
+                const channel = extractChannel(plugin.releaseTag);
+                return (
+                  <div key={plugin.pluginId} className="plugin-item">
+                    <div>
+                      <strong>{plugin.pluginId}</strong>
+                      <span className="setting-hint">v{plugin.version}</span>
+                    </div>
+                    <div className="plugin-meta">
+                      {channel && <span className="badge">{channel}</span>}
+                      <span className={`badge ${plugin.signatureVerified ? 'badge-ok' : 'badge-warn'}`}>
+                        {plugin.signatureVerified ? '签名已验证' : '签名未验证'}
+                      </span>
+                      {plugin.bundleByDefault && <span className="badge">默认内置</span>}
+                    </div>
                   </div>
-                  <div className="plugin-meta">
-                    <span className={`badge ${plugin.signatureVerified ? 'badge-ok' : 'badge-warn'}`}>
-                      {plugin.signatureVerified ? '签名已验证' : '签名未验证'}
-                    </span>
-                    {plugin.bundleByDefault && <span className="badge">默认内置</span>}
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </section>
@@ -264,7 +290,7 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, onRefreshInterval
       {tab === 'privacy' && (
         <section className="card settings-section">
           <div className="card-title"><h2>隐私</h2></div>
-          <SettingRow title="禁用遥测" hint="Mira 不实现遥测，此选项始终开启">
+          <SettingRow title="禁用遥测" hint="Mira 不内置遥测，此选项始终开启">
             <Toggle checked={true} onChange={() => {}} label="禁用遥测" disabled />
           </SettingRow>
           <SettingRow title="扫描 HID 设备" hint="列出与已安装插件匹配的真实 HID 设备（硬件测试用）">

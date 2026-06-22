@@ -10,6 +10,7 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }));
 const settings: AppSettings = {
   theme: 'system', autostart: false, startHidden: true, lowBatteryThreshold: 20,
   trayShowBatteryTitle: true, trayIncludeReceiverBattery: false, trayShowConnection: true,
+  trayIconColor: 'white',
   nightModeEnabled: false, nightModeStart: '22:00', nightModeEnd: '07:00',
   refreshIntervalSeconds: 5, telemetryDisabled: true,
 };
@@ -28,7 +29,7 @@ describe('SettingsPage', () => {
     render(<SettingsPage onNavigateAbout={vi.fn()} onThemeChange={onThemeChange} onRefreshIntervalChange={onRefreshIntervalChange} />);
 
     await waitFor(() => expect(onRefreshIntervalChange).toHaveBeenCalledWith(5));
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'dark' } });
+    fireEvent.change(screen.getByRole('combobox', { name: '主题模式' }), { target: { value: 'dark' } });
     expect(onThemeChange).toHaveBeenCalledWith('dark');
     expect(screen.getByRole('switch', { name: '显示电量百分比' })).toBeChecked();
     fireEvent.click(screen.getByRole('switch', { name: '标题附带接收器电量' }));
