@@ -77,8 +77,20 @@ function connectionDisplay(connection: string | undefined, t: (key: string) => s
 
 // 界面不硬编码品牌灯效名称。灯效名称由插件 parsers.json 的 derived.lookup 提供（effectName/optionName）。
 // 当插件未提供名称时，界面只显示通用占位符，避免将品牌数据耦合到 UI 层。
+function capabilityObject(capabilities: DeviceCapabilities | undefined, key: string): Record<string, unknown> | undefined {
+  const value = capabilities?.[key];
+  return value && typeof value === 'object' ? value : undefined;
+}
+
 function lightingCapability(capabilities: DeviceCapabilities | undefined, group: 'mouseEffect' | 'receiverLighting'): Record<string, unknown> | undefined {
-  return capabilities?.[group] ?? (group === 'mouseEffect' ? capabilities?.lighting : undefined);
+  if (group === 'receiverLighting') return capabilityObject(capabilities, 'receiverLighting');
+  return capabilityObject(capabilities, 'mouseEffect') ?? capabilityObject(capabilities, 'mouseLighting');
+}
+
+function confirmedMouseLightColor(snapshot: DeviceSnapshot, receiverLighting: Record<string, unknown> | undefined): string | undefined {
+  if (!snapshot.confirmedLightColor) return undefined;
+  if (typeof receiverLighting?.color === 'string') return undefined;
+  return snapshot.confirmedLightColor;
 }
 
 function getLightingEffectName(capabilities?: DeviceCapabilities, group: 'mouseEffect' | 'receiverLighting' = 'mouseEffect'): string {
@@ -122,12 +134,20 @@ function snapshotToState(snapshot: DeviceSnapshot): DeviceState {
   const caps = snapshot.capabilities ?? {};
   const mouseEffect = lightingCapability(caps, 'mouseEffect');
   const receiverLighting = lightingCapability(caps, 'receiverLighting');
+  const mouseLightColorOutput = capabilityObject(caps, 'mouseLightColor');
   const settings = caps.settings;
+  // 鼠标灯光状态只接受明确的鼠标侧来源，接收器侧灯光状态不能覆盖这里。
+  const mouseLightSwitch = typeof caps.mouseLightSwitch === 'object' && caps.mouseLightSwitch !== null
+    ? caps.mouseLightSwitch as Record<string, unknown>
+    : undefined;
   const mouseLightEnabled = typeof settings?.mouseLightEnabled === 'boolean'
     ? settings.mouseLightEnabled
-    : typeof mouseEffect?.enabled === 'boolean' ? mouseEffect.enabled : undefined;
+    : typeof mouseLightSwitch?.enabled === 'boolean'
+      ? mouseLightSwitch.enabled
+      : typeof mouseEffect?.enabled === 'boolean' ? mouseEffect.enabled : undefined;
   const mouseLightColor = rgbToHex(settings?.mouseLightStartColor)
-    ?? (typeof mouseEffect?.color === 'string' ? mouseEffect.color : snapshot.confirmedLightColor);
+    ?? rgbToHex(mouseLightColorOutput?.color)
+    ?? (typeof mouseEffect?.color === 'string' ? mouseEffect.color : confirmedMouseLightColor(snapshot, receiverLighting));
   const mouseLightEndColor = rgbToHex(settings?.mouseLightEndColor);
   const fallbackBatteries: DeviceBattery[] = snapshot.batteryPercent === undefined ? [] : [{
     id: 'mouse', label: i18n.t('mock.mouseLabel'), percentage: snapshot.batteryPercent, charging: snapshot.charging,
@@ -181,7 +201,7 @@ function DeviceAura({ color }: { color?: string }) {
     let unlisten: (() => void) | undefined;
     try {
       const win = getCurrentWindow();
-      win.isVisible().then(setPaused).catch(() => {});
+      win.isVisible().then(v => setPaused(!v)).catch(() => {});
       win.onFocusChanged(({ payload: focused }) => {
         if (focused) {
           setPaused(false);
@@ -1172,7 +1192,7 @@ function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceCh
             )}
           </div>
         </div>
-        <DeviceAura color={device.lighting?.mouseLightColor ?? device.lighting?.color} />
+        <DeviceAura color={device.lighting?.mouseLightColor} />
       </section>
 
       <div
@@ -1303,10 +1323,10 @@ function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceCh
                       disabled={writeBusy || !mouseLightingMutation || !writable(mouseLightingMutation)}
                       onClick={() => {
                         const enabled = device.lighting?.mouseLightEnabled === false;
-                        void runMutation(
-                          mouseLightingMutation!,
-                          { color: device.lighting?.mouseLightColor ?? '#b87ab0', enabled },
-                        );
+                        void runMutation(mouseLightingMutation!, {
+                          color: device.lighting?.mouseLightColor ?? '#b87ab0',
+                          enabled,
+                        });
                       }}
                     >
                       <span>{t('dashboard.status')}</span>
@@ -1587,7 +1607,7 @@ export default function App() {
 
   const activeDpiColor = device?.dpiStages.find((stage) => stage.enabled && stage.active)?.color
     ?? device?.dpiStages.find((stage) => stage.enabled)?.color;
-  const themeColor = activeDpiColor ?? device?.lighting?.mouseLightColor ?? device?.lighting?.color;
+  const themeColor = device?.lighting?.mouseLightColor ?? activeDpiColor;
   useEffect(() => applyTheme(theme, themeColor), [theme, themeColor]);
 
   return <div className={`app-shell ${pureWeb ? 'web-preview' : ''} ${windowsPlatform ? 'platform-windows' : ''} ${macPlatform ? 'platform-macos' : ''} ${windowsWebPreview ? 'windows-web-preview' : ''}`}>

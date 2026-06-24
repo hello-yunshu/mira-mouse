@@ -2,6 +2,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import App from './App';
+import { themeAccent } from './theme';
 import type { AppSettings, DeviceSnapshot } from './types';
 
 const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
@@ -142,6 +143,48 @@ describe('real device snapshot mapping', () => {
       mutation: 'set-control-mode', params: { mode: 2 },
     }));
     expect(screen.getByRole('region', { name: '设备状态' })).toHaveTextContent('配置控制软件');
+  });
+
+  it('does not use receiver lighting as the app accent or mouse lighting color', async () => {
+    const receiverOnlySnapshot: DeviceSnapshot = {
+      displayName: 'Receiver-lit Mouse',
+      connection: 'wireless',
+      batteryPercent: 80,
+      charging: false,
+      batteries: [{ id: 'mouse', label: '鼠标', percentage: 80, charging: false }],
+      dpi: 1600,
+      dpiStages: [{ value: 1600, color: '#9a8bd0', active: true, enabled: true }],
+      confirmedLightColor: '#00FF00',
+      capabilities: {
+        receiverLighting: { effect: 1, effectName: '常亮', speed: 2, brightness: 3, option: 7, color: '#00FF00' },
+        receiverLightSwitch: { enabled: false },
+      },
+      pluginCapabilities: [
+        {
+          id: 'lighting',
+          control: 'LightingZone',
+          labelKey: 'capability.lighting',
+          readOnly: false,
+          placements: [{ region: 'control', group: 'lighting', order: 30, span: 1, icon: 'lightbulb' }],
+          metadata: { label: '灯光', section: 'control', status: true, mutations: { mouse: 'set-mouse-lighting', receiver: 'set-receiver-lighting' } },
+        },
+      ],
+      writableMutations: ['set-mouse-lighting', 'set-receiver-lighting'],
+      evidence: 'hardware-verified',
+    };
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'settings_get') return Promise.resolve(settings);
+      if (command === 'device_snapshot') return Promise.resolve(receiverOnlySnapshot);
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+
+    render(<App />);
+    expect(await screen.findByText('Receiver-lit Mouse')).toBeInTheDocument();
+    await waitFor(() => expect(document.documentElement.style.getPropertyValue('--accent')).toBe(themeAccent('#9a8bd0')));
+    fireEvent.click(screen.getByRole('tab', { name: '灯光' }));
+    expect(screen.getByRole('button', { name: '颜色未报告' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('tab', { name: '接收器灯光' }));
+    expect(screen.getByRole('button', { name: '颜色#00FF00' })).toBeInTheDocument();
   });
 
   it('renders Logitech HID++ pointer speed and RGB control from plugin metadata', async () => {

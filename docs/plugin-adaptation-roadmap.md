@@ -103,7 +103,7 @@
 ### #11 配置导入/导出
 - **边界**：模式 B。插件声明可导出字段，Host 读写文件。
 - **实施**：`PluginManifest.exportable_fields: Vec<ExportableField>` 声明可导出字段白名单；`ExportableField` 含 `id`/`export_key`/`kind`。
-- **状态**：✅ 已完成。Host 提供 `device_config_export` / `device_config_import` 命令，按 `exportableFields` 白名单读写 app config 下的 `device-config.json`，导入时映射到插件声明 mutation。
+- **状态**：✅ 已完成。Host 提供 `device_config_export` / `device_config_import` 命令，按 `exportableFields` 白名单读写配置文件，导入时映射到插件声明 mutation。接入 `tauri-plugin-dialog`，设置页通过系统文件选择器指定导入/导出路径。
 
 ### #12 插件间依赖复用
 - **边界**：模式 B。插件 manifest 声明 `dependsOn`，Host 解析。

@@ -443,12 +443,22 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, previewMode = fal
       )}
 
       {tab === 'about' && (
-        <section className="card settings-section">
-          <div className="card-title"><h2>{t('settings.section.about')}</h2></div>
-          <SettingRow title={t('settings.about.label')} hint={t('settings.about.hint')}>
-            <button className="secondary" onClick={onNavigateAbout}>{t('settings.about.button')}</button>
-          </SettingRow>
-        </section>
+        <>
+          <section className="card settings-section">
+            <div className="card-title"><h2>{t('settings.section.about')}</h2></div>
+            <SettingRow title={t('settings.about.label')} hint={t('settings.about.hint')}>
+              <button className="secondary" onClick={onNavigateAbout}>{t('settings.about.button')}</button>
+            </SettingRow>
+          </section>
+
+          <section className="card settings-section donate-card">
+            <div className="card-title"><h2>{t('about.section.donate')}</h2></div>
+            <p className="setting-hint donate-hint">{t('about.donate.hint')}</p>
+            <div className="contact-links">
+              <a className="primary" href="https://hey.run/donate/" target="_blank" rel="noopener noreferrer">{t('about.donate.button')}</a>
+            </div>
+          </section>
+        </>
       )}
     </main>
   );
