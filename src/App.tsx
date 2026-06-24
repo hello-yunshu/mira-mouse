@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import {
   BatteryHigh,
   Gauge,
@@ -10,6 +11,7 @@ import {
   Lightbulb,
   Minus,
   ReadCvLogo,
+  SignOut,
   Square,
   Timer,
   UserCircle,
@@ -18,12 +20,12 @@ import {
 } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
 import { MOCK_DEVICE } from './mock';
-import { applyTheme } from './theme';
+import { applyTheme, pastelDisplayColor } from './theme';
 import i18n, { applyLanguage } from './i18n';
 import { SettingsPage } from './Settings';
 import { AboutPage } from './About';
 import type { AboutInfo, AppSettings, DeviceBattery, DeviceCapabilities, DeviceSnapshot, DeviceState, PluginCapability, PluginUpdateInfo, ThemeMode } from './types';
-import { onAppNotification, notifyInfo, type AppNotification } from './notify';
+import { onAppNotification, notifyError, notifyInfo, notifySuccess, type AppNotification } from './notify';
 import { startAutomaticAppUpdateCheck } from './updater';
 import './styles.css';
 
@@ -105,7 +107,7 @@ function rgbToHex(rgb: unknown): string | undefined {
   if (!Array.isArray(rgb) || rgb.length < 3) return undefined;
   const [r, g, b] = rgb.map((v) => Number(v));
   if ([r, g, b].some((v) => Number.isNaN(v))) return undefined;
-  return `#${[r, g, b].map((v) => v.toString(16).padStart(2, '0')).join('')}`;
+  return `#${[r, g, b].map((v) => Math.max(0, Math.min(255, Math.trunc(v))).toString(16).padStart(2, '0')).join('')}`;
 }
 
 function snapshotToState(snapshot: DeviceSnapshot): DeviceState {
@@ -172,11 +174,34 @@ function snapshotToState(snapshot: DeviceSnapshot): DeviceState {
 }
 
 function DeviceAura({ color }: { color?: string }) {
+  const [paused, setPaused] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) return;
+    let unlisten: (() => void) | undefined;
+    try {
+      const win = getCurrentWindow();
+      win.isVisible().then(setPaused).catch(() => {});
+      win.onFocusChanged(({ payload: focused }) => {
+        if (focused) {
+          setPaused(false);
+        } else {
+          win.isVisible().then(v => setPaused(!v)).catch(() => {});
+        }
+      }).then((fn: () => void) => { unlisten = fn; }).catch(() => {});
+    } catch {
+      // 非 Tauri 环境忽略
+    }
+    return () => { if (unlisten) unlisten(); };
+  }, []);
+
   return (
-    <div className="device-aura" data-animation="realtime-deformation" style={{ '--device-color': color ?? '#b87ab0' } as React.CSSProperties} aria-hidden="true">
+    <div className={`device-aura${paused ? ' is-paused' : ''}`} data-animation="realtime-deformation" style={{ '--device-color': color ?? '#b87ab0' } as React.CSSProperties} aria-hidden="true">
       <div className="aura-cloud aura-cloud-1" />
       <div className="aura-cloud aura-cloud-2" />
       <div className="aura-cloud aura-cloud-3" />
+      <div className="aura-cloud aura-cloud-4" />
+      <div className="aura-cloud aura-cloud-5" />
       <div className="aura-star aura-star-1" />
       <div className="aura-star aura-star-2" />
       <div className="aura-star aura-star-3" />
@@ -525,6 +550,7 @@ function GenericPluginControl({
   const param = typeof capability.metadata.param === 'string' ? capability.metadata.param : 'value';
   const options = pluginOptions(capability, device);
   const [draft, setDraft] = useState<string | number>(() => typeof current === 'number' || typeof current === 'string' ? current : '');
+  const [editingPollingRate, setEditingPollingRate] = useState(false);
 
   const writable = !capability.readOnly && device.writableMutations.includes(mutation);
   const apply = (value: unknown) => runMutation(mutation, { [param]: value });
@@ -532,31 +558,35 @@ function GenericPluginControl({
 
   if (mutation === 'set-polling-rate' || capability.labelKey === 'capability.polling-rate') {
     return (
-      <div className="control-reading mode-reading polling-rate-reading">
+      <div className="control-reading mode-reading polling-reading">
         <WaveSine weight="regular" />
         <span>{i18n.t('dashboard.currentPollingRate')}</span>
-        <strong>{typeof current === 'number' ? `${current} Hz` : i18n.t('common.notReported')}</strong>
-        {options.length > 0 && (
-          <div
-            className="polling-rate-options"
-            role="group"
-            aria-label={i18n.t('dashboard.pollingRateOptions')}
-            style={{ gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))` }}
-          >
-            {options.map((option) => (
-              <button
-                key={String(option.value)}
-                type="button"
-                className={current === option.value ? 'active' : ''}
-                aria-pressed={current === option.value}
-                disabled={writeBusy || !writable}
-                onClick={() => void apply(option.value)}
-              >{option.label}</button>
-            ))}
-          </div>
-        )}
+        <button
+          type="button"
+          className="polling-rate editable-reading"
+          aria-label={typeof current === 'number'
+            ? i18n.t('dashboard.currentPollingRateEdit', { value: current })
+            : i18n.t('dashboard.pollingRateNotReportedEdit')}
+          disabled={writeBusy || !writable || options.length === 0}
+          onClick={() => setEditingPollingRate(true)}
+        >
+          <strong>{typeof current === 'number' ? current : i18n.t('common.notReported')}</strong>
+          {typeof current === 'number' && <em>Hz</em>}
+        </button>
         <PluginSummary capability={capability} device={device} />
-        <p>{writable ? i18n.t('dashboard.pollingWriteHint') : i18n.t('dashboard.pollingReadonlyHint')}</p>
+        {editingPollingRate && (
+          <PollingRateEditModal
+            currentValue={current}
+            options={options}
+            writeBusy={writeBusy}
+            onClose={() => setEditingPollingRate(false)}
+            onApply={(value) => {
+              void apply(value);
+              setEditingPollingRate(false);
+            }}
+          />
+        )}
+        {!writable && <p>{i18n.t('dashboard.pollingReadonlyHint')}</p>}
       </div>
     );
   }
@@ -749,6 +779,40 @@ function DpiEditModal({ stage, currentValue, writeBusy, onClose, onApply }: DpiE
           disabled={writeBusy}
           onChange={(event) => setDraft(Number(event.target.value))}
         />
+      </label>
+    </EditModal>
+  );
+}
+
+function PollingRateEditModal({ currentValue, options, writeBusy, onClose, onApply }: {
+  currentValue: unknown;
+  options: PluginOption[];
+  writeBusy: boolean;
+  onClose: () => void;
+  onApply: (value: PluginOption['value']) => void;
+}) {
+  const [draft, setDraft] = useState(String(currentValue ?? options[0]?.value ?? ''));
+  const selected = options.find((option) => String(option.value) === draft);
+  return (
+    <EditModal
+      title={i18n.t('dashboard.setPollingRateTitle')}
+      submitDisabled={writeBusy || !selected || selected.value === currentValue}
+      onClose={onClose}
+      onSubmit={() => selected && onApply(selected.value)}
+    >
+      <label className="edit-field">
+        <span>{i18n.t('plugin.label.capability.polling-rate')}</span>
+        <select
+          autoFocus
+          aria-label={i18n.t('plugin.label.capability.polling-rate')}
+          value={draft}
+          disabled={writeBusy}
+          onChange={(event) => setDraft(event.target.value)}
+        >
+          {options.map((option) => (
+            <option key={String(option.value)} value={String(option.value)}>{option.label}</option>
+          ))}
+        </select>
       </label>
     </EditModal>
   );
@@ -973,9 +1037,11 @@ function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceCh
     try {
       const snapshot = await invoke<DeviceSnapshot>('device_mutate', { mutation, params });
       onDeviceChange(snapshotToState(snapshot));
-      setPreviewMessage(i18n.t('dashboard.writeConfirmed'));
+      setPreviewMessage('');
+      notifySuccess(i18n.t('dashboard.writeConfirmed'));
     } catch (error) {
-      setPreviewMessage(i18n.t('dashboard.writeFailed', { error: String(error) }));
+      setPreviewMessage('');
+      notifyError(i18n.t('notification.writeFailed'), i18n.t('notification.writeFailedBody', { error: String(error) }));
     } finally {
       setWriteBusy(false);
     }
@@ -1160,7 +1226,7 @@ function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceCh
                       )}
                       aria-label={t('dashboard.switchToStage', { stage: stageNumber })}
                     >
-                      <i style={{ '--stage-source-color': stage.color } as React.CSSProperties} />
+                      <i style={{ '--stage-source-color': pastelDisplayColor(stage.color) } as React.CSSProperties} />
                     </button>
                     <button
                       type="button"
@@ -1356,7 +1422,6 @@ function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceCh
                 </div>
               )}
             </div>
-            {device.lighting?.receiverLinked && <p className="setting-hint">{t('dashboard.lightingSeparateHint')}</p>}
           </div>
         )}
         {activeGenericDescriptors.map((descriptor) => (
@@ -1520,8 +1585,10 @@ export default function App() {
     };
   }, [demoMode, refreshNonce]);
 
-  const lightingColor = device?.lighting?.mouseLightColor ?? device?.lighting?.color;
-  useEffect(() => applyTheme(theme, lightingColor), [theme, lightingColor]);
+  const activeDpiColor = device?.dpiStages.find((stage) => stage.enabled && stage.active)?.color
+    ?? device?.dpiStages.find((stage) => stage.enabled)?.color;
+  const themeColor = activeDpiColor ?? device?.lighting?.mouseLightColor ?? device?.lighting?.color;
+  useEffect(() => applyTheme(theme, themeColor), [theme, themeColor]);
 
   return <div className={`app-shell ${pureWeb ? 'web-preview' : ''} ${windowsPlatform ? 'platform-windows' : ''} ${macPlatform ? 'platform-macos' : ''} ${windowsWebPreview ? 'windows-web-preview' : ''}`}>
     {windowsWebPreview && <WindowsPreviewControls />}
@@ -1530,7 +1597,7 @@ export default function App() {
         <button className={`nav-link ${view === 'dashboard' ? 'active' : ''}`} onClick={() => setView('dashboard')}>{t('nav.dashboard')}</button>
         <button className={`nav-link ${view === 'settings' ? 'active' : ''}`} onClick={() => setView('settings')}>{t('nav.settings')}</button>
         <button className={`nav-link nav-about ${view === 'about' ? 'active' : ''}`} onClick={() => setView('about')} aria-label={t('nav.about')}><Info weight="regular" /></button>
-        {demoMode && <button className="nav-link nav-exit" onClick={() => { setDemoMode(false); setDevice(undefined); setRefreshNonce((value) => value + 1); invoke('device_refresh').catch(() => {}); }} aria-label={t('nav.exitDemo')} title={t('nav.exitDemo')}><X weight="regular" /></button>}
+        {demoMode && <button className="nav-link nav-exit" onClick={() => { setDemoMode(false); setDevice(undefined); setRefreshNonce((value) => value + 1); invoke('device_refresh').catch(() => {}); }} aria-label={t('nav.exitDemo')} title={t('nav.exitDemo')}><SignOut weight="regular" /></button>}
       </div>
     </nav>
     {view === 'dashboard' && (device ? <Dashboard device={device} onDeviceChange={setDevice} /> : <EmptyState onRefresh={() => { setDemoMode(false); setDevice(undefined); setRefreshNonce((value) => value + 1); invoke('device_refresh').catch(() => {}); }} onDemo={() => { setDemoMode(true); setDevice(MOCK_DEVICE); }} onOpenSettings={() => setView('settings')} />)}

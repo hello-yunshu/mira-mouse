@@ -92,6 +92,7 @@ export interface PluginInstallResult {
 
 export interface ContactLinks {
   github?: string;
+  repository?: string;
   x?: string;
   telegram?: string;
   developerName?: string;
