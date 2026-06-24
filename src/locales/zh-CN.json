@@ -344,7 +344,12 @@
       "checkUpdate": "检查更新",
       "license": "开源许可",
       "privacy": "隐私说明",
-      "reportIssue": "报告问题"
+      "reportIssue": "报告问题",
+      "donate": "打赏"
+    },
+    "donate": {
+      "hint": "如果你愿意打赏支持，小女子真的会非常非常感谢你🙏！！",
+      "button": "打赏支持"
     },
     "label": {
       "appName": "应用名称",

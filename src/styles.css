@@ -1200,6 +1200,47 @@ input[type="time"] { border: 1px solid var(--panel-border); border-radius: 8px; 
 .contact-links button.secondary:hover:not(:disabled) { background: color-mix(in oklch, var(--panel), rgb(127 120 140 / 10%)); }
 .contact-links a.secondary:active,
 .contact-links button.secondary:active:not(:disabled) { transform: scale(.97); }
+.contact-links a.primary {
+  display: inline-block;
+  padding: 7px 14px;
+  font-size: 13px;
+  border-radius: 999px;
+  color: #fff;
+  background: #4a4654;
+  transition: transform .12s ease, background .2s ease;
+}
+.contact-links a.primary:hover { background: #5a5666; }
+.contact-links a.primary:active { transform: scale(.97); }
+
+/* Donate card — 支付宝蓝 + 微信绿右侧晕染 */
+.donate-card {
+  position: relative;
+  overflow: hidden;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+}
+.donate-card::before {
+  content: "";
+  position: absolute;
+  top: -45%;
+  right: -18%;
+  width: 72%;
+  height: 190%;
+  background:
+    radial-gradient(circle at 32% 32%, rgb(22 119 255 / 16%), transparent 55%),
+    radial-gradient(circle at 70% 68%, rgb(7 193 96 / 16%), transparent 55%);
+  filter: blur(26px);
+  pointer-events: none;
+  z-index: 0;
+}
+.donate-card > * { position: relative; z-index: 1; }
+.donate-card .contact-links { justify-content: flex-end; }
+:root[data-theme="dark"] .donate-card::before {
+  background:
+    radial-gradient(circle at 32% 32%, rgb(22 119 255 / 24%), transparent 55%),
+    radial-gradient(circle at 70% 68%, rgb(7 193 96 / 24%), transparent 55%);
+}
+.donate-hint { margin-top: 6px; line-height: 1.7; }
 
 /* Responsive — 竖向窄屏适配 */
 @media (max-width: 440px) {

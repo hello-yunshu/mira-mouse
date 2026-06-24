@@ -322,9 +322,14 @@ fn standard_reading(
         .and_then(Value::as_str)
         .map(str::to_string)
         .or_else(|| {
+            object(&outputs, "mouseLightColor")
+                .and_then(|lighting| lighting.get("color"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .or_else(|| {
             object(&outputs, "mouseEffect")
                 .or_else(|| object(&outputs, "mouseLighting"))
-                .or_else(|| object(&outputs, "lighting"))
                 .and_then(|lighting| lighting.get("color"))
                 .and_then(Value::as_str)
                 .map(str::to_string)
@@ -429,6 +434,26 @@ mod tests {
                 "settings".into(),
                 json!({"mouseLightStartColor": "#FB223C"}),
             ),
+            ("receiverLighting".into(), json!({"color": "#4BBFB1"})),
+        ]);
+        let reading = standard_reading(outputs, None);
+        assert_eq!(reading.light_color.as_deref(), Some("#FB223C"));
+    }
+
+    #[test]
+    fn never_treats_receiver_lighting_as_mouse_light_color() {
+        let outputs = BTreeMap::from([
+            ("lighting".into(), json!({"color": "#EEAA00"})),
+            ("receiverLighting".into(), json!({"color": "#4BBFB1"})),
+        ]);
+        let reading = standard_reading(outputs, None);
+        assert_eq!(reading.light_color, None);
+    }
+
+    #[test]
+    fn prefers_explicit_mouse_light_color_over_receiver_lighting() {
+        let outputs = BTreeMap::from([
+            ("mouseLightColor".into(), json!({"color": "#FB223C"})),
             ("receiverLighting".into(), json!({"color": "#4BBFB1"})),
         ]);
         let reading = standard_reading(outputs, None);

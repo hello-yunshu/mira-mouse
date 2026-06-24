@@ -344,7 +344,12 @@
       "checkUpdate": "Check for updates",
       "license": "Open source license",
       "privacy": "Privacy notice",
-      "reportIssue": "Report an issue"
+      "reportIssue": "Report an issue",
+      "donate": "Donate"
+    },
+    "donate": {
+      "hint": "If you'd like to support me with a donation, I'd truly, truly appreciate it 🙏!!",
+      "button": "Donate"
     },
     "label": {
       "appName": "Application name",
