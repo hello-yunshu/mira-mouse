@@ -485,6 +485,7 @@ struct BundledPluginInfo {
 #[serde(rename_all = "camelCase")]
 struct ContactLinks {
     github: Option<String>,
+    repository: Option<String>,
     x: Option<String>,
     telegram: Option<String>,
     developer_name: Option<String>,
@@ -1624,14 +1625,17 @@ fn load_contact_links() -> ContactLinks {
     // development and packaged builds on the same path.
     let text = include_str!("../../config/project-metadata.toml");
     let mut github = None;
+    let mut repository = None;
     let mut x = None;
     let mut telegram = None;
     let mut developer_name = None;
     let mut copyright = None;
     for line in text.lines() {
         let trimmed = line.trim();
-        if let Some(value) = trimmed.strip_prefix("main_repository_url = ") {
+        if let Some(value) = trimmed.strip_prefix("github_profile_url = ") {
             github = parse_toml_string(value);
+        } else if let Some(value) = trimmed.strip_prefix("main_repository_url = ") {
+            repository = parse_toml_string(value);
         } else if let Some(value) = trimmed.strip_prefix("x_profile_url = ") {
             x = parse_toml_string(value);
         } else if let Some(value) = trimmed.strip_prefix("telegram_profile_url = ") {
@@ -1644,6 +1648,7 @@ fn load_contact_links() -> ContactLinks {
     }
     ContactLinks {
         github,
+        repository,
         x,
         telegram,
         developer_name,

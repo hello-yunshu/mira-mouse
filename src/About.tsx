@@ -26,7 +26,14 @@ export function AboutPage({ onBack, previewMode = false }: { onBack: () => void;
     buildDate: t('about.buildDatePreview'),
     gitCommit: 'working-tree',
     bundledPlugins: [],
-    contact: { github: 'https://github.com/hello-yunshu/mira-mouse' },
+    contact: {
+      github: 'https://github.com/hello-yunshu',
+      repository: 'https://github.com/hello-yunshu/mira-mouse',
+      x: 'https://x.com/yunyunyshu',
+      telegram: 'https://t.me/yunyunshu',
+      developerName: '云云舒',
+      copyright: '云云舒',
+    },
     updaterActive: false,
   };
   const [info, setInfo] = useState<AboutInfo | null>(previewMode ? PREVIEW_INFO : null);
@@ -96,6 +103,7 @@ export function AboutPage({ onBack, previewMode = false }: { onBack: () => void;
   }
 
   const contact = info.contact;
+  const repositoryUrl = contact.repository ?? contact.github;
 
   return (
     <main className="about-page">
@@ -224,13 +232,13 @@ export function AboutPage({ onBack, previewMode = false }: { onBack: () => void;
           {t('about.licenseHint')}
         </p>
         <div className="contact-links">
-          {contact.github ? (
-            <a className="secondary" href={`${contact.github}/blob/main/LICENSE`} target="_blank" rel="noopener noreferrer">{t('about.viewLicense')}</a>
+          {repositoryUrl ? (
+            <a className="secondary" href={`${repositoryUrl}/blob/main/LICENSE`} target="_blank" rel="noopener noreferrer">{t('about.viewLicense')}</a>
           ) : (
             <button className="secondary" disabled>{t('about.viewLicenseDisabled')}</button>
           )}
-          {contact.github ? (
-            <a className="secondary" href={`${contact.github}/tree/main/NOTICE`} target="_blank" rel="noopener noreferrer">{t('about.viewThirdParty')}</a>
+          {repositoryUrl ? (
+            <a className="secondary" href={`${repositoryUrl}/tree/main/NOTICE`} target="_blank" rel="noopener noreferrer">{t('about.viewThirdParty')}</a>
           ) : (
             <button className="secondary" disabled>{t('about.viewThirdPartyDisabled')}</button>
           )}
@@ -256,8 +264,8 @@ export function AboutPage({ onBack, previewMode = false }: { onBack: () => void;
           {t('about.reportIssueHint')}
         </p>
         <div className="contact-links">
-          {contact.github ? (
-            <a className="secondary" href={`${contact.github}/issues/new/choose`} target="_blank" rel="noopener noreferrer">{t('about.reportIssue')}</a>
+          {repositoryUrl ? (
+            <a className="secondary" href={`${repositoryUrl}/issues/new/choose`} target="_blank" rel="noopener noreferrer">{t('about.reportIssue')}</a>
           ) : (
             <button className="secondary" disabled>{t('about.reportIssueDisabled')}</button>
           )}
