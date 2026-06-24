@@ -204,7 +204,7 @@ enum TransportDefinition {
         #[serde(default)]
         timeout_ms: Option<u64>,
     },
-    /// AM35 RACE-style protocol (VID 0x0E8D).
+    /// AM35 RACE-style protocol over hidraw-compatible transports.
     /// Uses HID Output Report (ID 0x06) for writes and Input Report (ID 0x07)
     /// for reads, with a 3-byte framing header: [writeReportId, length, type].
     /// `race_type` is 0x00 for direct USB, 0x80 for receiver forwarding.

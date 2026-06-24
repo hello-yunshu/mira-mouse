@@ -139,6 +139,14 @@ export function AboutPage({ onBack, previewMode = false }: { onBack: () => void;
         </dl>
       </section>
 
+      <section className="card about-section donate-card">
+        <div className="card-title"><h2>{t('about.section.donate')}</h2></div>
+        <p className="setting-hint donate-hint">{t('about.donate.hint')}</p>
+        <div className="contact-links">
+          <a className="primary" href="https://hey.run/donate/" target="_blank" rel="noopener noreferrer">{t('about.donate.button')}</a>
+        </div>
+      </section>
+
       <section className="card about-section">
         <div className="card-title"><h2>{t('about.section.bundledPlugins')}</h2></div>
         {info.bundledPlugins.length === 0 ? (

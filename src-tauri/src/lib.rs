@@ -2312,6 +2312,10 @@ enum DeviceReadOutcome {
     Skip,
     /// Device disconnected or read failed — clear the cached state.
     Clear,
+    /// 设备仍被枚举到但读取失败（如无线设备休眠导致的间歇性超时）。
+    /// 保留上次有效快照，避免清除缓存后形成"识别→丢失→识别"的无限循环。
+    /// 注意：不应清除 feature_index_cache 等缓存，否则下次读取更慢，加剧循环。
+    PreserveLast,
     /// Read succeeded — publish snapshots for all matched devices.
     /// 修复 #10：携带所有 matched 设备的快照，实现多设备并行读取。
     Ready(Vec<(String, DeviceSnapshot)>),
@@ -2489,7 +2493,15 @@ fn read_device_once(app: &AppHandle) {
         }
 
         if entries.is_empty() {
-            Some(DeviceReadOutcome::Clear)
+            // 设备仍被枚举到（matched 非空）但所有设备读取都失败。
+            // 这种情况通常由无线设备休眠导致的间歇性超时引起。
+            // 保留上次有效快照，避免清除缓存后形成"识别→丢失→识别"的无限循环：
+            //   - 清除 last_snapshot 会让前端显示"未找到设备"
+            //   - 清除 feature_index_cache 会让下次 HID++ 读取重新查询所有 feature index
+            //     （罗技 42 步工作流最坏情况 14 秒），加剧超时
+            //   - settling 重置后会以 500ms 快速轮询，进一步放大问题
+            // 只有 matched 为空（设备真正断开）时才触发 Clear。
+            Some(DeviceReadOutcome::PreserveLast)
         } else {
             Some(DeviceReadOutcome::Ready(entries))
         }
@@ -2500,6 +2512,12 @@ fn read_device_once(app: &AppHandle) {
     // device_io or plugins locks so concurrent commands are not blocked.
     match outcome {
         DeviceReadOutcome::Skip => {}
+        DeviceReadOutcome::PreserveLast => {
+            // 设备仍被枚举到但读取失败：保留上次有效快照，不触发前端更新。
+            // 这样前端不会看到"设备丢失"的闪烁，settle 也不会被重置，
+            // 下次轮询会以正常间隔重试。如果设备真正断开，matched 会变空，
+            // 下一轮会走到 Clear 分支。
+        }
         DeviceReadOutcome::Clear => {
             if let Ok(mut applied) = state.applied_software_profiles.lock() {
                 applied.clear();

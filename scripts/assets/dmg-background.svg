@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 660 400" width="660" height="400" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1E1A28"/>
+      <stop offset="50%" stop-color="#241F30"/>
+      <stop offset="100%" stop-color="#2D2638"/>
+    </linearGradient>
+    <radialGradient id="auraPink" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#D8B0B7" stop-opacity="0.22"/>
+      <stop offset="60%" stop-color="#D8B0B7" stop-opacity="0.08"/>
+      <stop offset="100%" stop-color="#D8B0B7" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="auraPurple" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#9B7BB0" stop-opacity="0.20"/>
+      <stop offset="60%" stop-color="#9B7BB0" stop-opacity="0.07"/>
+      <stop offset="100%" stop-color="#9B7BB0" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="auraCyan" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#7BA0B8" stop-opacity="0.14"/>
+      <stop offset="60%" stop-color="#7BA0B8" stop-opacity="0.05"/>
+      <stop offset="100%" stop-color="#7BA0B8" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="660" height="400" fill="url(#bg)"/>
+
+  <circle cx="110" cy="90" r="180" fill="url(#auraPink)"/>
+  <circle cx="560" cy="320" r="200" fill="url(#auraPurple)"/>
+  <circle cx="330" cy="210" r="160" fill="url(#auraCyan)" opacity="0.7"/>
+
+  <text x="330" y="46" text-anchor="middle" font-family="-apple-system, 'PingFang SC', system-ui, sans-serif" font-size="22" font-weight="700" fill="#E0DCE8" letter-spacing="1.5">Mira</text>
+  <text x="330" y="65" text-anchor="middle" font-family="-apple-system, 'PingFang SC', system-ui, sans-serif" font-size="9" font-weight="400" fill="#9B91A8" letter-spacing="0.5">鼠标配置工具 · Mouse Configuration</text>
+
+  <g opacity="0.3">
+    <line x1="230" y1="200" x2="420" y2="200" stroke="#D8B0B7" stroke-width="1.5" stroke-dasharray="6,5"/>
+    <polygon points="420,193 436,200 420,207" fill="#D8B0B7"/>
+  </g>
+
+  <text x="330" y="350" text-anchor="middle" font-family="-apple-system, 'PingFang SC', system-ui, sans-serif" font-size="12" font-weight="600" fill="#C8C2D4">将 Mira 拖到 Applications 文件夹完成安装</text>
+  <text x="330" y="366" text-anchor="middle" font-family="-apple-system, system-ui, sans-serif" font-size="9" font-weight="400" fill="#7E7588">Drag Mira to the Applications folder to install</text>
+</svg>
