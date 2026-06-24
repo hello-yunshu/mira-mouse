@@ -137,6 +137,8 @@ fn main() {
         connection,
         files: &files,
         outputs: BTreeMap::new(),
+        feature_index_cache: None,
+        onboard_memory_cache: None,
     };
     let reading = read_device(&context).expect("execute signed plugin workflow");
 
@@ -156,6 +158,8 @@ fn main() {
         connection,
         files: &files,
         outputs: reading.capabilities.clone(),
+        feature_index_cache: None,
+        onboard_memory_cache: None,
     };
     let allowed = writable_mutations(&read_context).expect("list writable mutations");
     println!("writable mutations: {:?}", allowed);
@@ -180,6 +184,8 @@ fn main() {
             connection,
             files: &files,
             outputs: reading.capabilities.clone(),
+            feature_index_cache: None,
+            onboard_memory_cache: None,
         };
 
         if let Some(target_mode) = std::env::var("MIRA_WRITE_MODE")
