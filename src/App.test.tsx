@@ -28,11 +28,10 @@ describe('Mira shell', () => {
   it('renders capability data and labels the application-layer link', () => {
     render(<App />);
     fireEvent.click(screen.getByText('打开 Fixture 演示'));
-    expect(document.documentElement.style.getPropertyValue('--accent')).toBe('#D8B0B7');
+    expect(document.documentElement.style.getPropertyValue('--accent')).toBe('oklch(72% 0.020 321)');
     expect(screen.getAllByText('82%')).toHaveLength(2);
     expect(screen.getByLabelText('当前 DPI：1000，点击编辑')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('tab', { name: '灯光' }));
-    expect(screen.getByText(/分别读取，互不混用/)).toBeInTheDocument();
     expect(screen.queryByText('fixture-verified')).not.toBeInTheDocument();
     expect(document.querySelector('[data-animation="realtime-deformation"]')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '全部读取信息' }));

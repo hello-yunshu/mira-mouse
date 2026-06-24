@@ -340,10 +340,10 @@ select {
 
 .app-notification {
   position: absolute;
-  z-index: 40;
+  z-index: 60;
+  top: 72px;
   right: 18px;
-  bottom: 18px;
-  width: min(340px, calc(100% - 36px));
+  width: min(360px, calc(100% - 32px));
   padding: 12px 12px 12px 14px;
   display: flex;
   align-items: flex-start;
@@ -354,10 +354,41 @@ select {
   background: var(--glass-popup);
   -webkit-backdrop-filter: var(--glass-blur);
   backdrop-filter: var(--glass-blur);
-  box-shadow: 0 16px 42px rgb(42 35 52 / 22%);
+  box-shadow: 0 18px 44px rgb(42 35 52 / 20%);
 }
-.app-notification.error { border-color: rgb(190 76 90 / 32%); }
-.app-notification.info { border-color: color-mix(in oklch, var(--accent), transparent 58%); }
+.app-notification.error {
+  border-color: rgb(190 76 90 / 24%);
+  background: linear-gradient(135deg, rgb(255 235 239 / 72%), rgb(255 255 255 / 56%));
+  box-shadow: 0 18px 44px rgb(150 55 72 / 20%), 0 5px 18px rgb(190 76 90 / 10%);
+}
+.app-notification.success {
+  border-color: rgb(78 148 104 / 24%);
+  background: linear-gradient(135deg, rgb(231 250 239 / 72%), rgb(255 255 255 / 56%));
+  box-shadow: 0 18px 44px rgb(54 128 84 / 18%), 0 5px 18px rgb(78 148 104 / 10%);
+}
+.app-notification.info { box-shadow: 0 18px 44px color-mix(in oklch, var(--accent), transparent 82%); }
+:root[data-theme="dark"] .app-notification.error {
+  border-color: rgb(190 76 90 / 24%);
+  background: linear-gradient(135deg, rgb(96 38 50 / 62%), rgb(32 28 37 / 64%));
+  box-shadow: 0 18px 44px rgb(80 18 34 / 32%), 0 5px 18px rgb(190 76 90 / 14%);
+}
+:root[data-theme="dark"] .app-notification.success {
+  border-color: rgb(78 148 104 / 24%);
+  background: linear-gradient(135deg, rgb(34 82 54 / 62%), rgb(32 28 37 / 64%));
+  box-shadow: 0 18px 44px rgb(20 74 44 / 30%), 0 5px 18px rgb(78 148 104 / 14%);
+}
+@media (prefers-color-scheme: dark) {
+  :root[data-theme="system"] .app-notification.error {
+    border-color: rgb(190 76 90 / 24%);
+    background: linear-gradient(135deg, rgb(96 38 50 / 62%), rgb(32 28 37 / 64%));
+    box-shadow: 0 18px 44px rgb(80 18 34 / 32%), 0 5px 18px rgb(190 76 90 / 14%);
+  }
+  :root[data-theme="system"] .app-notification.success {
+    border-color: rgb(78 148 104 / 24%);
+    background: linear-gradient(135deg, rgb(34 82 54 / 62%), rgb(32 28 37 / 64%));
+    box-shadow: 0 18px 44px rgb(20 74 44 / 30%), 0 5px 18px rgb(78 148 104 / 14%);
+  }
+}
 .app-notification strong { display: block; font-size: 12px; }
 .app-notification p { margin: 3px 0 0; color: var(--muted); font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
 .app-notification button {
@@ -378,8 +409,12 @@ select {
   --aura-color-1: var(--device-color);
   --aura-color-2: oklch(from var(--device-color) l c calc(h + 50));
   --aura-color-3: oklch(from var(--device-color) l c calc(h - 50));
-  --aura-color-4: oklch(from var(--device-color) l c calc(h + 110));
-  --aura-color-5: oklch(from var(--device-color) l c calc(h - 110));
+  --aura-color-4: oklch(from var(--device-color) l c calc(h + 90));
+  --aura-color-5: oklch(from var(--device-color) l c calc(h - 90));
+  --aura-cloud-2-color: color-mix(in oklch, var(--aura-color-2) 78%, var(--device-color));
+  --aura-cloud-3-color: color-mix(in oklch, var(--aura-color-3) 78%, var(--device-color));
+  --aura-cloud-4-color: color-mix(in oklch, var(--aura-color-4) 66%, var(--device-color));
+  --aura-cloud-5-color: color-mix(in oklch, var(--aura-color-5) 66%, var(--device-color));
   position: relative;
   width: 184px;
   height: 148px;
@@ -391,26 +426,45 @@ select {
   position: absolute;
   border-radius: 50%;
   filter: blur(10px);
-  will-change: transform, opacity, border-radius;
+  will-change: transform, opacity;
   pointer-events: none;
 }
 .aura-cloud-1 {
   width: 70%; height: 70%; top: 10%; left: 15%;
-  background: radial-gradient(circle at 40% 40%, var(--aura-color-1), transparent 65%);
-  opacity: .70;
+  z-index: 3;
+  background: radial-gradient(circle at 42% 42%, color-mix(in oklch, var(--aura-color-1), #fff 10%) 0 18%, var(--aura-color-1) 42%, transparent 68%);
+  opacity: .72;
   animation: aura-cloud-1 14s ease-in-out infinite;
 }
 .aura-cloud-2 {
-  width: 55%; height: 60%; top: 5%; left: 35%;
-  background: radial-gradient(circle at 50% 50%, var(--aura-color-2), transparent 60%);
-  opacity: .60;
+  width: 58%; height: 62%; top: 2%; left: 37%;
+  z-index: 2;
+  background: radial-gradient(circle at 45% 48%, color-mix(in oklch, var(--aura-cloud-2-color), #fff 8%) 0 16%, var(--aura-cloud-2-color) 42%, transparent 66%);
+  opacity: .62;
   animation: aura-cloud-2 18s ease-in-out infinite;
 }
 .aura-cloud-3 {
-  width: 50%; height: 55%; top: 25%; left: 5%;
-  background: radial-gradient(circle at 45% 55%, var(--aura-color-3), transparent 60%);
-  opacity: .55;
+  width: 54%; height: 58%; top: 27%; left: 0;
+  z-index: 2;
+  background: radial-gradient(circle at 52% 56%, color-mix(in oklch, var(--aura-cloud-3-color), #fff 8%) 0 14%, var(--aura-cloud-3-color) 40%, transparent 66%);
+  opacity: .58;
   animation: aura-cloud-3 16s ease-in-out infinite;
+}
+.aura-cloud-4 {
+  width: 46%; height: 50%; top: 42%; left: 46%;
+  z-index: 1;
+  border-radius: 45% 55% 42% 58%;
+  background: radial-gradient(circle at 34% 44%, var(--aura-cloud-4-color) 0 35%, transparent 68%);
+  opacity: .44;
+  animation: aura-cloud-4 20s ease-in-out infinite;
+}
+.aura-cloud-5 {
+  width: 42%; height: 48%; top: 13%; left: -5%;
+  z-index: 1;
+  border-radius: 58% 42% 60% 40%;
+  background: radial-gradient(circle at 58% 50%, var(--aura-cloud-5-color) 0 34%, transparent 68%);
+  opacity: .40;
+  animation: aura-cloud-5 22s ease-in-out infinite;
 }
 @keyframes aura-cloud-1 {
   0%, 100% { transform: translate(0, 0) scale(1) rotate(0deg); border-radius: 50% 55% 45% 60%; opacity: .55; }
@@ -430,6 +484,18 @@ select {
   30% { transform: translate(6px, 7px) scale(1.1); border-radius: 45% 55% 40% 60%; opacity: .65; }
   60% { transform: translate(-8px, -4px) scale(1.02); border-radius: 55% 45% 60% 40%; opacity: .50; }
   85% { transform: translate(3px, 6px) scale(.93); border-radius: 50% 60% 45% 55%; opacity: .40; }
+}
+@keyframes aura-cloud-4 {
+  0%, 100% { transform: translate(0, 0) scale(.96) rotate(0deg); opacity: .34; }
+  22% { transform: translate(-7px, -3px) scale(1.08) rotate(-12deg); opacity: .48; }
+  52% { transform: translate(5px, 6px) scale(.92) rotate(10deg); opacity: .36; }
+  78% { transform: translate(-2px, 4px) scale(1.03) rotate(-6deg); opacity: .42; }
+}
+@keyframes aura-cloud-5 {
+  0%, 100% { transform: translate(0, 0) scale(.94) rotate(0deg); opacity: .30; }
+  28% { transform: translate(6px, -5px) scale(1.12) rotate(14deg); opacity: .44; }
+  58% { transform: translate(-5px, 5px) scale(.9) rotate(-8deg); opacity: .32; }
+  82% { transform: translate(3px, -2px) scale(1.02) rotate(6deg); opacity: .38; }
 }
 
 /* 星星微闪 — 大小不一、位置随机、闪烁频率不同 */
@@ -455,6 +521,10 @@ select {
   60% { opacity: .7; transform: scale(1); }
   80% { opacity: .3; transform: scale(.8); }
 }
+
+/* 窗口隐藏到托盘时暂停 Aura 动画，避免后台 GPU/CPU 消耗 */
+.device-aura.is-paused .aura-cloud,
+.device-aura.is-paused .aura-star { animation-play-state: paused; }
 
 .control-tabs {
   width: min(66%, 300px);
@@ -594,7 +664,8 @@ select {
 }
 .dpi-stage-value:hover:not(:disabled) { color: inherit; background: rgb(127 120 140 / 10%); }
 .dpi-stage-value:disabled { opacity: .48; }
-.write-badge { position: absolute; top: 6px; left: 50%; transform: translateX(-50%); padding: 4px 10px; border-radius: 999px; background: color-mix(in oklch, var(--accent), transparent 70%); color: var(--muted); font-size: 11px; z-index: 2; pointer-events: none; }
+.preview-message,
+.write-badge { position: absolute; top: 6px; left: 50%; transform: translateX(-50%); margin: 0; padding: 4px 10px; border-radius: 999px; background: color-mix(in oklch, var(--accent), transparent 70%); color: var(--muted); font-size: 11px; z-index: 2; pointer-events: none; }
 
 .mode-reading {
   gap: 2px;
@@ -1077,7 +1148,7 @@ input[type="time"] { border: 1px solid var(--panel-border); border-radius: 8px; 
 .plugin-item { display: grid; grid-template-columns: 1fr auto; gap: 4px 10px; padding: 10px 12px; border-radius: 10px; background: rgb(127 120 140 / 8%); }
 .plugin-item strong { font-size: 13px; }
 .plugin-item .setting-hint { margin-left: 6px; }
-.plugin-update-actions { margin: 8px 0; align-items: center; }
+.plugin-update-actions { align-items: center; }
 .plugin-update-row { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding-top: 7px; border-top: 1px solid rgb(127 120 140 / 10%); }
 .plugin-update-row .setting-hint { margin-left: 0; }
 .plugin-update-row button { padding: 5px 10px; font-size: 11px; }
@@ -1092,14 +1163,14 @@ input[type="time"] { border: 1px solid var(--panel-border); border-radius: 8px; 
 .plugin-detail code { font-size: 10px; color: var(--muted); }
 
 /* Diagnostics output */
-.diagnostics-output { margin-top: 8px; padding: 10px; border-radius: 10px; background: rgb(0 0 0 / 6%); font-size: 10px; line-height: 1.4; overflow-x: auto; max-height: 180px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; }
+.diagnostics-output { margin-top: 10px; padding: 10px; border-radius: 10px; background: rgb(0 0 0 / 6%); font-size: 10px; line-height: 1.4; overflow-x: auto; max-height: 180px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; }
 :root[data-theme="dark"] .diagnostics-output { background: rgb(255 255 255 / 6%); }
 
 /* About page */
 .about-section { padding: 12px 16px; margin-top: 12px; box-shadow: none; }
 .about-section .card-title { margin-bottom: 10px; padding-bottom: 10px; }
 .about-section .setting-hint { margin-top: 6px; line-height: 1.65; }
-.update-details { margin-top: 9px; padding: 9px 11px; border-radius: 10px; background: rgb(127 120 140 / 7%); }
+.update-details { margin-top: 10px; padding: 9px 11px; border-radius: 10px; background: rgb(127 120 140 / 7%); }
 .update-details p { margin: 6px 0 0; color: var(--muted); font-size: 11px; line-height: 1.55; white-space: pre-wrap; }
 .update-progress { margin-top: 10px; display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 10px; color: var(--muted); font-size: 11px; }
 .update-progress progress { width: 100%; height: 6px; accent-color: var(--accent); }
@@ -1112,7 +1183,8 @@ input[type="time"] { border: 1px solid var(--panel-border); border-radius: 8px; 
 .info-list div { display: flex; justify-content: space-between; gap: 10px; padding: 6px 0; border-bottom: 1px solid rgb(127 120 140 / 8%); }
 .info-list dt { color: var(--muted); font-size: 12px; }
 .info-list dd { margin: 0; font-size: 12px; text-align: right; word-break: break-all; }
-.contact-links { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+.contact-links { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 0; }
+.contact-links.plugin-update-actions { margin: 10px 0; }
 .contact-links a { color: inherit; text-decoration: none; }
 .contact-links a.secondary,
 .contact-links button.secondary {
