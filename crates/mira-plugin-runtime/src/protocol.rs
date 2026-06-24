@@ -2,7 +2,17 @@
 use crate::engine::ProtocolPackage;
 use hidapi::HidApi;
 use serde_json::{json, Map, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::Mutex;
+
+/// Feature index 缓存：按设备路径索引，存储 featureId → featureIndex 映射。
+/// feature index 在设备连接期间不变，缓存可避免每轮轮询重复查询。
+pub type FeatureIndexCache = HashMap<String, HashMap<u16, u8>>;
+
+/// Onboard memory 缓存：按设备路径索引，存储最近一次 onboard read 的 (outputs, bytes)。
+/// 写入 mutation 的预读阶段检查缓存，命中则跳过 16 chunk HID 往返。
+/// 写入后的验证读更新缓存。设备断开时由调用方清空。
+pub type OnboardMemoryCache = HashMap<String, (BTreeMap<String, Value>, Vec<u8>)>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionKind {
@@ -34,6 +44,12 @@ pub struct ProtocolContext<'a> {
     pub connection: ConnectionKind,
     pub files: &'a BTreeMap<String, Vec<u8>>,
     pub outputs: BTreeMap<String, Value>,
+    /// Feature index 缓存（按设备路径索引）。设备连接期间 feature index 不变，
+    /// 缓存命中时跳过 root-get-feature 的 HID 往返。设备断开时由调用方清空。
+    pub feature_index_cache: Option<&'a Mutex<FeatureIndexCache>>,
+    /// Onboard memory 缓存（按设备路径索引）。写入 mutation 预读时命中缓存则跳过
+    /// 16 chunk HID 往返；验证读后更新缓存。设备断开时由调用方清空。
+    pub onboard_memory_cache: Option<&'a Mutex<OnboardMemoryCache>>,
 }
 
 pub fn read_device(ctx: &ProtocolContext) -> Result<DeviceReading, String> {
@@ -48,11 +64,17 @@ pub fn read_device_with_package(
     ctx: &ProtocolContext,
 ) -> Result<DeviceReading, String> {
     let workflow_id = format!("{}-read", ctx.family);
-    let outputs = package.execute(ctx.api, ctx.path, &workflow_id)?;
+    let outputs = package.execute_with_cache(
+        ctx.api,
+        ctx.path,
+        &workflow_id,
+        ctx.feature_index_cache,
+    )?;
     #[cfg(debug_assertions)]
     eprintln!(
-        "[mira] plugin workflow {workflow_id}: {}",
-        serde_json::to_string(&outputs).unwrap_or_else(|_| "<serialization failed>".into())
+        "[mira] plugin workflow {workflow_id}: {} outputs: [{}]",
+        outputs.len(),
+        outputs.keys().map(|k| k.as_str()).collect::<Vec<_>>().join(", ")
     );
     let capabilities = package.capabilities().cloned();
     Ok(standard_reading(outputs, capabilities))
@@ -95,7 +117,14 @@ pub fn mutate_device_with_package(
     params: &Map<String, Value>,
 ) -> Result<Value, String> {
     let mutation_id = format!("{}-{mutation}", ctx.family);
-    package.mutate(ctx.api, ctx.path, &mutation_id, params, &ctx.outputs)
+    package.mutate(
+        ctx.api,
+        ctx.path,
+        &mutation_id,
+        params,
+        &ctx.outputs,
+        ctx.onboard_memory_cache,
+    )
 }
 
 fn standard_reading(
