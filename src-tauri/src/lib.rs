@@ -4,17 +4,18 @@ use hidapi::HidApi;
 use mira_core::{DeviceSnapshot, LowBatteryCrossing, PluginCapability, PluginCapabilityPlacement};
 use mira_plugin_runtime::{
     extract_package, hid, inspect_package, mutate_device_with_package, read_device_with_package,
-    writable_mutations_with_package, ConnectionKind, DeviceReading, PackageInspection,
-    ProtocolContext, ProtocolPackage, TrustStore,
+    writable_mutations_with_package, ConnectionKind, DeviceReading, ExportableField,
+    PackageInspection, ProtocolContext, ProtocolPackage, TrustStore,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fs,
-    io::Cursor,
+    io::{Cursor, Read},
     path::PathBuf,
-    sync::Mutex,
+    sync::{Arc, Condvar, Mutex},
+    time::{Duration, Instant},
 };
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
@@ -30,27 +31,125 @@ type CachedPlugins = Vec<(
     std::collections::BTreeMap<String, Vec<u8>>,
 )>;
 
-fn plugin_capabilities(inspection: &PackageInspection) -> Vec<PluginCapability> {
+const PLUGIN_REGISTRY_URL: &str =
+    "https://raw.githubusercontent.com/hello-yunshu/mira-mouse-plugins/main/registry/index.json";
+const MAX_REGISTRY_BYTES: u64 = 1024 * 1024;
+const MAX_PLUGIN_BYTES: u64 = 32 * 1024 * 1024;
+
+/// 将连接类型字符串归一化为规范值（"usb"/"receiver"/"bluetooth"）。
+/// devices.json 中接收器连接值可能写作 "wireless" 或 "wireless-receiver"，
+/// 统一映射为 "receiver" 以匹配插件 capabilities 声明的 connections 列表。
+/// 修复 #3：消除文档词汇表（"receiver"）与 runtime 实际值（"wireless"）的不一致。
+fn normalize_connection(value: &str) -> &str {
+    match value {
+        "wireless" | "wireless-receiver" => "receiver",
+        "usb" => "usb",
+        "bluetooth" => "bluetooth",
+        _ => value,
+    }
+}
+
+fn find_firmware_version(value: &serde_json::Value) -> Option<semver::Version> {
+    match value {
+        serde_json::Value::String(text) => semver::Version::parse(text).ok(),
+        serde_json::Value::Array(items) => items.iter().find_map(find_firmware_version),
+        serde_json::Value::Object(object) => {
+            for key in ["firmwareVersion", "version", "versionName", "semver"] {
+                if let Some(version) = object.get(key).and_then(find_firmware_version) {
+                    return Some(version);
+                }
+            }
+            object.values().find_map(find_firmware_version)
+        }
+        _ => None,
+    }
+}
+
+fn firmware_available(
+    outputs: &BTreeMap<String, serde_json::Value>,
+    min_firmware: Option<&str>,
+) -> bool {
+    let Some(min_firmware) = min_firmware else {
+        return true;
+    };
+    let Ok(required) = semver::Version::parse(min_firmware) else {
+        return false;
+    };
+    outputs
+        .values()
+        .find_map(find_firmware_version)
+        .is_some_and(|current| current >= required)
+}
+
+/// 根据插件声明和 workflow 输出构建能力列表。
+/// `outputs` 是设备读取的 workflow 输出，用于 probe 判断：
+/// 当 capability.probe 引用的字段值为 0 时，available=false。
+/// `connection` 是当前设备连接类型（"usb"/"receiver"/"bluetooth"），
+/// 用于 #3 连接类型能力分支筛选。
+fn plugin_capabilities(
+    inspection: &PackageInspection,
+    outputs: &BTreeMap<String, serde_json::Value>,
+    connection: &str,
+) -> Vec<PluginCapability> {
+    let normalized_connection = normalize_connection(connection);
     inspection
         .capabilities
         .iter()
-        .map(|capability| PluginCapability {
-            id: capability.id.clone(),
-            control: capability.control.as_str().into(),
-            label_key: capability.label_key.clone(),
-            read_only: capability.read_only,
-            placements: capability
-                .placements
-                .iter()
-                .map(|placement| PluginCapabilityPlacement {
-                    region: placement.region.as_str().into(),
-                    group: placement.group.clone(),
-                    order: placement.order,
-                    span: placement.span,
-                    icon: placement.icon.clone(),
-                })
-                .collect(),
-            metadata: capability.metadata.clone(),
+        .map(|capability| {
+            // 能力动态协商：根据 probe 声明检查 workflow 输出。
+            // probe 引用的字段值为 0 → 设备不支持该能力 → available=false。
+            // 无 probe 声明 → 默认 available=true（向后兼容）。
+            // 修复 #1：支持整数和浮点（0/0.0 均视为不支持），非数字或字段缺失默认可用。
+            let probe_available = capability.probe.as_ref().map_or(true, |probe| {
+                match outputs.get(&probe.output) {
+                    None => {
+                        // probe 引用的 output 不存在：产生该 output 的 workflow 未执行
+                        //（可能因 skip_if_zero 被跳过，说明设备不支持该能力）。
+                        // fail-closed 标记不可用，避免 false-positive。
+                        false
+                    }
+                    Some(value) => value
+                        .as_object()
+                        .and_then(|object| object.get(&probe.field))
+                        .map(|field_value| {
+                            field_value
+                                .as_u64()
+                                .map(|v| v != 0)
+                                .or_else(|| field_value.as_f64().map(|v| v != 0.0))
+                                .unwrap_or(true)
+                        })
+                        .unwrap_or(true),
+                }
+            });
+            // #3 连接类型能力分支：归一化后比较，兼容 "wireless"/"wireless-receiver" 别名。
+            let connection_available = capability.connections.as_ref().map_or(true, |allowed| {
+                allowed
+                    .iter()
+                    .any(|conn| normalize_connection(conn) == normalized_connection)
+            });
+            let firmware_available =
+                firmware_available(outputs, capability.min_firmware.as_deref());
+            PluginCapability {
+                id: capability.id.clone(),
+                control: capability.control.as_str().into(),
+                label_key: capability.label_key.clone(),
+                read_only: capability.read_only,
+                placements: capability
+                    .placements
+                    .iter()
+                    .map(|placement| PluginCapabilityPlacement {
+                        region: placement.region.as_str().into(),
+                        group: placement.group.clone(),
+                        order: placement.order,
+                        span: placement.span,
+                        icon: placement.icon.clone(),
+                    })
+                    .collect(),
+                metadata: capability.metadata.clone(),
+                available: probe_available && connection_available && firmware_available,
+                connections: capability.connections.clone(),
+                min_firmware: capability.min_firmware.clone(),
+            }
         })
         .collect()
 }
@@ -58,8 +157,13 @@ fn plugin_capabilities(inspection: &PackageInspection) -> Vec<PluginCapability> 
 #[derive(Default)]
 struct SessionState {
     write_in_progress: Mutex<bool>,
+    /// 与 `write_in_progress` 配对，让并发写入排队等待而非立即失败。
+    write_cond: Condvar,
     device_io: Mutex<()>,
-    last_snapshot: Mutex<Option<DeviceSnapshot>>,
+    /// 缓存所有已连接设备的快照，按 HID 路径索引。
+    /// 支持多设备并行管理：每轮轮询更新对应设备的快照，
+    /// 断开的设备从 map 中移除。`device_snapshot` 命令返回 primary 设备。
+    last_snapshot: Mutex<BTreeMap<String, DeviceSnapshot>>,
     plugins: Mutex<Option<CachedPlugins>>,
     tray_icon_level: Mutex<Option<i16>>,
     tray_is_charging: Mutex<Option<bool>>,
@@ -89,6 +193,15 @@ struct SessionState {
     cached_bundled_plugins: Mutex<Option<Vec<BundledPluginInfo>>>,
     /// 缓存 load_software_profiles 结果。由 save_software_profiles 写入后失效。
     cached_software_profiles: Mutex<Option<SoftwareProfileStore>>,
+    /// 缓存 ProtocolPackage 解析结果，按 plugin_id 索引。
+    /// 每次 read_device_once / device_mutate_blocking 都会调用 from_files，
+    /// 而 JSON 文件内容在插件加载后不变，缓存可避免重复解析。
+    /// 由插件加载（启动 / install_plugin_update）清空。
+    cached_packages: Mutex<HashMap<String, Arc<ProtocolPackage>>>,
+    /// #9 防抖式 TTL 缓存：记录每个设备最近一次 HID 读取的时间戳（按 HID 路径索引）。
+    /// 非 settling 状态下，500ms 内的重复读取复用 last_snapshot，跳过 HID 往返。
+    /// 写入后（device_mutate_blocking）和设备断开（clear_snapshots）时清除。
+    last_read_at: Mutex<HashMap<String, Instant>>,
 }
 
 /// Send an immediate-refresh signal to the background reader thread.
@@ -101,9 +214,94 @@ fn request_refresh(state: &SessionState) {
     }
 }
 
+/// 解析或复用插件对应的 ProtocolPackage。
+///
+/// 插件文件在加载后内容不变，重复解析 JSON 会浪费 CPU。缓存按 `plugin_id::model`
+/// 索引（型号覆盖加载 #2：不同型号产生不同的合并结果），在插件加载
+/// （启动 / install_plugin_update）时整体清空。
+fn get_or_parse_package(
+    state: &SessionState,
+    inspection: &PackageInspection,
+    model: Option<&str>,
+    files: &BTreeMap<String, Vec<u8>>,
+    plugins: &CachedPlugins,
+) -> Result<Arc<ProtocolPackage>, String> {
+    // 缓存键：plugin_id + "::" + model，确保不同型号的合并结果独立缓存。
+    let cache_key = match model {
+        Some(m) if !m.is_empty() => format!("{}::{m}", inspection.plugin_id),
+        _ => inspection.plugin_id.to_string(),
+    };
+    let dependencies = dependency_transport_files(inspection, plugins)?;
+    if let Ok(mut cache) = state.cached_packages.lock() {
+        if let Some(package) = cache.get(&cache_key) {
+            return Ok(package.clone());
+        }
+        let package = Arc::new(ProtocolPackage::from_files_with_model_and_dependencies(
+            files,
+            model,
+            &dependencies,
+        )?);
+        cache.insert(cache_key, package.clone());
+        return Ok(package);
+    }
+    // 锁失败（中毒）—— 直接解析，不缓存。
+    Ok(Arc::new(
+        ProtocolPackage::from_files_with_model_and_dependencies(files, model, &dependencies)?,
+    ))
+}
+
+/// 清空 ProtocolPackage 缓存。在插件集合变化时调用。
+fn invalidate_package_cache(state: &SessionState) {
+    if let Ok(mut cache) = state.cached_packages.lock() {
+        cache.clear();
+    }
+}
+
+fn dependency_transport_files<'a>(
+    inspection: &PackageInspection,
+    plugins: &'a CachedPlugins,
+) -> Result<Vec<&'a BTreeMap<String, Vec<u8>>>, String> {
+    // 所有依赖（无论 reuseTransport 是否为 true）都校验存在性与版本要求；
+    // 仅 reuseTransport=true 时才收集被依赖插件的 transports.json。
+    // 当前实现不递归解析依赖的依赖（roadmap #12 仅承诺直接依赖的 transport 复用），
+    // 因此不会出现循环依赖导致的无限递归；若未来支持传递依赖，需在此增加环检测。
+    let mut transport_files = Vec::new();
+    for dependency in &inspection.depends_on {
+        let (found, _, files) = plugins
+            .iter()
+            .find(|(candidate, _, _)| candidate.plugin_id == dependency.plugin_id)
+            .ok_or_else(|| {
+                format!(
+                    "plugin {} depends on missing plugin {}",
+                    inspection.plugin_id, dependency.plugin_id
+                )
+            })?;
+        if let Some(requirement) = &dependency.version {
+            let requirement = semver::VersionReq::parse(requirement)
+                .map_err(|error| format!("invalid dependency version requirement: {error}"))?;
+            let version = semver::Version::parse(&found.version)
+                .map_err(|error| format!("invalid dependency version: {error}"))?;
+            if !requirement.matches(&version) {
+                return Err(format!(
+                    "plugin {} dependency {} version {} does not satisfy {}",
+                    inspection.plugin_id, found.plugin_id, found.version, requirement
+                ));
+            }
+        }
+        if dependency.reuse_transport {
+            transport_files.push(files);
+        }
+    }
+    Ok(transport_files)
+}
+
 /// Number of fast polls performed after a state transition is detected.
 /// At 500 ms per poll this covers a 3-second settling window.
 const SETTLING_POLL_COUNT: u8 = 6;
+
+/// #9 防抖式 TTL：非 settling 状态下，500ms 内的重复读取复用快照。
+/// 防止窗口聚焦、托盘点击等短时间多次 RefreshNow 信号触发重复 HID 往返。
+const READ_DEBOUNCE_TTL: Duration = Duration::from_millis(500);
 
 /// Mark that the device state just changed, enabling a short burst of fast polls.
 /// This is used for plug/unplug, charging state changes, and after device writes
@@ -114,15 +312,63 @@ fn note_state_change(state: &SessionState) {
     }
 }
 
-/// Update the cached snapshot and, if it actually changed, enable the settling burst.
-fn store_snapshot(state: &SessionState, snapshot: Option<DeviceSnapshot>) {
+/// 从多设备快照 map 中选择 primary 设备。
+/// 优先返回真正开放写入的设备，否则返回第一个。
+fn primary_snapshot(snapshots: &BTreeMap<String, DeviceSnapshot>) -> Option<&DeviceSnapshot> {
+    primary_snapshot_entry(snapshots).map(|(_, snapshot)| snapshot)
+}
+
+fn primary_snapshot_entry(
+    snapshots: &BTreeMap<String, DeviceSnapshot>,
+) -> Option<(&String, &DeviceSnapshot)> {
+    snapshots
+        .iter()
+        .find(|(_, snapshot)| snapshot_allows_writes(snapshot))
+        .or_else(|| snapshots.iter().next())
+}
+
+/// 替换整个快照 map，并在变化时触发 settling burst。
+fn store_snapshots(state: &SessionState, snapshots: BTreeMap<String, DeviceSnapshot>) {
     let mut guard = state
         .last_snapshot
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    let changed = guard.as_ref() != snapshot.as_ref();
-    *guard = snapshot;
+    let changed = *guard != snapshots;
+    *guard = snapshots;
     drop(guard);
+    if changed {
+        note_state_change(state);
+    }
+}
+
+/// 更新单个设备的快照，避免 clone 整个 map 引发的读-改-写竞态。
+/// 修复 #10：device_mutate_blocking 写入后只更新当前设备，不覆盖其他设备的快照。
+fn store_snapshot(state: &SessionState, device_path: String, snapshot: DeviceSnapshot) {
+    let mut guard = state
+        .last_snapshot
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let changed = guard.get(&device_path) != Some(&snapshot);
+    guard.insert(device_path, snapshot);
+    drop(guard);
+    if changed {
+        note_state_change(state);
+    }
+}
+
+/// 清空所有快照，并在变化时触发 settling burst。
+fn clear_snapshots(state: &SessionState) {
+    let mut guard = state
+        .last_snapshot
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let changed = !guard.is_empty();
+    guard.clear();
+    drop(guard);
+    // #9 设备断开时清除 TTL 缓存。
+    if let Ok(mut cache) = state.last_read_at.lock() {
+        cache.clear();
+    }
     if changed {
         note_state_change(state);
     }
@@ -192,6 +438,7 @@ struct BundledPluginInfo {
     bundle_by_default: bool,
     signature_verified: bool,
     evidence: String,
+    source: String,
 }
 
 #[derive(Serialize, Default)]
@@ -223,6 +470,9 @@ struct AppSettings {
     night_mode_end: String,
     refresh_interval_seconds: u16,
     telemetry_disabled: bool,
+    automatic_update_checks: bool,
+    automatic_update_install: bool,
+    automatic_plugin_update_checks: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -254,6 +504,9 @@ impl Default for AppSettings {
             night_mode_end: "07:00".into(),
             refresh_interval_seconds: 5,
             telemetry_disabled: true,
+            automatic_update_checks: true,
+            automatic_update_install: false,
+            automatic_plugin_update_checks: true,
         }
     }
 }
@@ -306,6 +559,9 @@ mod settings_tests {
         assert_eq!(settings.refresh_interval_seconds, 5);
         assert!(settings.telemetry_disabled);
         assert!(!settings.start_hidden);
+        assert!(settings.automatic_update_checks);
+        assert!(!settings.automatic_update_install);
+        assert!(settings.automatic_plugin_update_checks);
     }
 
     #[test]
@@ -360,12 +616,20 @@ mod settings_tests {
     }
 
     #[test]
-    fn device_writes_are_exclusive_and_release_after_completion() {
+    fn device_writes_queue_and_release_after_completion() {
         let state = SessionState::default();
-        let guard = begin_device_write(&state).unwrap();
-        assert!(begin_device_write(&state).is_err());
-        drop(guard);
-        assert!(begin_device_write(&state).is_ok());
+        std::thread::scope(|s| {
+            let guard = begin_device_write(&state).unwrap();
+            let handle = s.spawn(|| {
+                // 并发写入排队等待，而非立即失败。
+                let _queued = begin_device_write(&state).unwrap();
+            });
+            // 给排队线程一点时间进入等待。
+            std::thread::sleep(Duration::from_millis(50));
+            drop(guard);
+            // guard 释放后，排队的写入应能获取锁并完成。
+            handle.join().unwrap();
+        });
     }
 
     #[test]
@@ -399,6 +663,7 @@ mod settings_tests {
             plugin_capabilities: Vec::new(),
             writable_mutations: Vec::new(),
             evidence: "hardware-verified".into(),
+            readonly: false,
         };
         let mut settings = AppSettings::default();
         assert_eq!(battery_title(&snapshot, &settings).as_deref(), Some("64%"));
@@ -413,6 +678,471 @@ mod settings_tests {
         settings.tray_show_battery_title = false;
         assert_eq!(battery_title(&snapshot, &settings), None);
     }
+
+    fn primary_test_snapshot(
+        name: &str,
+        evidence: &str,
+        readonly: bool,
+        writable_mutations: Vec<String>,
+    ) -> DeviceSnapshot {
+        DeviceSnapshot {
+            display_name: name.into(),
+            connection: mira_core::Connection::Wireless,
+            battery_percent: None,
+            charging: false,
+            batteries: Vec::new(),
+            dpi: None,
+            dpi_stages: None,
+            polling_rate_hz: None,
+            supported_polling_rates_hz: None,
+            profile: None,
+            confirmed_light_color: None,
+            capabilities: Default::default(),
+            plugin_capabilities: Vec::new(),
+            writable_mutations,
+            evidence: evidence.into(),
+            readonly,
+        }
+    }
+
+    #[test]
+    fn primary_snapshot_prefers_truly_writable_device() {
+        let snapshots = BTreeMap::from([
+            (
+                "a".into(),
+                primary_test_snapshot(
+                    "readonly verified",
+                    "hardware-verified",
+                    true,
+                    vec!["set-dpi".into()],
+                ),
+            ),
+            (
+                "b".into(),
+                primary_test_snapshot(
+                    "writable verified",
+                    "hardware-verified",
+                    false,
+                    vec!["set-dpi".into()],
+                ),
+            ),
+        ]);
+        assert_eq!(
+            primary_snapshot(&snapshots).map(|snapshot| snapshot.display_name.as_str()),
+            Some("writable verified")
+        );
+    }
+
+    #[test]
+    fn primary_snapshot_falls_back_when_no_device_can_write() {
+        let snapshots = BTreeMap::from([
+            (
+                "a".into(),
+                primary_test_snapshot("first readonly", "hardware-verified", true, Vec::new()),
+            ),
+            (
+                "b".into(),
+                primary_test_snapshot("source only", "source-confirmed", false, Vec::new()),
+            ),
+        ]);
+        assert_eq!(
+            primary_snapshot(&snapshots).map(|snapshot| snapshot.display_name.as_str()),
+            Some("first readonly")
+        );
+    }
+
+    #[test]
+    fn plugin_updates_only_offer_newer_semver() {
+        let current = BTreeMap::from([
+            ("mira.amaster".into(), "1.3.3".into()),
+            ("mira.logitech-hidpp".into(), "0.6.1".into()),
+        ]);
+        let registry = PluginRegistry {
+            schema_version: 1,
+            plugins: vec![
+                PluginRegistryEntry {
+                    plugin_id: "mira.amaster".into(),
+                    version: "1.3.5".into(),
+                    release_tag: "plugin/amaster/v1.3.5".into(),
+                    url: "https://github.com/hello-yunshu/mira-mouse-plugins/releases/download/test/amaster.mira-plugin".into(),
+                    sha256: "0".repeat(64),
+                    publisher_key_id: PRODUCTION_KEY_ID.into(),
+                    notes: None,
+                },
+                PluginRegistryEntry {
+                    plugin_id: "mira.logitech-hidpp".into(),
+                    version: "0.6.1".into(),
+                    release_tag: "plugin/logitech-hidpp/v0.6.1".into(),
+                    url: "https://github.com/hello-yunshu/mira-mouse-plugins/releases/download/test/logitech.mira-plugin".into(),
+                    sha256: "1".repeat(64),
+                    publisher_key_id: PRODUCTION_KEY_ID.into(),
+                    notes: None,
+                },
+            ],
+        };
+        let updates = plugin_updates_for_versions(&current, registry).unwrap();
+        assert!(
+            updates
+                .iter()
+                .find(|item| item.plugin_id == "mira.amaster")
+                .unwrap()
+                .update_available
+        );
+        assert!(
+            !updates
+                .iter()
+                .find(|item| item.plugin_id == "mira.logitech-hidpp")
+                .unwrap()
+                .update_available
+        );
+    }
+
+    #[test]
+    fn exportable_value_reads_capability_source() {
+        let snapshot = DeviceSnapshot {
+            display_name: "Test Mouse".into(),
+            connection: mira_core::Connection::Usb,
+            battery_percent: None,
+            charging: false,
+            batteries: Vec::new(),
+            dpi: Some(1600),
+            dpi_stages: None,
+            polling_rate_hz: None,
+            supported_polling_rates_hz: None,
+            profile: None,
+            confirmed_light_color: None,
+            capabilities: BTreeMap::new(),
+            plugin_capabilities: vec![PluginCapability {
+                id: "dpi".into(),
+                control: "Number".into(),
+                label_key: "capability.dpi".into(),
+                read_only: false,
+                placements: Vec::new(),
+                metadata: BTreeMap::from([(
+                    "source".into(),
+                    serde_json::Value::String("dpi".into()),
+                )]),
+                available: true,
+                connections: None,
+                min_firmware: None,
+            }],
+            writable_mutations: Vec::new(),
+            evidence: "hardware-verified".into(),
+            readonly: false,
+        };
+        assert_eq!(
+            exportable_value(
+                &snapshot,
+                &ExportableField {
+                    id: "dpi".into(),
+                    export_key: "dpi".into(),
+                    kind: None,
+                    mutation: None,
+                    param: None,
+                    source: None,
+                    sources: None,
+                }
+            ),
+            Some(serde_json::json!(1600))
+        );
+    }
+
+    #[test]
+    fn mutation_for_exportable_uses_capability_metadata() {
+        let capability = mira_plugin_runtime::Capability {
+            id: "dpi".into(),
+            control: mira_plugin_runtime::Control::Number,
+            label_key: "capability.dpi".into(),
+            read_only: false,
+            placements: Vec::new(),
+            metadata: BTreeMap::from([
+                ("mutation".into(), serde_json::json!("set-dpi-value")),
+                ("param".into(), serde_json::json!("dpi")),
+            ]),
+            probe: None,
+            connections: None,
+            min_firmware: None,
+        };
+        let inspection = PackageInspection {
+            plugin_id: "test.plugin".into(),
+            version: "1.0.0".into(),
+            evidence: "hardware-verified".into(),
+            signature_verified: true,
+            writes_enabled: true,
+            capabilities: vec![capability],
+            exportable_fields: vec![],
+            depends_on: vec![],
+            file_count: 0,
+        };
+        assert_eq!(
+            mutation_for_exportable(
+                &inspection,
+                &ExportableField {
+                    id: "dpi".into(),
+                    export_key: "dpi".into(),
+                    kind: None,
+                    mutation: None,
+                    param: None,
+                    source: None,
+                    sources: None,
+                }
+            ),
+            ("set-dpi-value".into(), "dpi".into())
+        );
+    }
+}
+
+#[cfg(test)]
+mod capability_tests {
+    use super::*;
+    use mira_plugin_runtime::{Capability, CapabilityProbe, Control};
+
+    fn make_capability(
+        id: &str,
+        probe: Option<CapabilityProbe>,
+        connections: Option<Vec<String>>,
+    ) -> Capability {
+        Capability {
+            id: id.into(),
+            control: Control::Toggle,
+            label_key: format!("{id}.label"),
+            read_only: false,
+            placements: Vec::new(),
+            metadata: BTreeMap::new(),
+            probe,
+            connections,
+            min_firmware: None,
+        }
+    }
+
+    fn make_inspection(capabilities: Vec<Capability>) -> PackageInspection {
+        PackageInspection {
+            plugin_id: "test.plugin".into(),
+            version: "1.0.0".into(),
+            evidence: "hardware-verified".into(),
+            signature_verified: true,
+            writes_enabled: true,
+            capabilities,
+            exportable_fields: vec![],
+            depends_on: vec![],
+            file_count: 0,
+        }
+    }
+
+    #[test]
+    fn normalize_connection_maps_aliases() {
+        // 修复 #3：wireless/wireless-receiver 应归一化为 receiver
+        assert_eq!(normalize_connection("wireless"), "receiver");
+        assert_eq!(normalize_connection("wireless-receiver"), "receiver");
+        assert_eq!(normalize_connection("usb"), "usb");
+        assert_eq!(normalize_connection("bluetooth"), "bluetooth");
+        assert_eq!(normalize_connection("unknown"), "unknown");
+    }
+
+    #[test]
+    fn firmware_gate_marks_capability_unavailable_below_minimum() {
+        let mut cap = make_capability("advanced", None, None);
+        cap.min_firmware = Some("2.0.0".into());
+        let inspection = make_inspection(vec![cap]);
+        let outputs =
+            BTreeMap::from([("firmware".into(), serde_json::json!({"version": "1.9.9"}))]);
+        let result = plugin_capabilities(&inspection, &outputs, "usb");
+        assert!(!result[0].available);
+    }
+
+    #[test]
+    fn firmware_gate_accepts_matching_version() {
+        let mut cap = make_capability("advanced", None, None);
+        cap.min_firmware = Some("2.0.0".into());
+        let inspection = make_inspection(vec![cap]);
+        let outputs =
+            BTreeMap::from([("firmware".into(), serde_json::json!({"version": "2.1.0"}))]);
+        let result = plugin_capabilities(&inspection, &outputs, "usb");
+        assert!(result[0].available);
+    }
+
+    #[test]
+    fn capability_filter_uses_runtime_reported_connection() {
+        let cap = make_capability("wired-only", None, Some(vec!["usb".into()]));
+        let inspection = make_inspection(vec![cap]);
+        let devices = hid::DevicesFile {
+            schema_version: 1,
+            devices: Vec::new(),
+            hardware_verified_models: Vec::new(),
+        };
+        let device = hid::MatchedDevice {
+            plugin_id: "test.plugin".into(),
+            family: "mouse".into(),
+            evidence: "hardware-verified".into(),
+            connection: "wireless".into(),
+            path: "test-path".into(),
+            vendor_id: 1,
+            product_id: 2,
+            usage_page: 3,
+            usage: 4,
+            model: None,
+        };
+        let reading = DeviceReading {
+            connection: Some(ConnectionKind::Usb),
+            ..DeviceReading::default()
+        };
+
+        let snapshot = build_device_snapshot(
+            reading,
+            &inspection,
+            &devices,
+            &device,
+            mira_core::Connection::Wireless,
+            Vec::new(),
+            None,
+        );
+
+        assert_eq!(snapshot.connection, mira_core::Connection::Usb);
+        assert!(snapshot.plugin_capabilities[0].available);
+    }
+
+    #[test]
+    fn probe_zero_integer_marks_unavailable() {
+        let cap = make_capability(
+            "dpi",
+            Some(CapabilityProbe {
+                output: "dpi".into(),
+                field: "value".into(),
+            }),
+            None,
+        );
+        let inspection = make_inspection(vec![cap]);
+        let outputs = BTreeMap::from([("dpi".into(), serde_json::json!({"value": 0}))]);
+        let result = plugin_capabilities(&inspection, &outputs, "usb");
+        assert!(!result[0].available);
+    }
+
+    #[test]
+    fn probe_zero_float_marks_unavailable() {
+        // 修复 #1：浮点 0.0 也应标记为不可用
+        let cap = make_capability(
+            "dpi",
+            Some(CapabilityProbe {
+                output: "dpi".into(),
+                field: "value".into(),
+            }),
+            None,
+        );
+        let inspection = make_inspection(vec![cap]);
+        let outputs = BTreeMap::from([("dpi".into(), serde_json::json!({"value": 0.0}))]);
+        let result = plugin_capabilities(&inspection, &outputs, "usb");
+        assert!(!result[0].available);
+    }
+
+    #[test]
+    fn probe_nonzero_marks_available() {
+        let cap = make_capability(
+            "dpi",
+            Some(CapabilityProbe {
+                output: "dpi".into(),
+                field: "value".into(),
+            }),
+            None,
+        );
+        let inspection = make_inspection(vec![cap]);
+        let outputs = BTreeMap::from([("dpi".into(), serde_json::json!({"value": 1600}))]);
+        let result = plugin_capabilities(&inspection, &outputs, "usb");
+        assert!(result[0].available);
+    }
+
+    #[test]
+    fn probe_missing_output_marks_unavailable() {
+        // probe 引用的 output 整个不存在（workflow 未执行/被 skip_if_zero 跳过）：
+        // fail-closed 标记不可用，避免设备不支持却显示为可用。
+        let cap = make_capability(
+            "dpi",
+            Some(CapabilityProbe {
+                output: "dpi".into(),
+                field: "value".into(),
+            }),
+            None,
+        );
+        let inspection = make_inspection(vec![cap]);
+        let outputs = BTreeMap::new();
+        let result = plugin_capabilities(&inspection, &outputs, "usb");
+        assert!(!result[0].available);
+    }
+
+    #[test]
+    fn probe_missing_field_defaults_available() {
+        // 向后兼容：output 存在但字段缺失时默认可用
+        let cap = make_capability(
+            "dpi",
+            Some(CapabilityProbe {
+                output: "dpi".into(),
+                field: "value".into(),
+            }),
+            None,
+        );
+        let inspection = make_inspection(vec![cap]);
+        let outputs = BTreeMap::from([("dpi".into(), serde_json::json!({}))]);
+        let result = plugin_capabilities(&inspection, &outputs, "usb");
+        assert!(result[0].available);
+    }
+
+    #[test]
+    fn no_probe_defaults_available() {
+        let cap = make_capability("dpi", None, None);
+        let inspection = make_inspection(vec![cap]);
+        let outputs = BTreeMap::new();
+        let result = plugin_capabilities(&inspection, &outputs, "usb");
+        assert!(result[0].available);
+    }
+
+    #[test]
+    fn connections_receiver_alias_matches_wireless() {
+        // 修复 #3：声明 ["receiver"] 应匹配 "wireless" 连接
+        let cap = make_capability("lighting", None, Some(vec!["receiver".into()]));
+        let inspection = make_inspection(vec![cap]);
+        let outputs = BTreeMap::new();
+        let result = plugin_capabilities(&inspection, &outputs, "wireless");
+        assert!(result[0].available);
+    }
+
+    #[test]
+    fn connections_receiver_alias_matches_wireless_receiver() {
+        let cap = make_capability("lighting", None, Some(vec!["receiver".into()]));
+        let inspection = make_inspection(vec![cap]);
+        let outputs = BTreeMap::new();
+        let result = plugin_capabilities(&inspection, &outputs, "wireless-receiver");
+        assert!(result[0].available);
+    }
+
+    #[test]
+    fn connections_mismatch_marks_unavailable() {
+        let cap = make_capability("lighting", None, Some(vec!["usb".into()]));
+        let inspection = make_inspection(vec![cap]);
+        let outputs = BTreeMap::new();
+        let result = plugin_capabilities(&inspection, &outputs, "wireless");
+        assert!(!result[0].available);
+    }
+
+    #[test]
+    fn connections_multiple_matches() {
+        let cap = make_capability(
+            "lighting",
+            None,
+            Some(vec!["receiver".into(), "usb".into()]),
+        );
+        let inspection = make_inspection(vec![cap]);
+        let outputs = BTreeMap::new();
+        let result = plugin_capabilities(&inspection, &outputs, "usb");
+        assert!(result[0].available);
+    }
+
+    #[test]
+    fn no_connections_defaults_available() {
+        let cap = make_capability("lighting", None, None);
+        let inspection = make_inspection(vec![cap]);
+        let outputs = BTreeMap::new();
+        let result = plugin_capabilities(&inspection, &outputs, "wireless");
+        assert!(result[0].available);
+    }
 }
 
 #[derive(Deserialize)]
@@ -420,6 +1150,7 @@ mod settings_tests {
 struct LockFile {
     #[allow(dead_code)]
     schema_version: u32,
+    release_ready: bool,
     plugins: Vec<LockPlugin>,
 }
 
@@ -437,6 +1168,132 @@ struct LockPlugin {
     #[allow(dead_code)]
     plugin_api: String,
     bundle_by_default: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PluginRegistry {
+    schema_version: u32,
+    plugins: Vec<PluginRegistryEntry>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PluginRegistryEntry {
+    plugin_id: String,
+    version: String,
+    release_tag: String,
+    url: String,
+    sha256: String,
+    publisher_key_id: String,
+    #[serde(default)]
+    notes: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PluginUpdateInfo {
+    plugin_id: String,
+    current_version: String,
+    available_version: Option<String>,
+    release_tag: Option<String>,
+    notes: Option<String>,
+    update_available: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PluginInstallResult {
+    plugin_id: String,
+    version: String,
+    previous_version: String,
+    restarted_runtime: bool,
+}
+
+fn fetch_bounded(url: &str, max_bytes: u64) -> Result<Vec<u8>, String> {
+    let response = reqwest::blocking::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(60))
+        .user_agent("Mira-Mouse-Updater")
+        .build()
+        .map_err(|error| format!("build HTTP client: {error}"))?
+        .get(url)
+        .send()
+        .map_err(|error| format!("download {url}: {error}"))?
+        .error_for_status()
+        .map_err(|error| format!("download {url}: {error}"))?;
+    if response
+        .content_length()
+        .is_some_and(|length| length > max_bytes)
+    {
+        return Err(format!("download exceeds {max_bytes} byte limit"));
+    }
+    let mut bytes = Vec::new();
+    response
+        .take(max_bytes + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("read download: {error}"))?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(format!("download exceeds {max_bytes} byte limit"));
+    }
+    Ok(bytes)
+}
+
+fn fetch_plugin_registry() -> Result<PluginRegistry, String> {
+    let bytes = fetch_bounded(PLUGIN_REGISTRY_URL, MAX_REGISTRY_BYTES)?;
+    let registry: PluginRegistry = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("parse plugin registry: {error}"))?;
+    if registry.schema_version != 1 {
+        return Err(format!(
+            "unsupported plugin registry schema {}",
+            registry.schema_version
+        ));
+    }
+    Ok(registry)
+}
+
+fn plugin_updates_for_versions(
+    current: &BTreeMap<String, String>,
+    registry: PluginRegistry,
+) -> Result<Vec<PluginUpdateInfo>, String> {
+    let remote = registry
+        .plugins
+        .into_iter()
+        .map(|entry| (entry.plugin_id.clone(), entry))
+        .collect::<BTreeMap<_, _>>();
+    current
+        .iter()
+        .map(|(plugin_id, current_version)| {
+            let current_semver = semver::Version::parse(current_version)
+                .map_err(|error| format!("invalid installed version for {plugin_id}: {error}"))?;
+            let candidate = remote.get(plugin_id);
+            let update_available = candidate
+                .map(|entry| {
+                    semver::Version::parse(&entry.version)
+                        .map(|version| version > current_semver)
+                        .map_err(|error| {
+                            format!("invalid registry version for {plugin_id}: {error}")
+                        })
+                })
+                .transpose()?
+                .unwrap_or(false);
+            Ok(PluginUpdateInfo {
+                plugin_id: plugin_id.clone(),
+                current_version: current_version.clone(),
+                available_version: candidate.map(|entry| entry.version.clone()),
+                release_tag: candidate.map(|entry| entry.release_tag.clone()),
+                notes: candidate.and_then(|entry| entry.notes.clone()),
+                update_available,
+            })
+        })
+        .collect()
+}
+
+fn installed_plugins_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(|path| path.join("plugins"))
+        .map_err(|error| format!("resolve plugin data directory: {error}"))
 }
 
 fn read_lock_file() -> Option<LockFile> {
@@ -500,6 +1357,7 @@ fn inspect_bundled_plugins(app: &AppHandle, trust: &TrustStore) -> Vec<BundledPl
                 } else {
                     "signature-unverified".to_string()
                 },
+                source: "bundled".to_string(),
             })
         })
         .collect()
@@ -522,6 +1380,64 @@ fn cached_bundled_plugins(app: &AppHandle) -> Vec<BundledPluginInfo> {
     inspect_bundled_plugins(app, &production_trust_store())
 }
 
+fn active_plugins_info(app: &AppHandle) -> Vec<BundledPluginInfo> {
+    let mut info = cached_bundled_plugins(app);
+    let Ok(versions) = active_plugin_versions(app) else {
+        return info;
+    };
+    let trust = production_trust_store();
+    let Ok(directory) = installed_plugins_dir(app) else {
+        return info;
+    };
+    for (plugin_id, version) in versions {
+        if info
+            .iter()
+            .any(|plugin| plugin.plugin_id == plugin_id && plugin.version == version)
+        {
+            continue;
+        }
+        let Some(path) = find_installed_plugin_path(&directory, &plugin_id, &trust) else {
+            continue;
+        };
+        let Ok(bytes) = fs::read(&path) else { continue };
+        let Ok((inspection, files)) = extract_package(Cursor::new(&bytes), &trust, true) else {
+            continue;
+        };
+        let publisher_key_id = files
+            .get("plugin.json")
+            .and_then(|manifest| serde_json::from_slice::<serde_json::Value>(manifest).ok())
+            .and_then(|manifest| {
+                manifest
+                    .get("publisherKeyId")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            })
+            .unwrap_or_default();
+        let installed = BundledPluginInfo {
+            plugin_id: inspection.plugin_id.clone(),
+            version: inspection.version,
+            asset: path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("installed.mira-plugin")
+                .to_string(),
+            sha256: hex::encode(Sha256::digest(&bytes)),
+            publisher_key_id,
+            release_tag: String::new(),
+            bundle_by_default: false,
+            signature_verified: inspection.signature_verified,
+            evidence: inspection.evidence,
+            source: "installed".to_string(),
+        };
+        if let Some(index) = info.iter().position(|plugin| plugin.plugin_id == plugin_id) {
+            info[index] = installed;
+        } else {
+            info.push(installed);
+        }
+    }
+    info
+}
+
 /// Load all bundled plugin packages that can be verified and extract their
 /// `devices.json` descriptors. Used by the HID discovery path.
 fn load_bundled_plugin_devices(
@@ -538,7 +1454,8 @@ fn load_bundled_plugin_devices(
         return Vec::new();
     };
     let trust = production_trust_store();
-    lock.plugins
+    let mut plugins: CachedPlugins = lock
+        .plugins
         .into_iter()
         .filter(|plugin| plugin.bundle_by_default)
         .filter_map(|plugin| {
@@ -582,7 +1499,79 @@ fn load_bundled_plugin_devices(
                 }
             }
         })
-        .collect()
+        .collect();
+
+    if let Ok(installed_dir) = installed_plugins_dir(app) {
+        if let Ok(entries) = fs::read_dir(&installed_dir) {
+            for backup in entries.flatten().map(|entry| entry.path()).filter(|path| {
+                path.file_name()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|name| name.contains(".rollback."))
+            }) {
+                let recovered = fs::read(&backup)
+                    .ok()
+                    .and_then(|bytes| inspect_package(Cursor::new(bytes), &trust, true).ok());
+                if let Some(inspection) = recovered {
+                    if find_installed_plugin_path(&installed_dir, &inspection.plugin_id, &trust)
+                        .is_none()
+                    {
+                        let target = installed_dir.join(format!(
+                            "{}-{}.mira-plugin",
+                            inspection.plugin_id, inspection.version
+                        ));
+                        if let Err(error) = fs::rename(&backup, target) {
+                            eprintln!("[mira] plugin rollback recovery failed: {error}");
+                        }
+                    }
+                }
+            }
+        }
+        if let Ok(entries) = fs::read_dir(installed_dir) {
+            for path in entries.flatten().map(|entry| entry.path()).filter(|path| {
+                path.extension().and_then(|value| value.to_str()) == Some("mira-plugin")
+                    && !path
+                        .file_name()
+                        .and_then(|value| value.to_str())
+                        .is_some_and(|name| name.contains(".rollback."))
+            }) {
+                let loaded = (|| -> Result<_, String> {
+                    let bytes = fs::read(&path)
+                        .map_err(|error| format!("read {}: {error}", path.display()))?;
+                    let (inspection, files) = extract_package(Cursor::new(&bytes), &trust, true)
+                        .map_err(|error| format!("verify {}: {error}", path.display()))?;
+                    let devices = hid::parse_devices_json(
+                        files
+                            .get("devices.json")
+                            .ok_or("installed plugin has no devices.json")?,
+                    )?;
+                    Ok((inspection, devices, files))
+                })();
+                match loaded {
+                    Ok(installed) => {
+                        let installed_version = semver::Version::parse(&installed.0.version).ok();
+                        let replace = plugins
+                            .iter()
+                            .position(|plugin| plugin.0.plugin_id == installed.0.plugin_id)
+                            .filter(|index| {
+                                let current =
+                                    semver::Version::parse(&plugins[*index].0.version).ok();
+                                installed_version > current
+                            });
+                        if let Some(index) = replace {
+                            plugins[index] = installed;
+                        } else if !plugins
+                            .iter()
+                            .any(|plugin| plugin.0.plugin_id == installed.0.plugin_id)
+                        {
+                            plugins.push(installed);
+                        }
+                    }
+                    Err(error) => eprintln!("[mira] installed plugin ignored: {error}"),
+                }
+            }
+        }
+    }
+    plugins
 }
 
 fn load_contact_links() -> ContactLinks {
@@ -736,6 +1725,224 @@ fn save_software_profiles(app: &AppHandle, profiles: &SoftwareProfileStore) -> R
     Ok(())
 }
 
+fn device_config_path(app: &AppHandle) -> Option<PathBuf> {
+    app.path()
+        .app_config_dir()
+        .ok()
+        .map(|dir| dir.join("device-config.json"))
+}
+
+fn read_json_path<'a>(value: &'a serde_json::Value, path: &str) -> Option<&'a serde_json::Value> {
+    path.split('.').try_fold(value, |current, segment| {
+        current.as_object().and_then(|object| object.get(segment))
+    })
+}
+
+fn exportable_value(snapshot: &DeviceSnapshot, field: &ExportableField) -> Option<serde_json::Value> {
+    // 复合字段：从多个快照路径组合为 object
+    if let Some(sources) = &field.sources {
+        let snapshot_value = serde_json::to_value(snapshot).ok()?;
+        let mut object = serde_json::Map::new();
+        for (param, path) in sources {
+            if let Some(value) = read_json_path(&snapshot_value, path) {
+                object.insert(param.clone(), value.clone());
+            }
+        }
+        return Some(serde_json::Value::Object(object));
+    }
+    // 显式声明的源路径
+    if let Some(source) = &field.source {
+        let snapshot_value = serde_json::to_value(snapshot).ok()?;
+        return read_json_path(&snapshot_value, source).cloned();
+    }
+    // 回退：直接从 capabilities map 取值
+    if let Some(value) = snapshot.capabilities.get(&field.id) {
+        return Some(value.clone());
+    }
+    // 回退：从 capability metadata 的 source 路径取值
+    let snapshot_value = serde_json::to_value(snapshot).ok()?;
+    snapshot
+        .plugin_capabilities
+        .iter()
+        .find(|capability| capability.id == field.id)
+        .and_then(|capability| capability.metadata.get("source"))
+        .and_then(serde_json::Value::as_str)
+        .and_then(|path| read_json_path(&snapshot_value, path))
+        .cloned()
+}
+
+fn current_plugin_for_primary_snapshot(
+    app: &AppHandle,
+) -> Result<(PackageInspection, DeviceSnapshot), String> {
+    let state = app.state::<SessionState>();
+    let (primary_path, snapshot) = {
+        let guard = state
+            .last_snapshot
+            .lock()
+            .map_err(|_| "device snapshot state unavailable".to_string())?;
+        primary_snapshot_entry(&guard)
+            .map(|(path, snapshot)| (path.clone(), snapshot.clone()))
+            .ok_or_else(|| "no device snapshot is available".to_string())?
+    };
+    let plugins_guard = state.plugins.lock().map_err(|_| "state lock failed")?;
+    let plugins = plugins_guard.as_ref().ok_or("plugins not loaded")?;
+    let mut hidapi_guard = state
+        .cached_hidapi
+        .lock()
+        .map_err(|_| "HidApi cache unavailable")?;
+    if hidapi_guard.is_none() {
+        *hidapi_guard = Some(HidApi::new().map_err(|e| e.to_string())?);
+    }
+    let api = hidapi_guard.as_mut().unwrap();
+    let _ = api.refresh_devices();
+    let matched = hid::enumerate_matched_devices(api, plugins);
+    let device = matched
+        .iter()
+        .find(|device| device.path == primary_path)
+        .ok_or("primary device is no longer connected")?;
+    let inspection = plugins
+        .iter()
+        .find(|(inspection, _, _)| inspection.plugin_id == device.plugin_id)
+        .map(|(inspection, _, _)| inspection.clone())
+        .ok_or("matched plugin is unavailable")?;
+    Ok((inspection, snapshot))
+}
+
+#[tauri::command]
+fn device_config_export(app: tauri::AppHandle, path: Option<String>) -> Result<serde_json::Value, String> {
+    let (inspection, snapshot) = current_plugin_for_primary_snapshot(&app)?;
+    if inspection.exportable_fields.is_empty() {
+        return Err(format!(
+            "plugin {} does not declare exportable fields",
+            inspection.plugin_id
+        ));
+    }
+    let mut fields = serde_json::Map::new();
+    for field in &inspection.exportable_fields {
+        if let Some(value) = exportable_value(&snapshot, field) {
+            fields.insert(field.export_key.clone(), value);
+        }
+    }
+    let config = serde_json::json!({
+        "schemaVersion": 1,
+        "pluginId": inspection.plugin_id,
+        "pluginVersion": inspection.version,
+        "device": snapshot.display_name,
+        "fields": fields,
+    });
+    // #11 支持用户指定导出路径（文件选择器），未指定时用默认 app config 路径。
+    let path = match path {
+        Some(p) => PathBuf::from(p),
+        None => device_config_path(&app).ok_or_else(|| "config dir unavailable".to_string())?,
+    };
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| format!("create config dir: {error}"))?;
+    }
+    let text =
+        serde_json::to_string_pretty(&config).map_err(|error| format!("serialize: {error}"))?;
+    fs::write(&path, text).map_err(|error| format!("write device config: {error}"))?;
+    Ok(config)
+}
+
+fn mutation_for_exportable(inspection: &PackageInspection, field: &ExportableField) -> (String, String) {
+    // 优先使用字段声明的 mutation 和 param
+    if let Some(mutation) = &field.mutation {
+        let param = field.param.clone().unwrap_or_else(|| "value".to_string());
+        return (mutation.clone(), param);
+    }
+    // 回退：从 capability metadata 推导
+    let field_id = &field.id;
+    for capability in &inspection.capabilities {
+        let mutation = capability
+            .metadata
+            .get("mutation")
+            .and_then(serde_json::Value::as_str);
+        if &capability.id == field_id {
+            if let Some(mutation) = mutation {
+                let param = capability
+                    .metadata
+                    .get("param")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("value");
+                return (mutation.to_string(), param.to_string());
+            }
+        }
+        if mutation == Some(field_id.as_str()) {
+            let param = capability
+                .metadata
+                .get("param")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("value");
+            return (field_id.clone(), param.to_string());
+        }
+    }
+    (field_id.clone(), "value".to_string())
+}
+
+#[tauri::command]
+fn device_config_import(app: tauri::AppHandle, path: Option<String>) -> Result<DeviceSnapshot, String> {
+    // #11 支持用户指定导入路径（文件选择器），未指定时用默认 app config 路径。
+    let path = match path {
+        Some(p) => PathBuf::from(p),
+        None => device_config_path(&app).ok_or_else(|| "config dir unavailable".to_string())?,
+    };
+    let config: serde_json::Value = fs::read_to_string(&path)
+        .map_err(|error| format!("read device config: {error}"))
+        .and_then(|text| {
+            serde_json::from_str(&text).map_err(|error| format!("parse device config: {error}"))
+        })?;
+    if config
+        .get("schemaVersion")
+        .and_then(serde_json::Value::as_u64)
+        != Some(1)
+    {
+        return Err("unsupported device config schema".into());
+    }
+    let fields = config
+        .get("fields")
+        .and_then(serde_json::Value::as_object)
+        .ok_or("device config has no fields object")?;
+    let (inspection, snapshot) = current_plugin_for_primary_snapshot(&app)?;
+    if config.get("pluginId").and_then(serde_json::Value::as_str)
+        != Some(inspection.plugin_id.as_str())
+    {
+        return Err("device config plugin does not match the connected device".into());
+    }
+    let mut latest = snapshot;
+    let mut applied: Vec<String> = Vec::new();
+    for field in &inspection.exportable_fields {
+        let Some(value) = fields.get(&field.export_key) else {
+            continue;
+        };
+        let (mutation, param) = mutation_for_exportable(&inspection, field);
+        // 复合字段（object）：将键值展开为 mutation 参数
+        // 标量字段：使用单个 param 包装
+        let params = match value {
+            serde_json::Value::Object(map) => map.clone(),
+            _ => serde_json::Map::from_iter([(param, value.clone())]),
+        };
+        match device_mutate_blocking(&app, &mutation, &params) {
+            Ok(snapshot) => {
+                latest = snapshot;
+                applied.push(field.export_key.clone());
+            }
+            Err(error) => {
+                // 修复 #11：导入逐字段写入，第 N 字段失败时前 N-1 个已生效。
+                // 返回包含已成功字段列表的错误，让用户知道设备已部分变更。
+                if applied.is_empty() {
+                    return Err(error);
+                }
+                return Err(format!(
+                    "导入在字段 {export_key} 失败：{error}。已成功导入字段：{applied_list}。建议重新导出当前配置或手动校准未导入字段。",
+                    export_key = field.export_key,
+                    applied_list = applied.join(", ")
+                ));
+            }
+        }
+    }
+    Ok(latest)
+}
+
 fn control_mode(reading: &DeviceReading) -> Option<u8> {
     reading
         .capabilities
@@ -830,8 +2037,23 @@ fn runtime_connection(value: ConnectionKind) -> mira_core::Connection {
     }
 }
 
+fn capability_connection_label(value: mira_core::Connection) -> &'static str {
+    match value {
+        mira_core::Connection::Usb => "usb",
+        mira_core::Connection::Wireless => "receiver",
+        mira_core::Connection::Bluetooth => "bluetooth",
+        mira_core::Connection::Virtual => "usb",
+    }
+}
+
 fn device_evidence_allows_writes(evidence: &str) -> bool {
     matches!(evidence, "hardware-verified" | "protocol-verified")
+}
+
+fn snapshot_allows_writes(snapshot: &DeviceSnapshot) -> bool {
+    !snapshot.readonly
+        && device_evidence_allows_writes(&snapshot.evidence)
+        && !snapshot.writable_mutations.is_empty()
 }
 
 fn display_name(
@@ -883,6 +2105,16 @@ fn build_device_snapshot(
             .and_then(serde_json::Value::as_str)
             .map(str::to_string)
     });
+    let readonly = !(inspection.signature_verified && inspection.writes_enabled);
+    // 能力动态协商：用 workflow 输出计算每个能力的 available 标记。
+    // 在 reading.capabilities 被移动前借用，传给 plugin_capabilities。
+    // #3 连接类型能力分支：优先使用 workflow 实际读到的连接类型，
+    // 避免 devices.json fallback 与真实连接不一致时误判能力可见性。
+    let plugin_capabilities = plugin_capabilities(
+        inspection,
+        &reading.capabilities,
+        capability_connection_label(resolved_connection),
+    );
     DeviceSnapshot {
         display_name: resolved_name,
         connection: resolved_connection,
@@ -896,15 +2128,27 @@ fn build_device_snapshot(
         profile: reading.profile.map(|p| (p + 1).to_string()),
         confirmed_light_color,
         capabilities: reading.capabilities,
-        plugin_capabilities: plugin_capabilities(inspection),
+        plugin_capabilities,
         writable_mutations,
         evidence: device.evidence.clone(),
+        readonly,
     }
 }
 
 #[tauri::command]
 fn device_snapshot(state: tauri::State<'_, SessionState>) -> Option<DeviceSnapshot> {
-    state.last_snapshot.lock().ok()?.as_ref().cloned()
+    let guard = state.last_snapshot.lock().ok()?;
+    primary_snapshot(&guard).cloned()
+}
+
+/// 返回所有已连接设备的快照列表，供未来多设备 UI 使用。
+#[tauri::command]
+fn device_snapshots(state: tauri::State<'_, SessionState>) -> Vec<DeviceSnapshot> {
+    state
+        .last_snapshot
+        .lock()
+        .map(|guard| guard.values().cloned().collect())
+        .unwrap_or_default()
 }
 
 /// Trigger an immediate device read on the background thread.
@@ -924,6 +2168,14 @@ struct SoftwareProfileRuntime<'a> {
     package: &'a ProtocolPackage,
 }
 
+/// 在读取路径中恢复软件配置（控制模式 + 已保存的 mutation）。
+///
+/// 注意：此函数在 `read_device_once` 持有 `device_io` 锁期间调用，**不经过
+/// `begin_device_write` 写入队列**。这是有意为之——`device_mutate_blocking` 的
+/// 锁顺序是 `write_in_progress` → `device_io`，若此处再获取 `write_in_progress`
+/// 会形成 `device_io` → `write_in_progress` 的反向锁顺序，导致死锁。
+/// 此处的写入由 `device_io` 锁序列化（与 `device_mutate_blocking` 互斥），
+/// 且仅对已验证插件的 `allowed` mutation 执行，安全性等价。
 fn reapply_software_profile(
     app: &AppHandle,
     state: &SessionState,
@@ -1006,8 +2258,9 @@ enum DeviceReadOutcome {
     Skip,
     /// Device disconnected or read failed — clear the cached state.
     Clear,
-    /// Read succeeded — publish the snapshot.
-    Ready(Box<DeviceSnapshot>),
+    /// Read succeeded — publish snapshots for all matched devices.
+    /// 修复 #10：携带所有 matched 设备的快照，实现多设备并行读取。
+    Ready(Vec<(String, DeviceSnapshot)>),
 }
 
 /// Read the device once, update the cached snapshot, and emit `device-updated`.
@@ -1045,31 +2298,70 @@ fn read_device_once(app: &AppHandle) {
         #[cfg(debug_assertions)]
         eprintln!("[mira] background: matched {} device(s)", matched.len());
 
-        let first = match matched
-            .iter()
-            .find(|device| device_evidence_allows_writes(&device.evidence))
-            .or_else(|| matched.first())
-        {
-            Some(device) => device,
-            None => return Some(DeviceReadOutcome::Clear),
-        };
+        // 修复 #10：遍历所有 matched 设备，逐个读取并收集快照。
+        if matched.is_empty() {
+            return Some(DeviceReadOutcome::Clear);
+        }
+        let mut entries: Vec<(String, DeviceSnapshot)> = Vec::new();
+        for device in &matched {
+            let (inspection, devices, plugin_files) = match plugins
+                .iter()
+                .find(|(inspection, _, _)| inspection.plugin_id == device.plugin_id)
+            {
+                Some(triple) => triple,
+                None => continue,
+            };
 
-        let (inspection, devices, plugin_files) = plugins
-            .iter()
-            .find(|(inspection, _, _)| inspection.plugin_id == first.plugin_id)?;
+            let (connection, kind) = connection_kind(&device.connection);
 
-        let (connection, kind) = connection_kind(&first.connection);
+            // 缓存命中时直接复用 Arc<ProtocolPackage>，避免每轮轮询都解析 JSON。
+            let package = match get_or_parse_package(
+                &state,
+                inspection,
+                device.model.as_deref(),
+                plugin_files,
+                plugins,
+            ) {
+                Ok(pkg) => pkg,
+                Err(_) => continue,
+            };
 
-        // Parse the protocol package once and reuse it for both read and
-        // writable_mutations to avoid re-parsing the JSON files twice per poll.
-        let package = ProtocolPackage::from_files(plugin_files).ok()?;
-        Some(
+            // #9 防抖式 TTL 缓存：非 settling 状态下，500ms 内复用快照跳过 HID 往返。
+            // settling 期间需要快速轮询捕捉状态变化，不缓存。
+            let settling = state
+                .settling_polls
+                .lock()
+                .map(|s| *s > 0)
+                .unwrap_or(false);
+            if !settling {
+                let cache_hit = state
+                    .last_read_at
+                    .lock()
+                    .ok()
+                    .is_some_and(|cache| {
+                        cache
+                            .get(&device.path)
+                            .is_some_and(|t| t.elapsed() < READ_DEBOUNCE_TTL)
+                    });
+                if cache_hit {
+                    if let Some(snapshot) = state
+                        .last_snapshot
+                        .lock()
+                        .ok()
+                        .and_then(|map| map.get(&device.path).cloned())
+                    {
+                        entries.push((device.path.clone(), snapshot));
+                        continue;
+                    }
+                }
+            }
+
             match read_device_with_package(
                 &package,
                 &ProtocolContext {
                     api,
-                    path: &first.path,
-                    family: &first.family,
+                    path: &device.path,
+                    family: &device.family,
                     connection: kind,
                     files: plugin_files,
                     outputs: BTreeMap::new(),
@@ -1078,14 +2370,14 @@ fn read_device_once(app: &AppHandle) {
                 Ok(mut reading) => {
                     let writable_mutations = if inspection.signature_verified
                         && inspection.writes_enabled
-                        && device_evidence_allows_writes(&first.evidence)
+                        && device_evidence_allows_writes(&device.evidence)
                     {
                         writable_mutations_with_package(
                             &package,
                             &ProtocolContext {
                                 api,
-                                path: &first.path,
-                                family: &first.family,
+                                path: &device.path,
+                                family: &device.family,
                                 connection: kind,
                                 files: plugin_files,
                                 outputs: reading.capabilities.clone(),
@@ -1098,7 +2390,7 @@ fn read_device_once(app: &AppHandle) {
                     if let Some(updated) = reapply_software_profile(
                         app,
                         &state,
-                        first,
+                        device,
                         &reading,
                         &writable_mutations,
                         &SoftwareProfileRuntime {
@@ -1114,22 +2406,31 @@ fn read_device_once(app: &AppHandle) {
                         reading,
                         inspection,
                         devices,
-                        first,
+                        device,
                         connection,
                         writable_mutations,
                         None,
                     );
-                    DeviceReadOutcome::Ready(Box::new(snapshot))
+                    entries.push((device.path.clone(), snapshot));
+                    // #9 记录读取时间戳，供下一轮 TTL 防抖判断。
+                    if let Ok(mut cache) = state.last_read_at.lock() {
+                        cache.insert(device.path.clone(), Instant::now());
+                    }
                 }
                 Err(error) => {
                     eprintln!(
                         "[mira] background read failed for {}: {error}",
-                        first.family
+                        device.family
                     );
-                    DeviceReadOutcome::Clear
                 }
-            },
-        )
+            }
+        }
+
+        if entries.is_empty() {
+            Some(DeviceReadOutcome::Clear)
+        } else {
+            Some(DeviceReadOutcome::Ready(entries))
+        }
     })()
     .unwrap_or(DeviceReadOutcome::Skip);
 
@@ -1141,40 +2442,44 @@ fn read_device_once(app: &AppHandle) {
             if let Ok(mut applied) = state.applied_software_profiles.lock() {
                 applied.clear();
             }
-            store_snapshot(&state, None);
+            clear_snapshots(&state);
             let _ = app.emit("device-updated", Option::<DeviceSnapshot>::None);
             let _ = update_tray(app, None, &cached_settings(app));
         }
-        DeviceReadOutcome::Ready(snapshot) => {
-            let snapshot = *snapshot;
-            store_snapshot(&state, Some(snapshot.clone()));
-            // 通知前端有新数据，前端通过事件监听更新，无需轮询
-            let _ = app.emit("device-updated", &snapshot);
-            let settings = cached_settings(app);
-            let _ = update_tray(app, Some(&snapshot), &settings);
-            // 低电量跨阈值检测：充电时不触发，充电结束后若仍低于阈值才再次提醒
-            let battery_value = if mouse_battery_charging(&snapshot) {
-                None
-            } else {
-                mouse_battery_percentage(&snapshot)
-            };
-            let threshold = settings.low_battery_threshold;
-            let notify = state
-                .low_battery
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .update(battery_value, threshold);
-            if notify {
-                if let Some(percent) = battery_value {
-                    let _ = app
-                        .notification()
-                        .builder()
-                        .title("低电量提醒")
-                        .body(format!(
-                            "鼠标电量已低于 {}%（当前 {}%）",
-                            threshold, percent
-                        ))
-                        .show();
+        DeviceReadOutcome::Ready(entries) => {
+            // 多设备管理：用当前 matched 设备的快照整体替换 map，清除已断开的设备。
+            let new_map: BTreeMap<String, DeviceSnapshot> = entries.iter().cloned().collect();
+            store_snapshots(&state, new_map.clone());
+            // 选择 primary 设备通知前端（向后兼容单设备 API）。
+            if let Some(snapshot) = primary_snapshot(&new_map).cloned() {
+                // 通知前端有新数据，前端通过事件监听更新，无需轮询
+                let _ = app.emit("device-updated", &snapshot);
+                let settings = cached_settings(app);
+                let _ = update_tray(app, Some(&snapshot), &settings);
+                // 低电量跨阈值检测：充电时不触发，充电结束后若仍低于阈值才再次提醒
+                let battery_value = if mouse_battery_charging(&snapshot) {
+                    None
+                } else {
+                    mouse_battery_percentage(&snapshot)
+                };
+                let threshold = settings.low_battery_threshold;
+                let notify = state
+                    .low_battery
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .update(battery_value, threshold);
+                if notify {
+                    if let Some(percent) = battery_value {
+                        let _ = app
+                            .notification()
+                            .builder()
+                            .title("低电量提醒")
+                            .body(format!(
+                                "鼠标电量已低于 {}%（当前 {}%）",
+                                threshold, percent
+                            ))
+                            .show();
+                    }
                 }
             }
         }
@@ -1214,11 +2519,11 @@ fn spawn_device_reader(app: AppHandle) {
             .and_then(|window| window.is_visible().ok())
             .unwrap_or(false);
         let (connected, settling_now) = {
-            let connected = state
+            let connected = !state
                 .last_snapshot
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .is_some();
+                .is_empty();
             let mut settling = state
                 .settling_polls
                 .lock()
@@ -1313,13 +2618,14 @@ fn discover_devices(
         .collect())
 }
 
-struct WriteFlagGuard<'a>(&'a Mutex<bool>);
+struct WriteFlagGuard<'a>(&'a Mutex<bool>, &'a Condvar);
 
 impl Drop for WriteFlagGuard<'_> {
     fn drop(&mut self) {
         if let Ok(mut active) = self.0.lock() {
             *active = false;
         }
+        self.1.notify_one();
     }
 }
 
@@ -1328,12 +2634,19 @@ fn begin_device_write(state: &SessionState) -> Result<WriteFlagGuard<'_>, String
         .write_in_progress
         .lock()
         .map_err(|_| "transaction state unavailable")?;
-    if *active {
-        return Err("A device write is still in progress".into());
+    // 排队等待前一个写入完成。最多等 25 秒，留 5 秒给实际 HID 写入，
+    // 配合 device_mutate 的 30 秒总超时。
+    let (guard, wait_result) = state
+        .write_cond
+        .wait_timeout_while(active, Duration::from_secs(25), |a| *a)
+        .map_err(|_| "transaction state unavailable")?;
+    active = guard;
+    if *active || wait_result.timed_out() {
+        return Err("写入排队超时：前一个写入仍未完成，请稍后重试".into());
     }
     *active = true;
     drop(active);
-    Ok(WriteFlagGuard(&state.write_in_progress))
+    Ok(WriteFlagGuard(&state.write_in_progress, &state.write_cond))
 }
 
 fn remember_software_profile(
@@ -1392,7 +2705,7 @@ async fn device_mutate(
     match rx.recv_timeout(std::time::Duration::from_secs(30)) {
         Ok(result) => result,
         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-            Err("设备写入超时（30 秒）。鼠标可能处于休眠状态，请移动鼠标唤醒后重试。".into())
+            Err("设备写入超时（30 秒）。鼠标可能处于休眠状态，请移动鼠标唤醒后重试。写入可能仍在后台执行，设备状态将在完成后自动刷新。".into())
         }
         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err("设备写入线程异常退出".into()),
     }
@@ -1404,10 +2717,10 @@ fn device_mutate_blocking(
     params: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<DeviceSnapshot, String> {
     let state = app.state::<SessionState>();
-    // Lock scope: only HID I/O, snapshot construction and profile bookkeeping.
-    // Disk reads (load_settings), tray updates and event emission run after the
-    // locks are released so they cannot block discover_devices or reads.
-    let snapshot = {
+    // Lock scope: only HID I/O and snapshot construction.
+    // Disk I/O (profile save, load_settings), tray updates and event emission
+    // run after the locks are released so they cannot block discover_devices or reads.
+    let (device_path, snapshot, profile_remember) = {
         let _write_guard = begin_device_write(&state)?;
         let _io_guard = state
             .device_io
@@ -1427,9 +2740,23 @@ fn device_mutate_blocking(
         let _ = cached_api.refresh_devices();
         let api: &HidApi = cached_api;
         let matched = hid::enumerate_matched_devices(api, plugins);
+        // 修复 #10：优先写入 primary 设备（与前端展示一致）。
+        // 多设备并存时，按枚举顺序的 find(first writable) 会误写非目标设备。
+        // 这里从 last_snapshot 取 primary 设备的 HID 路径精确定位；
+        // primary 已断开时回退到第一个可写设备，再回退到首个匹配设备。
+        let primary_path = state
+            .last_snapshot
+            .lock()
+            .ok()
+            .and_then(|guard| primary_snapshot_entry(&guard).map(|(path, _)| path.clone()));
         let device = matched
             .iter()
-            .find(|device| device_evidence_allows_writes(&device.evidence))
+            .find(|device| Some(&device.path) == primary_path.as_ref())
+            .or_else(|| {
+                matched
+                    .iter()
+                    .find(|device| device_evidence_allows_writes(&device.evidence))
+            })
             .or_else(|| matched.first())
             .ok_or("supported device is not connected")?;
         let (inspection, devices, files) = plugins
@@ -1446,7 +2773,9 @@ fn device_mutate_blocking(
         let (connection, kind) = connection_kind(&device.connection);
         // Parse the protocol package once and reuse it for writable_mutations,
         // read_device, and mutate_device to avoid re-parsing the JSON files 4 times.
-        let package = ProtocolPackage::from_files(files)?;
+        // 缓存命中时复用 Arc<ProtocolPackage>，写入路径同样受益。
+        let package =
+            get_or_parse_package(&state, inspection, device.model.as_deref(), files, plugins)?;
         let context = ProtocolContext {
             api,
             path: &device.path,
@@ -1471,8 +2800,15 @@ fn device_mutate_blocking(
         let mutation_result =
             mutate_device_with_package(&package, &mutate_context, mutation, params)?;
         let reading = read_device_with_package(&package, &context)?;
-        remember_software_profile(app, &state, device, &reading, &allowed, mutation, params)?;
-        build_device_snapshot(
+        // 修复 P-2：remember_software_profile 涉及磁盘 I/O（save_software_profiles），
+        // 原代码在锁作用域内调用，违反 L2720-2722 注释承诺，会阻塞并发
+        // discover_devices / read。改为仅在锁内 clone 所需数据，锁外再执行磁盘写入。
+        let profile_remember = if control_mode(&reading).is_some() {
+            Some((device.clone(), reading.clone(), allowed.clone()))
+        } else {
+            None
+        };
+        let snapshot = build_device_snapshot(
             reading,
             inspection,
             devices,
@@ -1480,12 +2816,30 @@ fn device_mutate_blocking(
             connection,
             allowed,
             Some(&mutation_result),
-        )
+        );
+        (device.path.clone(), snapshot, profile_remember)
     };
 
     // Post-lock: disk I/O, tray updates and event emission run without holding
     // device_io or plugins locks so concurrent reads are not blocked.
-    store_snapshot(&state, Some(snapshot.clone()));
+    // 修复 P-2：remember_software_profile 在锁外执行磁盘写入，保持与注释承诺一致。
+    if let Some((device_clone, reading_clone, allowed_clone)) = profile_remember {
+        remember_software_profile(
+            app,
+            &state,
+            &device_clone,
+            &reading_clone,
+            &allowed_clone,
+            mutation,
+            params,
+        )?;
+    }
+    // 修复 #10：用单条 insert 替代 clone→insert→store，避免覆盖其他设备的快照。
+    store_snapshot(&state, device_path.clone(), snapshot.clone());
+    // #9 写入后清除 TTL 缓存，确保下一轮读取强制刷新 HID。
+    if let Ok(mut cache) = state.last_read_at.lock() {
+        cache.remove(&device_path);
+    }
     let _ = app.emit("device-updated", &snapshot);
     let _ = update_tray(app, Some(&snapshot), &cached_settings(app));
     Ok(snapshot)
@@ -1512,10 +2866,194 @@ fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
     }
 }
 
+fn active_plugin_versions(app: &AppHandle) -> Result<BTreeMap<String, String>, String> {
+    let state = app.state::<SessionState>();
+    let plugins = state
+        .plugins
+        .lock()
+        .map_err(|_| "plugin state lock failed".to_string())?;
+    Ok(plugins
+        .as_ref()
+        .into_iter()
+        .flatten()
+        .map(|plugin| (plugin.0.plugin_id.clone(), plugin.0.version.clone()))
+        .collect())
+}
+
+#[tauri::command]
+async fn plugin_updates_check(app: tauri::AppHandle) -> Result<Vec<PluginUpdateInfo>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let current = active_plugin_versions(&app)?;
+        plugin_updates_for_versions(&current, fetch_plugin_registry()?)
+    })
+    .await
+    .map_err(|error| format!("plugin update task failed: {error}"))?
+}
+
+fn find_installed_plugin_path(
+    directory: &std::path::Path,
+    plugin_id: &str,
+    trust: &TrustStore,
+) -> Option<PathBuf> {
+    fs::read_dir(directory)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension().and_then(|value| value.to_str()) == Some("mira-plugin")
+                && !path
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|name| name.contains(".rollback."))
+        })
+        .find(|path| {
+            fs::read(path)
+                .ok()
+                .and_then(|bytes| inspect_package(Cursor::new(bytes), trust, true).ok())
+                .is_some_and(|inspection| inspection.plugin_id == plugin_id)
+        })
+}
+
+fn install_plugin_update(app: &AppHandle, plugin_id: &str) -> Result<PluginInstallResult, String> {
+    let current = active_plugin_versions(app)?;
+    let previous_version = current
+        .get(plugin_id)
+        .cloned()
+        .ok_or_else(|| format!("plugin {plugin_id} is not installed"))?;
+    let registry = fetch_plugin_registry()?;
+    let entry = registry
+        .plugins
+        .into_iter()
+        .find(|entry| entry.plugin_id == plugin_id)
+        .ok_or_else(|| format!("plugin {plugin_id} is not in the update registry"))?;
+    let current_semver = semver::Version::parse(&previous_version)
+        .map_err(|error| format!("invalid installed version: {error}"))?;
+    let next_semver = semver::Version::parse(&entry.version)
+        .map_err(|error| format!("invalid registry version: {error}"))?;
+    if next_semver <= current_semver {
+        return Err(format!("plugin {plugin_id} is already up to date"));
+    }
+    let allowed_prefix = "https://github.com/hello-yunshu/mira-mouse-plugins/releases/download/";
+    if !entry.url.starts_with(allowed_prefix) {
+        return Err("plugin asset URL is outside the trusted release origin".into());
+    }
+    let bytes = fetch_bounded(&entry.url, MAX_PLUGIN_BYTES)?;
+    let actual_sha = hex::encode(Sha256::digest(&bytes));
+    if actual_sha != entry.sha256 {
+        return Err(format!(
+            "plugin SHA-256 mismatch: expected {}, got {actual_sha}",
+            entry.sha256
+        ));
+    }
+    let trust = production_trust_store();
+    let (inspection, files) = extract_package(Cursor::new(&bytes), &trust, true)
+        .map_err(|error| format!("plugin signature or package validation failed: {error}"))?;
+    if inspection.plugin_id != entry.plugin_id || inspection.version != entry.version {
+        return Err("plugin registry identity does not match signed package".into());
+    }
+    let manifest: serde_json::Value = serde_json::from_slice(
+        files
+            .get("plugin.json")
+            .ok_or("signed package has no plugin.json")?,
+    )
+    .map_err(|error| format!("parse signed plugin manifest: {error}"))?;
+    if manifest
+        .get("publisherKeyId")
+        .and_then(serde_json::Value::as_str)
+        != Some(entry.publisher_key_id.as_str())
+    {
+        return Err("plugin registry publisher does not match signed package".into());
+    }
+    let devices = hid::parse_devices_json(
+        files
+            .get("devices.json")
+            .ok_or("signed package has no devices.json")?,
+    )?;
+
+    let directory = installed_plugins_dir(app)?;
+    fs::create_dir_all(&directory).map_err(|error| format!("create plugin directory: {error}"))?;
+    let previous_path = find_installed_plugin_path(&directory, plugin_id, &trust);
+    let backup_path = directory.join(format!("{plugin_id}.rollback.mira-plugin"));
+    if backup_path.exists() {
+        fs::remove_file(&backup_path).map_err(|error| format!("remove stale rollback: {error}"))?;
+    }
+    if let Some(path) = &previous_path {
+        fs::rename(path, &backup_path)
+            .map_err(|error| format!("prepare plugin rollback: {error}"))?;
+    }
+    let final_path = directory.join(format!("{plugin_id}-{}.mira-plugin", entry.version));
+    let write_result = (|| -> Result<(), String> {
+        let mut temporary = tempfile::NamedTempFile::new_in(&directory)
+            .map_err(|error| format!("create plugin temporary file: {error}"))?;
+        std::io::Write::write_all(&mut temporary, &bytes)
+            .map_err(|error| format!("write plugin temporary file: {error}"))?;
+        temporary
+            .as_file()
+            .sync_all()
+            .map_err(|error| format!("sync plugin temporary file: {error}"))?;
+        temporary
+            .persist(&final_path)
+            .map_err(|error| format!("install plugin atomically: {}", error.error))?;
+        Ok(())
+    })();
+    if let Err(error) = write_result {
+        if backup_path.exists() {
+            if let Some(path) = &previous_path {
+                let _ = fs::rename(&backup_path, path);
+            }
+        }
+        return Err(error);
+    }
+
+    let runtime_result = {
+        let state = app.state::<SessionState>();
+        let result = state
+            .plugins
+            .lock()
+            .map_err(|_| "plugin state lock failed".to_string())
+            .map(|mut plugins| {
+                let active = plugins.get_or_insert_with(Vec::new);
+                active.retain(|plugin| plugin.0.plugin_id != plugin_id);
+                active.push((inspection, devices, files));
+            });
+        // 插件集合变化后清空 ProtocolPackage 缓存，避免使用旧版本解析结果。
+        invalidate_package_cache(&state);
+        result
+    };
+    if let Err(error) = runtime_result {
+        let _ = fs::remove_file(&final_path);
+        if backup_path.exists() {
+            if let Some(path) = &previous_path {
+                let _ = fs::rename(&backup_path, path);
+            }
+        }
+        return Err(error);
+    }
+    if backup_path.exists() {
+        let _ = fs::remove_file(&backup_path);
+    }
+    Ok(PluginInstallResult {
+        plugin_id: plugin_id.to_string(),
+        version: entry.version,
+        previous_version,
+        restarted_runtime: true,
+    })
+}
+
+#[tauri::command]
+async fn plugin_update_install(
+    app: tauri::AppHandle,
+    plugin_id: String,
+) -> Result<PluginInstallResult, String> {
+    tauri::async_runtime::spawn_blocking(move || install_plugin_update(&app, &plugin_id))
+        .await
+        .map_err(|error| format!("plugin install task failed: {error}"))?
+}
+
 #[tauri::command]
 fn about_info(app: tauri::AppHandle) -> Result<AboutInfo, String> {
     let package = app.package_info();
-    let bundled = cached_bundled_plugins(&app);
+    let bundled = active_plugins_info(&app);
     Ok(AboutInfo {
         name: package.name.to_string(),
         version: package.version.to_string(),
@@ -1527,7 +3065,7 @@ fn about_info(app: tauri::AppHandle) -> Result<AboutInfo, String> {
         git_commit: env!("GIT_COMMIT").to_string(),
         bundled_plugins: bundled,
         contact: load_contact_links(),
-        updater_active: true,
+        updater_active: read_lock_file().is_some_and(|lock| lock.release_ready),
     })
 }
 
@@ -1554,7 +3092,7 @@ fn settings_set(app: tauri::AppHandle, settings: AppSettings) -> Result<AppSetti
         .last_snapshot
         .lock()
         .ok()
-        .and_then(|snapshot| snapshot.clone());
+        .and_then(|guard| primary_snapshot(&guard).cloned());
     update_tray(&app, snapshot.as_ref(), &settings)
         .map_err(|error| format!("update tray: {error}"))?;
     Ok(settings)
@@ -1563,7 +3101,7 @@ fn settings_set(app: tauri::AppHandle, settings: AppSettings) -> Result<AppSetti
 #[tauri::command]
 fn export_diagnostics(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     let package = app.package_info();
-    let bundled = cached_bundled_plugins(&app);
+    let bundled = active_plugins_info(&app);
     // Diagnostics are intentionally minimal and sanitized: no serial numbers,
     // no HID report payloads, no user device identifiers. Only app metadata,
     // platform, and bundled plugin verification status are included.
@@ -1578,7 +3116,7 @@ fn export_diagnostics(app: tauri::AppHandle) -> Result<serde_json::Value, String
         "rust_version": env!("CARGO_PKG_RUST_VERSION"),
         "autostart_enabled": app.autolaunch().is_enabled().unwrap_or(false),
         "bundled_plugins": bundled,
-        "updater_active": true,
+        "updater_active": read_lock_file().is_some_and(|lock| lock.release_ready),
         "note": "Diagnostics contain no device serial numbers, HID payloads, or user-identifying data.",
     }))
 }
@@ -1958,7 +3496,7 @@ fn build_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .last_snapshot
         .lock()
         .ok()
-        .and_then(|value| value.clone());
+        .and_then(|guard| primary_snapshot(&guard).cloned());
     update_tray(app.handle(), snapshot.as_ref(), &settings)?;
     Ok(())
 }
@@ -1971,7 +3509,9 @@ pub fn run() {
             focus_main(app.get_webview_window("main"))
         }))
         .plugin(tauri_plugin_autostart::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             // macOS native Vibrancy backdrop.
@@ -2000,10 +3540,12 @@ pub fn run() {
             let plugins = load_bundled_plugin_devices(app.handle());
             #[cfg(debug_assertions)]
             eprintln!("[mira] loaded {} bundled plugin(s)", plugins.len());
-            *app.state::<SessionState>()
-                .plugins
-                .lock()
-                .unwrap_or_else(|e| e.into_inner()) = Some(plugins);
+            {
+                let state = app.state::<SessionState>();
+                *state.plugins.lock().unwrap_or_else(|e| e.into_inner()) = Some(plugins);
+                // 启动加载后清空缓存，确保首次读取使用最新插件文件。
+                invalidate_package_cache(&state);
+            }
 
             // Retry tray setup a few times: on some platforms the tray is not
             // ready immediately at startup and a single attempt fails silently.
@@ -2063,7 +3605,7 @@ pub fn run() {
                                 .last_snapshot
                                 .lock()
                                 .ok()
-                                .and_then(|guard| guard.clone());
+                                .and_then(|guard| primary_snapshot(&guard).cloned());
                             let settings = cached_settings(&app_handle);
                             let _ = update_tray(&app_handle, snapshot.as_ref(), &settings);
                         }
@@ -2099,11 +3641,16 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             device_snapshot,
+            device_snapshots,
             device_refresh,
             device_mutate,
             discover_devices,
             autostart_state,
             set_autostart,
+            plugin_updates_check,
+            plugin_update_install,
+            device_config_export,
+            device_config_import,
             about_info,
             settings_get,
             settings_set,

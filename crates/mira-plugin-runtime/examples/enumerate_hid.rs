@@ -282,6 +282,16 @@ fn print_onboard_profile_summary(outputs: &BTreeMap<String, Value>) {
         .and_then(Value::as_u64)
         .and_then(|size| usize::try_from(size).ok())
         .unwrap_or(256);
+    // Issue 4 防御：onboard-read workflow 使用固定 15+1 块结构（每块 16 字节），
+    // 仅覆盖 sectorSize <= 256。超出时中间区域为空洞（全 0），CRC 校验会失败。
+    // 主流 Logitech 设备 sectorSize=256 不触发；未来若出现更大扇区，
+    // 需通过 models/ 型号覆盖或引擎循环支持来扩展。
+    if sector_size > 256 {
+        eprintln!(
+            "onboard summary: WARNING sectorSize={sector_size} exceeds 256-byte coverage of the fixed 15+1 chunk workflow; bytes 240..{} will be zero-filled (incomplete data)",
+            sector_size.saturating_sub(16)
+        );
+    }
     let mut profile = vec![0u8; sector_size];
     for index in 0..16 {
         let key = format!("onboardProfileChunk{index:02}");

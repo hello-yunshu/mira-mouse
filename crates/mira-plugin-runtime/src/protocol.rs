@@ -110,6 +110,7 @@ fn standard_reading(
     // Prefer device-reported rates from the protocol; fall back to the static
     // plugin manifest so the UI always receives a supported list.
     if let Some(rates) = object(&outputs, "reportRateList")
+        .or_else(|| object(&outputs, "reportRateListExtended"))
         .and_then(|value| value.get("supportedRates"))
         .and_then(Value::as_array)
     {
@@ -229,7 +230,7 @@ fn standard_reading(
             .insert("profile".into(), Value::Object(profile));
     }
 
-    if let Some(dpi) = object(&outputs, "dpi") {
+    if let Some(dpi) = object(&outputs, "dpi").or_else(|| object(&outputs, "dpiExtended")) {
         let current = number(dpi, "currentStage").and_then(|value| usize::try_from(value).ok());
         let values = array(dpi, "dpiX");
         let colors = array(dpi, "stageColors");
@@ -280,7 +281,9 @@ fn standard_reading(
         }
     }
 
-    if let Some(settings) = object(&outputs, "settings") {
+    if let Some(settings) =
+        object(&outputs, "settings").or_else(|| object(&outputs, "settingsExtended"))
+    {
         reading.polling_rate_hz =
             number(settings, "pollingRate").and_then(|value| u16::try_from(value).ok());
     }
@@ -444,6 +447,28 @@ mod tests {
         assert_eq!(
             reading.supported_polling_rates_hz,
             Some(vec![1000, 500, 125])
+        );
+    }
+
+    #[test]
+    fn reads_extended_hidpp_dpi_and_polling_rate() {
+        let outputs = BTreeMap::from([
+            (
+                "dpiExtended".into(),
+                json!({"dpiValue": 2400, "sensorIndex": 0}),
+            ),
+            ("settingsExtended".into(), json!({"pollingRate": 8000})),
+            (
+                "reportRateListExtended".into(),
+                json!({"rateListFlags": 0x0078, "supportedRates": [1000, 2000, 4000, 8000]}),
+            ),
+        ]);
+        let reading = standard_reading(outputs, None);
+        assert_eq!(reading.dpi, Some(2400));
+        assert_eq!(reading.polling_rate_hz, Some(8000));
+        assert_eq!(
+            reading.supported_polling_rates_hz,
+            Some(vec![1000, 2000, 4000, 8000])
         );
     }
 

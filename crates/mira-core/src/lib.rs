@@ -31,6 +31,23 @@ pub struct PluginCapability {
     pub placements: Vec<PluginCapabilityPlacement>,
     #[serde(default)]
     pub metadata: BTreeMap<String, Value>,
+    /// 设备实际是否支持该能力（运行时探测结果）。
+    /// 由 Host 根据 probe 声明和 workflow 输出计算，前端据此过滤渲染。
+    /// 默认 true（向后兼容：无 probe 声明的能力始终可用）。
+    #[serde(default = "default_available")]
+    pub available: bool,
+    /// 连接类型能力分支（#3）：声明该能力仅在指定连接类型下可见。
+    /// 可选值："usb"、"receiver"、"bluetooth"。未声明时所有连接类型均可见。
+    #[serde(default)]
+    pub connections: Option<Vec<String>>,
+    /// 固件版本门槛（#4）：声明该能力所需的最低固件版本。
+    /// 格式为 semver（如 "1.2.3"）。未声明时无版本限制。
+    #[serde(default)]
+    pub min_firmware: Option<String>,
+}
+
+fn default_available() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -65,6 +82,10 @@ pub struct DeviceSnapshot {
     #[serde(default)]
     pub writable_mutations: Vec<String>,
     pub evidence: String,
+    /// 设备是否处于只读模式：插件未签名/签名失效/未启用写入时为 true。
+    /// UI 据此明确显示「未信任插件 · 只读模式」，而非静默隐藏写入控件。
+    #[serde(default)]
+    pub readonly: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

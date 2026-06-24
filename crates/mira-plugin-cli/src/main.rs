@@ -289,6 +289,7 @@ fn scaffold(plugin_id: &str, path: &Path) -> Result<()> {
         bail!("target already exists");
     }
     fs::create_dir_all(path.join("tests/fixtures"))?;
+    fs::create_dir_all(path.join("models"))?;
     let manifest = serde_json::json!({
         "schemaVersion": 1, "pluginId": plugin_id, "name": plugin_id,
         "version": "0.1.0", "pluginApi": ">=1.0.0, <2.0.0",
@@ -303,6 +304,10 @@ fn scaffold(plugin_id: &str, path: &Path) -> Result<()> {
         path.join("tests/fixtures/example.json"),
         b"{\"kind\":\"read\",\"response\":[]}\n",
     )?;
+    // Reserved parent folder for per-model adapter overrides. Plugins ship
+    // model-specific JSON under `models/<model>/` in the future; the placeholder
+    // keeps the directory non-empty so it survives packaging and version control.
+    fs::write(path.join("models/placeholder.json"), b"{}\n")?;
     fs::write(
         path.join("README.md"),
         format!("# {plugin_id}\n\nFixture-only tutorial plugin.\n"),

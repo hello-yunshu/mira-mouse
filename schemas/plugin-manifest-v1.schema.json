@@ -87,10 +87,57 @@
                 }
               }
             }
+          },
+          "probe": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["output", "field"],
+            "properties": {
+              "output": { "type": "string", "minLength": 1 },
+              "field": { "type": "string", "minLength": 1 }
+            }
+          },
+          "connections": {
+            "type": "array",
+            "items": { "enum": ["usb", "receiver", "bluetooth"] }
+          },
+          "minFirmware": { "type": "string" }
+        }
+      }
+    },
+    "writesEnabled": { "type": "boolean" },
+    "exportableFields": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "exportKey"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "exportKey": { "type": "string", "minLength": 1 },
+          "kind": { "type": "string" },
+          "mutation": { "type": "string" },
+          "param": { "type": "string" },
+          "source": { "type": "string" },
+          "sources": {
+            "type": "object",
+            "additionalProperties": { "type": "string" }
           }
         }
       }
     },
-    "writesEnabled": { "type": "boolean" }
+    "dependsOn": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["pluginId"],
+        "properties": {
+          "pluginId": { "type": "string", "minLength": 1 },
+          "version": { "type": "string" },
+          "reuseTransport": { "type": "boolean", "default": false }
+        }
+      }
+    }
   }
 }

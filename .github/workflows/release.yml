@@ -35,6 +35,8 @@ jobs:
       - run: rustup toolchain install stable --profile minimal
       - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+      - name: Sync locked default plugins
+        run: cargo run --package xtask -- plugins sync --locked
       - name: Build signed updater packages
         shell: bash
         env:
@@ -43,9 +45,9 @@ jobs:
         run: |
           set -euo pipefail
           case "$RUNNER_OS" in
-            macOS) rustup target add aarch64-apple-darwin x86_64-apple-darwin; npm exec tauri build -- --target universal-apple-darwin ;;
-            Windows) npm exec tauri build -- --bundles nsis ;;
-            Linux) npm exec tauri build -- --bundles appimage,deb,rpm ;;
+            macOS) rustup target add aarch64-apple-darwin x86_64-apple-darwin; npm exec tauri build -- --target universal-apple-darwin --config '{"bundle":{"createUpdaterArtifacts":true}}' ;;
+            Windows) npm exec tauri build -- --bundles nsis --config '{"bundle":{"createUpdaterArtifacts":true}}' ;;
+            Linux) npm exec tauri build -- --bundles appimage,deb,rpm --config '{"bundle":{"createUpdaterArtifacts":true}}' ;;
           esac
           find target -type f -path '*/bundle/*' -print0 | xargs -0 shasum -a 256 > SHA256SUMS.txt
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -56,7 +58,7 @@ jobs:
             SHA256SUMS.txt
           retention-days: 7
           if-no-files-found: error
-  attest-and-draft:
+  attest-and-publish:
     needs: [gate, build]
     runs-on: ubuntu-22.04
     timeout-minutes: 20
@@ -78,13 +80,24 @@ jobs:
           REPO="hello-yunshu/mira-mouse"
           BASE="https://github.com/$REPO/releases/download/$TAG"
           PUB_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          # 收集各平台的 .tar.gz/.sig 和 .nsis/.sig 签名文件
-          MAC_SIG=$(find release-assets -name '*.app.tar.gz.sig' | head -1 | xargs cat 2>/dev/null || echo "")
-          WIN_SIG=$(find release-assets -name '*-setup.exe.sig' | head -1 | xargs cat 2>/dev/null || echo "")
-          LINUX_SIG=$(find release-assets -name '*.AppImage.tar.gz.sig' | head -1 | xargs cat 2>/dev/null || echo "")
-          MAC_URL="$BASE/Mira_${VERSION}_universal.app.tar.gz"
-          WIN_URL="$BASE/Mira_${VERSION}_x64-setup.exe"
-          LINUX_URL="$BASE/Mira_${VERSION}_x86_64.AppImage.tar.gz"
+          mkdir publish-assets
+          find release-assets -type f \( \
+            -name '*.dmg' -o -name '*.exe' -o -name '*.AppImage' -o \
+            -name '*.deb' -o -name '*.rpm' -o -name '*.app.tar.gz' -o \
+            -name '*.AppImage.tar.gz' -o -name '*.nsis.zip' -o -name '*.sig' \
+          \) -exec cp {} publish-assets/ \;
+          MAC_FILE=$(find publish-assets -name '*.app.tar.gz' -print -quit)
+          WIN_FILE=$(find publish-assets -name '*.nsis.zip' -print -quit)
+          LINUX_FILE=$(find publish-assets -name '*.AppImage.tar.gz' -print -quit)
+          test -f "$MAC_FILE" && test -f "$MAC_FILE.sig"
+          test -f "$WIN_FILE" && test -f "$WIN_FILE.sig"
+          test -f "$LINUX_FILE" && test -f "$LINUX_FILE.sig"
+          MAC_SIG=$(cat "$MAC_FILE.sig")
+          WIN_SIG=$(cat "$WIN_FILE.sig")
+          LINUX_SIG=$(cat "$LINUX_FILE.sig")
+          MAC_URL="$BASE/$(basename "$MAC_FILE")"
+          WIN_URL="$BASE/$(basename "$WIN_FILE")"
+          LINUX_URL="$BASE/$(basename "$LINUX_FILE")"
           cat > latest.json <<EOF
           {
             "version": "$VERSION",
@@ -100,7 +113,7 @@ jobs:
           EOF
       - env: { GH_TOKEN: '${{ github.token }}', TAG: '${{ github.ref_name }}' }
         run: |
-          gh release create "$TAG" release-assets/**/* latest.json \
-            --draft --verify-tag \
+          gh release create "$TAG" publish-assets/* latest.json \
+            --verify-tag \
             --title "Mira ${TAG#app/v}" \
-            --notes "Community release with Tauri Updater signing. Platform code-signing and notarization remain separate evidence states."
+            --notes "Official Mira release with Tauri Updater signing. Platform notarization and OS code-signing evidence are tracked separately."
