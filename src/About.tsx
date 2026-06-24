@@ -1,12 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { check } from '@tauri-apps/plugin-updater';
 import type { AboutInfo } from './types';
 import { notifyError } from './notify';
 import { extractChannel, exportDiagnostics } from './plugin-utils';
-
-type UpdateState = 'idle' | 'checking' | 'up-to-date' | 'available' | 'downloading' | 'installed';
+import {
+  appUpdateState,
+  checkForAppUpdate,
+  installAppUpdate,
+  onAppUpdateState,
+  relaunchAfterUpdate,
+  type AppUpdateState,
+} from './updater';
 
 const PREVIEW_INFO: AboutInfo = {
   name: 'Mira Mouse',
@@ -25,7 +30,7 @@ const PREVIEW_INFO: AboutInfo = {
 export function AboutPage({ onBack, previewMode = false }: { onBack: () => void; previewMode?: boolean }) {
   const [info, setInfo] = useState<AboutInfo | null>(previewMode ? PREVIEW_INFO : null);
   const [error, setError] = useState<string>('');
-  const [updateState, setUpdateState] = useState<UpdateState>('idle');
+  const [update, setUpdate] = useState<AppUpdateState>(appUpdateState());
   const [diagnostics, setDiagnostics] = useState<string>('');
 
   useEffect(() => {
@@ -39,34 +44,21 @@ export function AboutPage({ onBack, previewMode = false }: { onBack: () => void;
       });
   }, [previewMode]);
 
+  useEffect(() => onAppUpdateState(setUpdate), []);
+
   async function checkForUpdates() {
     if (!info?.updaterActive) return;
-    setUpdateState('checking');
     try {
-      const update = await check();
-      if (update) {
-        setUpdateState('available');
-      } else {
-        setUpdateState('up-to-date');
-      }
+      await checkForAppUpdate();
     } catch (err) {
-      setUpdateState('idle');
       notifyError('检查更新失败', String(err));
     }
   }
 
   async function installUpdate() {
-    setUpdateState('downloading');
     try {
-      const update = await check();
-      if (!update) {
-        setUpdateState('up-to-date');
-        return;
-      }
-      await update.downloadAndInstall();
-      setUpdateState('installed');
+      await installAppUpdate();
     } catch (err) {
-      setUpdateState('available');
       notifyError('安装更新失败', String(err));
     }
   }
@@ -159,6 +151,7 @@ export function AboutPage({ onBack, previewMode = false }: { onBack: () => void;
                       {plugin.signatureVerified ? '签名已验证' : '签名未验证'}
                     </span>
                     {plugin.bundleByDefault && <span className="badge">默认内置</span>}
+                    {plugin.source === 'installed' && <span className="badge badge-ok">用户更新</span>}
                   </div>
                   <dl className="plugin-detail">
                     <div><dt>SHA-256</dt><dd><code>{plugin.sha256}</code></dd></div>
@@ -195,18 +188,32 @@ export function AboutPage({ onBack, previewMode = false }: { onBack: () => void;
         {info.updaterActive && (
           <>
             <div className="contact-links">
-              <button className="secondary" onClick={checkForUpdates} disabled={updateState === 'checking' || updateState === 'downloading'}>
-                {updateState === 'checking' ? '检查中…' : '检查更新'}
+              <button className="secondary" onClick={checkForUpdates} disabled={update.phase === 'checking' || update.phase === 'downloading'}>
+                {update.phase === 'checking' ? '检查中…' : '检查更新'}
               </button>
-              {updateState === 'up-to-date' && <span className="save-badge">已是最新</span>}
-              {updateState === 'available' && (
+              {update.phase === 'up-to-date' && <span className="save-badge">已是最新</span>}
+              {update.phase === 'available' && (
                 <button className="primary" onClick={installUpdate}>
-                  立即安装
+                  下载并安装 v{update.version}
                 </button>
               )}
-              {updateState === 'installed' && <span className="save-badge">安装完成，请重启应用</span>}
+              {update.phase === 'installed' && <button className="primary" onClick={() => void relaunchAfterUpdate()}>重启完成更新</button>}
             </div>
-            {updateState === 'available' && <p className="setting-hint">点击"立即安装"下载并安装更新。</p>}
+            {update.phase === 'available' && (
+              <div className="update-details">
+                {update.date && <span className="setting-hint">发布日期：{new Date(update.date).toLocaleDateString()}</span>}
+                {update.notes && <p>{update.notes}</p>}
+              </div>
+            )}
+            {update.phase === 'downloading' && (
+              <div className="update-progress" aria-live="polite">
+                <progress value={update.downloadedBytes} max={update.totalBytes || undefined} />
+                <span>{update.totalBytes
+                  ? `已下载 ${Math.min(100, Math.round((update.downloadedBytes / update.totalBytes) * 100))}%`
+                  : `已下载 ${(update.downloadedBytes / 1024 / 1024).toFixed(1)} MiB`}</span>
+              </div>
+            )}
+            {update.phase === 'error' && <p className="setting-hint update-error">{update.error}</p>}
           </>
         )}
       </section>

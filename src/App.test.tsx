@@ -2,8 +2,16 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import App from './App';
+import { notifyError } from './notify';
 
 describe('Mira shell', () => {
+  it('shows foreground errors inside the app and lets the user dismiss them', async () => {
+    render(<App />);
+    notifyError('刷新失败', '设备暂时不可用');
+    expect(await screen.findByRole('alert')).toHaveTextContent('刷新失败设备暂时不可用');
+    fireEvent.click(screen.getByRole('button', { name: '关闭通知' }));
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
   it('shows a quiet no-device state without stale numbers', () => {
     render(<App />);
     expect(screen.getByText('没有找到支持的鼠标')).toBeInTheDocument();

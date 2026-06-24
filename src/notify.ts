@@ -1,20 +1,28 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { sendNotification } from '@tauri-apps/plugin-notification';
+export interface AppNotification {
+  title: string;
+  body?: string;
+  kind: 'error' | 'info' | 'success';
+}
 
-const isTauri = (): boolean =>
-  typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+const notificationTarget = new EventTarget();
 
-/**
- * 发送系统级错误通知。非 Tauri 环境下回退到 console.error。
- */
+export function onAppNotification(listener: (notification: AppNotification) => void): () => void {
+  const handler = (event: Event) => listener((event as CustomEvent<AppNotification>).detail);
+  notificationTarget.addEventListener('notification', handler);
+  return () => notificationTarget.removeEventListener('notification', handler);
+}
+
+/** Report foreground operation failures inside the app; background alerts use native notifications. */
 export function notifyError(title: string, body?: string): void {
-  if (isTauri()) {
-    try {
-      sendNotification({ title, body });
-      return;
-    } catch (error) {
-      console.error('通知发送失败，回退到控制台：', error);
-    }
-  }
+  notificationTarget.dispatchEvent(new CustomEvent<AppNotification>('notification', {
+    detail: { title, body, kind: 'error' },
+  }));
   console.error(title, body ?? '');
+}
+
+export function notifyInfo(title: string, body?: string): void {
+  notificationTarget.dispatchEvent(new CustomEvent<AppNotification>('notification', {
+    detail: { title, body, kind: 'info' },
+  }));
 }

@@ -5,11 +5,12 @@ use serde_json::{Map, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::CString;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const MAX_COMMANDS: usize = 32;
 const MAX_REPORTS: usize = 128;
 const MAX_DELAY_MS: u64 = 5_000;
+const MAX_OPERATION_TIMEOUT_MS: u64 = 30_000;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -165,6 +166,10 @@ enum TransportDefinition {
         strip_report_id_on_read: bool,
         #[serde(default = "default_feature_delay_ms")]
         feature_delay_ms: u64,
+        /// #8 超时统一治理：per-transport 超时声明（毫秒）。
+        /// Host 强制 30s 上限，未声明时使用默认值。
+        #[serde(default)]
+        timeout_ms: Option<u64>,
     },
     HidFeatureProxy {
         base_transport: String,
@@ -179,6 +184,9 @@ enum TransportDefinition {
         status_output: String,
         attempts: usize,
         delay_ms: u64,
+        /// #8 超时统一治理：per-transport 超时声明（毫秒）。
+        #[serde(default)]
+        timeout_ms: Option<u64>,
     },
     HidOutputInput {
         report_id: u8,
@@ -189,6 +197,29 @@ enum TransportDefinition {
         read_timeout_ms: i32,
         #[serde(default = "default_read_retries")]
         read_retries: u8,
+        /// #8 超时统一治理：per-transport 超时声明（毫秒）。
+        #[serde(default)]
+        timeout_ms: Option<u64>,
+    },
+    /// AM35 RACE-style protocol (VID 0x0E8D).
+    /// Uses HID Output Report (ID 0x06) for writes and Input Report (ID 0x07)
+    /// for reads, with a 3-byte framing header: [writeReportId, length, type].
+    /// `race_type` is 0x00 for direct USB, 0x80 for receiver forwarding.
+    /// Protocol data collected from AMasterDriver v1.0.6 reverse analysis;
+    /// runtime execution is preparatory and pending hardware validation.
+    HidRace {
+        write_report_id: u8,
+        read_report_id: u8,
+        write_length: usize,
+        read_length: usize,
+        race_type: u8,
+        strip_report_id_on_read: bool,
+        #[serde(default = "default_read_timeout_ms")]
+        read_timeout_ms: i32,
+        #[serde(default = "default_read_retries")]
+        read_retries: u8,
+        #[serde(default)]
+        timeout_ms: Option<u64>,
     },
 }
 
@@ -219,6 +250,27 @@ struct WorkflowsFile {
     workflows: HashMap<String, WorkflowDefinition>,
     #[serde(default)]
     mutations: HashMap<String, MutationDefinition>,
+    /// #5 写事务与回滚：声明写事务边界和回滚策略。
+    /// 事务期间的写操作在持锁状态下执行（依赖 #7 排队），
+    /// 失败时按声明的回滚策略恢复板载配置。
+    #[serde(default)]
+    transactions: HashMap<String, TransactionDefinition>,
+}
+
+/// #5 写事务与回滚：事务边界声明。
+/// 定义一组 mutation 的事务语义，包括快照点和回滚策略。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TransactionDefinition {
+    /// 事务包含的 mutation id 列表。
+    mutations: Vec<String>,
+    /// 快照 workflow id：事务开始前执行，读取板载配置作为回滚基准。
+    snapshot_workflow: Option<String>,
+    /// 回滚 workflow id：事务失败时执行，用快照数据恢复板载配置。
+    rollback_workflow: Option<String>,
+    /// 事务超时（毫秒），Host 强制 30s 上限。
+    #[serde(default)]
+    timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -272,6 +324,10 @@ struct MutationDefinition {
     #[serde(default)]
     settle_ms: u64,
     verify: MutationVerify,
+    /// #8 超时统一治理：per-mutation 超时声明（毫秒）。
+    /// 覆盖 transport 级别的 timeout_ms，Host 强制 30s 上限。
+    #[serde(default)]
+    timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -408,6 +464,93 @@ impl ProtocolPackage {
         Ok(package)
     }
 
+    /// 解析插件包文件，可选地应用型号覆盖。
+    ///
+    /// 型号覆盖是模式 C 的核心：`models/<model>/` 目录下的 JSON 文件
+    /// 与父插件对应文件做 deep merge，型号文件的字段覆盖父插件。
+    /// 这允许同一协议族插件为不同型号提供差异化配置（如不同的 DPI 范围、
+    /// 灯光区域数等），而无需复制整个协议文件。
+    ///
+    /// `model` 为 None 或空字符串时，等价于 `from_files`（向后兼容）。
+    pub fn from_files_with_model(
+        files: &BTreeMap<String, Vec<u8>>,
+        model: Option<&str>,
+    ) -> Result<Self, String> {
+        let model = match model {
+            Some(m) if !m.is_empty() => m,
+            _ => return Self::from_files(files),
+        };
+        // 防御性校验：model 不含路径分隔符，防止 models/<model>/ 路径拼接越界。
+        // model 来自 devices.json 的 hardware_verified_models（插件作者控制），
+        // BTreeMap 查找是精确字符串匹配，不含 '/' 即无法跳出 models/ 目录。
+        if model.contains('/') || model.contains('\\') {
+            return Err(format!(
+                "invalid model name containing path separators: {model}"
+            ));
+        }
+
+        // 型号覆盖文件路径与父插件路径的对应关系。
+        // models/<model>/protocol/commands.json → protocol/commands.json
+        const MERGE_PATHS: &[&str] = &[
+            "protocol/commands.json",
+            "protocol/parsers.json",
+            "protocol/transports.json",
+            "protocol/workflows.json",
+            "protocol/features.json",
+            "capabilities.json",
+        ];
+
+        let mut merged_files = files.clone();
+        for path in MERGE_PATHS {
+            let model_path = format!("models/{model}/{path}");
+            if let Some(model_bytes) = files.get(&model_path) {
+                let merged_bytes = match files.get(*path) {
+                    Some(base_bytes) => {
+                        let base: Value = serde_json::from_slice(base_bytes)
+                            .map_err(|e| format!("invalid {path}: {e}"))?;
+                        let overlay: Value = serde_json::from_slice(model_bytes)
+                            .map_err(|e| format!("invalid {model_path}: {e}"))?;
+                        let merged = deep_merge_json(base, overlay);
+                        serde_json::to_vec(&merged)
+                            .map_err(|e| format!("serialize merged {path}: {e}"))?
+                    }
+                    None => model_bytes.clone(),
+                };
+                merged_files.insert(path.to_string(), merged_bytes);
+            }
+        }
+
+        Self::from_files(&merged_files)
+    }
+
+    /// Parse with optional model overrides and dependency transport reuse.
+    /// Dependency packages may contribute only `protocol/transports.json`;
+    /// main-plugin definitions win on key conflicts.
+    pub fn from_files_with_model_and_dependencies(
+        files: &BTreeMap<String, Vec<u8>>,
+        model: Option<&str>,
+        dependency_files: &[&BTreeMap<String, Vec<u8>>],
+    ) -> Result<Self, String> {
+        let mut merged_files = files.clone();
+        for dependency in dependency_files {
+            let (Some(dependency_transports), Some(current_transports)) = (
+                dependency.get("protocol/transports.json"),
+                merged_files.get("protocol/transports.json"),
+            ) else {
+                continue;
+            };
+            let dependency_json: Value = serde_json::from_slice(dependency_transports)
+                .map_err(|error| format!("invalid dependency protocol/transports.json: {error}"))?;
+            let current_json: Value = serde_json::from_slice(current_transports)
+                .map_err(|error| format!("invalid protocol/transports.json: {error}"))?;
+            let merged = deep_merge_json(dependency_json, current_json);
+            let bytes = serde_json::to_vec(&merged)
+                .map_err(|error| format!("serialize dependency transports: {error}"))?;
+            merged_files.insert("protocol/transports.json".into(), bytes);
+        }
+        Self::from_files_with_model(&merged_files, model)
+    }
+
     pub fn capabilities(&self) -> Option<&Value> {
         self.capabilities.as_ref()
     }
@@ -417,6 +560,18 @@ impl ProtocolPackage {
         api: &HidApi,
         path: &str,
         workflow_id: &str,
+    ) -> Result<BTreeMap<String, Value>, String> {
+        self.execute_with_initial_outputs(api, path, workflow_id, BTreeMap::new(), None, None)
+    }
+
+    fn execute_with_initial_outputs(
+        &self,
+        api: &HidApi,
+        path: &str,
+        workflow_id: &str,
+        initial_outputs: BTreeMap<String, Value>,
+        timeout_ms: Option<u64>,
+        inherited_deadline: Option<Instant>,
     ) -> Result<BTreeMap<String, Value>, String> {
         let workflow = self
             .workflows
@@ -433,7 +588,8 @@ impl ProtocolPackage {
             device,
             reports: 0,
             delay_ms: 0,
-            outputs: BTreeMap::new(),
+            outputs: initial_outputs,
+            deadline: merge_deadline(inherited_deadline, timeout_ms)?,
         };
         for (index, step) in workflow.steps.iter().enumerate() {
             if step.skip_if_zero.iter().any(|reference| {
@@ -586,6 +742,7 @@ impl ProtocolPackage {
                 &context,
                 true,
                 None,
+                None,
             )
             .map_err(|error| format!("mutation {mutation_id} memory write start: {error}"))?;
         for (index, chunk) in updated.chunks(definition.chunk_size).enumerate() {
@@ -601,6 +758,7 @@ impl ProtocolPackage {
                     &chunk_params,
                     true,
                     None,
+                    None,
                 )
                 .map_err(|error| format!("mutation {mutation_id} memory chunk {index}: {error}"))?;
         }
@@ -610,6 +768,7 @@ impl ProtocolPackage {
                 &definition.end_command,
                 &context,
                 definition.end_expect_response,
+                None,
                 None,
             )
             .map_err(|error| format!("mutation {mutation_id} memory write end: {error}"))?;
@@ -623,6 +782,119 @@ impl ProtocolPackage {
         mutation_id: &str,
         params: &Map<String, Value>,
         ctx_outputs: &BTreeMap<String, Value>,
+    ) -> Result<Value, String> {
+        if let Some(transaction) = self.transaction_for_mutation(mutation_id)? {
+            return self.mutate_in_transaction(
+                api,
+                path,
+                mutation_id,
+                params,
+                ctx_outputs,
+                transaction,
+            );
+        }
+        self.mutate_inner(api, path, mutation_id, params, ctx_outputs, None)
+    }
+
+    /// 查找声明了目标 mutation 的事务。
+    ///
+    /// 匹配规则：事务 `mutations` 列表中的 id 必须与 `mutation_id` **精确相等**。
+    /// 早期实现用 `ends_with("-{id}")` 做宽松后缀匹配，但这会让
+    /// `"fake-set-dpi"` 误匹配声明 `"set-dpi"` 的事务，触发非预期的
+    /// snapshot/rollback。事务应声明完整的 mutation id。
+    ///
+    /// 若多个事务声明了同一 mutation，返回错误——一个 mutation 只能属于一个事务，
+    /// 否则 snapshot/rollback 的选择将不确定。
+    fn transaction_for_mutation(
+        &self,
+        mutation_id: &str,
+    ) -> Result<Option<TransactionDefinition>, String> {
+        let matches: Vec<&TransactionDefinition> = self
+            .workflows
+            .transactions
+            .values()
+            .filter(|transaction| transaction.mutations.iter().any(|id| id == mutation_id))
+            .collect();
+        match matches.len() {
+            0 => Ok(None),
+            1 => Ok(Some(matches[0].clone())),
+            _ => Err(format!(
+                "mutation {mutation_id} is declared in multiple transactions; a mutation may belong to at most one transaction"
+            )),
+        }
+    }
+
+    fn mutate_in_transaction(
+        &self,
+        api: &HidApi,
+        path: &str,
+        mutation_id: &str,
+        params: &Map<String, Value>,
+        ctx_outputs: &BTreeMap<String, Value>,
+        transaction: TransactionDefinition,
+    ) -> Result<Value, String> {
+        // 事务级 timeout 是整个事务（snapshot + mutation + rollback）的总预算：
+        // 三阶段共享同一 deadline，而非各自独立计时（否则总时间可达 3×timeout）。
+        let tx_deadline = timeout_deadline(transaction.timeout_ms)?;
+        let snapshot_outputs = if let Some(workflow) = &transaction.snapshot_workflow {
+            self.execute_with_initial_outputs(
+                api,
+                path,
+                workflow,
+                ctx_outputs.clone(),
+                None,
+                tx_deadline,
+            )?
+        } else {
+            ctx_outputs.clone()
+        };
+        match self.mutate_inner(
+            api,
+            path,
+            mutation_id,
+            params,
+            ctx_outputs,
+            tx_deadline,
+        ) {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                // #5 事务可观测性：错误信息包含 snapshot/rollback workflow 名称，
+                // 让用户通过通知了解事务执行详情（复用前端 notifyError）。
+                if let Some(rollback_workflow) = &transaction.rollback_workflow {
+                    match self.execute_with_initial_outputs(
+                        api,
+                        path,
+                        rollback_workflow,
+                        snapshot_outputs,
+                        None,
+                        tx_deadline,
+                    ) {
+                        Ok(_) => Err(format!(
+                            "写入 {mutation_id} 失败：{error}。事务回滚已执行（回滚工作流：{rollback_workflow}），设备已恢复至写入前状态。"
+                        )),
+                        Err(rollback_error) => Err(format!(
+                            "写入 {mutation_id} 失败：{error}。事务回滚失败（回滚工作流：{rollback_workflow}）：{rollback_error}。设备可能处于不一致状态，请重新读取设备。"
+                        )),
+                    }
+                } else if let Some(snapshot_workflow) = &transaction.snapshot_workflow {
+                    Err(format!(
+                        "写入 {mutation_id} 失败：{error}。该事务声明了快照（{snapshot_workflow}）但无回滚策略。"
+                    ))
+                } else {
+                    Err(error)
+                }
+            }
+        }
+    }
+
+    fn mutate_inner(
+        &self,
+        api: &HidApi,
+        path: &str,
+        mutation_id: &str,
+        params: &Map<String, Value>,
+        ctx_outputs: &BTreeMap<String, Value>,
+        inherited_deadline: Option<Instant>,
     ) -> Result<Value, String> {
         let mutation = self
             .workflows
@@ -712,7 +984,13 @@ impl ProtocolPackage {
                 }
                 outputs
             },
+            deadline: merge_deadline(inherited_deadline, mutation.timeout_ms)?,
         };
+        // mutation 自身的 timeout 与事务继承的 deadline 已在 session.deadline 取 min。
+        // 这里不再 fallback 到事务 timeout——否则会覆盖 transport 自身更严格的 timeout。
+        // execute_command 会用 mutation.timeout_ms.or(transport_timeout_ms)，
+        // 再与 session.deadline（含事务总预算）merge 取 min。
+        let mutation_timeout_ms = mutation.timeout_ms;
 
         let read_transport = mutation
             .read
@@ -734,6 +1012,7 @@ impl ProtocolPackage {
                     &read_params,
                     true,
                     None,
+                    mutation_timeout_ms,
                 )
                 .map_err(|error| format!("mutation {mutation_id} pre-read command: {error}"))?;
             self.parse_response(&mutation.read.parser, &response)
@@ -760,6 +1039,7 @@ impl ProtocolPackage {
             &write_inputs,
             false,
             Some(&before),
+            mutation_timeout_ms,
         )?;
         session.delay(mutation.settle_ms)?;
 
@@ -799,6 +1079,7 @@ impl ProtocolPackage {
                 &verify_params,
                 true,
                 None,
+                mutation_timeout_ms,
             )?;
             let parsed = self
                 .parse_response(&mutation.verify.parser, &response)
@@ -1014,7 +1295,7 @@ fn execute_with_candidates(
     candidates: &BTreeMap<String, Vec<Value>>,
 ) -> Result<Vec<u8>, String> {
     if candidates.is_empty() {
-        return session.execute_command(transport, command, params, true, None);
+        return session.execute_command(transport, command, params, true, None, None);
     }
     if candidates.len() != 1 {
         return Err("only one candidate parameter is supported per workflow step".into());
@@ -1029,7 +1310,7 @@ fn execute_with_candidates(
     for value in values {
         let mut attempt = params.clone();
         attempt.insert(name.clone(), value.clone());
-        match session.execute_command(transport, command, &attempt, true, None) {
+        match session.execute_command(transport, command, &attempt, true, None, None) {
             Ok(response) => return Ok(response),
             Err(error) => last_error = Some(error),
         }
@@ -1052,6 +1333,7 @@ struct Session<'a> {
     reports: usize,
     delay_ms: u64,
     outputs: BTreeMap<String, Value>,
+    deadline: Option<Instant>,
 }
 
 impl Session<'_> {
@@ -1062,6 +1344,7 @@ impl Session<'_> {
         params: &BTreeMap<String, Value>,
         expect_response: bool,
         base: Option<&[u8]>,
+        timeout_override_ms: Option<u64>,
     ) -> Result<Vec<u8>, String> {
         let transport = self
             .package
@@ -1069,7 +1352,18 @@ impl Session<'_> {
             .transports
             .get(transport_id)
             .ok_or_else(|| format!("missing transport {transport_id}"))?;
-        match transport {
+        let transport_timeout_ms = match transport {
+            TransportDefinition::HidFeature { timeout_ms, .. }
+            | TransportDefinition::HidFeatureProxy { timeout_ms, .. }
+            | TransportDefinition::HidOutputInput { timeout_ms, .. }
+            | TransportDefinition::HidRace { timeout_ms, .. } => *timeout_ms,
+        };
+        let previous_deadline = self.deadline;
+        self.deadline = merge_deadline(
+            previous_deadline,
+            timeout_override_ms.or(transport_timeout_ms),
+        )?;
+        let result = match transport {
             TransportDefinition::HidFeature { .. } => {
                 let report = self.package.build_command(command_id, params, base)?;
                 self.feature_exchange(transport_id, &report, expect_response)
@@ -1087,6 +1381,7 @@ impl Session<'_> {
                 status_output,
                 attempts,
                 delay_ms,
+                ..
             } => {
                 let base_transport = base_transport.clone();
                 let start_command = start_command.clone();
@@ -1161,7 +1456,13 @@ impl Session<'_> {
                 let report = self.package.build_command(command_id, params, base)?;
                 self.output_input_exchange(transport_id, &report, expect_response)
             }
-        }
+            TransportDefinition::HidRace { .. } => {
+                let race_payload = self.package.build_command(command_id, params, base)?;
+                self.race_exchange(transport_id, &race_payload, expect_response)
+            }
+        };
+        self.deadline = previous_deadline;
+        result
     }
 
     fn poll_until(
@@ -1202,6 +1503,7 @@ impl Session<'_> {
             read_length,
             strip_report_id_on_read,
             feature_delay_ms,
+            ..
         }) = self.package.transports.transports.get(transport_id)
         else {
             return Err(format!("transport {transport_id} is not hid-feature"));
@@ -1213,6 +1515,7 @@ impl Session<'_> {
         if self.reports > MAX_REPORTS {
             return Err("report limit exceeded".into());
         }
+        deadline_remaining_ms(self.deadline)?;
         let mut report = Vec::with_capacity(*write_length);
         report.push(*report_id);
         report.extend_from_slice(payload);
@@ -1223,6 +1526,7 @@ impl Session<'_> {
             return Ok(Vec::new());
         }
         self.delay(*feature_delay_ms)?;
+        deadline_remaining_ms(self.deadline)?;
         let mut response = vec![0u8; *read_length];
         let count = self
             .device
@@ -1248,6 +1552,7 @@ impl Session<'_> {
             strip_report_id_on_read,
             read_timeout_ms,
             read_retries,
+            ..
         }) = self.package.transports.transports.get(transport_id)
         else {
             return Err(format!("transport {transport_id} is not hid-output-input"));
@@ -1259,6 +1564,7 @@ impl Session<'_> {
         if self.reports > MAX_REPORTS {
             return Err("report limit exceeded".into());
         }
+        deadline_remaining_ms(self.deadline)?;
         let mut report = Vec::with_capacity(*write_length);
         report.push(*report_id);
         report.extend_from_slice(payload);
@@ -1277,10 +1583,16 @@ impl Session<'_> {
         }
 
         for _ in 0..*read_retries {
+            let read_timeout_ms = match deadline_remaining_ms(self.deadline)? {
+                Some(remaining) => {
+                    (*read_timeout_ms).min(i32::try_from(remaining).unwrap_or(i32::MAX))
+                }
+                None => *read_timeout_ms,
+            };
             let mut response = vec![0u8; *read_length];
             let count = self
                 .device
-                .read_timeout(&mut response, *read_timeout_ms)
+                .read_timeout(&mut response, read_timeout_ms)
                 .map_err(|error| format!("read input report: {error}"))?;
             if count == 0 {
                 continue;
@@ -1320,6 +1632,91 @@ impl Session<'_> {
         Err("timed out waiting for matching input report".into())
     }
 
+    /// AM35 RACE-style exchange: frames the RACE payload with a 3-byte header
+    /// ([writeReportId, payloadLength, raceType]), writes via HID Output Report,
+    /// and reads the response via HID Input Report.
+    fn race_exchange(
+        &mut self,
+        transport_id: &str,
+        race_payload: &[u8],
+        expect_response: bool,
+    ) -> Result<Vec<u8>, String> {
+        let Some(TransportDefinition::HidRace {
+            write_report_id,
+            read_report_id,
+            write_length,
+            read_length,
+            race_type,
+            strip_report_id_on_read,
+            read_timeout_ms,
+            read_retries,
+            ..
+        }) = self.package.transports.transports.get(transport_id)
+        else {
+            return Err(format!("transport {transport_id} is not hid-race"));
+        };
+        if race_payload.len() + 3 > *write_length || *write_length > 1025 || *read_length > 1025 {
+            return Err("race report length mismatch".into());
+        }
+        // 修复 P-1：race_payload 长度字段为单字节（u8），当 write_length > 258 时
+        // payload 可超过 255 字节，`as u8` 会静默截断导致协议帧损坏。
+        // 当前 amaster 插件 writeLength=62 不触发，但需防御未来插件。
+        if race_payload.len() > 255 {
+            return Err("race payload exceeds single-byte length field".into());
+        }
+        self.reports += 1;
+        if self.reports > MAX_REPORTS {
+            return Err("report limit exceeded".into());
+        }
+        deadline_remaining_ms(self.deadline)?;
+        // Frame: [writeReportId, racePayloadLength, raceType, ...payload, ...zeros]
+        let mut report = Vec::with_capacity(*write_length);
+        report.push(*write_report_id);
+        report.push(race_payload.len() as u8);
+        report.push(*race_type);
+        report.extend_from_slice(race_payload);
+        report.resize(*write_length, 0);
+        let written = self
+            .device
+            .write(&report)
+            .map_err(|error| format!("send race output report: {error}"))?;
+        if written != report.len() {
+            return Err(format!(
+                "short race output report write: {written}/{}",
+                report.len()
+            ));
+        }
+        if !expect_response {
+            return Ok(Vec::new());
+        }
+        for _ in 0..*read_retries {
+            let timeout = match deadline_remaining_ms(self.deadline)? {
+                Some(remaining) => {
+                    (*read_timeout_ms).min(i32::try_from(remaining).unwrap_or(i32::MAX))
+                }
+                None => *read_timeout_ms,
+            };
+            let mut response = vec![0u8; *read_length];
+            let count = self
+                .device
+                .read_timeout(&mut response, timeout)
+                .map_err(|error| format!("read race input report: {error}"))?;
+            if count == 0 {
+                continue;
+            }
+            response.truncate(count);
+            // Match the expected read report ID
+            if response.first() != Some(read_report_id) {
+                continue;
+            }
+            if *strip_report_id_on_read && !response.is_empty() {
+                response.remove(0);
+            }
+            return Ok(response);
+        }
+        Err("timed out waiting for race input report".into())
+    }
+
     fn delay(&mut self, milliseconds: u64) -> Result<(), String> {
         self.delay_ms = self
             .delay_ms
@@ -1327,6 +1724,11 @@ impl Session<'_> {
             .ok_or_else(|| "delay limit exceeded".to_string())?;
         if self.delay_ms > MAX_DELAY_MS {
             return Err("delay limit exceeded".into());
+        }
+        if let Some(remaining) = deadline_remaining_ms(self.deadline)? {
+            if milliseconds > remaining {
+                return Err("operation timeout exceeded".into());
+            }
         }
         thread::sleep(Duration::from_millis(milliseconds));
         Ok(())
@@ -1341,6 +1743,32 @@ fn output_value<'a>(
         .get(&reference.output)?
         .as_object()?
         .get(&reference.field)
+}
+
+/// Deep merge two JSON values for model override loading.
+///
+/// 合并策略：
+/// - Object + Object：递归合并，overlay 的字段覆盖 base 的同名字段。
+/// - 其他类型组合：overlay 完全覆盖 base（包括 Array，不做元素级合并）。
+///
+/// 这让型号覆盖文件只需提供 diff（变更的字段），其余字段从父插件继承。
+fn deep_merge_json(base: Value, overlay: Value) -> Value {
+    match (base, overlay) {
+        (Value::Object(mut base_map), Value::Object(overlay_map)) => {
+            for (key, value) in overlay_map {
+                match base_map.remove(&key) {
+                    Some(base_value) => {
+                        base_map.insert(key, deep_merge_json(base_value, value));
+                    }
+                    None => {
+                        base_map.insert(key, value);
+                    }
+                }
+            }
+            Value::Object(base_map)
+        }
+        (_, overlay) => overlay,
+    }
 }
 
 fn resolve_workflow_params(
@@ -1487,6 +1915,17 @@ fn apply_byte_definition(
                         format!("command {command_id} parameter {param} has no encoding")
                     })?]
                 }
+                "bool-lookup-u8" => {
+                    let key = value
+                        .as_bool()
+                        .ok_or_else(|| {
+                            format!("command {command_id} parameter {param} is not boolean")
+                        })?
+                        .to_string();
+                    vec![*definition.lookup.get(&key).ok_or_else(|| {
+                        format!("command {command_id} parameter {param} has no encoding")
+                    })?]
+                }
                 encoding => {
                     return Err(format!(
                         "command {command_id} uses unsupported parameter encoding {encoding}"
@@ -1505,6 +1944,44 @@ fn apply_byte_definition(
         .ok_or_else(|| format!("command {command_id} byte range out of bounds"))?;
     target.copy_from_slice(&encoded);
     Ok(())
+}
+
+fn timeout_deadline(timeout_ms: Option<u64>) -> Result<Option<Instant>, String> {
+    timeout_ms
+        .map(|value| {
+            if value == 0 {
+                return Err("timeout_ms must be greater than zero".into());
+            }
+            Ok(Instant::now() + Duration::from_millis(value.min(MAX_OPERATION_TIMEOUT_MS)))
+        })
+        .transpose()
+}
+
+fn merge_deadline(
+    current: Option<Instant>,
+    timeout_ms: Option<u64>,
+) -> Result<Option<Instant>, String> {
+    let Some(next) = timeout_deadline(timeout_ms)? else {
+        return Ok(current);
+    };
+    Ok(Some(match current {
+        Some(existing) => existing.min(next),
+        None => next,
+    }))
+}
+
+fn deadline_remaining_ms(deadline: Option<Instant>) -> Result<Option<u64>, String> {
+    match deadline {
+        Some(deadline) => {
+            let remaining = deadline
+                .checked_duration_since(Instant::now())
+                .ok_or_else(|| "operation timeout exceeded".to_string())?;
+            Ok(Some(
+                remaining.as_millis().max(1).min(u128::from(u64::MAX)) as u64
+            ))
+        }
+        None => Ok(None),
+    }
 }
 
 fn parse_rgb(value: &str) -> Result<[u8; 3], String> {
@@ -1867,6 +2344,24 @@ mod tests {
     }
 
     #[test]
+    fn encodes_boolean_lookup_values() {
+        let mut report = vec![0x00; 8];
+        let params = BTreeMap::from([("enabled".into(), Value::from(true))]);
+        let definition = ByteDefinition {
+            offset: 4,
+            value: None,
+            param: Some("enabled".into()),
+            encoding: Some("bool-lookup-u8".into()),
+            indexed_by: None,
+            index_base: 0,
+            stride: 1,
+            lookup: BTreeMap::from([("true".into(), 0x03), ("false".into(), 0x00)]),
+        };
+        apply_byte_definition("rgb-control-set", &definition, &params, &mut report).unwrap();
+        assert_eq!(report[4], 0x03);
+    }
+
+    #[test]
     fn mutation_inputs_are_exact_and_bounded() {
         let definitions = BTreeMap::from([(
             "dpi".into(),
@@ -2017,6 +2512,133 @@ mod tests {
             workflows.as_bytes().to_vec(),
         );
         ProtocolPackage::from_files(&files).unwrap()
+    }
+
+    fn test_files(
+        commands: &str,
+        parsers: &str,
+        transports: &str,
+        workflows: &str,
+    ) -> BTreeMap<String, Vec<u8>> {
+        BTreeMap::from([
+            (
+                "protocol/commands.json".into(),
+                commands.as_bytes().to_vec(),
+            ),
+            ("protocol/parsers.json".into(), parsers.as_bytes().to_vec()),
+            (
+                "protocol/transports.json".into(),
+                transports.as_bytes().to_vec(),
+            ),
+            (
+                "protocol/workflows.json".into(),
+                workflows.as_bytes().to_vec(),
+            ),
+        ])
+    }
+
+    #[test]
+    fn dependency_transports_are_merged_without_overriding_main() {
+        let main = test_files(
+            r#"{"schemaVersion": 1, "commands": {}}"#,
+            r#"{"schemaVersion": 1, "parsers": {}}"#,
+            r#"{"schemaVersion": 1, "transports": {
+                "main": {"kind": "hid-feature", "reportId": 16, "writeLength": 2, "readLength": 2, "stripReportIdOnRead": true},
+                "shared": {"kind": "hid-feature", "reportId": 17, "writeLength": 2, "readLength": 2, "stripReportIdOnRead": true}
+            }}"#,
+            r#"{"schemaVersion": 1, "workflows": {}, "mutations": {}}"#,
+        );
+        let dependency = test_files(
+            r#"{"schemaVersion": 1, "commands": {}}"#,
+            r#"{"schemaVersion": 1, "parsers": {}}"#,
+            r#"{"schemaVersion": 1, "transports": {
+                "base": {"kind": "hid-feature", "reportId": 18, "writeLength": 2, "readLength": 2, "stripReportIdOnRead": true},
+                "shared": {"kind": "hid-feature", "reportId": 19, "writeLength": 2, "readLength": 2, "stripReportIdOnRead": true}
+            }}"#,
+            r#"{"schemaVersion": 1, "workflows": {}, "mutations": {}}"#,
+        );
+        let package =
+            ProtocolPackage::from_files_with_model_and_dependencies(&main, None, &[&dependency])
+                .unwrap();
+        assert!(package.transports.transports.contains_key("base"));
+        match package.transports.transports.get("shared").unwrap() {
+            TransportDefinition::HidFeature { report_id, .. } => assert_eq!(*report_id, 17),
+            _ => panic!("unexpected transport kind"),
+        }
+    }
+
+    #[test]
+    fn transaction_lookup_requires_exact_mutation_id() {
+        let package = build_test_package(
+            r#"{"schemaVersion": 1, "commands": {}}"#,
+            r#"{"schemaVersion": 1, "parsers": {}}"#,
+            r#"{"schemaVersion": 1, "transports": {}}"#,
+            r#"{
+                "schemaVersion": 1,
+                "workflows": {},
+                "mutations": {},
+                "transactions": {
+                    "profile": {
+                        "mutations": ["mouse-set-dpi"],
+                        "snapshotWorkflow": "snapshot",
+                        "rollbackWorkflow": "rollback",
+                        "timeoutMs": 500
+                    }
+                }
+            }"#,
+        );
+        // 精确匹配：事务声明完整 mutation id，短 id 或无关 id 不再匹配。
+        assert!(package
+            .transaction_for_mutation("mouse-set-dpi")
+            .unwrap()
+            .is_some());
+        assert!(package
+            .transaction_for_mutation("set-dpi")
+            .unwrap()
+            .is_none());
+        assert!(package
+            .transaction_for_mutation("set-rate")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn transaction_lookup_rejects_mutation_in_multiple_transactions() {
+        let package = build_test_package(
+            r#"{"schemaVersion": 1, "commands": {}}"#,
+            r#"{"schemaVersion": 1, "parsers": {}}"#,
+            r#"{"schemaVersion": 1, "transports": {}}"#,
+            r#"{
+                "schemaVersion": 1,
+                "workflows": {},
+                "mutations": {},
+                "transactions": {
+                    "profile-a": {
+                        "mutations": ["mouse-set-dpi"],
+                        "snapshotWorkflow": "snapshot",
+                        "rollbackWorkflow": "rollback",
+                        "timeoutMs": 500
+                    },
+                    "profile-b": {
+                        "mutations": ["mouse-set-dpi"],
+                        "snapshotWorkflow": "snapshot",
+                        "rollbackWorkflow": "rollback",
+                        "timeoutMs": 500
+                    }
+                }
+            }"#,
+        );
+        // 同一 mutation 属于多个事务时必须报错，避免 snapshot/rollback 选择不确定。
+        assert!(package
+            .transaction_for_mutation("mouse-set-dpi")
+            .is_err());
+    }
+
+    #[test]
+    fn timeout_deadline_rejects_zero_and_caps_large_values() {
+        assert!(timeout_deadline(Some(0)).is_err());
+        assert!(timeout_deadline(Some(MAX_OPERATION_TIMEOUT_MS + 1)).is_ok());
+        assert!(merge_deadline(None, Some(10)).unwrap().is_some());
     }
 
     /// Shared `HidApi` instance for tests. `HidApi::new()` enumerates all HID
@@ -2237,5 +2859,78 @@ mod tests {
             !err.contains("missing command"),
             "should not fail on validation: {err}"
         );
+    }
+
+    #[test]
+    fn deep_merge_objects_recursive() {
+        // 修复 #2：Object+Object 应递归合并
+        let base = serde_json::json!({"a": 1, "b": {"c": 2, "d": 3}});
+        let overlay = serde_json::json!({"b": {"d": 99}, "e": 4});
+        let merged = deep_merge_json(base, overlay);
+        assert_eq!(
+            merged,
+            serde_json::json!({"a": 1, "b": {"c": 2, "d": 99}, "e": 4})
+        );
+    }
+
+    #[test]
+    fn deep_merge_array_replaces_entirely() {
+        // Array 整体替换，不做元素级合并
+        let base = serde_json::json!({"items": [1, 2, 3]});
+        let overlay = serde_json::json!({"items": [9]});
+        let merged = deep_merge_json(base, overlay);
+        assert_eq!(merged, serde_json::json!({"items": [9]}));
+    }
+
+    #[test]
+    fn deep_merge_null_overrides() {
+        // null 作为 overlay 覆盖 base
+        let base = serde_json::json!({"a": 1});
+        let overlay = serde_json::json!({"a": null});
+        let merged = deep_merge_json(base, overlay);
+        assert_eq!(merged, serde_json::json!({"a": null}));
+    }
+
+    #[test]
+    fn deep_merge_scalar_overrides() {
+        let base = serde_json::json!("base");
+        let overlay = serde_json::json!("overlay");
+        let merged = deep_merge_json(base, overlay);
+        assert_eq!(merged, serde_json::json!("overlay"));
+    }
+
+    #[test]
+    fn from_files_with_model_rejects_path_separators() {
+        // 修复 #2：model 含路径分隔符应被拒绝，防止路径遍历
+        let files = BTreeMap::new();
+        let result = ProtocolPackage::from_files_with_model(&files, Some("../escape"));
+        match result {
+            Err(err) => assert!(err.contains("path separators"), "unexpected error: {err}"),
+            Ok(_) => panic!("expected error for path separator in model"),
+        }
+    }
+
+    #[test]
+    fn from_files_with_model_rejects_backslash() {
+        let files = BTreeMap::new();
+        let result = ProtocolPackage::from_files_with_model(&files, Some("a\\b"));
+        match result {
+            Err(err) => assert!(err.contains("path separators"), "unexpected error: {err}"),
+            Ok(_) => panic!("expected error for backslash in model"),
+        }
+    }
+
+    #[test]
+    fn from_files_with_model_empty_model_skips_validation() {
+        // model 为空字符串时应回退到 from_files，不触发路径校验
+        let files = BTreeMap::new();
+        let result = ProtocolPackage::from_files_with_model(&files, Some(""));
+        match result {
+            Err(err) => assert!(
+                !err.contains("path separators"),
+                "empty model should not trigger path validation: {err}"
+            ),
+            Ok(_) => panic!("expected error from from_files with empty file set"),
+        }
     }
 }

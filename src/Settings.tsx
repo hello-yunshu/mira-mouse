@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import type { AppSettings, BundledPluginInfo, AboutInfo, DiscoveredDevice, ThemeMode } from './types';
+import type { AppSettings, BundledPluginInfo, AboutInfo, DiscoveredDevice, PluginInstallResult, PluginUpdateInfo, ThemeMode } from './types';
 import { Tooltip } from './Tooltip';
-import { notifyError } from './notify';
+import { notifyError, notifyInfo } from './notify';
 import { extractChannel, exportDiagnostics } from './plugin-utils';
+import { save, open } from '@tauri-apps/plugin-dialog';
 
 const DEFAULT_SETTINGS: AppSettings = {
   theme: 'system',
@@ -20,6 +21,9 @@ const DEFAULT_SETTINGS: AppSettings = {
   nightModeEnd: '07:00',
   refreshIntervalSeconds: 5,
   telemetryDisabled: true,
+  automaticUpdateChecks: true,
+  automaticUpdateInstall: false,
+  automaticPluginUpdateChecks: true,
 };
 
 type SettingsTab = 'general' | 'device' | 'plugins' | 'privacy' | 'about';
@@ -63,6 +67,9 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, onRefreshInterval
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [autostartEnabled, setAutostartEnabled] = useState(false);
   const [plugins, setPlugins] = useState<BundledPluginInfo[]>([]);
+  const [pluginUpdates, setPluginUpdates] = useState<PluginUpdateInfo[]>([]);
+  const [pluginUpdatesChecking, setPluginUpdatesChecking] = useState(false);
+  const [pluginInstalling, setPluginInstalling] = useState<string>();
   const [diagnostics, setDiagnostics] = useState<string>('');
   const [discovered, setDiscovered] = useState<DiscoveredDevice[]>([]);
   const [saved, setSaved] = useState(false);
@@ -129,10 +136,69 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, onRefreshInterval
     if (result !== undefined) setDiagnostics(result);
   }
 
+  // #11 配置导出：通过系统文件选择器指定保存路径。
+  async function handleExportConfig() {
+    if (previewMode) return;
+    try {
+      const path = await save({
+        defaultPath: 'device-config.json',
+        filters: [{ name: 'Mira 配置', extensions: ['json'] }],
+      });
+      if (!path) return;
+      await invoke('device_config_export', { path });
+      notifyInfo('导出成功', `配置已保存至 ${path}`);
+    } catch (error) {
+      notifyError('导出失败', String(error));
+    }
+  }
+
+  // #11 配置导入：通过系统文件选择器选择配置文件。
+  async function handleImportConfig() {
+    if (previewMode) return;
+    try {
+      const selected = await open({
+        filters: [{ name: 'Mira 配置', extensions: ['json'] }],
+        multiple: false,
+      });
+      if (!selected || typeof selected !== 'string') return;
+      await invoke('device_config_import', { path: selected });
+      notifyInfo('导入成功', '配置已应用，设备状态已更新');
+    } catch (error) {
+      notifyError('导入失败', String(error));
+    }
+  }
+
   function scanDevices() {
     invoke<DiscoveredDevice[]>('discover_devices')
       .then(setDiscovered)
       .catch((err) => notifyError('扫描失败', String(err)));
+  }
+
+  async function checkPluginUpdates() {
+    if (previewMode) return;
+    setPluginUpdatesChecking(true);
+    try {
+      setPluginUpdates(await invoke<PluginUpdateInfo[]>('plugin_updates_check'));
+    } catch (error) {
+      notifyError('检查插件更新失败', String(error));
+    } finally {
+      setPluginUpdatesChecking(false);
+    }
+  }
+
+  async function installPluginUpdate(pluginId: string) {
+    setPluginInstalling(pluginId);
+    try {
+      const result = await invoke<PluginInstallResult>('plugin_update_install', { pluginId });
+      setPlugins((current) => current.map((plugin) => plugin.pluginId === result.pluginId
+        ? { ...plugin, version: result.version, source: 'installed', signatureVerified: true }
+        : plugin));
+      await checkPluginUpdates();
+    } catch (error) {
+      notifyError('安装插件更新失败', String(error));
+    } finally {
+      setPluginInstalling(undefined);
+    }
   }
 
   return (
@@ -210,6 +276,21 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, onRefreshInterval
               />
             </SettingRow>
           </section>
+
+          <section className="card settings-section">
+            <div className="card-title"><h2>软件更新</h2></div>
+            <SettingRow title="启动时检查 Mira 更新" hint="启动后联网检查新版本，并在应用内提示结果">
+              <Toggle checked={settings.automaticUpdateChecks} onChange={(v) => update({ automaticUpdateChecks: v })} label="启动时检查 Mira 更新" />
+            </SettingRow>
+            <SettingRow title="自动下载并安装" hint="发现新版本后自动安装，完成后提示重启，不会强制中断当前工作">
+              <Toggle
+                checked={settings.automaticUpdateInstall}
+                onChange={(v) => update({ automaticUpdateInstall: v })}
+                label="自动下载并安装 Mira 更新"
+                disabled={!settings.automaticUpdateChecks}
+              />
+            </SettingRow>
+          </section>
         </>
       )}
 
@@ -245,13 +326,12 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, onRefreshInterval
           <section className="card settings-section">
             <div className="card-title"><h2>配置导入导出</h2></div>
             <p className="setting-hint">
-              导出 .mira-profile 配置文件用于备份或迁移；导入时会检查插件和固件兼容性并展示差异。
+              导出设备配置文件用于备份或迁移；导入时会检查插件兼容性并逐项应用。
             </p>
             <div className="contact-links">
-              <button className="secondary" disabled>导出配置</button>
-              <button className="secondary" disabled>导入配置</button>
+              <button className="secondary" onClick={() => void handleExportConfig()} disabled={previewMode}>导出配置</button>
+              <button className="secondary" onClick={() => void handleImportConfig()} disabled={previewMode}>导入配置</button>
             </div>
-            <p className="setting-hint">配置导入导出需要连接真实设备后开放。</p>
           </section>
         </>
       )}
@@ -259,6 +339,15 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, onRefreshInterval
       {tab === 'plugins' && (
         <section className="card settings-section">
           <div className="card-title"><h2>已安装插件</h2></div>
+          <SettingRow title="启动时检查插件更新" hint="仅检查签名插件的新版本，不会静默替换插件">
+            <Toggle checked={settings.automaticPluginUpdateChecks} onChange={(v) => update({ automaticPluginUpdateChecks: v })} label="启动时检查插件更新" />
+          </SettingRow>
+          <div className="contact-links plugin-update-actions">
+            <button className="secondary" onClick={() => void checkPluginUpdates()} disabled={previewMode || pluginUpdatesChecking || Boolean(pluginInstalling)}>
+              {pluginUpdatesChecking ? '检查中…' : '检查插件更新'}
+            </button>
+            {pluginUpdates.length > 0 && pluginUpdates.every((item) => !item.updateAvailable) && <span className="save-badge">插件均为最新</span>}
+          </div>
           {plugins.length === 0 ? (
             <p className="setting-hint">未发现已安装插件。正式安装包默认携带 mira.amaster。</p>
           ) : (
@@ -278,6 +367,18 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, onRefreshInterval
                       </span>
                       {plugin.bundleByDefault && <span className="badge">默认内置</span>}
                     </div>
+                    {pluginUpdates.find((item) => item.pluginId === plugin.pluginId)?.updateAvailable && (
+                      <div className="plugin-update-row">
+                        <span className="setting-hint">可更新至 v{pluginUpdates.find((item) => item.pluginId === plugin.pluginId)?.availableVersion}</span>
+                        <button
+                          className="primary"
+                          disabled={Boolean(pluginInstalling)}
+                          onClick={() => void installPluginUpdate(plugin.pluginId)}
+                        >
+                          {pluginInstalling === plugin.pluginId ? '验证并安装中…' : '更新插件'}
+                        </button>
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -293,10 +394,10 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, onRefreshInterval
             <Toggle checked={true} onChange={() => {}} label="禁用遥测" disabled />
           </SettingRow>
           <SettingRow title="扫描 HID 设备" hint="列出与已安装插件匹配的真实 HID 设备（硬件测试用）">
-            <button className="secondary" onClick={scanDevices}>扫描</button>
+            <button className="secondary" onClick={scanDevices} disabled={previewMode}>扫描</button>
           </SettingRow>
           <SettingRow title="导出诊断" hint="诊断数据已脱敏，不含序列号或 HID 负载">
-            <button className="secondary" onClick={handleExportDiagnostics}>导出诊断</button>
+            <button className="secondary" onClick={handleExportDiagnostics} disabled={previewMode}>导出诊断</button>
           </SettingRow>
           {discovered.length > 0 && (
             <div className="plugin-list">

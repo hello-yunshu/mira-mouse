@@ -18,7 +18,7 @@ const MAX_TOTAL_BYTES: u64 = 32 * 1024 * 1024;
 #[derive(Default)]
 pub struct TrustStore(pub HashMap<String, VerifyingKey>);
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct PackageInspection {
     pub plugin_id: String,
     pub version: String,
@@ -26,6 +26,8 @@ pub struct PackageInspection {
     pub signature_verified: bool,
     pub writes_enabled: bool,
     pub capabilities: Vec<mira_plugin_api::Capability>,
+    pub exportable_fields: Vec<mira_plugin_api::ExportableField>,
+    pub depends_on: Vec<mira_plugin_api::PluginDependency>,
     pub file_count: usize,
 }
 
@@ -156,6 +158,8 @@ pub fn extract_package<R: Read + Seek>(
         signature_verified,
         writes_enabled: manifest.writes_enabled,
         capabilities: manifest.capabilities,
+        exportable_fields: manifest.exportable_fields,
+        depends_on: manifest.depends_on,
         file_count: files.len(),
     };
     Ok((inspection, files))
@@ -191,7 +195,7 @@ fn allowed(name: &str) -> bool {
             | "devices.json"
             | "capabilities.json"
             | "META-INF/signature.ed25519"
-    ) || ["protocol/", "locales/", "tests/fixtures/"]
+    ) || ["protocol/", "locales/", "tests/fixtures/", "models/"]
         .iter()
         .any(|prefix| name.starts_with(prefix) && name.ends_with(".json"))
 }
@@ -325,6 +329,23 @@ mod tests {
         let (bytes, trust) = archive(Some(("protocol/run.js", b"alert(1)")), false, false);
         assert!(matches!(
             inspect_package(Cursor::new(bytes), &trust, false),
+            Err(PackageError::Forbidden(_))
+        ));
+    }
+
+    /// The `models/` directory is the reserved parent folder for per-model
+    /// adapter overrides. JSON payloads under it must be accepted so that
+    /// future plugins can ship model-specific files; non-JSON entries remain
+    /// forbidden, matching the `protocol/` policy.
+    #[test]
+    fn allows_models_directory_json_but_rejects_other_extensions() {
+        let (allowed_bytes, trust) = archive(Some(("models/placeholder.json", b"{}")), false, true);
+        let inspection = inspect_package(Cursor::new(allowed_bytes), &trust, true).unwrap();
+        assert_eq!(inspection.plugin_id, "mira.example");
+
+        let (forbidden_bytes, trust) = archive(Some(("models/run.js", b"alert(1)")), false, false);
+        assert!(matches!(
+            inspect_package(Cursor::new(forbidden_bytes), &trust, false),
             Err(PackageError::Forbidden(_))
         ));
     }

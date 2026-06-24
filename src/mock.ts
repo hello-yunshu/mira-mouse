@@ -58,4 +58,5 @@ export const MOCK_DEVICE: DeviceState = {
     { id: 'firmware', control: 'ReadOnlyValue', labelKey: 'capability.firmware', readOnly: true, placements: [{ region: 'details', order: 10, span: 1, icon: 'info' }], metadata: {} },
   ],
   writableMutations: ['set-dpi-stage', 'set-dpi-value', 'set-polling-rate', 'set-mouse-lighting', 'set-receiver-lighting', 'set-wireless-sleep-time', 'set-bluetooth-sleep-time'],
+  readonly: false,
 };

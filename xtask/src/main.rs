@@ -3,7 +3,9 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use std::{fs, path::PathBuf};
+use std::{fs, path::PathBuf, time::Duration};
+
+const MAX_PLUGIN_BYTES: u64 = 32 * 1024 * 1024;
 
 #[derive(Parser)]
 struct Cli {
@@ -41,6 +43,8 @@ struct Lock {
 #[serde(rename_all = "camelCase")]
 struct LockedPlugin {
     plugin_id: String,
+    repository: String,
+    release_tag: String,
     asset: String,
     sha256: String,
     cache_path: String,
@@ -69,9 +73,6 @@ fn sync(locked: bool, offline: bool) -> Result<()> {
     if !locked {
         bail!("plugin synchronization requires --locked");
     }
-    if !offline {
-        bail!("network sync is disabled until a real immutable repository URL and release are configured");
-    }
     let lock: Lock = serde_json::from_slice(&fs::read("plugins.lock.json")?)?;
     if lock.schema_version != 1 {
         bail!("unsupported lock schema");
@@ -81,10 +82,8 @@ fn sync(locked: bool, offline: bool) -> Result<()> {
         if plugin.sha256.starts_with("BLOCKED_") || plugin.cache_path.starts_with("BLOCKED_") {
             bail!("{} has unresolved release metadata", plugin.plugin_id);
         }
-        let source = PathBuf::from(&plugin.cache_path);
-        let bytes =
-            fs::read(&source).with_context(|| format!("read locked cache {}", source.display()))?;
-        let actual = hex::encode(Sha256::digest(&bytes));
+        let bytes = load_locked_plugin(&plugin, offline)?;
+        let actual = sha256_hex(&bytes);
         if actual != plugin.sha256 {
             bail!("locked hash mismatch for {}", plugin.plugin_id);
         }
@@ -94,4 +93,82 @@ fn sync(locked: bool, offline: bool) -> Result<()> {
         )?;
     }
     Ok(())
+}
+
+fn load_locked_plugin(plugin: &LockedPlugin, offline: bool) -> Result<Vec<u8>> {
+    let source = PathBuf::from(&plugin.cache_path);
+    let cached = fs::read(&source).ok();
+    if let Some(bytes) = cached {
+        if sha256_hex(&bytes) == plugin.sha256 {
+            return Ok(bytes);
+        }
+        if offline {
+            bail!("locked hash mismatch for {}", plugin.plugin_id);
+        }
+    } else if offline {
+        return fs::read(&source)
+            .with_context(|| format!("read locked cache {}", source.display()));
+    }
+
+    let url = release_asset_url(plugin);
+    let bytes = download_bounded(&url, MAX_PLUGIN_BYTES)?;
+    if sha256_hex(&bytes) != plugin.sha256 {
+        bail!("downloaded hash mismatch for {}", plugin.plugin_id);
+    }
+    if let Some(parent) = source.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&source, &bytes)
+        .with_context(|| format!("write locked cache {}", source.display()))?;
+    Ok(bytes)
+}
+
+fn release_asset_url(plugin: &LockedPlugin) -> String {
+    format!(
+        "https://github.com/{}/releases/download/{}/{}",
+        plugin.repository,
+        encode_path_segment(&plugin.release_tag),
+        plugin.asset
+    )
+}
+
+fn download_bounded(url: &str, max_bytes: u64) -> Result<Vec<u8>> {
+    let response = reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(60))
+        .user_agent("mira-xtask-plugin-sync/0.1")
+        .build()?
+        .get(url)
+        .send()
+        .with_context(|| format!("download {url}"))?
+        .error_for_status()
+        .with_context(|| format!("download {url}"))?;
+    if response
+        .content_length()
+        .is_some_and(|length| length > max_bytes)
+    {
+        bail!("download exceeds {max_bytes} byte limit");
+    }
+    let bytes = response.bytes().context("read plugin download")?;
+    if bytes.len() as u64 > max_bytes {
+        bail!("download exceeds {max_bytes} byte limit");
+    }
+    Ok(bytes.to_vec())
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
+}
+
+fn encode_path_segment(value: &str) -> String {
+    let mut encoded = String::new();
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                encoded.push(char::from(byte));
+            }
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
 }

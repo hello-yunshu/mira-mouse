@@ -16,6 +16,7 @@ const settings: AppSettings = {
   trayIconColor: 'white',
   nightModeEnabled: false, nightModeStart: '22:00', nightModeEnd: '07:00',
   refreshIntervalSeconds: 5, telemetryDisabled: true,
+  automaticUpdateChecks: true, automaticUpdateInstall: false, automaticPluginUpdateChecks: true,
 };
 
 const snapshot: DeviceSnapshot = {
@@ -142,6 +143,59 @@ describe('real device snapshot mapping', () => {
     expect(screen.getByRole('region', { name: '设备状态' })).toHaveTextContent('配置控制软件');
   });
 
+  it('renders Logitech HID++ pointer speed and RGB control from plugin metadata', async () => {
+    const logitechSnapshot: DeviceSnapshot = {
+      displayName: 'HID++ Mouse', connection: 'wireless', batteryPercent: 82,
+      charging: false, batteries: [{ id: 'mouse', label: '鼠标', percentage: 82, charging: false }],
+      dpi: 1600, dpiStages: [{ value: 1600, color: '#9a8bd0', active: true, enabled: true }],
+      capabilities: {
+        pointerSpeed: { speedRaw: 256 },
+        rgbControl: { enabled: false, mode: 0, flags: 0 },
+      },
+      pluginCapabilities: [
+        {
+          id: 'pointer-speed', control: 'Number', labelKey: 'capability.pointer-speed', readOnly: false,
+          placements: [{ region: 'control', group: 'performance', order: 15, span: 1, icon: 'gauge' }],
+          metadata: { label: '指针速度', source: 'capabilities.pointerSpeed.speedRaw', mutation: 'set-pointer-speed', param: 'speed', min: 46, max: 511, step: 1 },
+        },
+        {
+          id: 'rgb-control', control: 'Toggle', labelKey: 'capability.rgb-control', readOnly: false,
+          placements: [{ region: 'control', group: 'lighting', order: 31, span: 1, icon: 'lightbulb' }],
+          metadata: { label: 'RGB 接管', source: 'capabilities.rgbControl.enabled', mutation: 'set-rgb-control', param: 'enabled' },
+        },
+      ],
+      writableMutations: ['set-pointer-speed', 'set-rgb-control'], evidence: 'hardware-verified',
+    };
+    invokeMock.mockImplementation((command: string, args?: { mutation?: string; params?: Record<string, unknown> }) => {
+      if (command === 'settings_get') return Promise.resolve(settings);
+      if (command === 'device_snapshot') return Promise.resolve(logitechSnapshot);
+      if (command === 'device_mutate' && args?.mutation === 'set-pointer-speed') return Promise.resolve({
+        ...logitechSnapshot,
+        capabilities: { ...logitechSnapshot.capabilities, pointerSpeed: { speedRaw: args.params?.speed } },
+      });
+      if (command === 'device_mutate' && args?.mutation === 'set-rgb-control') return Promise.resolve({
+        ...logitechSnapshot,
+        capabilities: { ...logitechSnapshot.capabilities, rgbControl: { enabled: args.params?.enabled } },
+      });
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+
+    render(<App />);
+    expect(await screen.findByText('HID++ Mouse')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('tab', { name: '指针速度' }));
+    fireEvent.change(screen.getByRole('spinbutton', { name: '指针速度' }), { target: { value: '300' } });
+    fireEvent.click(screen.getByRole('button', { name: '应用' }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('device_mutate', {
+      mutation: 'set-pointer-speed', params: { speed: 300 },
+    }));
+
+    fireEvent.click(screen.getByRole('tab', { name: 'RGB 接管' }));
+    fireEvent.click(screen.getByRole('button', { name: '关闭' }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('device_mutate', {
+      mutation: 'set-rgb-control', params: { enabled: true },
+    }));
+  });
+
   it('keeps all plugin capabilities available to the UI', async () => {
     invokeMock.mockImplementation((command: string, args?: { mutation?: string; params?: Record<string, unknown> }) => {
       if (command === 'settings_get') return Promise.resolve(settings);
@@ -175,6 +229,12 @@ describe('real device snapshot mapping', () => {
     fireEvent.click(screen.getByRole('button', { name: /76%/ }));
     expect(screen.getByRole('region', { name: '设备电量' })).toHaveTextContent('鼠标76%');
     expect(screen.getByRole('region', { name: '设备电量' })).toHaveTextContent('接收器100%');
+    expect(screen.getByRole('button', { name: /76%/ })).toHaveAttribute('aria-expanded', 'true');
+    fireEvent.click(screen.getByRole('button', { name: /76%/ }));
+    expect(screen.getByRole('button', { name: /76%/ })).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(screen.getByRole('button', { name: /76%/ }));
+    fireEvent.click(document.body);
+    expect(screen.getByRole('button', { name: /76%/ })).toHaveAttribute('aria-expanded', 'false');
 
     fireEvent.click(screen.getByRole('tab', { name: '回报率' }));
     const summary = screen.getByLabelText('设备摘要');
@@ -244,6 +304,72 @@ describe('real device snapshot mapping', () => {
     fireEvent.click(screen.getByRole('button', { name: '全部读取信息' }));
     expect(screen.getByText('设备连接')).toBeInTheDocument();
     expect(screen.getByText('当前 DPI')).toBeInTheDocument();
+  });
+
+  it('uses extended HID++ mutations and device-reported polling options when available', async () => {
+    const extendedSnapshot: DeviceSnapshot = {
+      displayName: 'Extended HID++ Mouse',
+      connection: 'usb',
+      batteryPercent: 88,
+      charging: false,
+      batteries: [{ id: 'mouse', label: '鼠标', percentage: 88, charging: false }],
+      dpi: 2400,
+      dpiStages: [{ value: 2400, color: '#9a8bd0', active: true, enabled: true }],
+      pollingRateHz: 1000,
+      supportedPollingRatesHz: [1000, 2000, 4000, 8000],
+      capabilities: {
+        dpiExtended: { sensorIndex: 0, dpiValue: 2400 },
+        settingsExtended: { pollingRate: 1000 },
+      },
+      pluginCapabilities: [
+        {
+          id: 'dpi', control: 'DpiStages', labelKey: 'capability.dpi', readOnly: false,
+          placements: [{ region: 'control', group: 'performance', order: 10, span: 1, icon: 'gauge' }],
+          metadata: { label: 'DPI', source: 'dpiStages', mutations: { value: ['set-dpi-value', 'set-dpi-value-extended'] } },
+        },
+        {
+          id: 'polling-rate', control: 'Select', labelKey: 'capability.polling-rate', readOnly: false,
+          placements: [{ region: 'control', group: 'polling', order: 20, span: 1, icon: 'wave' }],
+          metadata: {
+            label: '回报率', source: 'pollingRate', mutation: ['set-polling-rate', 'set-polling-rate-extended'], param: 'rate',
+            options: [125, 250, 500, 1000, 2000, 4000, 8000].map((value) => ({ value, label: `${value} Hz` })),
+          },
+        },
+      ],
+      writableMutations: ['set-dpi-value-extended', 'set-polling-rate-extended'],
+      evidence: 'source-confirmed',
+    };
+    invokeMock.mockImplementation((command: string, args?: { mutation?: string; params?: Record<string, unknown> }) => {
+      if (command === 'settings_get') return Promise.resolve(settings);
+      if (command === 'device_snapshot') return Promise.resolve(extendedSnapshot);
+      if (command === 'device_mutate' && args?.mutation === 'set-dpi-value-extended') {
+        return Promise.resolve({ ...extendedSnapshot, dpi: args.params?.dpi, dpiStages: [{ value: Number(args.params?.dpi), color: '#9a8bd0', active: true, enabled: true }] });
+      }
+      if (command === 'device_mutate' && args?.mutation === 'set-polling-rate-extended') {
+        return Promise.resolve({ ...extendedSnapshot, pollingRateHz: args.params?.rate });
+      }
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+
+    render(<App />);
+    expect(await screen.findByText('Extended HID++ Mouse')).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText('当前 DPI：2400，点击编辑'));
+    fireEvent.change(screen.getByLabelText('DPI 数值'), { target: { value: '3200' } });
+    fireEvent.click(screen.getByRole('button', { name: '应用' }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('device_mutate', {
+      mutation: 'set-dpi-value-extended', params: { stage: 1, dpi: 3200 },
+    }));
+
+    fireEvent.click(screen.getByRole('tab', { name: '回报率' }));
+    fireEvent.click(screen.getByRole('button', { name: /当前回报率：1000 Hz/ }));
+    const pollingSelect = screen.getByRole('combobox', { name: '回报率' });
+    expect(screen.queryByRole('option', { name: '125 Hz' })).not.toBeInTheDocument();
+    expect(screen.getByRole('option', { name: '8000 Hz' })).toBeInTheDocument();
+    fireEvent.change(pollingSelect, { target: { value: '8000' } });
+    fireEvent.click(screen.getByRole('button', { name: '应用' }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('device_mutate', {
+      mutation: 'set-polling-rate-extended', params: { rate: 8000 },
+    }));
   });
 
   it('renders a minimal device without crashing when most capabilities are absent', async () => {

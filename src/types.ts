@@ -27,6 +27,12 @@ export interface PluginCapability {
   readOnly: boolean;
   placements?: PluginCapabilityPlacement[];
   metadata: Record<string, unknown>;
+  /** 设备实际是否支持该能力（运行时探测结果）。默认 true（向后兼容）。 */
+  available?: boolean;
+  /** 连接类型能力分支（#3）：声明该能力仅在指定连接类型下可见。 */
+  connections?: string[];
+  /** 固件版本门槛（#4）：声明该能力所需的最低固件版本。 */
+  minFirmware?: string;
 }
 export interface PluginCapabilityPlacement {
   region: 'hero' | 'control' | 'status' | 'details';
@@ -50,6 +56,8 @@ export interface DeviceState {
   pluginCapabilities: PluginCapability[];
   writableMutations: string[];
   evidence: Evidence;
+  /** 插件未签名/未启用写入时为 true，UI 显示只读模式标记。 */
+  readonly: boolean;
   updatedAt: string;
 }
 
@@ -63,6 +71,23 @@ export interface BundledPluginInfo {
   bundleByDefault: boolean;
   signatureVerified: boolean;
   evidence: string;
+  source?: 'bundled' | 'installed';
+}
+
+export interface PluginUpdateInfo {
+  pluginId: string;
+  currentVersion: string;
+  availableVersion?: string;
+  releaseTag?: string;
+  notes?: string;
+  updateAvailable: boolean;
+}
+
+export interface PluginInstallResult {
+  pluginId: string;
+  version: string;
+  previousVersion: string;
+  restartedRuntime: boolean;
 }
 
 export interface ContactLinks {
@@ -101,6 +126,9 @@ export interface AppSettings {
   nightModeEnd: string;
   refreshIntervalSeconds: number;
   telemetryDisabled: boolean;
+  automaticUpdateChecks: boolean;
+  automaticUpdateInstall: boolean;
+  automaticPluginUpdateChecks: boolean;
 }
 
 export interface DeviceSnapshot {
@@ -119,6 +147,8 @@ export interface DeviceSnapshot {
   pluginCapabilities?: PluginCapability[];
   writableMutations?: string[];
   evidence: Evidence;
+  /** 插件未签名/签名失效/未启用写入时为 true，UI 显示只读模式标记。 */
+  readonly?: boolean;
 }
 
 export interface DiscoveredDevice {

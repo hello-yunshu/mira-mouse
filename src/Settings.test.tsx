@@ -13,6 +13,7 @@ const settings: AppSettings = {
   trayIconColor: 'white',
   nightModeEnabled: false, nightModeStart: '22:00', nightModeEnd: '07:00',
   refreshIntervalSeconds: 5, telemetryDisabled: true,
+  automaticUpdateChecks: true, automaticUpdateInstall: false, automaticPluginUpdateChecks: true,
 };
 
 describe('SettingsPage', () => {
@@ -22,6 +23,7 @@ describe('SettingsPage', () => {
       if (command === 'settings_set') return Promise.resolve(payload?.settings);
       if (command === 'autostart_state') return Promise.resolve(false);
       if (command === 'about_info') return Promise.reject(new Error('not available in test'));
+      if (command === 'plugin_updates_check') return Promise.resolve([]);
       return Promise.resolve(undefined);
     });
     const onThemeChange = vi.fn();
@@ -48,5 +50,8 @@ describe('SettingsPage', () => {
     expect(screen.getByRole('switch', { name: '启用夜间模式' })).toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: '隐私' }));
     expect(screen.getByRole('switch', { name: '禁用遥测' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: '插件' }));
+    fireEvent.click(screen.getByRole('button', { name: '检查插件更新' }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('plugin_updates_check'));
   });
 });

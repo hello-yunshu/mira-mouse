@@ -45,6 +45,11 @@ pub struct MatchedDevice {
     pub product_id: u16,
     pub usage_page: u16,
     pub usage: u16,
+    /// 设备型号名，用于型号覆盖加载（模式 C）。
+    /// 当 evidence 为 "hardware-verified" 且 devices.json 的 hardwareVerifiedModels
+    /// 只有一个型号时，设置为该型号名；否则为 None。
+    /// 未来可通过 workflow 探测或 VID/PID 查表精确识别多型号场景。
+    pub model: Option<String>,
 }
 
 fn connection_label(conn: Option<&str>) -> String {
@@ -72,6 +77,16 @@ pub fn enumerate_matched_devices(
         for (inspection, devices, _) in plugins {
             for descriptor in &devices.devices {
                 if descriptor_matches(device, descriptor) {
+                    // 型号识别：当 evidence 为 "hardware-verified" 且只有一个已验证型号时，
+                    // 可以确定设备型号。多型号场景需要未来通过 workflow 探测扩展。
+                    let model = if evidence_label(descriptor.evidence.as_deref())
+                        == "hardware-verified"
+                        && devices.hardware_verified_models.len() == 1
+                    {
+                        Some(devices.hardware_verified_models[0].clone())
+                    } else {
+                        None
+                    };
                     let candidate = MatchedDevice {
                         plugin_id: inspection.plugin_id.clone(),
                         family: descriptor.family.clone(),
@@ -82,6 +97,7 @@ pub fn enumerate_matched_devices(
                         product_id: device.product_id(),
                         usage_page: device.usage_page(),
                         usage: device.usage(),
+                        model,
                     };
                     if let Some(existing) = matches.iter_mut().find(|matched| {
                         matched.plugin_id == candidate.plugin_id

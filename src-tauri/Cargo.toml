@@ -22,7 +22,9 @@ serde.workspace = true
 serde_json.workspace = true
 tauri = { version = "2", features = ["image-png", "macos-private-api", "tray-icon"] }
 tauri-plugin-autostart = "2"
+tauri-plugin-dialog = "2"
 tauri-plugin-notification = "2"
+tauri-plugin-process = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-updater = "2"
 mira-core = { path = "../crates/mira-core" }
@@ -30,5 +32,8 @@ mira-plugin-runtime = { path = "../crates/mira-plugin-runtime" }
 ed25519-dalek = { workspace = true }
 hex = { workspace = true }
 sha2 = { workspace = true }
+semver = { workspace = true }
+tempfile = { workspace = true }
+reqwest = { workspace = true }
 hidapi = "2.6"
 window-vibrancy = "0.6"
