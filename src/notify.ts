@@ -26,3 +26,9 @@ export function notifyInfo(title: string, body?: string): void {
     detail: { title, body, kind: 'info' },
   }));
 }
+
+export function notifySuccess(title: string, body?: string): void {
+  notificationTarget.dispatchEvent(new CustomEvent<AppNotification>('notification', {
+    detail: { title, body, kind: 'success' },
+  }));
+}
