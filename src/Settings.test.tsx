@@ -27,10 +27,9 @@ describe('SettingsPage', () => {
       return Promise.resolve(undefined);
     });
     const onThemeChange = vi.fn();
-    const onRefreshIntervalChange = vi.fn();
-    render(<SettingsPage onNavigateAbout={vi.fn()} onThemeChange={onThemeChange} onRefreshIntervalChange={onRefreshIntervalChange} />);
+    render(<SettingsPage onNavigateAbout={vi.fn()} onThemeChange={onThemeChange} />);
 
-    await waitFor(() => expect(onRefreshIntervalChange).toHaveBeenCalledWith(5));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('settings_get'));
     fireEvent.change(screen.getByRole('combobox', { name: '主题模式' }), { target: { value: 'dark' } });
     expect(onThemeChange).toHaveBeenCalledWith('dark');
     expect(screen.getByRole('switch', { name: '显示电量百分比' })).toBeChecked();

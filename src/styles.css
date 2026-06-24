@@ -390,7 +390,7 @@ select {
 .aura-cloud {
   position: absolute;
   border-radius: 50%;
-  filter: blur(14px);
+  filter: blur(10px);
   will-change: transform, opacity, border-radius;
   pointer-events: none;
 }
@@ -412,18 +412,6 @@ select {
   opacity: .55;
   animation: aura-cloud-3 16s ease-in-out infinite;
 }
-.aura-cloud-4 {
-  width: 48%; height: 52%; top: 40%; left: 45%;
-  background: radial-gradient(circle at 50% 50%, var(--aura-color-4), transparent 58%);
-  opacity: .58;
-  animation: aura-cloud-4 20s ease-in-out infinite;
-}
-.aura-cloud-5 {
-  width: 44%; height: 48%; top: 0%; left: 10%;
-  background: radial-gradient(circle at 55% 45%, var(--aura-color-5), transparent 58%);
-  opacity: .52;
-  animation: aura-cloud-5 22s ease-in-out infinite;
-}
 @keyframes aura-cloud-1 {
   0%, 100% { transform: translate(0, 0) scale(1) rotate(0deg); border-radius: 50% 55% 45% 60%; opacity: .55; }
   20% { transform: translate(8px, -6px) scale(1.1) rotate(15deg); border-radius: 55% 45% 60% 40%; opacity: .80; }
@@ -442,18 +430,6 @@ select {
   30% { transform: translate(6px, 7px) scale(1.1); border-radius: 45% 55% 40% 60%; opacity: .65; }
   60% { transform: translate(-8px, -4px) scale(1.02); border-radius: 55% 45% 60% 40%; opacity: .50; }
   85% { transform: translate(3px, 6px) scale(.93); border-radius: 50% 60% 45% 55%; opacity: .40; }
-}
-@keyframes aura-cloud-4 {
-  0%, 100% { transform: translate(0, 0) scale(1); border-radius: 50%; opacity: .45; }
-  25% { transform: translate(-7px, 6px) scale(1.12); border-radius: 55% 45% 60% 40%; opacity: .65; }
-  50% { transform: translate(9px, -5px) scale(.92); border-radius: 40% 60% 50% 55%; opacity: .50; }
-  75% { transform: translate(-5px, -7px) scale(1.06); border-radius: 60% 40% 55% 45%; opacity: .60; }
-}
-@keyframes aura-cloud-5 {
-  0%, 100% { transform: translate(0, 0) scale(.98); border-radius: 50%; opacity: .42; }
-  20% { transform: translate(5px, 8px) scale(1.08); border-radius: 45% 55% 40% 60%; opacity: .60; }
-  55% { transform: translate(-9px, 4px) scale(.94); border-radius: 60% 40% 55% 45%; opacity: .45; }
-  80% { transform: translate(4px, -6px) scale(1.04); border-radius: 50% 60% 45% 55%; opacity: .55; }
 }
 
 /* 星星微闪 — 大小不一、位置随机、闪烁频率不同 */
@@ -906,8 +882,8 @@ select {
   border-radius: 12px;
   color: var(--muted);
   background: var(--panel);
-  -webkit-backdrop-filter: blur(16px) saturate(145%);
-  backdrop-filter: blur(16px) saturate(145%);
+  -webkit-backdrop-filter: blur(8px) saturate(145%);
+  backdrop-filter: blur(8px) saturate(145%);
   box-shadow: 0 8px 26px rgb(47 39 60 / 6%);
   text-align: left;
   transition: transform .12s ease, background .2s ease, box-shadow .2s ease, color .2s ease;

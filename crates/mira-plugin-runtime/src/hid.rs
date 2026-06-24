@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use hidapi::{DeviceInfo, HidApi, HidDevice};
 use serde::Deserialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::ffi::CString;
 
 use crate::dsl::{Transport, Workflow};
@@ -73,6 +73,9 @@ pub fn enumerate_matched_devices(
     plugins: &[(PackageInspection, DevicesFile, BTreeMap<String, Vec<u8>>)],
 ) -> Vec<MatchedDevice> {
     let mut matches: Vec<MatchedDevice> = Vec::new();
+    // P4: 用 HashMap 索引替代线性查找，将去重从 O(n²) 降为 O(n)。
+    // key 为 (plugin_id, family, path)，value 为 matches 中的索引。
+    let mut dedup_index: HashMap<(String, String, String), usize> = HashMap::new();
     for device in api.device_list() {
         for (inspection, devices, _) in plugins {
             for descriptor in &devices.devices {
@@ -99,15 +102,17 @@ pub fn enumerate_matched_devices(
                         usage: device.usage(),
                         model,
                     };
-                    if let Some(existing) = matches.iter_mut().find(|matched| {
-                        matched.plugin_id == candidate.plugin_id
-                            && matched.family == candidate.family
-                            && matched.path == candidate.path
-                    }) {
-                        if evidence_rank(&candidate.evidence) > evidence_rank(&existing.evidence) {
-                            *existing = candidate;
+                    let key = (
+                        candidate.plugin_id.clone(),
+                        candidate.family.clone(),
+                        candidate.path.clone(),
+                    );
+                    if let Some(&idx) = dedup_index.get(&key) {
+                        if evidence_rank(&candidate.evidence) > evidence_rank(&matches[idx].evidence) {
+                            matches[idx] = candidate;
                         }
                     } else {
+                        dedup_index.insert(key, matches.len());
                         matches.push(candidate);
                     }
                 }

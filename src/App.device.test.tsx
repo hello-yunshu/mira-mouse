@@ -224,7 +224,7 @@ describe('real device snapshot mapping', () => {
     fireEvent.click(screen.getByRole('button', { name: '切换到第 1 档' }));
     await waitFor(() => expect(screen.getByLabelText('当前 DPI：800，点击编辑')).toBeInTheDocument());
     expect(invokeMock).toHaveBeenCalledWith('device_mutate', { mutation: 'set-dpi-stage', params: { stage: 1 } });
-    expect(screen.getByText('已写入')).toBeInTheDocument();
+    expect(screen.getByText(/已写入/)).toBeInTheDocument();
     expect(document.documentElement.style.getPropertyValue('--accent')).toContain('210');
     fireEvent.click(screen.getByRole('button', { name: /76%/ }));
     expect(screen.getByRole('region', { name: '设备电量' })).toHaveTextContent('鼠标76%');
@@ -361,12 +361,13 @@ describe('real device snapshot mapping', () => {
     }));
 
     fireEvent.click(screen.getByRole('tab', { name: '回报率' }));
-    fireEvent.click(screen.getByRole('button', { name: /当前回报率：1000 Hz/ }));
-    const pollingSelect = screen.getByRole('combobox', { name: '回报率' });
-    expect(screen.queryByRole('option', { name: '125 Hz' })).not.toBeInTheDocument();
-    expect(screen.getByRole('option', { name: '8000 Hz' })).toBeInTheDocument();
-    fireEvent.change(pollingSelect, { target: { value: '8000' } });
-    fireEvent.click(screen.getByRole('button', { name: '应用' }));
+    // New UI: option buttons are shown directly (no edit dialog).
+    // Device reports supportedPollingRatesHz: [1000, 2000, 4000, 8000],
+    // so only those 4 options appear (not the full plugin metadata list).
+    expect(screen.getByRole('button', { name: '1000 Hz' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.queryByRole('button', { name: '125 Hz' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '8000 Hz' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '8000 Hz' }));
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('device_mutate', {
       mutation: 'set-polling-rate-extended', params: { rate: 8000 },
     }));
@@ -472,12 +473,12 @@ describe('real device snapshot mapping', () => {
     expect(await screen.findByText('Polling-Only Mouse')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('tab', { name: '回报率' }));
     expect(screen.getByText('当前回报率').parentElement).toHaveTextContent('未报告');
-    expect(screen.queryByRole('group', { name: '回报率选项' })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: '回报率未报告，点击设置' }));
-    expect(screen.getByRole('dialog', { name: '设置回报率' })).toBeInTheDocument();
-    expect(screen.getByRole('combobox', { name: '回报率' })).toHaveValue('125');
-    expect(screen.queryByRole('button', { name: '125 Hz' })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: '应用' }));
+    // When the device reports supported rates but not the current rate,
+    // the UI shows option buttons directly (no edit dialog).
+    const optionsGroup = screen.getByRole('group', { name: '回报率选项' });
+    expect(optionsGroup).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '125 Hz' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '125 Hz' }));
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('device_mutate', {
       mutation: 'set-polling-rate', params: { rate: 125 },
     }));
