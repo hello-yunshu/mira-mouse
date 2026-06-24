@@ -63,7 +63,7 @@ function Toggle({ checked, onChange, label, disabled = false }: { checked: boole
   );
 }
 
-export function SettingsPage({ onNavigateAbout, onThemeChange, onRefreshIntervalChange, previewMode = false }: { onNavigateAbout: () => void; onThemeChange: (theme: ThemeMode) => void; onRefreshIntervalChange: (seconds: number) => void; previewMode?: boolean }) {
+export function SettingsPage({ onNavigateAbout, onThemeChange, previewMode = false }: { onNavigateAbout: () => void; onThemeChange: (theme: ThemeMode) => void; previewMode?: boolean }) {
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [autostartEnabled, setAutostartEnabled] = useState(false);
   const [plugins, setPlugins] = useState<BundledPluginInfo[]>([]);
@@ -83,7 +83,6 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, onRefreshInterval
         const merged: AppSettings = { ...DEFAULT_SETTINGS, ...loaded };
         setSettings(merged);
         onThemeChange(merged.theme as ThemeMode);
-        onRefreshIntervalChange(merged.refreshIntervalSeconds);
       })
       .catch(() => setSettings(DEFAULT_SETTINGS));
     invoke<boolean>('autostart_state')
@@ -92,13 +91,12 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, onRefreshInterval
     invoke<AboutInfo>('about_info')
       .then((info) => setPlugins(info.bundledPlugins ?? []))
       .catch(() => setPlugins([]));
-  }, [onRefreshIntervalChange, onThemeChange, previewMode]);
+  }, [onThemeChange, previewMode]);
 
   function update(patch: Partial<AppSettings>) {
     const next = { ...settings, ...patch };
     setSettings(next);
     if (patch.theme && onThemeChange) onThemeChange(patch.theme as ThemeMode);
-    if (patch.refreshIntervalSeconds != null) onRefreshIntervalChange(patch.refreshIntervalSeconds);
     if (previewMode) {
       setSaved(true);
       setTimeout(() => setSaved(false), 1500);

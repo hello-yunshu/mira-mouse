@@ -5,7 +5,8 @@ use mira_core::{DeviceSnapshot, LowBatteryCrossing, PluginCapability, PluginCapa
 use mira_plugin_runtime::{
     extract_package, hid, inspect_package, mutate_device_with_package, read_device_with_package,
     writable_mutations_with_package, ConnectionKind, DeviceReading, ExportableField,
-    PackageInspection, ProtocolContext, ProtocolPackage, TrustStore,
+    FeatureIndexCache, OnboardMemoryCache, PackageInspection, ProtocolContext, ProtocolPackage,
+    TrustStore,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -154,6 +155,22 @@ fn plugin_capabilities(
         .collect()
 }
 
+/// 托盘菜单签名：捕获影响菜单结构的所有字段。
+/// 签名相同时跳过菜单重建，仅更新 title/tooltip。
+#[derive(Clone, PartialEq)]
+struct TrayMenuSignature {
+    /// 是否有设备连接（None = 未连接，Some = 已连接）
+    connected: bool,
+    /// 电池信息列表：(label, percentage, charging)
+    batteries: Vec<(String, u8, bool)>,
+    /// 是否显示连接状态菜单项
+    show_connection: bool,
+    /// 连接标签（如 "USB"、"无线"）
+    connection_label: String,
+    /// 设备显示名
+    display_name: String,
+}
+
 #[derive(Default)]
 struct SessionState {
     write_in_progress: Mutex<bool>,
@@ -168,8 +185,11 @@ struct SessionState {
     tray_icon_level: Mutex<Option<i16>>,
     tray_is_charging: Mutex<Option<bool>>,
     tray_uses_dark: Mutex<Option<bool>>,
+    /// 缓存托盘菜单签名，避免每轮轮询都重建菜单（仅图标做了 diff）。
+    /// 签名相同时跳过菜单重建，仅更新 title/tooltip（轻量文本操作）。
+    tray_menu_signature: Mutex<Option<TrayMenuSignature>>,
     /// 缓存系统主题检测结果，避免每次 update_tray 都 fork 进程。
-    /// 由 read_device_once（电量轮询）和 ThemeChanged 事件更新。
+    /// 由 ThemeChanged 事件和窗口聚焦事件更新；首次读取时 tray_theme_is_dark 会兜底检测。
     system_dark: Mutex<Option<bool>>,
     /// Channel used to wake the background reader thread for an immediate refresh.
     /// Send `()` to trigger a read; the reader drains pending signals before reading
@@ -202,6 +222,17 @@ struct SessionState {
     /// 非 settling 状态下，500ms 内的重复读取复用 last_snapshot，跳过 HID 往返。
     /// 写入后（device_mutate_blocking）和设备断开（clear_snapshots）时清除。
     last_read_at: Mutex<HashMap<String, Instant>>,
+    /// 缓存 logitech-hidpp feature index 查询结果，按设备路径索引。
+    /// feature index 在设备连接期间不变，缓存命中时跳过 root-get-feature 的 HID 往返。
+    /// 设备断开时由 clear_snapshots 清空。
+    feature_index_cache: Mutex<FeatureIndexCache>,
+    /// 缓存 onboard memory 读取结果，按设备路径索引。
+    /// 写入 mutation 预读时命中缓存则跳过 16 chunk HID 往返；验证读后更新缓存。
+    /// 设备断开时由 clear_snapshots 清空。
+    onboard_memory_cache: Mutex<OnboardMemoryCache>,
+    /// debug 构建中记录上一次 matched device 数量，仅在变化时输出日志。
+    #[cfg(debug_assertions)]
+    last_matched_count: Mutex<usize>,
 }
 
 /// Send an immediate-refresh signal to the background reader thread.
@@ -367,6 +398,14 @@ fn clear_snapshots(state: &SessionState) {
     drop(guard);
     // #9 设备断开时清除 TTL 缓存。
     if let Ok(mut cache) = state.last_read_at.lock() {
+        cache.clear();
+    }
+    // P1 设备断开时清除 feature index 缓存，确保重连后重新查询。
+    if let Ok(mut cache) = state.feature_index_cache.lock() {
+        cache.clear();
+    }
+    // UX3 设备断开时清除 onboard memory 缓存，避免重连后使用过期数据。
+    if let Ok(mut cache) = state.onboard_memory_cache.lock() {
         cache.clear();
     }
     if changed {
@@ -2198,6 +2237,8 @@ fn reapply_software_profile(
         connection: runtime.connection,
         files: runtime.files,
         outputs: reading.capabilities.clone(),
+        feature_index_cache: Some(&state.feature_index_cache),
+        onboard_memory_cache: Some(&state.onboard_memory_cache),
     };
     let mut failed = false;
     if allowed
@@ -2244,6 +2285,8 @@ fn reapply_software_profile(
                 connection: runtime.connection,
                 files: runtime.files,
                 outputs: BTreeMap::new(),
+                feature_index_cache: Some(&state.feature_index_cache),
+                onboard_memory_cache: Some(&state.onboard_memory_cache),
             },
         )
         .ok()
@@ -2268,12 +2311,8 @@ enum DeviceReadOutcome {
 /// triggered by a signal or the fallback timeout).
 fn read_device_once(app: &AppHandle) {
     let state = app.state::<SessionState>();
-    // 顺便刷新系统主题缓存：和电量轮询合并，不产生额外的轮询开销。
-    // 这样 update_tray 只读缓存，无需每次都 fork 进程检测主题。
-    let dark = detect_system_dark(app);
-    if let Ok(mut cache) = state.system_dark.lock() {
-        *cache = Some(dark);
-    }
+    // 系统主题缓存由 ThemeChanged 事件和窗口聚焦事件更新，
+    // 轮询期间只读缓存，避免每轮都 fork 进程检测主题。
     // Lock scope: only HID I/O and snapshot construction. Disk reads, tray
     // updates and event emission run after the locks are released so they
     // cannot block discover_devices or other commands.
@@ -2296,7 +2335,15 @@ fn read_device_once(app: &AppHandle) {
         let api: &HidApi = cached_api;
         let matched = hid::enumerate_matched_devices(api, plugins);
         #[cfg(debug_assertions)]
-        eprintln!("[mira] background: matched {} device(s)", matched.len());
+        {
+            let count = matched.len();
+            if let Ok(mut last) = state.last_matched_count.lock() {
+                if *last != count {
+                    eprintln!("[mira] background: matched {} device(s)", count);
+                    *last = count;
+                }
+            }
+        }
 
         // 修复 #10：遍历所有 matched 设备，逐个读取并收集快照。
         if matched.is_empty() {
@@ -2365,6 +2412,8 @@ fn read_device_once(app: &AppHandle) {
                     connection: kind,
                     files: plugin_files,
                     outputs: BTreeMap::new(),
+                    feature_index_cache: Some(&state.feature_index_cache),
+                    onboard_memory_cache: Some(&state.onboard_memory_cache),
                 },
             ) {
                 Ok(mut reading) => {
@@ -2381,6 +2430,8 @@ fn read_device_once(app: &AppHandle) {
                                 connection: kind,
                                 files: plugin_files,
                                 outputs: reading.capabilities.clone(),
+                                feature_index_cache: Some(&state.feature_index_cache),
+                                onboard_memory_cache: Some(&state.onboard_memory_cache),
                             },
                         )
                         .unwrap_or_default()
@@ -2783,6 +2834,8 @@ fn device_mutate_blocking(
             connection: kind,
             files,
             outputs: BTreeMap::new(),
+            feature_index_cache: Some(&state.feature_index_cache),
+            onboard_memory_cache: Some(&state.onboard_memory_cache),
         };
         let allowed = writable_mutations_with_package(&package, &context)?;
         if !allowed.iter().any(|candidate| candidate == mutation) {
@@ -2796,6 +2849,8 @@ fn device_mutate_blocking(
             connection: kind,
             files,
             outputs: before.capabilities.clone(),
+            feature_index_cache: Some(&state.feature_index_cache),
+            onboard_memory_cache: Some(&state.onboard_memory_cache),
         };
         let mutation_result =
             mutate_device_with_package(&package, &mutate_context, mutation, params)?;
@@ -3071,7 +3126,7 @@ fn about_info(app: tauri::AppHandle) -> Result<AboutInfo, String> {
 
 #[tauri::command]
 fn settings_get(app: tauri::AppHandle) -> Result<AppSettings, String> {
-    Ok(load_settings(&app))
+    Ok(cached_settings(&app))
 }
 
 #[tauri::command]
@@ -3378,7 +3433,8 @@ fn update_tray(
     }
     let menu = Menu::new(app)?;
 
-    if let Some(snapshot) = snapshot {
+    // 计算当前菜单签名，用于判断是否需要重建菜单
+    let current_signature = if let Some(snapshot) = snapshot {
         let mut batteries = snapshot.batteries.clone();
         if batteries.is_empty() {
             if let Some(percentage) = snapshot.battery_percent {
@@ -3390,35 +3446,105 @@ fn update_tray(
                 });
             }
         }
-        for (index, battery) in batteries.iter().enumerate() {
-            let charging = if battery.charging {
-                " · 充电中"
-            } else {
-                ""
-            };
-            let item = MenuItem::with_id(
+        TrayMenuSignature {
+            connected: true,
+            batteries: batteries
+                .iter()
+                .map(|b| (b.label.clone(), b.percentage, b.charging))
+                .collect(),
+            show_connection: settings.tray_show_connection,
+            connection_label: connection_label(snapshot.connection).to_string(),
+            display_name: snapshot.display_name.clone(),
+        }
+    } else {
+        TrayMenuSignature {
+            connected: false,
+            batteries: Vec::new(),
+            show_connection: false,
+            connection_label: String::new(),
+            display_name: String::new(),
+        }
+    };
+
+    // 比较签名：相同则跳过菜单重建，仅更新 title/tooltip（轻量文本操作）
+    let menu_changed = state
+        .tray_menu_signature
+        .lock()
+        .map(|cached| *cached != Some(current_signature.clone()))
+        .unwrap_or(true);
+
+    if menu_changed {
+        if let Some(snapshot) = snapshot {
+            let mut batteries = snapshot.batteries.clone();
+            if batteries.is_empty() {
+                if let Some(percentage) = snapshot.battery_percent {
+                    batteries.push(mira_core::DeviceBattery {
+                        id: "mouse".into(),
+                        label: "鼠标".into(),
+                        percentage,
+                        charging: snapshot.charging,
+                    });
+                }
+            }
+            for (index, battery) in batteries.iter().enumerate() {
+                let charging = if battery.charging { " · 充电中" } else { "" };
+                let item = MenuItem::with_id(
+                    app,
+                    format!("battery-{index}"),
+                    format!("{}电量：{}%{charging}", battery.label, battery.percentage),
+                    true,
+                    None::<&str>,
+                )?;
+                menu.append(&item)?;
+            }
+            if settings.tray_show_connection {
+                let connection = MenuItem::with_id(
+                    app,
+                    "connection-status",
+                    format!(
+                        "连接：{} · {}",
+                        connection_label(snapshot.connection),
+                        snapshot.display_name
+                    ),
+                    true,
+                    None::<&str>,
+                )?;
+                menu.append(&connection)?;
+            }
+        } else {
+            let disconnected = MenuItem::with_id(
                 app,
-                format!("battery-{index}"),
-                format!("{}电量：{}%{charging}", battery.label, battery.percentage),
+                "disconnected",
+                "未连接受支持的鼠标",
                 true,
                 None::<&str>,
             )?;
-            menu.append(&item)?;
+            menu.append(&disconnected)?;
         }
-        if settings.tray_show_connection {
-            let connection = MenuItem::with_id(
-                app,
-                "connection-status",
-                format!(
-                    "连接：{} · {}",
-                    connection_label(snapshot.connection),
-                    snapshot.display_name
-                ),
-                true,
-                None::<&str>,
-            )?;
-            menu.append(&connection)?;
+
+        menu.append(&PredefinedMenuItem::separator(app)?)?;
+        menu.append(&MenuItem::with_id(
+            app,
+            "open",
+            "打开 Mira",
+            true,
+            None::<&str>,
+        )?)?;
+        menu.append(&MenuItem::with_id(
+            app,
+            "quit",
+            "退出 Mira",
+            true,
+            None::<&str>,
+        )?)?;
+        tray.set_menu(Some(menu))?;
+        if let Ok(mut cached) = state.tray_menu_signature.lock() {
+            *cached = Some(current_signature);
         }
+    }
+
+    // title/tooltip 是轻量文本操作，每次都更新
+    if let Some(snapshot) = snapshot {
         // On macOS, `None` means "leave the existing title unchanged".
         // An empty string is required to actually hide a previously shown percentage.
         tray.set_title(Some(battery_title(snapshot, settings).unwrap_or_default()))?;
@@ -3428,34 +3554,9 @@ fn update_tray(
             snapshot.display_name
         )))?;
     } else {
-        let disconnected = MenuItem::with_id(
-            app,
-            "disconnected",
-            "未连接受支持的鼠标",
-            true,
-            None::<&str>,
-        )?;
-        menu.append(&disconnected)?;
         tray.set_title(Some(""))?;
         tray.set_tooltip(Some("Mira · 未连接受支持的鼠标"))?;
     }
-
-    menu.append(&PredefinedMenuItem::separator(app)?)?;
-    menu.append(&MenuItem::with_id(
-        app,
-        "open",
-        "打开 Mira",
-        true,
-        None::<&str>,
-    )?)?;
-    menu.append(&MenuItem::with_id(
-        app,
-        "quit",
-        "退出 Mira",
-        true,
-        None::<&str>,
-    )?)?;
-    tray.set_menu(Some(menu))?;
     Ok(())
 }
 
@@ -3591,6 +3692,13 @@ pub fn run() {
                         }
                         tauri::WindowEvent::Focused(true) => {
                             // Window gained focus — refresh device state on demand.
+                            // 同时刷新系统主题缓存：窗口隐藏期间系统主题可能已变化，
+                            // 但 ThemeChanged 事件可能未触发（窗口不可见时）。
+                            let state = app_handle.state::<SessionState>();
+                            let dark = detect_system_dark(&app_handle);
+                            if let Ok(mut cache) = state.system_dark.lock() {
+                                *cache = Some(dark);
+                            }
                             request_refresh(&app_handle.state::<SessionState>());
                         }
                         tauri::WindowEvent::ThemeChanged(_) => {

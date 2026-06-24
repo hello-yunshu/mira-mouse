@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import {
@@ -10,7 +10,6 @@ import {
   Lightbulb,
   Minus,
   ReadCvLogo,
-  SignOut,
   Square,
   Timer,
   UserCircle,
@@ -22,9 +21,9 @@ import { applyTheme } from './theme';
 import { SettingsPage } from './Settings';
 import { AboutPage } from './About';
 import type { AboutInfo, AppSettings, DeviceBattery, DeviceCapabilities, DeviceSnapshot, DeviceState, PluginCapability, PluginUpdateInfo, ThemeMode } from './types';
-import './styles.css';
-import { notifyError, notifyInfo, onAppNotification, type AppNotification } from './notify';
+import { onAppNotification, notifyInfo, type AppNotification } from './notify';
 import { startAutomaticAppUpdateCheck } from './updater';
+import './styles.css';
 
 type View = 'dashboard' | 'settings' | 'about';
 type ControlMode = string;
@@ -104,8 +103,7 @@ function rgbToHex(rgb: unknown): string | undefined {
   if (!Array.isArray(rgb) || rgb.length < 3) return undefined;
   const [r, g, b] = rgb.map((v) => Number(v));
   if ([r, g, b].some((v) => Number.isNaN(v))) return undefined;
-  // 钳制到 [0, 255] 范围，避免负数或 >255 的值产生无效的 hex 字符串
-  return `#${[r, g, b].map((v) => Math.max(0, Math.min(255, Math.trunc(v))).toString(16).padStart(2, '0')).join('')}`;
+  return `#${[r, g, b].map((v) => v.toString(16).padStart(2, '0')).join('')}`;
 }
 
 function snapshotToState(snapshot: DeviceSnapshot): DeviceState {
@@ -143,9 +141,10 @@ function snapshotToState(snapshot: DeviceSnapshot): DeviceState {
     charging: snapshot.charging,
     batteries: snapshot.batteries?.length ? snapshot.batteries : fallbackBatteries,
     pollingRate: snapshot.pollingRateHz,
-    supportedPollingRates: snapshot.supportedPollingRatesHz,
-    profile: snapshot.profile ? `配置 ${snapshot.profile}` : undefined,
+    supportedPollingRates: snapshot.supportedPollingRatesHz ?? [],
+    profile: snapshot.profile?.replace(/^Profile\s+/i, '配置 '),
     evidence: snapshot.evidence,
+    readonly: snapshot.readonly ?? false,
     updatedAt: now,
     dpiStages: stages,
     lighting: hasLightingData
@@ -167,7 +166,6 @@ function snapshotToState(snapshot: DeviceSnapshot): DeviceState {
     capabilities: caps,
     pluginCapabilities: snapshot.pluginCapabilities ?? [],
     writableMutations: snapshot.writableMutations ?? [],
-    readonly: snapshot.readonly === true,
   };
 }
 
@@ -177,8 +175,6 @@ function DeviceAura({ color }: { color?: string }) {
       <div className="aura-cloud aura-cloud-1" />
       <div className="aura-cloud aura-cloud-2" />
       <div className="aura-cloud aura-cloud-3" />
-      <div className="aura-cloud aura-cloud-4" />
-      <div className="aura-cloud aura-cloud-5" />
       <div className="aura-star aura-star-1" />
       <div className="aura-star aura-star-2" />
       <div className="aura-star aura-star-3" />
@@ -214,42 +210,11 @@ const CAPABILITY_GROUP_LABELS: Record<string, string> = {
   batteryCapability: '电池能力',
   unifiedBatteryCapability: '统一电池能力',
   dpi: 'DPI 档位',
-  dpiExtended: '扩展 DPI 档位',
-  featureSet: 'HID++ 功能集',
   featureIndexBattery: '电池功能索引',
   featureIndexDeviceName: '名称功能索引',
   featureIndexDpi: 'DPI 功能索引',
-  featureIndexExtendedDpi: '扩展 DPI 功能索引',
-  featureIndexFeatureSet: '功能集索引',
-  featureIndexMousePointer: '指针功能索引',
-  featureIndexPointerSpeed: '指针速度功能索引',
-  featureIndexSurfaceTuning: '表面调校功能索引',
-  featureIndexXyStats: 'XY 统计功能索引',
-  featureIndexWheelStats: '滚轮统计功能索引',
-  featureIndexReportRate: '回报率功能索引',
-  featureIndexExtendedReportRate: '扩展回报率功能索引',
-  featureIndexColorLed: 'Color LED 功能索引',
-  featureIndexRgbEffects: 'RGB 功能索引',
-  featureIndexOnboardProfiles: '板载配置功能索引',
-  featureIndexProfileManagement: '配置管理功能索引',
   featureIndexUnifiedBattery: '统一电池功能索引',
-  mousePointer: '鼠标指针',
-  pointerSpeed: '指针速度',
   settings: '传感器与连接',
-  settingsExtended: '扩展传感器与连接',
-  reportRateList: '可用回报率',
-  reportRateListExtended: '扩展可用回报率',
-  colorLedInfo: 'Color LED 信息',
-  rgbEffectsInfo: 'RGB_EFFECTS 信息',
-  rgbControl: 'RGB 接管状态',
-  controlMode: '板载/软件控制',
-  onboardDescription: '板载配置描述',
-  onboardMode: '板载控制模式',
-  onboardCurrentProfile: '当前板载配置',
-  onboardCurrentDpiIndex: '当前 DPI 索引',
-  profileMgmtInfo: '配置管理信息',
-  profileMgmtCount: '配置数量',
-  profileMgmtCurrent: '当前配置文件',
   lighting: '主灯光（旧插件）',
   mouseEffect: '鼠标灯效',
   receiverLighting: '接收器灯光',
@@ -269,10 +234,6 @@ const CAPABILITY_FIELD_LABELS: Record<string, string> = {
   percentage: '电量', charging: '充电中', valid: '数据有效', profile: '配置编号', currentStage: '当前档位', stageCount: '档位数量',
   nextPercentage: '下一电量阈值', statusRaw: '充电状态原始值', statusName: '充电状态', chargingStatus: '充电状态值', externalPowerStatus: '外部供电状态', levelFlags: '电量等级',
   supportedLevels: '支持的电量等级', capabilityFlags: '能力标志', sensorIndex: '传感器索引', dpiValue: '当前 DPI', defaultDpi: '默认 DPI',
-  count: '数量', dpi: 'DPI', flags: '标志', accelerationRaw: '加速度原始值', acceleration: '加速度', suggestOsBallistics: '建议系统弹道', suggestVerticalOrientation: '建议垂直方向',
-  speedRaw: '速度原始值', target: '目标', mode: '模式', modeName: '模式名称', zoneCount: '区域数量', response0: '响应字节 0', response1: '响应字节 1', responseFlags: '响应标志', capabilities: '能力标志',
-  maxProfileCount: '最大配置数', profileNameLength: '配置名长度', profileCount: '配置数量', profileIndex: '配置索引', memoryModelId: '内存模型 ID', profileFormatId: '配置格式 ID',
-  macroFormatId: '宏格式 ID', readOnlyProfileCount: '只读配置数', buttonCount: '按键数量', sectorCount: '扇区数量', sectorSize: '扇区大小', mechanicalLayout: '机械布局', variousInfo: '附加信息',
   dpiX: 'X 轴 DPI', dpiY: 'Y 轴 DPI', stageColors: '档位颜色', pollingRaw: '回报率原始值', pollingRate: '回报率',
   usbDebounce: 'USB 防抖', wirelessDebounce: '2.4G 防抖', bluetoothDebounce: '蓝牙防抖', rippleCorrection: '波纹修正',
   buttonChangeTime: '按键切换时间', wheelToButton: '滚轮转按键', buttonToWheel: '按键转滚轮', bluetoothSleepValue: '蓝牙休眠值',
@@ -324,14 +285,11 @@ const PLUGIN_LABELS: Record<string, string> = {
   'capability.battery': '电量',
   'capability.dpi': 'DPI',
   'capability.polling-rate': '回报率',
-  'capability.pointer-speed': '指针速度',
   'capability.sleep-time': '休眠时间',
   'capability.profile': '配置文件',
-  'capability.profile-mgmt-current': '当前配置文件',
   'capability.firmware': '固件',
   'capability.lighting': '灯光',
   'capability.mouse-lighting': '鼠标灯光',
-  'capability.rgb-control': 'RGB 接管',
   'capability.control-mode': '配置控制',
   'capability.onboard-profile': '板载配置',
 };
@@ -386,6 +344,18 @@ function pluginOptions(capability: PluginCapability, device?: DeviceState): Plug
       .map((value) => ({ value, label: `${value} Hz` }));
   }
   return parsePluginOptions(capability.metadata.options).slice(0, MAX_CONTROL_OPTIONS);
+}
+
+/// 从 mutation 字段（string 或 string[]）中选取第一个可写的 mutation。
+/// 插件可声明多个候选 mutation（如 ['set-polling-rate', 'set-polling-rate-extended']），
+/// UI 优先选择设备支持的写入命令。
+function pickMutation(value: unknown, writableMutations: string[]): string | undefined {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) {
+    const candidates = value.filter((m): m is string => typeof m === 'string');
+    return candidates.find((m) => writableMutations.includes(m)) ?? candidates[0];
+  }
+  return undefined;
 }
 
 function pluginSummaryItems(capability: PluginCapability): PluginSummaryItem[] {
@@ -474,21 +444,20 @@ function placementsFor(capability: PluginCapability, region: PluginRegion) {
   return declared.filter((placement) => placement.region === region);
 }
 
-function metadataMutation(value: unknown, device?: DeviceState): string | undefined {
-  if (typeof value === 'string') return value;
-  if (!Array.isArray(value)) return undefined;
-  const candidates = value.filter((candidate): candidate is string => typeof candidate === 'string');
-  return candidates.find((candidate) => device?.writableMutations.includes(candidate)) ?? candidates[0];
-}
-
-function pluginMutations(capability: PluginCapability, device?: DeviceState): Record<string, string> {
+function pluginMutations(capability: PluginCapability, writableMutations?: string[]): Record<string, string> {
   const mutations: Record<string, string> = {};
-  const defaultMutation = metadataMutation(capability.metadata.mutation, device);
-  if (defaultMutation) mutations.default = defaultMutation;
+  if (typeof capability.metadata.mutation === 'string') mutations.default = capability.metadata.mutation;
   if (capability.metadata.mutations && typeof capability.metadata.mutations === 'object') {
     for (const [key, value] of Object.entries(capability.metadata.mutations as Record<string, unknown>)) {
-      const mutation = metadataMutation(value, device);
-      if (mutation) mutations[key] = mutation;
+      if (typeof value === 'string') {
+        mutations[key] = value;
+      } else if (Array.isArray(value)) {
+        const candidates = value.filter((m): m is string => typeof m === 'string');
+        const picked = writableMutations
+          ? candidates.find((m) => writableMutations.includes(m))
+          : candidates[0];
+        if (picked) mutations[key] = picked;
+      }
     }
   }
   if (Object.keys(mutations).length === 0) {
@@ -506,11 +475,7 @@ function pluginMutations(capability: PluginCapability, device?: DeviceState): Re
 }
 
 function compatibilityCapabilities(device: DeviceState): PluginCapability[] {
-  // 能力动态协商：过滤掉设备实际不支持的能力（available=false）。
-  // 无 available 字段（旧版本插件）默认可用，保持向后兼容。
-  if (device.pluginCapabilities.length > 0) {
-    return device.pluginCapabilities.filter((capability) => capability.available !== false);
-  }
+  if (device.pluginCapabilities.length > 0) return device.pluginCapabilities;
   const capabilities: PluginCapability[] = [];
   if (device.dpiStages.length > 0 || device.writableMutations.some((mutation) => mutation.startsWith('set-dpi-'))) {
     capabilities.push({
@@ -564,26 +529,26 @@ function capabilityBinding(capability: PluginCapability, device: DeviceState): C
     return {
       label: typeof binding.label === 'string' ? binding.label : pluginLabel(capability),
       value: readPath(device, binding.source),
-      mutation: metadataMutation(binding.mutation, device),
+      mutation: pickMutation(binding.mutation, device.writableMutations),
       param: typeof binding.param === 'string' ? binding.param : 'value',
     };
   }
   return {
     label: pluginLabel(capability),
     value: readPath(device, capability.metadata.source),
-    mutation: metadataMutation(capability.metadata.mutation, device),
+    mutation: pickMutation(capability.metadata.mutation, device.writableMutations),
     param: typeof capability.metadata.param === 'string' ? capability.metadata.param : 'value',
   };
 }
 
 function capabilityVisible(capability: PluginCapability, device: DeviceState): boolean {
   const binding = capabilityBinding(capability, device);
-  const mutations = Object.values(pluginMutations(capability, device));
+  const mutations = Object.values(pluginMutations(capability, device.writableMutations));
   if (binding.value !== undefined || (binding.mutation && device.writableMutations.includes(binding.mutation))) return true;
   if (mutations.some((mutation) => device.writableMutations.includes(mutation))) return true;
   if (capability.control === 'DpiStages') return device.dpiStages.length > 0;
   if (capability.control === 'LightingZone') return device.lighting !== undefined;
-  if (!capability.readOnly && Object.values(pluginMutations(capability, device)).some((mutation) => device.writableMutations.includes(mutation))) return true;
+  if (!capability.readOnly && Object.values(pluginMutations(capability, device.writableMutations)).some((mutation) => device.writableMutations.includes(mutation))) return true;
   return capability.control === 'Info';
 }
 
@@ -599,11 +564,10 @@ function GenericPluginControl({
   runMutation: (mutation: string, params: Record<string, unknown>) => Promise<void>;
 }) {
   const current = readPath(device, capability.metadata.source);
-  const mutation = pluginMutations(capability, device).default ?? `set-${capability.id}`;
+  const mutation = pickMutation(capability.metadata.mutation, device.writableMutations) ?? `set-${capability.id}`;
   const param = typeof capability.metadata.param === 'string' ? capability.metadata.param : 'value';
   const options = pluginOptions(capability, device);
   const [draft, setDraft] = useState<string | number>(() => typeof current === 'number' || typeof current === 'string' ? current : '');
-  const [editingPollingRate, setEditingPollingRate] = useState(false);
 
   const writable = !capability.readOnly && device.writableMutations.includes(mutation);
   const apply = (value: unknown) => runMutation(mutation, { [param]: value });
@@ -611,32 +575,31 @@ function GenericPluginControl({
 
   if (mutation === 'set-polling-rate' || capability.labelKey === 'capability.polling-rate') {
     return (
-      <div className="control-reading mode-reading polling-reading">
+      <div className="control-reading mode-reading polling-rate-reading">
         <WaveSine weight="regular" />
         <span>当前回报率</span>
-        <button
-          type="button"
-          className="polling-rate editable-reading"
-          aria-label={typeof current === 'number' ? `当前回报率：${current} Hz，点击编辑` : '回报率未报告，点击设置'}
-          disabled={writeBusy || !writable || options.length === 0}
-          onClick={() => setEditingPollingRate(true)}
-        >
-          <strong>{typeof current === 'number' ? current : '未报告'}</strong>
-          {typeof current === 'number' && <em>Hz</em>}
-        </button>
-        <PluginSummary capability={capability} device={device} />
-        {editingPollingRate && (
-          <PollingRateEditModal
-            currentValue={current}
-            options={options}
-            writeBusy={writeBusy}
-            onClose={() => setEditingPollingRate(false)}
-            onApply={(value) => {
-              void apply(value);
-              setEditingPollingRate(false);
-            }}
-          />
+        <strong>{typeof current === 'number' ? `${current} Hz` : '未报告'}</strong>
+        {options.length > 0 && (
+          <div
+            className="polling-rate-options"
+            role="group"
+            aria-label="回报率选项"
+            style={{ gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))` }}
+          >
+            {options.map((option) => (
+              <button
+                key={String(option.value)}
+                type="button"
+                className={current === option.value ? 'active' : ''}
+                aria-pressed={current === option.value}
+                disabled={writeBusy || !writable}
+                onClick={() => void apply(option.value)}
+              >{option.label}</button>
+            ))}
+          </div>
         )}
+        <PluginSummary capability={capability} device={device} />
+        <p>{writable ? '选择回报率后将立即写入设备并回读确认。' : '显示设备当前报告的状态；当前设备或插件未开放写入。'}</p>
       </div>
     );
   }
@@ -834,40 +797,6 @@ function DpiEditModal({ stage, currentValue, writeBusy, onClose, onApply }: DpiE
   );
 }
 
-function PollingRateEditModal({ currentValue, options, writeBusy, onClose, onApply }: {
-  currentValue: unknown;
-  options: PluginOption[];
-  writeBusy: boolean;
-  onClose: () => void;
-  onApply: (value: PluginOption['value']) => void;
-}) {
-  const [draft, setDraft] = useState(String(currentValue ?? options[0]?.value ?? ''));
-  const selected = options.find((option) => String(option.value) === draft);
-  return (
-    <EditModal
-      title="设置回报率"
-      submitDisabled={writeBusy || !selected || selected.value === currentValue}
-      onClose={onClose}
-      onSubmit={() => selected && onApply(selected.value)}
-    >
-      <label className="edit-field">
-        <span>回报率</span>
-        <select
-          autoFocus
-          aria-label="回报率"
-          value={draft}
-          disabled={writeBusy}
-          onChange={(event) => setDraft(event.target.value)}
-        >
-          {options.map((option) => (
-            <option key={String(option.value)} value={String(option.value)}>{option.label}</option>
-          ))}
-        </select>
-      </label>
-    </EditModal>
-  );
-}
-
 interface ColorEditModalProps {
   title: string;
   currentColor: string;
@@ -932,63 +861,12 @@ function SleepEditModal({ label, currentSeconds, writeBusy, onClose, onApply }: 
 
 type ReceiverLightingField = 'effect' | 'option' | 'speed' | 'brightness' | 'color';
 
-interface ReceiverLightingOption {
-  value: number;
-  label: string;
-}
-
+interface ReceiverLightingOption { value: number; label: string }
 interface ReceiverLightingOptions {
-  effect: ReceiverLightingOption[];
-  speed: ReceiverLightingOption[];
-  brightness: ReceiverLightingOption[];
-  option: ReceiverLightingOption[];
-}
-
-// 向后兼容回退：当插件 manifest 未声明 receiverLightingOptions 时使用。
-// 这些值对应 AMaster 协议的固有能力档位，插件声明后优先使用插件值。
-const DEFAULT_RECEIVER_LIGHTING_OPTIONS: ReceiverLightingOptions = {
-  effect: [
-    { value: 0, label: '关闭' },
-    { value: 1, label: '常亮' },
-    { value: 2, label: '呼吸' },
-    { value: 3, label: '霓虹' },
-    { value: 4, label: '光波' },
-    { value: 5, label: '跑马' },
-    { value: 6, label: '圆环' },
-    { value: 7, label: '缓冲' },
-    { value: 8, label: '追捕' },
-  ],
-  speed: [
-    { value: 0, label: '最快' },
-    { value: 1, label: '快' },
-    { value: 2, label: '中' },
-    { value: 3, label: '慢' },
-    { value: 4, label: '最慢' },
-  ],
-  brightness: [
-    { value: 0, label: '最暗' },
-    { value: 1, label: '暗' },
-    { value: 2, label: '中' },
-    { value: 3, label: '亮' },
-    { value: 4, label: '最亮' },
-  ],
-  option: [
-    { value: 0, label: '红' },
-    { value: 1, label: '橙' },
-    { value: 2, label: '黄' },
-    { value: 3, label: '绿' },
-    { value: 4, label: '青' },
-    { value: 5, label: '蓝' },
-    { value: 6, label: '紫' },
-    { value: 7, label: '自定义' },
-    { value: 8, label: '炫彩' },
-  ],
-};
-
-function getReceiverLightingOptions(pluginCapabilities: PluginCapability[]): ReceiverLightingOptions {
-  const lighting = pluginCapabilities.find((c) => c.id === 'lighting');
-  const declared = lighting?.metadata?.receiverLightingOptions as ReceiverLightingOptions | undefined;
-  return declared ?? DEFAULT_RECEIVER_LIGHTING_OPTIONS;
+  effect?: ReceiverLightingOption[];
+  speed?: ReceiverLightingOption[];
+  brightness?: ReceiverLightingOption[];
+  option?: ReceiverLightingOption[];
 }
 
 interface ReceiverLightingEditModalProps {
@@ -1000,7 +878,7 @@ interface ReceiverLightingEditModalProps {
     option: number;
     color: string;
   };
-  options: ReceiverLightingOptions;
+  options?: ReceiverLightingOptions;
   writeBusy: boolean;
   onClose: () => void;
   onApply: (params: {
@@ -1022,10 +900,14 @@ const RECEIVER_LIGHTING_FIELD_LABELS: Record<ReceiverLightingField, string> = {
 
 function ReceiverLightingEditModal({ field, initial, options, writeBusy, onClose, onApply }: ReceiverLightingEditModalProps) {
   const [draft, setDraft] = useState(initial);
+  const submitDisabled = useMemo(
+    () => writeBusy || JSON.stringify(draft) === JSON.stringify(initial),
+    [writeBusy, draft, initial],
+  );
   return (
     <EditModal
       title={`编辑接收器${RECEIVER_LIGHTING_FIELD_LABELS[field]}`}
-      submitDisabled={writeBusy || JSON.stringify(draft) === JSON.stringify(initial)}
+      submitDisabled={submitDisabled}
       onClose={onClose}
       onSubmit={() => onApply(draft)}
     >
@@ -1036,7 +918,7 @@ function ReceiverLightingEditModal({ field, initial, options, writeBusy, onClose
           disabled={writeBusy}
           onChange={(event) => setDraft({ ...draft, effect: Number(event.target.value) })}
         >
-          {options.effect.map((opt) => (
+          {(options?.effect ?? []).map((opt) => (
             <option key={opt.value} value={opt.value}>{opt.label}</option>
           ))}
         </select>
@@ -1048,7 +930,7 @@ function ReceiverLightingEditModal({ field, initial, options, writeBusy, onClose
           disabled={writeBusy}
           onChange={(event) => setDraft({ ...draft, speed: Number(event.target.value) })}
         >
-          {options.speed.map((opt) => (
+          {(options?.speed ?? []).map((opt) => (
             <option key={opt.value} value={opt.value}>{opt.label}</option>
           ))}
         </select>
@@ -1060,7 +942,7 @@ function ReceiverLightingEditModal({ field, initial, options, writeBusy, onClose
           disabled={writeBusy}
           onChange={(event) => setDraft({ ...draft, brightness: Number(event.target.value) })}
         >
-          {options.brightness.map((opt) => (
+          {(options?.brightness ?? []).map((opt) => (
             <option key={opt.value} value={opt.value}>{opt.label}</option>
           ))}
         </select>
@@ -1072,7 +954,7 @@ function ReceiverLightingEditModal({ field, initial, options, writeBusy, onClose
           disabled={writeBusy}
           onChange={(event) => setDraft({ ...draft, option: Number(event.target.value) })}
         >
-          {options.option.map((opt) => (
+          {(options?.option ?? []).map((opt) => (
             <option key={opt.value} value={opt.value}>{opt.label}</option>
           ))}
         </select>
@@ -1101,7 +983,6 @@ function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceCh
   const [previewMessage, setPreviewMessage] = useState('');
   const [showDetails, setShowDetails] = useState(false);
   const [showBatteries, setShowBatteries] = useState(false);
-  const [suppressBatteryHover, setSuppressBatteryHover] = useState(false);
   const batteryControlRef = useRef<HTMLDivElement>(null);
   const [writeBusy, setWriteBusy] = useState(false);
   const [editingDpiStage, setEditingDpiStage] = useState<number | null>(null);
@@ -1109,7 +990,10 @@ function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceCh
   const [editingMouseLightEndColor, setEditingMouseLightEndColor] = useState(false);
   const [editingReceiverLighting, setEditingReceiverLighting] = useState<ReceiverLightingField | null>(null);
   const activeDpi = initialDpi;
-  const writable = (mutation: string) => device.writableMutations.includes(mutation);
+  const writable = useCallback(
+    (mutation: string) => device.writableMutations.includes(mutation),
+    [device.writableMutations],
+  );
 
   useEffect(() => {
     const closeOnOutsideClick = (event: MouseEvent) => {
@@ -1131,14 +1015,13 @@ function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceCh
     params: Record<string, unknown>,
   ) => {
     setWriteBusy(true);
+    setPreviewMessage('正在写入并回读确认…');
     try {
       const snapshot = await invoke<DeviceSnapshot>('device_mutate', { mutation, params });
       onDeviceChange(snapshotToState(snapshot));
-      setPreviewMessage('已写入');
-      setTimeout(() => setPreviewMessage(''), 1500);
+      setPreviewMessage('已写入，回读确认一致。');
     } catch (error) {
-      // #5 事务可观测性：错误信息已包含事务详情（snapshot/rollback workflow 名称）。
-      notifyError('写入失败', String(error));
+      setPreviewMessage(`写入失败，界面已保留设备真实状态：${String(error)}`);
     } finally {
       setWriteBusy(false);
     }
@@ -1148,79 +1031,92 @@ function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceCh
   const receiverLighting = lightingCapability(device.capabilities, 'receiverLighting');
   const [sleepSetting, setSleepSetting] = useState<{ label: string; seconds: number; mutation: string; param: string }>();
   const [editingSleep, setEditingSleep] = useState(false);
-  const pluginDescriptors = compatibilityCapabilities(device);
-  const controlPlacements = pluginDescriptors
-    .flatMap((capability) => placementsFor(capability, 'control').map((placement) => ({ capability, placement })))
-    .filter(({ capability }) => capabilityVisible(capability, device))
-    .sort((a, b) => a.placement.order - b.placement.order);
-  const controlGroups = new Map<string, { id: string; label: string; icon: PluginIcon; capabilities: PluginCapability[] }>();
-  for (const { capability, placement } of controlPlacements) {
-    const id = placement.group || capability.id;
-    const existing = controlGroups.get(id);
-    if (existing) existing.capabilities.push(capability);
-    else controlGroups.set(id, { id, label: pluginLabel(capability), icon: pluginIcon(placement.icon), capabilities: [capability] });
-  }
-  const controls = [...controlGroups.values()].slice(0, MAX_CONTROL_GROUPS);
+  const pluginDescriptors = useMemo(() => compatibilityCapabilities(device), [device]);
+  const { controlGroups, controls } = useMemo(() => {
+    const controlPlacements = pluginDescriptors
+      .flatMap((capability) => placementsFor(capability, 'control').map((placement) => ({ capability, placement })))
+      .filter(({ capability }) => capabilityVisible(capability, device))
+      .sort((a, b) => a.placement.order - b.placement.order);
+    const map = new Map<string, { id: string; label: string; icon: PluginIcon; capabilities: PluginCapability[] }>();
+    for (const { capability, placement } of controlPlacements) {
+      const id = placement.group || capability.id;
+      const existing = map.get(id);
+      if (existing) existing.capabilities.push(capability);
+      else map.set(id, { id, label: pluginLabel(capability), icon: pluginIcon(placement.icon), capabilities: [capability] });
+    }
+    return { controlGroups: map, controls: [...map.values()].slice(0, MAX_CONTROL_GROUPS) };
+  }, [device, pluginDescriptors]);
   const activeMode = controls.some((control) => control.id === mode) ? mode : controls[0]?.id;
   const activeDescriptors = activeMode ? controlGroups.get(activeMode)?.capabilities ?? [] : [];
   const activeDpiDescriptor = activeDescriptors.find((capability) => capability.control === 'DpiStages');
   const activeLightingDescriptor = activeDescriptors.find((capability) => capability.control === 'LightingZone');
   const activeGenericDescriptors = activeDescriptors.filter((capability) => !['DpiStages', 'LightingZone'].includes(capability.control));
-  const dpiMutations = activeDpiDescriptor ? pluginMutations(activeDpiDescriptor, device) : {};
+  const dpiMutations = activeDpiDescriptor ? pluginMutations(activeDpiDescriptor, device.writableMutations) : {};
   const selectDpiMutation = dpiMutations.select;
   const setDpiMutation = dpiMutations.value;
-  const lightingMutations = activeLightingDescriptor ? pluginMutations(activeLightingDescriptor, device) : {};
+  const lightingMutations = activeLightingDescriptor ? pluginMutations(activeLightingDescriptor, device.writableMutations) : {};
   const mouseLightingMutation = lightingMutations.mouse;
   const receiverLightingMutation = lightingMutations.receiver;
   const supportsReceiverLighting = Boolean(receiverLightingMutation && writable(receiverLightingMutation))
     || Boolean(device.lighting?.receiverLightColor)
     || Boolean(device.capabilities.receiverLighting);
   const activeLightingView = lightingView === 'receiver' && !supportsReceiverLighting ? 'mouse' : lightingView;
-  const statusItems: {
-    id: string;
-    label: string;
-    value: string;
-    icon: typeof Gauge;
-    disabled?: boolean;
-    color?: string;
-    onClick?: () => void;
-  }[] = [];
-  const statusPlacements = pluginDescriptors
+  const statusPlacements = useMemo(() => pluginDescriptors
     .flatMap((capability) => placementsFor(capability, 'status').map((placement) => ({ capability, placement })))
     .filter(({ capability }) => capabilityVisible(capability, device))
     .sort((a, b) => a.placement.order - b.placement.order)
-    .slice(0, MAX_STATUS_ITEMS);
-  for (const { capability, placement } of statusPlacements) {
-    const binding = capabilityBinding(capability, device);
-    const controlPlacement = placementsFor(capability, 'control')[0];
-    if (capability.metadata.format === 'sleep' || (capability.control === 'Number' && Array.isArray(capability.metadata.bindings))) {
-      const seconds = Number(binding.value);
-      if (!Number.isFinite(seconds) || !binding.mutation) continue;
-      statusItems.push({
-        id: capability.id, label: binding.label, value: formatSleepTime(seconds), icon: pluginIcon(placement.icon),
-        disabled: !writable(binding.mutation),
-        onClick: () => {
-          setSleepSetting({ label: binding.label, seconds, mutation: binding.mutation!, param: binding.param });
-          setEditingSleep(true);
-        },
-      });
-    } else if (capability.control === 'LightingZone') {
-      const mutation = pluginMutations(capability, device).mouse;
-      statusItems.push({
-        id: capability.id, label: binding.label,
-        value: device.lighting?.mouseLightEnabled === false ? '已关闭' : device.lighting?.mouseLightColor ?? '未报告',
-        icon: pluginIcon(placement.icon), color: device.lighting?.mouseLightColor,
-        disabled: !mutation || !writable(mutation), onClick: () => setEditingMouseLightColor(true),
-      });
-    } else if (binding.value !== undefined) {
-      const target = controlPlacement?.group || (controlPlacement ? capability.id : undefined);
-      statusItems.push({
-        id: capability.id, label: binding.label, value: pluginValueLabel(capability, binding.value),
-        icon: pluginIcon(placement.icon),
-        disabled: !target, onClick: target ? () => setMode(target) : undefined,
-      });
+    .slice(0, MAX_STATUS_ITEMS), [device, pluginDescriptors]);
+  const statusItems = useMemo(() => {
+    const items: {
+      id: string;
+      label: string;
+      value: string;
+      icon: typeof Gauge;
+      disabled?: boolean;
+      color?: string;
+      onClick?: () => void;
+    }[] = [];
+    for (const { capability, placement } of statusPlacements) {
+      const binding = capabilityBinding(capability, device);
+      const controlPlacement = placementsFor(capability, 'control')[0];
+      if (capability.metadata.format === 'sleep' || (capability.control === 'Number' && Array.isArray(capability.metadata.bindings))) {
+        const seconds = Number(binding.value);
+        if (!Number.isFinite(seconds) || !binding.mutation) continue;
+        items.push({
+          id: capability.id, label: binding.label, value: formatSleepTime(seconds), icon: pluginIcon(placement.icon),
+          disabled: !writable(binding.mutation),
+          onClick: () => {
+            setSleepSetting({ label: binding.label, seconds, mutation: binding.mutation!, param: binding.param });
+            setEditingSleep(true);
+          },
+        });
+      } else if (capability.control === 'LightingZone') {
+        const mutation = pluginMutations(capability, device.writableMutations).mouse;
+        items.push({
+          id: capability.id, label: binding.label,
+          value: device.lighting?.mouseLightEnabled === false ? '已关闭' : device.lighting?.mouseLightColor ?? '未报告',
+          icon: pluginIcon(placement.icon), color: device.lighting?.mouseLightColor,
+          disabled: !mutation || !writable(mutation), onClick: () => setEditingMouseLightColor(true),
+        });
+      } else if (binding.value !== undefined) {
+        const target = controlPlacement?.group || (controlPlacement ? capability.id : undefined);
+        items.push({
+          id: capability.id, label: binding.label, value: pluginValueLabel(capability, binding.value),
+          icon: pluginIcon(placement.icon),
+          disabled: !target, onClick: target ? () => setMode(target) : undefined,
+        });
+      }
     }
-  }
+    return items;
+  }, [
+    device,
+    setEditingMouseLightColor,
+    setEditingSleep,
+    setMode,
+    setSleepSetting,
+    statusPlacements,
+    writable,
+  ]);
 
   return (
     <main className="dashboard">
@@ -1230,21 +1126,13 @@ function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceCh
           <div className="device-copy">
             <p className="connection-state"><span />{device.connection} · 已连接</p>
             <h1>{device.name}</h1>
-            {device.readonly && <p className="readonly-notice">未信任插件 · 只读模式</p>}
             {device.batteries.length > 0 && (
-            <div
-              ref={batteryControlRef}
-              className={`battery-control ${showBatteries ? 'open' : ''} ${suppressBatteryHover ? 'hover-suppressed' : ''}`}
-              onMouseLeave={() => setSuppressBatteryHover(false)}
-            >
+            <div ref={batteryControlRef} className={`battery-control ${showBatteries ? 'open' : ''}`}>
               <button
                 className="battery-state"
                 aria-expanded={showBatteries}
                 aria-controls="device-batteries"
-                onClick={() => setShowBatteries((visible) => {
-                  setSuppressBatteryHover(visible);
-                  return !visible;
-                })}
+                onClick={() => setShowBatteries((visible) => !visible)}
               >
                 <BatteryHigh weight="regular" />
                 {device.batteries[0].percentage}%
@@ -1376,7 +1264,6 @@ function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceCh
                 >接收器灯光</button>
               )}
             </div>
-            {supportsReceiverLighting && <p className="lighting-hint">鼠标与接收器灯光分别读取，互不混用。</p>}
             <div className="lighting-swatch" style={{ '--light-color': (
               activeLightingView === 'mouse' ? device.lighting?.mouseLightColor : device.lighting?.receiverLightColor
             ) ?? '#b87ab0' } as React.CSSProperties} />
@@ -1503,7 +1390,7 @@ function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceCh
                         option: Number(receiverLighting.option ?? 0),
                         color: String(receiverLighting.color ?? '#b87ab0'),
                       }}
-                      options={getReceiverLightingOptions(device.pluginCapabilities)}
+                      options={activeLightingDescriptor?.metadata?.receiverLightingOptions as ReceiverLightingOptions | undefined}
                       writeBusy={writeBusy}
                       onClose={() => setEditingReceiverLighting(null)}
                       onApply={(params) => {
@@ -1515,18 +1402,19 @@ function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceCh
                 </div>
               )}
             </div>
+            {device.lighting?.receiverLinked && <p className="setting-hint">鼠标与接收器灯光分别读取，互不混用。</p>}
           </div>
         )}
         {activeGenericDescriptors.map((descriptor) => (
           <GenericPluginControl
-            key={`${descriptor.id}:${String(readPath(device, descriptor.metadata.source))}`}
+            key={descriptor.id}
             capability={descriptor}
             device={device}
             writeBusy={writeBusy}
             runMutation={runMutation}
           />
         ))}
-        {previewMessage && <span className="write-badge">{previewMessage}</span>}
+        {previewMessage && <p className="preview-message">{previewMessage}</p>}
         {editingSleep && sleepSetting && (
           <SleepEditModal
             label={sleepSetting.label}
@@ -1547,7 +1435,7 @@ function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceCh
             onClose={() => setEditingMouseLightColor(false)}
             onApply={(color) => {
               const statusLighting = statusPlacements.find(({ capability }) => capability.control === 'LightingZone')?.capability;
-              const mutation = statusLighting ? pluginMutations(statusLighting, device).mouse : mouseLightingMutation;
+              const mutation = statusLighting ? pluginMutations(statusLighting, device.writableMutations).mouse : mouseLightingMutation;
               if (!mutation) return;
               void runMutation(
                 mutation,
@@ -1585,10 +1473,12 @@ function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceCh
 export default function App() {
   const pureWeb = isPureWebPreview();
   const [device, setDevice] = useState<DeviceState | undefined>(pureWeb ? MOCK_DEVICE : undefined);
+  // F11: device-updated 事件高频触发时，用 startTransition 将 Dashboard 渲染标记为低优先级，
+  // 避免 settling polls 期间（6 次 500ms）阻塞主线程。writeBusy 等用户交互状态保持同步。
+  const [, startTransition] = useTransition();
   const [theme, setTheme] = useState<ThemeMode>('system');
   const [view, setView] = useState<View>('dashboard');
   const [demoMode, setDemoMode] = useState(pureWeb);
-  const [, setRefreshIntervalSeconds] = useState(5);
   const [refreshNonce, setRefreshNonce] = useState(0);
   const [appNotification, setAppNotification] = useState<AppNotification>();
   const windowsPlatform = isWindowsPlatform();
@@ -1603,21 +1493,12 @@ export default function App() {
     return () => window.clearTimeout(timeout);
   }, [appNotification]);
 
-  // 触发后台立即刷新设备状态，失败时通知用户
-  const refreshDevice = () => {
-    setDemoMode(false);
-    setDevice(undefined);
-    setRefreshNonce((value) => value + 1);
-    invoke('device_refresh').catch((error) => notifyError('刷新设备失败', String(error)));
-  };
-
   // 从后端加载已保存的主题设置
   useEffect(() => {
     if (pureWeb) return;
     invoke<AppSettings>('settings_get')
       .then((settings) => {
         setTheme(settings.theme as ThemeMode);
-        setRefreshIntervalSeconds(Math.min(60, Math.max(1, settings.refreshIntervalSeconds || 5)));
         if (settings.automaticUpdateChecks) {
           void invoke<AboutInfo>('about_info')
             .then((info) => {
@@ -1635,7 +1516,7 @@ export default function App() {
             .catch(() => { /* Automatic checks stay quiet when offline. */ });
         }
       })
-      .catch((error) => console.warn('settings_get failed:', error));
+      .catch(() => {});
   }, [pureWeb]);
 
   // 周期性从后端读取真实设备状态
@@ -1659,16 +1540,18 @@ export default function App() {
     listen<DeviceSnapshot | null>('device-updated', (event) => {
       if (cancelled) return;
       const snapshot = event.payload;
-      setDevice(snapshot ? snapshotToState(snapshot) : undefined);
+      // F11: 高频 device-updated 事件用 startTransition 降低渲染优先级，
+      // 让用户交互（如点击按钮）能优先响应。
+      startTransition(() => {
+        setDevice(snapshot ? snapshotToState(snapshot) : undefined);
+      });
     }).then((un) => {
-      // 修复竞态泄漏：若组件在 listen 注册完成前已卸载，立即注销监听器，
-      // 否则 unlisten 永远不会被调用，导致监听器驻留后端进程。
       if (cancelled) {
         un();
       } else {
         unlisten = un;
       }
-    }).catch((error) => console.warn('device-updated listener failed:', error));
+    }).catch(() => {});
 
     return () => {
       cancelled = true;
@@ -1676,9 +1559,8 @@ export default function App() {
     };
   }, [demoMode, refreshNonce]);
 
-  // 仅在主题或灯光颜色实际变化时重新应用，避免每次设备快照更新都触发
-  const themeColor = device?.lighting?.mouseLightColor ?? device?.lighting?.color;
-  useEffect(() => applyTheme(theme, themeColor), [theme, themeColor]);
+  const lightingColor = device?.lighting?.mouseLightColor ?? device?.lighting?.color;
+  useEffect(() => applyTheme(theme, lightingColor), [theme, lightingColor]);
 
   return <div className={`app-shell ${pureWeb ? 'web-preview' : ''} ${windowsPlatform ? 'platform-windows' : ''} ${macPlatform ? 'platform-macos' : ''} ${windowsWebPreview ? 'windows-web-preview' : ''}`}>
     {windowsWebPreview && <WindowsPreviewControls />}
@@ -1687,11 +1569,11 @@ export default function App() {
         <button className={`nav-link ${view === 'dashboard' ? 'active' : ''}`} onClick={() => setView('dashboard')}>设备</button>
         <button className={`nav-link ${view === 'settings' ? 'active' : ''}`} onClick={() => setView('settings')}>设置</button>
         <button className={`nav-link nav-about ${view === 'about' ? 'active' : ''}`} onClick={() => setView('about')} aria-label="关于 Mira"><Info weight="regular" /></button>
-        {demoMode && <button className="nav-link nav-exit" onClick={refreshDevice} aria-label="退出演示" title="退出演示"><SignOut weight="regular" /></button>}
+        {demoMode && <button className="nav-link nav-exit" onClick={() => { setDemoMode(false); setDevice(undefined); setRefreshNonce((value) => value + 1); invoke('device_refresh').catch(() => {}); }} aria-label="退出演示" title="退出演示"><X weight="regular" /></button>}
       </div>
     </nav>
-    {view === 'dashboard' && (device ? <Dashboard device={device} onDeviceChange={setDevice} /> : <EmptyState onRefresh={refreshDevice} onDemo={() => { setDemoMode(true); setDevice(MOCK_DEVICE); }} onOpenSettings={() => setView('settings')} />)}
-    {view === 'settings' && <SettingsPage previewMode={pureWeb} onNavigateAbout={() => setView('about')} onThemeChange={setTheme} onRefreshIntervalChange={setRefreshIntervalSeconds} />}
+    {view === 'dashboard' && (device ? <Dashboard device={device} onDeviceChange={setDevice} /> : <EmptyState onRefresh={() => { setDemoMode(false); setDevice(undefined); setRefreshNonce((value) => value + 1); invoke('device_refresh').catch(() => {}); }} onDemo={() => { setDemoMode(true); setDevice(MOCK_DEVICE); }} onOpenSettings={() => setView('settings')} />)}
+    {view === 'settings' && <SettingsPage previewMode={pureWeb} onNavigateAbout={() => setView('about')} onThemeChange={setTheme} />}
     {view === 'about' && <AboutPage previewMode={pureWeb} onBack={() => setView('settings')} />}
     {appNotification && (
       <aside className={`app-notification ${appNotification.kind}`} role={appNotification.kind === 'error' ? 'alert' : 'status'} aria-live={appNotification.kind === 'error' ? 'assertive' : 'polite'}>

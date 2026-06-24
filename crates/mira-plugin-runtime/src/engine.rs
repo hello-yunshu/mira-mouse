@@ -4,8 +4,11 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::CString;
+use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
+
+use crate::protocol::{FeatureIndexCache, OnboardMemoryCache};
 
 const MAX_COMMANDS: usize = 32;
 const MAX_REPORTS: usize = 128;
@@ -417,6 +420,14 @@ pub struct ProtocolPackage {
     transports: TransportsFile,
     workflows: WorkflowsFile,
     capabilities: Option<Value>,
+    /// 预编译的 derived lookup 表：parser_id → derived_name → (numeric_source → value)。
+    /// 将 parsers.json 中的字符串键（"0x01"/"1"）在加载时解析为 u64，
+    /// parse_response 时直接用数值键查找，避免每次格式化字符串。
+    compiled_lookups: HashMap<String, HashMap<String, HashMap<u64, Value>>>,
+    /// 预构建的无 param 命令 report 字节：command_id → report。
+    /// 仅缓存 RequestBase::Zero 且所有 byte 定义都无 param/indexed_by 的命令。
+    /// build_command 时命中缓存直接返回，避免重复构建 + checksum 计算。
+    compiled_commands: HashMap<String, Vec<u8>>,
 }
 
 impl ProtocolPackage {
@@ -447,12 +458,14 @@ impl ProtocolPackage {
 
         let capabilities: Option<Value> = parse_optional(files, "capabilities.json")?;
 
-        let package = Self {
+        let mut package = Self {
             commands: parse(files, "protocol/commands.json")?,
             parsers: parse(files, "protocol/parsers.json")?,
             transports: parse(files, "protocol/transports.json")?,
             workflows,
             capabilities,
+            compiled_lookups: HashMap::new(),
+            compiled_commands: HashMap::new(),
         };
         if package.commands.schema_version != 1
             || package.parsers.schema_version != 1
@@ -461,7 +474,57 @@ impl ProtocolPackage {
         {
             return Err("unsupported protocol schema version".into());
         }
+        package.compile_lookups();
+        package.compile_commands();
         Ok(package)
+    }
+
+    /// 将 parsers.json 中 derived lookup 的字符串键（"0x01"/"1"）预编译为 u64 键。
+    /// 在 from_files 后调用，结果存储在 compiled_lookups 中供 parse_response 使用。
+    fn compile_lookups(&mut self) {
+        for (parser_id, parser) in &self.parsers.parsers {
+            for (derived_name, derived) in &parser.derived {
+                if derived.kind != "lookup" || derived.table.is_empty() {
+                    continue;
+                }
+                let mut compiled: HashMap<u64, Value> = HashMap::with_capacity(derived.table.len());
+                for (key, value) in &derived.table {
+                    if let Some(numeric) = parse_lookup_key(key) {
+                        compiled.insert(numeric, value.clone());
+                    }
+                }
+                if !compiled.is_empty() {
+                    self.compiled_lookups
+                        .entry(parser_id.clone())
+                        .or_default()
+                        .insert(derived_name.clone(), compiled);
+                }
+            }
+        }
+    }
+
+    /// 预构建无 param 依赖的命令 report 字节。
+    /// 仅缓存 RequestBase::Zero 且所有 byte 定义都无 param/indexed_by 的命令，
+    /// 这些命令的 report 字节在每次调用时完全相同，缓存后 build_command 直接返回。
+    fn compile_commands(&mut self) {
+        let empty_params: BTreeMap<String, Value> = BTreeMap::new();
+        for (id, command) in &self.commands.commands {
+            // 仅缓存 Zero base（ReadResponse 需要运行时 base 数据）
+            if command.request.base != RequestBase::Zero {
+                continue;
+            }
+            // 检查所有 byte 定义是否无 param 依赖
+            let cacheable = command.request.bytes.iter().all(|byte| {
+                byte.param.is_none() && byte.indexed_by.is_none()
+            });
+            if !cacheable {
+                continue;
+            }
+            // 预构建并缓存（忽略错误，运行时 build_command 会重新构建并报错）
+            if let Ok(report) = self.build_command(id, &empty_params, None) {
+                self.compiled_commands.insert(id.clone(), report);
+            }
+        }
     }
 
     /// 解析插件包文件，可选地应用型号覆盖。
@@ -561,7 +624,21 @@ impl ProtocolPackage {
         path: &str,
         workflow_id: &str,
     ) -> Result<BTreeMap<String, Value>, String> {
-        self.execute_with_initial_outputs(api, path, workflow_id, BTreeMap::new(), None, None)
+        self.execute_with_initial_outputs(api, path, workflow_id, BTreeMap::new(), None, None, None)
+    }
+
+    /// Like `execute` but with an optional feature index cache.
+    /// When cache is provided, `root-get-feature` steps that hit the cache are
+    /// skipped (the cached feature index is inserted directly into outputs).
+    /// Misses are populated after execution for future calls.
+    pub fn execute_with_cache(
+        &self,
+        api: &HidApi,
+        path: &str,
+        workflow_id: &str,
+        cache: Option<&Mutex<FeatureIndexCache>>,
+    ) -> Result<BTreeMap<String, Value>, String> {
+        self.execute_with_initial_outputs(api, path, workflow_id, BTreeMap::new(), None, None, cache)
     }
 
     fn execute_with_initial_outputs(
@@ -572,6 +649,7 @@ impl ProtocolPackage {
         initial_outputs: BTreeMap<String, Value>,
         timeout_ms: Option<u64>,
         inherited_deadline: Option<Instant>,
+        feature_index_cache: Option<&Mutex<FeatureIndexCache>>,
     ) -> Result<BTreeMap<String, Value>, String> {
         let workflow = self
             .workflows
@@ -601,6 +679,27 @@ impl ProtocolPackage {
                 resolve_workflow_params(&step.params, &session.outputs).map_err(|error| {
                     format!("workflow {workflow_id} step {} params: {error}", index + 1)
                 })?;
+
+            // Feature index 缓存：root-get-feature 命令命中缓存时跳过 HID 往返
+            if step.command == "root-get-feature" {
+                if let Some(cache) = feature_index_cache {
+                    if let Some(feature_id) = params.get("featureId").and_then(Value::as_u64) {
+                        let cache_hit = cache.lock().ok().and_then(|guard| {
+                            guard.get(path)
+                                .and_then(|device_cache| device_cache.get(&(feature_id as u16)))
+                                .copied()
+                        });
+                        if let Some(feature_index) = cache_hit {
+                            session.outputs.insert(
+                                step.output.clone(),
+                                serde_json::json!({ "featureIndex": feature_index }),
+                            );
+                            continue;
+                        }
+                    }
+                }
+            }
+
             let transport = step.transport.as_deref().unwrap_or(&workflow.transport);
             let response = execute_with_candidates(
                 &mut session,
@@ -626,6 +725,24 @@ impl ProtocolPackage {
                     )
                 })?;
             session.outputs.insert(step.output.clone(), parsed);
+
+            // 缓存 root-get-feature 结果供后续轮询使用
+            if step.command == "root-get-feature" {
+                if let Some(cache) = feature_index_cache {
+                    if let (Some(feature_id), Some(feature_index)) = (
+                        params.get("featureId").and_then(Value::as_u64),
+                        session.outputs.get(&step.output)
+                            .and_then(|v| v.get("featureIndex"))
+                            .and_then(Value::as_u64),
+                    ) {
+                        if let Ok(mut guard) = cache.lock() {
+                            guard.entry(path.to_string())
+                                .or_insert_with(HashMap::new)
+                                .insert(feature_id as u16, feature_index as u8);
+                        }
+                    }
+                }
+            }
         }
         Ok(session.outputs)
     }
@@ -782,6 +899,7 @@ impl ProtocolPackage {
         mutation_id: &str,
         params: &Map<String, Value>,
         ctx_outputs: &BTreeMap<String, Value>,
+        onboard_memory_cache: Option<&Mutex<OnboardMemoryCache>>,
     ) -> Result<Value, String> {
         if let Some(transaction) = self.transaction_for_mutation(mutation_id)? {
             return self.mutate_in_transaction(
@@ -791,9 +909,10 @@ impl ProtocolPackage {
                 params,
                 ctx_outputs,
                 transaction,
+                onboard_memory_cache,
             );
         }
-        self.mutate_inner(api, path, mutation_id, params, ctx_outputs, None)
+        self.mutate_inner(api, path, mutation_id, params, ctx_outputs, None, onboard_memory_cache)
     }
 
     /// 查找声明了目标 mutation 的事务。
@@ -832,6 +951,7 @@ impl ProtocolPackage {
         params: &Map<String, Value>,
         ctx_outputs: &BTreeMap<String, Value>,
         transaction: TransactionDefinition,
+        onboard_memory_cache: Option<&Mutex<OnboardMemoryCache>>,
     ) -> Result<Value, String> {
         // 事务级 timeout 是整个事务（snapshot + mutation + rollback）的总预算：
         // 三阶段共享同一 deadline，而非各自独立计时（否则总时间可达 3×timeout）。
@@ -844,6 +964,7 @@ impl ProtocolPackage {
                 ctx_outputs.clone(),
                 None,
                 tx_deadline,
+                None,
             )?
         } else {
             ctx_outputs.clone()
@@ -855,6 +976,7 @@ impl ProtocolPackage {
             params,
             ctx_outputs,
             tx_deadline,
+            onboard_memory_cache,
         ) {
             Ok(value) => Ok(value),
             Err(error) => {
@@ -868,6 +990,7 @@ impl ProtocolPackage {
                         snapshot_outputs,
                         None,
                         tx_deadline,
+                        None,
                     ) {
                         Ok(_) => Err(format!(
                             "写入 {mutation_id} 失败：{error}。事务回滚已执行（回滚工作流：{rollback_workflow}），设备已恢复至写入前状态。"
@@ -895,6 +1018,7 @@ impl ProtocolPackage {
         params: &Map<String, Value>,
         ctx_outputs: &BTreeMap<String, Value>,
         inherited_deadline: Option<Instant>,
+        onboard_memory_cache: Option<&Mutex<OnboardMemoryCache>>,
     ) -> Result<Value, String> {
         let mutation = self
             .workflows
@@ -949,6 +1073,10 @@ impl ProtocolPackage {
                     .unwrap_or(0)
                     != 0 =>
             {
+                // Always pre-read live device memory before read-modify-write.
+                // A cached sector can become stale when the user changes onboard
+                // profiles from hardware controls or another app during the same
+                // connection, and using it here would overwrite those changes.
                 let (outputs, bytes) = self.read_memory_mutation(api, path, memory)?;
                 let enabled = output_value(
                     &outputs,
@@ -1090,9 +1218,15 @@ impl ProtocolPackage {
         };
         drop(session);
         if let Some((memory, expected)) = expected_memory {
-            let (_, actual) = self.read_memory_mutation(api, path, memory)?;
+            let (verify_outputs, actual) = self.read_memory_mutation(api, path, memory)?;
             if actual != expected {
                 return Err(format!("mutation {mutation_id} memory readback mismatch"));
+            }
+            // UX3: 验证读成功后更新 onboard memory 缓存，下次预读可命中缓存。
+            if let Some(cache) = onboard_memory_cache {
+                if let Ok(mut cache_guard) = cache.lock() {
+                    cache_guard.insert(path.to_string(), (verify_outputs, actual));
+                }
             }
         }
         Ok(verified)
@@ -1104,6 +1238,13 @@ impl ProtocolPackage {
         params: &BTreeMap<String, Value>,
         base: Option<&[u8]>,
     ) -> Result<Vec<u8>, String> {
+        // P3: 无 param 命令命中预构建缓存时直接返回，跳过字节构建 + checksum 计算。
+        // 仅当 params 为空且 base 为 None 时才查缓存（有 params/base 说明调用方需要动态构建）。
+        if params.is_empty() && base.is_none() {
+            if let Some(cached) = self.compiled_commands.get(id) {
+                return Ok(cached.clone());
+            }
+        }
         let command = self
             .commands
             .commands
@@ -1164,14 +1305,23 @@ impl ProtocolPackage {
                         .get(&derived.source)
                         .and_then(Value::as_u64)
                         .ok_or_else(|| format!("invalid lookup source {}", derived.source))?;
-                    let hex_key = format!("0x{source:02X}");
-                    let decimal_key = source.to_string();
-                    let value = derived
-                        .table
-                        .get(&hex_key)
-                        .or_else(|| derived.table.get(&decimal_key))
-                        .cloned()
-                        .unwrap_or(Value::Null);
+                    // P2: 优先使用预编译的数值键查找，避免每次格式化字符串。
+                    let value = self
+                        .compiled_lookups
+                        .get(id)
+                        .and_then(|by_parser| by_parser.get(name))
+                        .and_then(|compiled| compiled.get(&source).cloned())
+                        .unwrap_or_else(|| {
+                            // 回退到原始字符串表查找（兼容未预编译的路径）。
+                            let hex_key = format!("0x{source:02X}");
+                            let decimal_key = source.to_string();
+                            derived
+                                .table
+                                .get(&hex_key)
+                                .or_else(|| derived.table.get(&decimal_key))
+                                .cloned()
+                                .unwrap_or(Value::Null)
+                        });
                     fields.insert(name.clone(), value);
                 }
                 "bitmap" => {
@@ -2120,6 +2270,16 @@ fn verify_assertions(
     Ok(())
 }
 
+/// 将 derived lookup 表的字符串键（"0x01" 或 "1"）解析为 u64。
+/// 用于预编译阶段，避免每次 parse_response 都格式化字符串。
+fn parse_lookup_key(key: &str) -> Option<u64> {
+    if let Some(hex) = key.strip_prefix("0x").or_else(|| key.strip_prefix("0X")) {
+        u64::from_str_radix(hex, 16).ok()
+    } else {
+        key.parse::<u64>().ok()
+    }
+}
+
 fn parse_field(field: &FieldDefinition, response: &[u8]) -> Result<Value, String> {
     let byte = || {
         response
@@ -2660,7 +2820,7 @@ mod tests {
         );
         let api = test_hid_api();
         let outputs = BTreeMap::new();
-        let result = package.mutate(api, "test-path", "nonexistent", &Map::new(), &outputs);
+        let result = package.mutate(api, "test-path", "nonexistent", &Map::new(), &outputs, None);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("missing mutation"));
     }
@@ -2691,7 +2851,7 @@ mod tests {
         );
         let api = test_hid_api();
         let outputs = BTreeMap::from([("dpi".into(), serde_json::json!({"value": 0}))]);
-        let result = package.mutate(api, "test-path", "test-set-dpi", &Map::new(), &outputs);
+        let result = package.mutate(api, "test-path", "test-set-dpi", &Map::new(), &outputs, None);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("not available on this device"));
     }
@@ -2722,7 +2882,7 @@ mod tests {
         );
         let api = test_hid_api();
         let outputs = BTreeMap::new();
-        let result = package.mutate(api, "test-path", "test-set-dpi", &Map::new(), &outputs);
+        let result = package.mutate(api, "test-path", "test-set-dpi", &Map::new(), &outputs, None);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("settle delay exceeds limit"));
     }
@@ -2752,7 +2912,7 @@ mod tests {
         );
         let api = test_hid_api();
         let outputs = BTreeMap::new();
-        let result = package.mutate(api, "test-path", "test-set-dpi", &Map::new(), &outputs);
+        let result = package.mutate(api, "test-path", "test-set-dpi", &Map::new(), &outputs, None);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("missing command"));
     }
@@ -2795,7 +2955,7 @@ mod tests {
         );
         let api = test_hid_api();
         let outputs = BTreeMap::new();
-        let result = package.mutate(api, "test-path", "test-set-dpi", &Map::new(), &outputs);
+        let result = package.mutate(api, "test-path", "test-set-dpi", &Map::new(), &outputs, None);
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -2847,6 +3007,7 @@ mod tests {
             "test-set-dpi",
             &Map::new(),
             &outputs,
+            None,
         );
         // Validation passed; the error should be from I/O (open_path), not validation.
         assert!(result.is_err());
