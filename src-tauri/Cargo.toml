@@ -37,3 +37,4 @@ tempfile = { workspace = true }
 reqwest = { workspace = true }
 hidapi = "2.6"
 window-vibrancy = "0.6"
+sys-locale = "0.3.2"

@@ -43,7 +43,7 @@ export interface PluginCapabilityPlacement {
 }
 export interface DeviceState {
   name: string;
-  connection: 'USB' | '无线' | '蓝牙' | '虚拟';
+  connection: 'usb' | 'wireless' | 'bluetooth' | 'virtual';
   battery?: number;
   charging?: boolean;
   batteries: DeviceBattery[];
@@ -113,6 +113,7 @@ export interface AboutInfo {
 }
 
 export interface AppSettings {
+  language: 'auto' | 'zh-CN' | 'en';
   theme: ThemeMode;
   autostart: boolean;
   startHidden: boolean;

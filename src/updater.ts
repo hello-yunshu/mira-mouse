@@ -2,6 +2,7 @@
 import { check, type DownloadEvent, type Update } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { notifyInfo } from './notify';
+import i18n from './i18n';
 
 export type AppUpdatePhase = 'idle' | 'checking' | 'up-to-date' | 'available' | 'downloading' | 'installed' | 'error';
 
@@ -58,7 +59,7 @@ export async function checkForAppUpdate(automatic = false): Promise<void> {
       date: update.date,
       downloadedBytes: 0,
     });
-    if (automatic) notifyInfo('发现 Mira 新版本', `v${update.version} 已可用，可在“关于”页查看并安装。`);
+    if (automatic) notifyInfo(i18n.t('notification.updateFound.title'), i18n.t('notification.updateFound.body', { version: update.version }));
   } catch (error) {
     publish({ phase: 'error', downloadedBytes: 0, error: String(error) });
     if (!automatic) throw error;
@@ -72,7 +73,7 @@ export async function startAutomaticAppUpdateCheck(enabled: boolean, installAuto
   if (installAutomatically && state.phase === 'available') {
     try {
       await installAppUpdate();
-      notifyInfo('Mira 更新已安装', '新版本将在你点击“重启完成更新”后生效。');
+      notifyInfo(i18n.t('notification.updateInstalled.title'), i18n.t('notification.updateInstalled.body'));
     } catch {
       // The error state is already published for the About page.
     }

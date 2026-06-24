@@ -16,8 +16,10 @@ import {
   WaveSine,
   X,
 } from '@phosphor-icons/react';
+import { useTranslation } from 'react-i18next';
 import { MOCK_DEVICE } from './mock';
 import { applyTheme } from './theme';
+import i18n, { applyLanguage } from './i18n';
 import { SettingsPage } from './Settings';
 import { AboutPage } from './About';
 import type { AboutInfo, AppSettings, DeviceBattery, DeviceCapabilities, DeviceSnapshot, DeviceState, PluginCapability, PluginUpdateInfo, ThemeMode } from './types';
@@ -51,24 +53,24 @@ function isPureWebPreview(): boolean {
 }
 
 function WindowsPreviewControls() {
+  const { t } = useTranslation();
   return (
-    <div className="windows-preview-controls" aria-label="Windows 窗口控件">
-      <button type="button" aria-label="最小化窗口"><Minus weight="regular" /></button>
-      <button type="button" aria-label="最大化窗口"><Square weight="regular" /></button>
-      <button type="button" className="windows-close" aria-label="关闭窗口"><X weight="regular" /></button>
+    <div className="windows-preview-controls" aria-label={t('dashboard.windowsControls')}>
+      <button type="button" aria-label={t('dashboard.minimizeWindow')}><Minus weight="regular" /></button>
+      <button type="button" aria-label={t('dashboard.maximizeWindow')}><Square weight="regular" /></button>
+      <button type="button" className="windows-close" aria-label={t('dashboard.closeWindow')}><X weight="regular" /></button>
     </div>
   );
 }
 
-const CONNECTION_LABEL: Record<DeviceSnapshot['connection'], DeviceState['connection']> = {
-  usb: 'USB',
-  wireless: '无线',
-  bluetooth: '蓝牙',
-  virtual: '虚拟',
-};
-
-function connectionLabel(connection: string | undefined): DeviceState['connection'] {
-  return CONNECTION_LABEL[connection as DeviceSnapshot['connection']] ?? '未知连接';
+function connectionDisplay(connection: string | undefined, t: (key: string) => string): string {
+  switch (connection) {
+    case 'usb': return t('connection.usb');
+    case 'wireless': return t('connection.wireless');
+    case 'bluetooth': return t('connection.bluetooth');
+    case 'virtual': return t('connection.virtual');
+    default: return t('connection.unknown');
+  }
 }
 
 // 界面不硬编码品牌灯效名称。灯效名称由插件 parsers.json 的 derived.lookup 提供（effectName/optionName）。
@@ -79,23 +81,23 @@ function lightingCapability(capabilities: DeviceCapabilities | undefined, group:
 
 function getLightingEffectName(capabilities?: DeviceCapabilities, group: 'mouseEffect' | 'receiverLighting' = 'mouseEffect'): string {
   const lighting = lightingCapability(capabilities, group);
-  if (!lighting) return '硬件同步';
+  if (!lighting) return i18n.t('lighting.hardwareSync');
   // 仅使用插件提供的 effectName（来自 parsers.json derived.lookup）
   if (typeof lighting.effectName === 'string' && lighting.effectName) return lighting.effectName;
   const effect = lighting.effect;
-  if (typeof effect !== 'number') return '硬件同步';
-  if (effect === 0) return '已关闭';
-  return `灯效 ${effect}`;
+  if (typeof effect !== 'number') return i18n.t('lighting.hardwareSync');
+  if (effect === 0) return i18n.t('lighting.off');
+  return i18n.t('lighting.effectN', { value: effect });
 }
 
 function getLightingColorMode(capabilities?: DeviceCapabilities, group: 'mouseEffect' | 'receiverLighting' = 'mouseEffect'): string {
   const lighting = lightingCapability(capabilities, group);
-  if (!lighting) return '未报告';
+  if (!lighting) return i18n.t('common.notReported');
   // 仅使用插件提供的 optionName（来自 parsers.json derived.lookup）
   if (typeof lighting.optionName === 'string' && lighting.optionName) return lighting.optionName;
   const option = lighting.option;
-  if (typeof option !== 'number') return '未报告';
-  return `模式 ${option}`;
+  if (typeof option !== 'number') return i18n.t('common.notReported');
+  return i18n.t('lighting.modeN', { value: option });
 }
 
 function rgbToHex(rgb: unknown): string | undefined {
@@ -126,7 +128,7 @@ function snapshotToState(snapshot: DeviceSnapshot): DeviceState {
     ?? (typeof mouseEffect?.color === 'string' ? mouseEffect.color : snapshot.confirmedLightColor);
   const mouseLightEndColor = rgbToHex(settings?.mouseLightEndColor);
   const fallbackBatteries: DeviceBattery[] = snapshot.batteryPercent === undefined ? [] : [{
-    id: 'mouse', label: '鼠标', percentage: snapshot.batteryPercent, charging: snapshot.charging,
+    id: 'mouse', label: i18n.t('mock.mouseLabel'), percentage: snapshot.batteryPercent, charging: snapshot.charging,
   }];
   // Build lighting state only when at least one lighting field is reported.
   // Avoid defaulting to 'enabled' when the device never reported lighting.
@@ -135,14 +137,14 @@ function snapshotToState(snapshot: DeviceSnapshot): DeviceState {
     || mouseEffect !== undefined
     || receiverLighting !== undefined;
   return {
-    name: snapshot.displayName ?? '未知设备',
-    connection: connectionLabel(snapshot.connection),
+    name: snapshot.displayName ?? i18n.t('common.unknownDevice'),
+    connection: snapshot.connection,
     battery: snapshot.batteryPercent,
     charging: snapshot.charging,
     batteries: snapshot.batteries?.length ? snapshot.batteries : fallbackBatteries,
     pollingRate: snapshot.pollingRateHz,
     supportedPollingRates: snapshot.supportedPollingRatesHz ?? [],
-    profile: snapshot.profile?.replace(/^Profile\s+/i, '配置 '),
+    profile: snapshot.profile?.replace(/^Profile\s+/i, i18n.t('common.profilePrefix') + ' '),
     evidence: snapshot.evidence,
     readonly: snapshot.readonly ?? false,
     updatedAt: now,
@@ -150,7 +152,7 @@ function snapshotToState(snapshot: DeviceSnapshot): DeviceState {
     lighting: hasLightingData
       ? {
           enabled: mouseLightEnabled !== false,
-          mode: mouseEffect ? getLightingEffectName(caps, 'mouseEffect') : mouseLightEnabled === false ? '已关闭' : '已开启',
+          mode: mouseEffect ? getLightingEffectName(caps, 'mouseEffect') : mouseLightEnabled === false ? i18n.t('lighting.off') : i18n.t('lighting.on'),
           color: mouseLightColor,
           supportsSpeed: typeof mouseEffect?.speed === 'number',
           supportsBrightness: typeof mouseEffect?.brightness === 'number',
@@ -186,65 +188,32 @@ function DeviceAura({ color }: { color?: string }) {
 }
 
 function EmptyState({ onRefresh, onDemo, onOpenSettings }: { onRefresh: () => void; onDemo: () => void; onOpenSettings: () => void }) {
+  const { t } = useTranslation();
   return (
     <main className="empty">
       <DeviceAura />
-      <p className="eyebrow">Mira Mouse</p>
-      <h1>没有找到支持的鼠标</h1>
-      <p>插上鼠标后，可用的设置会出现在这里。</p>
+      <p className="eyebrow">{t('dashboard.eyebrow')}</p>
+      <h1>{t('dashboard.noDevice')}</h1>
+      <p>{t('dashboard.plugInHint')}</p>
       <div className="actions">
-        <button onClick={onRefresh}>刷新</button>
-        <button className="secondary" onClick={onOpenSettings}>设备与诊断</button>
+        <button onClick={onRefresh}>{t('common.refresh')}</button>
+        <button className="secondary" onClick={onOpenSettings}>{t('dashboard.deviceAndDiagnostics')}</button>
       </div>
-      <button className="demo" onClick={onDemo}>打开 Fixture 演示</button>
+      <button className="demo" onClick={onDemo}>{t('dashboard.openFixture')}</button>
     </main>
   );
 }
 
-const CAPABILITY_GROUP_LABELS: Record<string, string> = {
-  device: '设备连接',
-  deviceInfo: '设备标识',
-  deviceName: '设备名称',
-  deviceNameLength: '名称信息',
-  battery: '电池',
-  batteryCapability: '电池能力',
-  unifiedBatteryCapability: '统一电池能力',
-  dpi: 'DPI 档位',
-  featureIndexBattery: '电池功能索引',
-  featureIndexDeviceName: '名称功能索引',
-  featureIndexDpi: 'DPI 功能索引',
-  featureIndexUnifiedBattery: '统一电池功能索引',
-  settings: '传感器与连接',
-  lighting: '主灯光（旧插件）',
-  mouseEffect: '鼠标灯效',
-  receiverLighting: '接收器灯光',
-  fps: '传感器帧率',
-  dpiButton: 'DPI 快切',
-  firmwareUsb: '鼠标 USB 固件',
-  firmwareSoc: '鼠标主控固件',
-  receiverFirmwareUsb: '接收器 USB 固件',
-  receiverFirmwareSoc: '接收器主控固件',
-  receiverFirmwareLed: '接收器灯光固件',
-  buttonMappings: '按键映射',
-};
+function capabilityGroupLabel(group: string): string {
+  return i18n.t(`capability.group.${group}`, { defaultValue: group });
+}
 
-const CAPABILITY_FIELD_LABELS: Record<string, string> = {
-  deviceIndex: '设备索引', featureIndex: '功能索引', featureVersion: '功能版本', connection: '连接方式', name: '设备名称', length: '名称长度',
-  entityCount: '固件实体数量', unitId: '设备单元 ID', transport: '传输类型', modelId: '型号 ID',
-  percentage: '电量', charging: '充电中', valid: '数据有效', profile: '配置编号', currentStage: '当前档位', stageCount: '档位数量',
-  nextPercentage: '下一电量阈值', statusRaw: '充电状态原始值', statusName: '充电状态', chargingStatus: '充电状态值', externalPowerStatus: '外部供电状态', levelFlags: '电量等级',
-  supportedLevels: '支持的电量等级', capabilityFlags: '能力标志', sensorIndex: '传感器索引', dpiValue: '当前 DPI', defaultDpi: '默认 DPI',
-  dpiX: 'X 轴 DPI', dpiY: 'Y 轴 DPI', stageColors: '档位颜色', pollingRaw: '回报率原始值', pollingRate: '回报率',
-  usbDebounce: 'USB 防抖', wirelessDebounce: '2.4G 防抖', bluetoothDebounce: '蓝牙防抖', rippleCorrection: '波纹修正',
-  buttonChangeTime: '按键切换时间', wheelToButton: '滚轮转按键', buttonToWheel: '按键转滚轮', bluetoothSleepValue: '蓝牙休眠值',
-  wirelessSleepValue: '2.4G 休眠值', liftCutOff: '抬升高度', angleSnap: '角度吸附', motionSync: '运动同步',
-  mouseLightStartColor: '鼠标灯光颜色', mouseLightEndColor: '鼠标灯光结束色', mouseLightEnabled: '鼠标灯光启用', effect: '灯效', speed: '速度',
-  brightness: '亮度', option: '颜色模式', color: '灯光颜色', enabled: '启用', versionRaw: '固件原始版本值',
-  effectName: '灯效名称', optionName: '颜色模式名称', speedLabel: '速度等级', brightnessLabel: '亮度等级',
-};
+function capabilityFieldLabel(key: string): string {
+  return i18n.t(`capability.field.${key}`, { defaultValue: key });
+}
 
 function capabilityValue(value: unknown, key: string): string {
-  if (typeof value === 'boolean') return value ? '开启' : '关闭';
+  if (typeof value === 'boolean') return value ? i18n.t('common.on') : i18n.t('common.off');
   if (typeof value === 'number') {
     // 灯效/颜色模式的友好名称由插件 derived.lookup 提供（effectName/optionName 字段），
     // 此处仅显示原始数值，避免在界面硬编码品牌映射表。
@@ -258,8 +227,9 @@ function capabilityValue(value: unknown, key: string): string {
     }
     return value.join(' · ');
   }
-  if (value === null || value === undefined || value === '') return '未报告';
+  if (value === null || value === undefined || value === '') return i18n.t('common.notReported');
   if (typeof value === 'object') return JSON.stringify(value);
+  if (key === 'connection' && typeof value === 'string') return connectionDisplay(value, i18n.t);
   return String(value);
 }
 
@@ -276,28 +246,15 @@ function preferredCapability(capabilities: DeviceCapabilities, group: string, pr
 
 function formatSleepTime(value: unknown): string {
   const seconds = typeof value === 'number' ? value : Number(value);
-  if (!Number.isFinite(seconds) || seconds <= 0) return '未报告';
-  if (seconds % 60 === 0) return `${seconds / 60} 分钟`;
-  return `${seconds} 秒`;
+  if (!Number.isFinite(seconds) || seconds <= 0) return i18n.t('common.notReported');
+  if (seconds % 60 === 0) return i18n.t('common.minute', { count: seconds / 60 });
+  return i18n.t('common.second', { count: seconds });
 }
-
-const PLUGIN_LABELS: Record<string, string> = {
-  'capability.battery': '电量',
-  'capability.dpi': 'DPI',
-  'capability.polling-rate': '回报率',
-  'capability.sleep-time': '休眠时间',
-  'capability.profile': '配置文件',
-  'capability.firmware': '固件',
-  'capability.lighting': '灯光',
-  'capability.mouse-lighting': '鼠标灯光',
-  'capability.control-mode': '配置控制',
-  'capability.onboard-profile': '板载配置',
-};
 
 function pluginLabel(capability: PluginCapability): string {
   return typeof capability.metadata.label === 'string'
     ? capability.metadata.label
-    : PLUGIN_LABELS[capability.labelKey] ?? capability.labelKey ?? capability.id;
+    : i18n.t(`plugin.label.${capability.labelKey}`, { defaultValue: capability.labelKey ?? capability.id });
 }
 
 function readPath(device: DeviceState, path: unknown): unknown {
@@ -389,11 +346,11 @@ function PluginSummary({ capability, device }: { capability: PluginCapability; d
   return (
     <div
       className="capability-summary"
-      aria-label="设备摘要"
+      aria-label={i18n.t('dashboard.deviceSummary')}
       style={{ gridTemplateColumns: `repeat(${items.length}, minmax(0, 1fr))` }}
     >
       {items.map((item) => (
-        <span key={`${item.label}:${item.source}`}>{item.label}<strong>{pluginSummaryValue(item, device)}</strong></span>
+        <span key={`${item.label}:${item.source}`}>{i18n.t(item.label, { defaultValue: item.label })}<strong>{pluginSummaryValue(item, device)}</strong></span>
       ))}
     </div>
   );
@@ -489,12 +446,12 @@ function compatibilityCapabilities(device: DeviceState): PluginCapability[] {
       id: 'compat-polling', control: 'Select', labelKey: 'capability.polling-rate', readOnly: false,
       placements: [{ region: 'control', group: 'compat-polling', order: 20, span: 1, icon: 'wave' }],
       metadata: {
-        label: '回报率', source: 'pollingRate', mutation: 'set-polling-rate', param: 'rate', unit: 'Hz',
+        label: i18n.t('plugin.label.capability.polling-rate'), source: 'pollingRate', mutation: 'set-polling-rate', param: 'rate', unit: 'Hz',
         options: (device.supportedPollingRates ?? []).map((value) => ({ value, label: `${value} Hz` })),
         summary: [
-          { label: '运动同步', source: 'capabilities.settings.motionSync' },
-          { label: '角度吸附', source: 'capabilities.settings.angleSnap' },
-          { label: '抬升高度', source: 'capabilities.settings.liftCutOff' },
+          { label: i18n.t('capability.field.motionSync'), source: 'capabilities.settings.motionSync' },
+          { label: i18n.t('capability.field.angleSnap'), source: 'capabilities.settings.angleSnap' },
+          { label: i18n.t('capability.field.liftCutOff'), source: 'capabilities.settings.liftCutOff' },
         ],
       },
     });
@@ -504,7 +461,7 @@ function compatibilityCapabilities(device: DeviceState): PluginCapability[] {
       id: 'compat-lighting', control: 'LightingZone', labelKey: 'capability.lighting', readOnly: false,
       placements: [{ region: 'control', group: 'compat-lighting', order: 30, span: 1, icon: 'lightbulb' }],
       metadata: {
-        label: '灯光', source: 'lighting.mouseLightColor',
+        label: i18n.t('plugin.label.capability.lighting'), source: 'lighting.mouseLightColor',
         mutations: { mouse: 'set-mouse-lighting', receiver: 'set-receiver-lighting' },
       },
     });
@@ -527,7 +484,7 @@ function capabilityBinding(capability: PluginCapability, device: DeviceState): C
     const when = binding.when && typeof binding.when === 'object' ? binding.when as Record<string, unknown> : undefined;
     if (when && readPath(device, when.path) !== when.eq) continue;
     return {
-      label: typeof binding.label === 'string' ? binding.label : pluginLabel(capability),
+      label: typeof binding.label === 'string' ? i18n.t(binding.label, { defaultValue: binding.label }) : pluginLabel(capability),
       value: readPath(device, binding.source),
       mutation: pickMutation(binding.mutation, device.writableMutations),
       param: typeof binding.param === 'string' ? binding.param : 'value',
@@ -577,13 +534,13 @@ function GenericPluginControl({
     return (
       <div className="control-reading mode-reading polling-rate-reading">
         <WaveSine weight="regular" />
-        <span>当前回报率</span>
-        <strong>{typeof current === 'number' ? `${current} Hz` : '未报告'}</strong>
+        <span>{i18n.t('dashboard.currentPollingRate')}</span>
+        <strong>{typeof current === 'number' ? `${current} Hz` : i18n.t('common.notReported')}</strong>
         {options.length > 0 && (
           <div
             className="polling-rate-options"
             role="group"
-            aria-label="回报率选项"
+            aria-label={i18n.t('dashboard.pollingRateOptions')}
             style={{ gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))` }}
           >
             {options.map((option) => (
@@ -599,7 +556,7 @@ function GenericPluginControl({
           </div>
         )}
         <PluginSummary capability={capability} device={device} />
-        <p>{writable ? '选择回报率后将立即写入设备并回读确认。' : '显示设备当前报告的状态；当前设备或插件未开放写入。'}</p>
+        <p>{writable ? i18n.t('dashboard.pollingWriteHint') : i18n.t('dashboard.pollingReadonlyHint')}</p>
       </div>
     );
   }
@@ -638,7 +595,7 @@ function GenericPluginControl({
             if (option) void apply(option.value);
           }}
         >
-          {current === undefined && <option value="" disabled>未报告</option>}
+          {current === undefined && <option value="" disabled>{i18n.t('common.notReported')}</option>}
           {options.map((option) => <option key={String(option.value)} value={String(option.value)}>{option.label}</option>)}
         </select>
       )}
@@ -649,7 +606,7 @@ function GenericPluginControl({
           aria-pressed={current === true}
           disabled={writeBusy || !writable}
           onClick={() => void apply(current !== true)}
-        >{current === true ? '开启' : '关闭'}</button>
+        >{current === true ? i18n.t('common.on') : i18n.t('common.off')}</button>
       )}
       {(capability.control === 'Number' || capability.control === 'Slider' || capability.control === 'Color') && (
         <div className="plugin-input-row">
@@ -663,7 +620,7 @@ function GenericPluginControl({
             disabled={writeBusy || !writable}
             onChange={(event) => setDraft(capability.control === 'Color' ? event.target.value : Number(event.target.value))}
           />
-          <button type="button" disabled={writeBusy || !writable} onClick={() => void apply(draft)}>应用</button>
+          <button type="button" disabled={writeBusy || !writable} onClick={() => void apply(draft)}>{i18n.t('common.apply')}</button>
         </div>
       )}
       {capability.control === 'Action' && (
@@ -672,12 +629,12 @@ function GenericPluginControl({
           className="plugin-action"
           disabled={writeBusy || !writable}
           onClick={() => void runMutation(mutation, (capability.metadata.params as Record<string, unknown>) ?? {})}
-        >{typeof capability.metadata.actionLabel === 'string' ? capability.metadata.actionLabel : '执行'}</button>
+        >{typeof capability.metadata.actionLabel === 'string' ? capability.metadata.actionLabel : i18n.t('common.execute')}</button>
       )}
       {(capability.readOnly || capability.control === 'ReadOnlyValue') && <strong className="plugin-current-value">{pluginValueLabel(capability, current)}</strong>}
       <PluginSummary capability={capability} device={device} />
       {description && <p>{description}</p>}
-      {!writable && !capability.readOnly && <p className="setting-hint">当前设备未开放这项写入。</p>}
+      {!writable && !capability.readOnly && <p className="setting-hint">{i18n.t('dashboard.writeUnavailableHint')}</p>}
     </div>
   );
 }
@@ -702,24 +659,24 @@ function DeviceDetails({ capabilities, pluginCapabilities, onClose }: { capabili
     <div className="details-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <section className="device-details" role="dialog" aria-modal="true" aria-labelledby="device-details-title">
         <header>
-          <div><p className="eyebrow">只读设备报告</p><h2 id="device-details-title">全部读取信息</h2></div>
-          <button className="icon-button" onClick={onClose} aria-label="关闭设备详情"><X weight="regular" /></button>
+          <div><p className="eyebrow">{i18n.t('dashboard.readonlyReport')}</p><h2 id="device-details-title">{i18n.t('dashboard.allReadInfo')}</h2></div>
+          <button className="icon-button" onClick={onClose} aria-label={i18n.t('dashboard.closeDeviceDetails')}><X weight="regular" /></button>
         </header>
-        <p className="details-note">以下是已签名设备插件返回的完整只读报告；经过验证的可写项目会在主界面提供独立控件。</p>
+        <p className="details-note">{i18n.t('dashboard.detailsNote')}</p>
         <div className="capability-groups">
           {groups.length ? groups.map(([group, fields]) => (
             <section className="capability-group" key={group}>
-              <h3>{CAPABILITY_GROUP_LABELS[group] ?? group}</h3>
+              <h3>{capabilityGroupLabel(group)}</h3>
               <dl>
                 {Object.entries(fields).map(([key, value]) => (
                   <div key={key}>
-                    <dt>{CAPABILITY_FIELD_LABELS[key] ?? key}</dt>
+                    <dt>{capabilityFieldLabel(key)}</dt>
                     <dd>{capabilityValue(value, key)}</dd>
                   </div>
                 ))}
               </dl>
             </section>
-          )) : <p className="setting-hint">设备没有报告扩展能力字段。</p>}
+          )) : <p className="setting-hint">{i18n.t('dashboard.noCapabilities')}</p>}
         </div>
       </section>
     </div>
@@ -735,7 +692,7 @@ interface EditModalProps {
   onSubmit: () => void;
 }
 
-function EditModal({ title, children, submitLabel = '应用', submitDisabled, onClose, onSubmit }: EditModalProps) {
+function EditModal({ title, children, submitLabel = i18n.t('common.apply'), submitDisabled, onClose, onSubmit }: EditModalProps) {
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
     window.addEventListener('keydown', closeOnEscape);
@@ -755,7 +712,7 @@ function EditModal({ title, children, submitLabel = '应用', submitDisabled, on
         </header>
         <div className="edit-modal-body">{children}</div>
         <footer>
-          <button type="button" className="secondary" onClick={onClose}>取消</button>
+          <button type="button" className="secondary" onClick={onClose}>{i18n.t('common.cancel')}</button>
           <button type="submit" disabled={submitDisabled}>{submitLabel}</button>
         </footer>
       </form>
@@ -775,13 +732,13 @@ function DpiEditModal({ stage, currentValue, writeBusy, onClose, onApply }: DpiE
   const [draft, setDraft] = useState(currentValue);
   return (
     <EditModal
-      title={`编辑第 ${stage} 档 DPI`}
+      title={i18n.t('dashboard.editStageDpi', { stage })}
       submitDisabled={writeBusy || draft < 50 || draft > 30000 || draft === currentValue}
       onClose={onClose}
       onSubmit={() => onApply(draft)}
     >
       <label className="edit-field">
-        <span>DPI 数值</span>
+        <span>{i18n.t('dashboard.dpiValue')}</span>
         <input
           type="number"
           min={50}
@@ -815,7 +772,7 @@ function ColorEditModal({ title, currentColor, writeBusy, onClose, onApply }: Co
       onSubmit={() => onApply(draft)}
     >
       <label className="edit-field color-field">
-        <span>颜色</span>
+        <span>{i18n.t('common.color')}</span>
         <input
           type="color"
           value={draft}
@@ -837,13 +794,13 @@ function SleepEditModal({ label, currentSeconds, writeBusy, onClose, onApply }: 
   const [draft, setDraft] = useState(currentSeconds);
   return (
     <EditModal
-      title={`设置${label}`}
+      title={i18n.t('dashboard.setSleepTitle', { label })}
       submitDisabled={writeBusy || draft < 10 || draft > 65535 || draft === currentSeconds}
       onClose={onClose}
       onSubmit={() => onApply(draft)}
     >
       <label className="edit-field">
-        <span>超时时间（秒）</span>
+        <span>{i18n.t('dashboard.timeoutSeconds')}</span>
         <input
           type="number"
           min={10}
@@ -890,13 +847,9 @@ interface ReceiverLightingEditModalProps {
   }) => void;
 }
 
-const RECEIVER_LIGHTING_FIELD_LABELS: Record<ReceiverLightingField, string> = {
-  effect: '灯效',
-  option: '颜色模式',
-  speed: '速度',
-  brightness: '亮度',
-  color: '颜色',
-};
+function receiverLightingFieldLabel(field: ReceiverLightingField): string {
+  return i18n.t(`receiverLighting.field.${field}`, { defaultValue: field });
+}
 
 function ReceiverLightingEditModal({ field, initial, options, writeBusy, onClose, onApply }: ReceiverLightingEditModalProps) {
   const [draft, setDraft] = useState(initial);
@@ -906,13 +859,13 @@ function ReceiverLightingEditModal({ field, initial, options, writeBusy, onClose
   );
   return (
     <EditModal
-      title={`编辑接收器${RECEIVER_LIGHTING_FIELD_LABELS[field]}`}
+      title={i18n.t('dashboard.editReceiverLightingTitle', { field: receiverLightingFieldLabel(field) })}
       submitDisabled={submitDisabled}
       onClose={onClose}
       onSubmit={() => onApply(draft)}
     >
       {field === 'effect' && <label className="edit-field">
-        <span>灯效</span>
+        <span>{i18n.t('receiverLighting.field.effect')}</span>
         <select
           value={draft.effect}
           disabled={writeBusy}
@@ -924,7 +877,7 @@ function ReceiverLightingEditModal({ field, initial, options, writeBusy, onClose
         </select>
       </label>}
       {field === 'speed' && <label className="edit-field">
-        <span>速度</span>
+        <span>{i18n.t('receiverLighting.field.speed')}</span>
         <select
           value={draft.speed}
           disabled={writeBusy}
@@ -936,7 +889,7 @@ function ReceiverLightingEditModal({ field, initial, options, writeBusy, onClose
         </select>
       </label>}
       {field === 'brightness' && <label className="edit-field">
-        <span>亮度</span>
+        <span>{i18n.t('receiverLighting.field.brightness')}</span>
         <select
           value={draft.brightness}
           disabled={writeBusy}
@@ -948,7 +901,7 @@ function ReceiverLightingEditModal({ field, initial, options, writeBusy, onClose
         </select>
       </label>}
       {field === 'option' && <label className="edit-field">
-        <span>颜色模式</span>
+        <span>{i18n.t('receiverLighting.field.option')}</span>
         <select
           value={draft.option}
           disabled={writeBusy}
@@ -960,7 +913,7 @@ function ReceiverLightingEditModal({ field, initial, options, writeBusy, onClose
         </select>
       </label>}
       {field === 'color' && <label className="edit-field color-field">
-        <span>颜色</span>
+        <span>{i18n.t('common.color')}</span>
         <input
           type="color"
           value={draft.color}
@@ -973,6 +926,7 @@ function ReceiverLightingEditModal({ field, initial, options, writeBusy, onClose
 }
 
 function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceChange: (device: DeviceState) => void }) {
+  const { t } = useTranslation();
   const stages = device.dpiStages.filter((stage) => stage.enabled);
   // 界面最多只渲染 8 个 DPI 档位，避免过宽导致布局撑大。
   const displayedStages = stages.slice(0, 8);
@@ -1015,13 +969,13 @@ function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceCh
     params: Record<string, unknown>,
   ) => {
     setWriteBusy(true);
-    setPreviewMessage('正在写入并回读确认…');
+    setPreviewMessage(i18n.t('dashboard.writing'));
     try {
       const snapshot = await invoke<DeviceSnapshot>('device_mutate', { mutation, params });
       onDeviceChange(snapshotToState(snapshot));
-      setPreviewMessage('已写入，回读确认一致。');
+      setPreviewMessage(i18n.t('dashboard.writeConfirmed'));
     } catch (error) {
-      setPreviewMessage(`写入失败，界面已保留设备真实状态：${String(error)}`);
+      setPreviewMessage(i18n.t('dashboard.writeFailed', { error: String(error) }));
     } finally {
       setWriteBusy(false);
     }
@@ -1094,7 +1048,7 @@ function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceCh
         const mutation = pluginMutations(capability, device.writableMutations).mouse;
         items.push({
           id: capability.id, label: binding.label,
-          value: device.lighting?.mouseLightEnabled === false ? '已关闭' : device.lighting?.mouseLightColor ?? '未报告',
+          value: device.lighting?.mouseLightEnabled === false ? i18n.t('lighting.off') : device.lighting?.mouseLightColor ?? i18n.t('common.notReported'),
           icon: pluginIcon(placement.icon), color: device.lighting?.mouseLightColor,
           disabled: !mutation || !writable(mutation), onClick: () => setEditingMouseLightColor(true),
         });
@@ -1120,11 +1074,11 @@ function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceCh
 
   return (
     <main className="dashboard">
-      <section className="device-hero" aria-label="已连接设备">
+      <section className="device-hero" aria-label={t('dashboard.connectedDevice')}>
         <div className="device-column">
           <h2 className="app-title">Mira</h2>
           <div className="device-copy">
-            <p className="connection-state"><span />{device.connection} · 已连接</p>
+            <p className="connection-state"><span />{connectionDisplay(device.connection, t)} · {t('common.connected')}</p>
             <h1>{device.name}</h1>
             {device.batteries.length > 0 && (
             <div ref={batteryControlRef} className={`battery-control ${showBatteries ? 'open' : ''}`}>
@@ -1136,15 +1090,15 @@ function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceCh
               >
                 <BatteryHigh weight="regular" />
                 {device.batteries[0].percentage}%
-                {device.batteries[0].charging ? ' · 充电中' : ''}
-                <span className="battery-count">{device.batteries.length} 台设备</span>
+                {device.batteries[0].charging ? ` · ${t('common.charging')}` : ''}
+                <span className="battery-count">{t('dashboard.deviceCount', { count: device.batteries.length })}</span>
               </button>
-              <section id="device-batteries" className="battery-popover" aria-label="设备电量">
-                <p>设备电量</p>
+              <section id="device-batteries" className="battery-popover" aria-label={t('dashboard.deviceBattery')}>
+                <p>{t('dashboard.deviceBattery')}</p>
                 {device.batteries.map((battery) => (
                   <div key={battery.id} className="battery-device">
-                    <span><BatteryHigh weight="regular" />{battery.label}</span>
-                    <strong>{battery.percentage}%{battery.charging ? ' · 充电中' : ''}</strong>
+                    <span><BatteryHigh weight="regular" />{t(battery.label, { defaultValue: battery.label })}</span>
+                    <strong>{battery.percentage}%{battery.charging ? ` · ${t('common.charging')}` : ''}</strong>
                   </div>
                 ))}
               </section>
@@ -1158,7 +1112,7 @@ function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceCh
       <div
         className="control-tabs"
         role="tablist"
-        aria-label="设备控制"
+        aria-label={t('dashboard.deviceControl')}
         style={{
           gridTemplateColumns: `repeat(${Math.max(controls.length, 1)}, minmax(0, 1fr))`,
           width: `min(92%, ${Math.max(220, controls.length * 104)}px)`,
@@ -1184,13 +1138,13 @@ function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceCh
             <button
               type="button"
               className="primary-reading editable-reading"
-              aria-label={activeDpi ? `当前 DPI：${activeDpi}，点击编辑` : 'DPI 未报告'}
+              aria-label={activeDpi ? t('dashboard.currentDpiEdit', { value: activeDpi }) : t('dashboard.dpiNotReported')}
               disabled={writeBusy || !setDpiMutation || !writable(setDpiMutation) || !activeDpi}
               onClick={() => activeDpi && setEditingDpiStage(currentStage)}
             >
-              <strong>{activeDpi || '未报告'}</strong><em>DPI</em>
+              <strong>{activeDpi || i18n.t('common.notReported')}</strong><em>DPI</em>
             </button>
-            <div className="dpi-scale" aria-label="DPI 档位" style={{ '--stage-count': Math.max(displayedStages.length, 1) } as React.CSSProperties}>
+            <div className="dpi-scale" aria-label={t('dashboard.dpiStages')} style={{ '--stage-count': Math.max(displayedStages.length, 1) } as React.CSSProperties}>
               {displayedStages.map((stage, index) => {
                 const stageNumber = index + 1;
                 return (
@@ -1204,7 +1158,7 @@ function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceCh
                         selectDpiMutation!,
                         { stage: stageNumber },
                       )}
-                      aria-label={`切换到第 ${stageNumber} 档`}
+                      aria-label={t('dashboard.switchToStage', { stage: stageNumber })}
                     >
                       <i style={{ '--stage-source-color': stage.color } as React.CSSProperties} />
                     </button>
@@ -1213,7 +1167,7 @@ function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceCh
                       className="dpi-stage-value"
                       disabled={writeBusy || !setDpiMutation || !writable(setDpiMutation)}
                       onClick={() => setEditingDpiStage(stageNumber)}
-                      aria-label={`编辑第 ${stageNumber} 档 DPI`}
+                      aria-label={t('dashboard.editStageDpi', { stage: stageNumber })}
                     >
                       {stage.value}
                     </button>
@@ -1221,8 +1175,8 @@ function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceCh
                 );
               })}
             </div>
-            {displayedStages.length === 0 && <p className="setting-hint">设备未报告 DPI 档位信息。</p>}
-            {(!setDpiMutation || !writable(setDpiMutation)) && displayedStages.length > 0 && <p className="setting-hint">当前设备或插件未开放 DPI 写入。</p>}
+            {displayedStages.length === 0 && <p className="setting-hint">{t('dashboard.noDpiStages')}</p>}
+            {(!setDpiMutation || !writable(setDpiMutation)) && displayedStages.length > 0 && <p className="setting-hint">{t('dashboard.dpiWriteUnavailable')}</p>}
             {editingDpiStage !== null && (
               <DpiEditModal
                 stage={editingDpiStage}
@@ -1246,7 +1200,7 @@ function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceCh
             <div
               className="lighting-sub-tabs"
               role="tablist"
-              aria-label="灯光对象"
+              aria-label={t('dashboard.lightingTarget')}
               style={{ gridTemplateColumns: `repeat(${supportsReceiverLighting ? 2 : 1}, minmax(0, 1fr))` }}
             >
               <button
@@ -1254,23 +1208,23 @@ function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceCh
                 aria-selected={lightingView === 'mouse'}
                 className={lightingView === 'mouse' ? 'active' : ''}
                 onClick={() => setLightingView('mouse')}
-              >鼠标灯光</button>
+              >{t('dashboard.mouseLighting')}</button>
               {supportsReceiverLighting && (
                 <button
                   role="tab"
                   aria-selected={lightingView === 'receiver'}
                   className={lightingView === 'receiver' ? 'active' : ''}
                   onClick={() => setLightingView('receiver')}
-                >接收器灯光</button>
+                >{t('dashboard.receiverLighting')}</button>
               )}
             </div>
             <div className="lighting-swatch" style={{ '--light-color': (
               activeLightingView === 'mouse' ? device.lighting?.mouseLightColor : device.lighting?.receiverLightColor
             ) ?? '#b87ab0' } as React.CSSProperties} />
-            <div className="lighting-sections" aria-label="灯光分组">
+            <div className="lighting-sections" aria-label={t('dashboard.lightingGroups')}>
               {activeLightingView === 'mouse' && (
                 <div className="lighting-group lighting-group-mouse">
-                  <p className="lighting-group-title">鼠标灯光</p>
+                  <p className="lighting-group-title">{t('dashboard.mouseLighting')}</p>
                   <div
                     className="lighting-rows"
                     style={{
@@ -1289,8 +1243,8 @@ function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceCh
                         );
                       }}
                     >
-                      <span>状态</span>
-                      <strong>{device.lighting?.mouseLightEnabled === false ? '关闭' : '开启'}</strong>
+                      <span>{t('dashboard.status')}</span>
+                      <strong>{device.lighting?.mouseLightEnabled === false ? i18n.t('common.off') : i18n.t('common.on')}</strong>
                     </button>
                     <button
                       type="button"
@@ -1298,8 +1252,8 @@ function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceCh
                       disabled={writeBusy || !mouseLightingMutation || !writable(mouseLightingMutation)}
                       onClick={() => setEditingMouseLightColor(true)}
                     >
-                      <span>颜色</span>
-                      <strong>{device.lighting?.mouseLightColor ?? '未报告'}</strong>
+                      <span>{i18n.t('common.color')}</span>
+                      <strong>{device.lighting?.mouseLightColor ?? i18n.t('common.notReported')}</strong>
                     </button>
                     {device.lighting?.mouseLightEndColor && device.lighting.mouseLightEndColor !== device.lighting.mouseLightColor && (
                       <button
@@ -1308,14 +1262,14 @@ function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceCh
                         disabled={writeBusy || !mouseLightingMutation || !writable(mouseLightingMutation)}
                         onClick={() => setEditingMouseLightEndColor(true)}
                       >
-                        <span>结束色</span>
+                        <span>{t('dashboard.endColor')}</span>
                         <strong>{device.lighting.mouseLightEndColor}</strong>
                       </button>
                     )}
                   </div>
                   {editingMouseLightEndColor && (
                     <ColorEditModal
-                      title="鼠标灯光结束色"
+                      title={t('dashboard.mouseLightEndColor')}
                       currentColor={device.lighting?.mouseLightEndColor ?? '#b87ab0'}
                       writeBusy={writeBusy}
                       onClose={() => setEditingMouseLightEndColor(false)}
@@ -1332,7 +1286,7 @@ function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceCh
               )}
               {activeLightingView === 'receiver' && (
                 <div className="lighting-group lighting-group-dongle">
-                  <p className="lighting-group-title">接收器灯光</p>
+                  <p className="lighting-group-title">{t('dashboard.receiverLighting')}</p>
                   <div className="lighting-rows" style={{ gridTemplateColumns: 'repeat(5, minmax(0, 1fr))' }}>
                     <button
                       type="button"
@@ -1340,8 +1294,8 @@ function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceCh
                       disabled={writeBusy || !receiverLightingMutation || !writable(receiverLightingMutation)}
                       onClick={() => setEditingReceiverLighting('effect')}
                     >
-                      <span>灯效</span>
-                      <strong>{device.lighting?.receiverLightMode ?? '未报告'}</strong>
+                      <span>{i18n.t('receiverLighting.field.effect')}</span>
+                      <strong>{device.lighting?.receiverLightMode ? i18n.t(device.lighting.receiverLightMode, { defaultValue: device.lighting.receiverLightMode }) : i18n.t('common.notReported')}</strong>
                     </button>
                     <button
                       type="button"
@@ -1349,7 +1303,7 @@ function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceCh
                       disabled={writeBusy || !receiverLightingMutation || !writable(receiverLightingMutation)}
                       onClick={() => setEditingReceiverLighting('option')}
                     >
-                      <span>颜色模式</span>
+                      <span>{i18n.t('receiverLighting.field.option')}</span>
                       <strong>{getLightingColorMode(device.capabilities, 'receiverLighting')}</strong>
                     </button>
                     <button
@@ -1358,7 +1312,7 @@ function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceCh
                       disabled={writeBusy || !receiverLightingMutation || !writable(receiverLightingMutation)}
                       onClick={() => setEditingReceiverLighting('speed')}
                     >
-                      <span>速度</span>
+                      <span>{i18n.t('receiverLighting.field.speed')}</span>
                       <strong>{preferredCapability(device.capabilities, 'receiverLighting', 'speedLabel', 'speed')}</strong>
                     </button>
                     <button
@@ -1367,7 +1321,7 @@ function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceCh
                       disabled={writeBusy || !receiverLightingMutation || !writable(receiverLightingMutation)}
                       onClick={() => setEditingReceiverLighting('brightness')}
                     >
-                      <span>亮度</span>
+                      <span>{i18n.t('receiverLighting.field.brightness')}</span>
                       <strong>{preferredCapability(device.capabilities, 'receiverLighting', 'brightnessLabel', 'brightness')}</strong>
                     </button>
                     <button
@@ -1376,8 +1330,8 @@ function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceCh
                       disabled={writeBusy || !receiverLightingMutation || !writable(receiverLightingMutation)}
                       onClick={() => setEditingReceiverLighting('color')}
                     >
-                      <span>颜色</span>
-                      <strong style={{ color: typeof receiverLighting?.color === 'string' ? receiverLighting.color : undefined }}>{typeof receiverLighting?.color === 'string' ? receiverLighting.color : '未报告'}</strong>
+                      <span>{i18n.t('common.color')}</span>
+                      <strong style={{ color: typeof receiverLighting?.color === 'string' ? receiverLighting.color : undefined }}>{typeof receiverLighting?.color === 'string' ? receiverLighting.color : i18n.t('common.notReported')}</strong>
                     </button>
                   </div>
                   {editingReceiverLighting !== null && receiverLighting && (
@@ -1402,7 +1356,7 @@ function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceCh
                 </div>
               )}
             </div>
-            {device.lighting?.receiverLinked && <p className="setting-hint">鼠标与接收器灯光分别读取，互不混用。</p>}
+            {device.lighting?.receiverLinked && <p className="setting-hint">{t('dashboard.lightingSeparateHint')}</p>}
           </div>
         )}
         {activeGenericDescriptors.map((descriptor) => (
@@ -1429,7 +1383,7 @@ function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceCh
         )}
         {editingMouseLightColor && (
           <ColorEditModal
-            title="鼠标灯光颜色"
+            title={t('dashboard.mouseLightColor')}
             currentColor={device.lighting?.mouseLightColor ?? '#b87ab0'}
             writeBusy={writeBusy}
             onClose={() => setEditingMouseLightColor(false)}
@@ -1450,7 +1404,7 @@ function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceCh
       {statusItems.length > 0 && (
       <section
         className="status-strip"
-        aria-label="设备状态"
+        aria-label={t('dashboard.deviceStatus')}
         style={{ gridTemplateColumns: `repeat(${statusItems.length}, minmax(0, 1fr))` }}
       >
         {statusItems.map(({ id, label, value, icon: StatusIcon, disabled, color, onClick }) => {
@@ -1462,8 +1416,8 @@ function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceCh
       </section>
       )}
       <div className="dashboard-meta">
-        <span>最后更新：{device.updatedAt}</span>
-        <button className="details-button" onClick={() => setShowDetails(true)}><ReadCvLogo weight="regular" />全部读取信息</button>
+        <span>{t('dashboard.lastUpdate', { time: device.updatedAt })}</span>
+        <button className="details-button" onClick={() => setShowDetails(true)}><ReadCvLogo weight="regular" />{t('dashboard.allReadInfo')}</button>
       </div>
       {showDetails && <DeviceDetails capabilities={device.capabilities} pluginCapabilities={pluginDescriptors} onClose={() => setShowDetails(false)} />}
     </main>
@@ -1471,6 +1425,7 @@ function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceCh
 }
 
 export default function App() {
+  const { t } = useTranslation();
   const pureWeb = isPureWebPreview();
   const [device, setDevice] = useState<DeviceState | undefined>(pureWeb ? MOCK_DEVICE : undefined);
   // F11: device-updated 事件高频触发时，用 startTransition 将 Dashboard 渲染标记为低优先级，
@@ -1499,6 +1454,7 @@ export default function App() {
     invoke<AppSettings>('settings_get')
       .then((settings) => {
         setTheme(settings.theme as ThemeMode);
+        applyLanguage(settings.language ?? 'auto');
         if (settings.automaticUpdateChecks) {
           void invoke<AboutInfo>('about_info')
             .then((info) => {
@@ -1511,7 +1467,12 @@ export default function App() {
           void invoke<PluginUpdateInfo[]>('plugin_updates_check')
             .then((updates) => {
               const available = updates.filter((item) => item.updateAvailable);
-              if (available.length > 0) notifyInfo('发现插件更新', `${available.length} 个已安装插件有新版本，可在“设置 → 插件”中更新。`);
+              if (available.length > 0) {
+                notifyInfo(
+                  i18n.t('dashboard.pluginUpdateFound'),
+                  i18n.t('dashboard.pluginUpdateFoundBody', { count: available.length }),
+                );
+              }
             })
             .catch(() => { /* Automatic checks stay quiet when offline. */ });
         }
@@ -1566,10 +1527,10 @@ export default function App() {
     {windowsWebPreview && <WindowsPreviewControls />}
     <nav className="top-nav" data-tauri-drag-region>
       <div className="nav-links">
-        <button className={`nav-link ${view === 'dashboard' ? 'active' : ''}`} onClick={() => setView('dashboard')}>设备</button>
-        <button className={`nav-link ${view === 'settings' ? 'active' : ''}`} onClick={() => setView('settings')}>设置</button>
-        <button className={`nav-link nav-about ${view === 'about' ? 'active' : ''}`} onClick={() => setView('about')} aria-label="关于 Mira"><Info weight="regular" /></button>
-        {demoMode && <button className="nav-link nav-exit" onClick={() => { setDemoMode(false); setDevice(undefined); setRefreshNonce((value) => value + 1); invoke('device_refresh').catch(() => {}); }} aria-label="退出演示" title="退出演示"><X weight="regular" /></button>}
+        <button className={`nav-link ${view === 'dashboard' ? 'active' : ''}`} onClick={() => setView('dashboard')}>{t('nav.dashboard')}</button>
+        <button className={`nav-link ${view === 'settings' ? 'active' : ''}`} onClick={() => setView('settings')}>{t('nav.settings')}</button>
+        <button className={`nav-link nav-about ${view === 'about' ? 'active' : ''}`} onClick={() => setView('about')} aria-label={t('nav.about')}><Info weight="regular" /></button>
+        {demoMode && <button className="nav-link nav-exit" onClick={() => { setDemoMode(false); setDevice(undefined); setRefreshNonce((value) => value + 1); invoke('device_refresh').catch(() => {}); }} aria-label={t('nav.exitDemo')} title={t('nav.exitDemo')}><X weight="regular" /></button>}
       </div>
     </nav>
     {view === 'dashboard' && (device ? <Dashboard device={device} onDeviceChange={setDevice} /> : <EmptyState onRefresh={() => { setDemoMode(false); setDevice(undefined); setRefreshNonce((value) => value + 1); invoke('device_refresh').catch(() => {}); }} onDemo={() => { setDemoMode(true); setDevice(MOCK_DEVICE); }} onOpenSettings={() => setView('settings')} />)}
@@ -1578,7 +1539,7 @@ export default function App() {
     {appNotification && (
       <aside className={`app-notification ${appNotification.kind}`} role={appNotification.kind === 'error' ? 'alert' : 'status'} aria-live={appNotification.kind === 'error' ? 'assertive' : 'polite'}>
         <div><strong>{appNotification.title}</strong>{appNotification.body && <p>{appNotification.body}</p>}</div>
-        <button type="button" onClick={() => setAppNotification(undefined)} aria-label="关闭通知"><X weight="bold" /></button>
+        <button type="button" onClick={() => setAppNotification(undefined)} aria-label={t('dashboard.closeNotification')}><X weight="bold" /></button>
       </aside>
     )}
   </div>;
