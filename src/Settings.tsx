@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { useTranslation } from 'react-i18next';
 import type { AppSettings, BundledPluginInfo, AboutInfo, DiscoveredDevice, PluginInstallResult, PluginUpdateInfo, ThemeMode } from './types';
 import { Tooltip } from './Tooltip';
 import { notifyError, notifyInfo } from './notify';
 import { extractChannel, exportDiagnostics } from './plugin-utils';
+import { applyLanguage, type AppLanguage } from './i18n';
 import { save, open } from '@tauri-apps/plugin-dialog';
 
 const DEFAULT_SETTINGS: AppSettings = {
+  language: 'auto',
   theme: 'system',
   autostart: false,
   startHidden: false,
@@ -27,14 +30,6 @@ const DEFAULT_SETTINGS: AppSettings = {
 };
 
 type SettingsTab = 'general' | 'device' | 'plugins' | 'privacy' | 'about';
-
-const TABS: { id: SettingsTab; label: string }[] = [
-  { id: 'general', label: '通用' },
-  { id: 'device', label: '设备' },
-  { id: 'plugins', label: '插件' },
-  { id: 'privacy', label: '隐私' },
-  { id: 'about', label: '关于' },
-];
 
 function SettingRow({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
   return (
@@ -64,6 +59,7 @@ function Toggle({ checked, onChange, label, disabled = false }: { checked: boole
 }
 
 export function SettingsPage({ onNavigateAbout, onThemeChange, previewMode = false }: { onNavigateAbout: () => void; onThemeChange: (theme: ThemeMode) => void; previewMode?: boolean }) {
+  const { t } = useTranslation();
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [autostartEnabled, setAutostartEnabled] = useState(false);
   const [plugins, setPlugins] = useState<BundledPluginInfo[]>([]);
@@ -74,6 +70,14 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, previewMode = fal
   const [discovered, setDiscovered] = useState<DiscoveredDevice[]>([]);
   const [saved, setSaved] = useState(false);
   const [tab, setTab] = useState<SettingsTab>('general');
+
+  const TABS: { id: SettingsTab; label: string }[] = [
+    { id: 'general', label: t('settings.tab.general') },
+    { id: 'device', label: t('settings.tab.device') },
+    { id: 'plugins', label: t('settings.tab.plugins') },
+    { id: 'privacy', label: t('settings.tab.privacy') },
+    { id: 'about', label: t('settings.tab.about') },
+  ];
 
   useEffect(() => {
     if (previewMode) return;
@@ -108,7 +112,7 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, previewMode = fal
         setSaved(true);
         setTimeout(() => setSaved(false), 1500);
       })
-      .catch((error) => notifyError('保存失败', String(error)));
+      .catch((error) => notifyError(t('notification.saveFailed'), String(error)));
   }
 
   function toggleAutostart(enabled: boolean) {
@@ -125,7 +129,7 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, previewMode = fal
       .catch((error) => {
         // 保持开关状态不变（未启用就是 false），并提示用户失败原因
         setAutostartEnabled(!enabled);
-        notifyError('设置开机启动失败', String(error));
+        notifyError(t('notification.autostartFailed'), String(error));
       });
   }
 
@@ -140,13 +144,13 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, previewMode = fal
     try {
       const path = await save({
         defaultPath: 'device-config.json',
-        filters: [{ name: 'Mira 配置', extensions: ['json'] }],
+        filters: [{ name: t('settings.config.filterName'), extensions: ['json'] }],
       });
       if (!path) return;
       await invoke('device_config_export', { path });
-      notifyInfo('导出成功', `配置已保存至 ${path}`);
+      notifyInfo(t('notification.exportSuccess'), t('notification.exportSuccessBody', { path }));
     } catch (error) {
-      notifyError('导出失败', String(error));
+      notifyError(t('notification.exportFailed'), String(error));
     }
   }
 
@@ -155,21 +159,21 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, previewMode = fal
     if (previewMode) return;
     try {
       const selected = await open({
-        filters: [{ name: 'Mira 配置', extensions: ['json'] }],
+        filters: [{ name: t('settings.config.filterName'), extensions: ['json'] }],
         multiple: false,
       });
       if (!selected || typeof selected !== 'string') return;
       await invoke('device_config_import', { path: selected });
-      notifyInfo('导入成功', '配置已应用，设备状态已更新');
+      notifyInfo(t('notification.importSuccess'), t('notification.importSuccessBody'));
     } catch (error) {
-      notifyError('导入失败', String(error));
+      notifyError(t('notification.importFailed'), String(error));
     }
   }
 
   function scanDevices() {
     invoke<DiscoveredDevice[]>('discover_devices')
       .then(setDiscovered)
-      .catch((err) => notifyError('扫描失败', String(err)));
+      .catch((err) => notifyError(t('notification.scanFailed'), String(err)));
   }
 
   async function checkPluginUpdates() {
@@ -178,7 +182,7 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, previewMode = fal
     try {
       setPluginUpdates(await invoke<PluginUpdateInfo[]>('plugin_updates_check'));
     } catch (error) {
-      notifyError('检查插件更新失败', String(error));
+      notifyError(t('notification.checkPluginUpdateFailed'), String(error));
     } finally {
       setPluginUpdatesChecking(false);
     }
@@ -193,7 +197,7 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, previewMode = fal
         : plugin));
       await checkPluginUpdates();
     } catch (error) {
-      notifyError('安装插件更新失败', String(error));
+      notifyError(t('notification.installPluginUpdateFailed'), String(error));
     } finally {
       setPluginInstalling(undefined);
     }
@@ -204,20 +208,20 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, previewMode = fal
       <header>
         <div>
           <p className="eyebrow">Mira Mouse</p>
-          <h1>设置</h1>
+          <h1>{t('settings.title')}</h1>
         </div>
-        {saved && <span className="save-badge">已保存</span>}
+        {saved && <span className="save-badge">{t('common.saved')}</span>}
       </header>
 
-      <nav className="sub-nav" aria-label="设置分类">
-        {TABS.map((t) => (
+      <nav className="sub-nav" aria-label={t('settings.category')}>
+        {TABS.map((tabItem) => (
           <button
-            key={t.id}
-            className={`sub-nav-link ${tab === t.id ? 'active' : ''}`}
-            onClick={() => setTab(t.id)}
-            aria-pressed={tab === t.id}
+            key={tabItem.id}
+            className={`sub-nav-link ${tab === tabItem.id ? 'active' : ''}`}
+            onClick={() => setTab(tabItem.id)}
+            aria-pressed={tab === tabItem.id}
           >
-            {t.label}
+            {tabItem.label}
           </button>
         ))}
       </nav>
@@ -225,66 +229,85 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, previewMode = fal
       {tab === 'general' && (
         <>
           <section className="card settings-section">
-            <div className="card-title"><h2>主题</h2></div>
-            <SettingRow title="主题模式" hint="跟随系统会自动适配浅色或深色">
-              <select value={settings.theme} onChange={(e) => update({ theme: e.target.value as ThemeMode })} aria-label="主题模式">
-                <option value="system">跟随系统</option>
-                <option value="light">浅色</option>
-                <option value="dark">深色</option>
+            <div className="card-title"><h2>{t('settings.language.label')}</h2></div>
+            <SettingRow title={t('settings.language.label')} hint={t('settings.language.hint')}>
+              <select
+                value={settings.language}
+                onChange={(e) => {
+                  const lang = e.target.value as AppLanguage;
+                  applyLanguage(lang);
+                  update({ language: lang });
+                }}
+                aria-label={t('settings.language.label')}
+              >
+                <option value="auto">{t('settings.language.auto')}</option>
+                <option value="zh-CN">{t('settings.language.zhCN')}</option>
+                <option value="en">{t('settings.language.en')}</option>
               </select>
             </SettingRow>
           </section>
 
           <section className="card settings-section">
-            <div className="card-title"><h2>开机与菜单栏</h2></div>
-            <SettingRow title="开机自动启动" hint="登录系统时自动启动 Mira">
-              <Toggle checked={autostartEnabled} onChange={toggleAutostart} label="开机自动启动" />
-            </SettingRow>
-            <SettingRow title="启动时隐藏窗口" hint="仅驻留菜单栏/托盘，不显示主窗口">
-              <Toggle checked={settings.startHidden} onChange={(v) => update({ startHidden: v })} label="启动时隐藏窗口" />
-            </SettingRow>
-            <SettingRow title="显示电量百分比" hint="鼠标图标仍会按电量填充，这里只控制旁边的数字">
-              <Toggle checked={settings.trayShowBatteryTitle} onChange={(v) => update({ trayShowBatteryTitle: v })} label="显示电量百分比" />
-            </SettingRow>
-            <SettingRow title="托盘图标颜色" hint="白色适合深色菜单栏背景，黑色适合浅色背景，跟随主题自动切换">
-              <select value={settings.trayIconColor} onChange={(e) => update({ trayIconColor: e.target.value })} aria-label="托盘图标颜色">
-                <option value="white">白色</option>
-                <option value="black">黑色</option>
-                <option value="auto">跟随主题</option>
+            <div className="card-title"><h2>{t('settings.section.theme')}</h2></div>
+            <SettingRow title={t('settings.theme.label')} hint={t('settings.theme.hint')}>
+              <select value={settings.theme} onChange={(e) => update({ theme: e.target.value as ThemeMode })} aria-label={t('settings.theme.label')}>
+                <option value="system">{t('settings.theme.system')}</option>
+                <option value="light">{t('settings.theme.light')}</option>
+                <option value="dark">{t('settings.theme.dark')}</option>
               </select>
-            </SettingRow>
-            <SettingRow title="标题附带接收器电量" hint="托盘菜单中始终保留所有设备电量">
-              <Toggle checked={settings.trayIncludeReceiverBattery} onChange={(v) => update({ trayIncludeReceiverBattery: v })} label="标题附带接收器电量" disabled={!settings.trayShowBatteryTitle} />
-            </SettingRow>
-            <SettingRow title="菜单显示连接状态" hint="在托盘菜单中显示连接方式和设备名称">
-              <Toggle checked={settings.trayShowConnection} onChange={(v) => update({ trayShowConnection: v })} label="菜单显示连接状态" />
             </SettingRow>
           </section>
 
           <section className="card settings-section">
-            <div className="card-title"><h2>轮询</h2></div>
-            <SettingRow title={`刷新间隔：${settings.refreshIntervalSeconds} 秒`} hint="窗口可见时的兜底轮询间隔；事件触发时立即读取，窗口隐藏时自动降为 60 秒">
+            <div className="card-title"><h2>{t('settings.section.startup')}</h2></div>
+            <SettingRow title={t('settings.autostart.label')} hint={t('settings.autostart.hint')}>
+              <Toggle checked={autostartEnabled} onChange={toggleAutostart} label={t('settings.autostart.label')} />
+            </SettingRow>
+            <SettingRow title={t('settings.startHidden.label')} hint={t('settings.startHidden.hint')}>
+              <Toggle checked={settings.startHidden} onChange={(v) => update({ startHidden: v })} label={t('settings.startHidden.label')} />
+            </SettingRow>
+            <SettingRow title={t('settings.trayBattery.label')} hint={t('settings.trayBattery.hint')}>
+              <Toggle checked={settings.trayShowBatteryTitle} onChange={(v) => update({ trayShowBatteryTitle: v })} label={t('settings.trayBattery.label')} />
+            </SettingRow>
+            <SettingRow title={t('settings.trayIconColor.label')} hint={t('settings.trayIconColor.hint')}>
+              <select value={settings.trayIconColor} onChange={(e) => update({ trayIconColor: e.target.value })} aria-label={t('settings.trayIconColor.label')}>
+                <option value="white">{t('settings.trayIconColor.white')}</option>
+                <option value="black">{t('settings.trayIconColor.black')}</option>
+                <option value="auto">{t('settings.trayIconColor.auto')}</option>
+              </select>
+            </SettingRow>
+            <SettingRow title={t('settings.receiverBattery.label')} hint={t('settings.receiverBattery.hint')}>
+              <Toggle checked={settings.trayIncludeReceiverBattery} onChange={(v) => update({ trayIncludeReceiverBattery: v })} label={t('settings.receiverBattery.label')} disabled={!settings.trayShowBatteryTitle} />
+            </SettingRow>
+            <SettingRow title={t('settings.trayConnection.label')} hint={t('settings.trayConnection.hint')}>
+              <Toggle checked={settings.trayShowConnection} onChange={(v) => update({ trayShowConnection: v })} label={t('settings.trayConnection.label')} />
+            </SettingRow>
+          </section>
+
+          <section className="card settings-section">
+            <div className="card-title"><h2>{t('settings.section.polling')}</h2></div>
+            <SettingRow title={t('settings.refreshInterval.label', { seconds: settings.refreshIntervalSeconds })} hint={t('settings.refreshInterval.hint')}>
               <input
                 type="range"
                 min={1}
                 max={60}
                 value={settings.refreshIntervalSeconds}
                 onChange={(e) => update({ refreshIntervalSeconds: Number(e.target.value) })}
-                aria-label="刷新间隔"
+                aria-label={t('settings.refreshInterval.label', { seconds: settings.refreshIntervalSeconds })}
               />
             </SettingRow>
           </section>
 
           <section className="card settings-section">
-            <div className="card-title"><h2>软件更新</h2></div>
-            <SettingRow title="启动时检查 Mira 更新" hint="启动后联网检查新版本，并在应用内提示结果">
-              <Toggle checked={settings.automaticUpdateChecks} onChange={(v) => update({ automaticUpdateChecks: v })} label="启动时检查 Mira 更新" />
+            <div className="card-title"><h2>{t('settings.section.update')}</h2></div>
+            <SettingRow title={t('settings.updateCheck.label')} hint={t('settings.updateCheck.hint')}>
+              <Toggle checked={settings.automaticUpdateChecks} onChange={(v) => update({ automaticUpdateChecks: v })} label={t('settings.updateCheck.label')} />
             </SettingRow>
-            <SettingRow title="自动下载并安装" hint="发现新版本后自动安装，完成后提示重启，不会强制中断当前工作">
+            <SettingRow title={t('settings.updateInstall.label')} hint={t('settings.updateInstall.hint')}>
               <Toggle
                 checked={settings.automaticUpdateInstall}
                 onChange={(v) => update({ automaticUpdateInstall: v })}
-                label="自动下载并安装 Mira 更新"
+                label={t('settings.updateInstall.label')}
                 disabled={!settings.automaticUpdateChecks}
               />
             </SettingRow>
@@ -296,39 +319,39 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, previewMode = fal
         <>
           <section className="card settings-section">
             <div className="card-title">
-              <h2>电量提醒</h2>
-              <Tooltip label="低电量提醒：仅在电量跨过阈值时提醒一次，不会反复弹窗。"><button className="icon-button" aria-label="低电量提醒说明">?</button></Tooltip>
+              <h2>{t('settings.section.battery')}</h2>
+              <Tooltip label={t('settings.lowBattery.tooltip')}><button className="icon-button" aria-label={t('settings.section.battery')}>?</button></Tooltip>
             </div>
-            <SettingRow title={`低电量阈值：${settings.lowBatteryThreshold}%`} hint="电量跨过阈值时通过系统通知提醒一次，充电期间不提醒">
+            <SettingRow title={t('settings.lowBattery.label', { value: settings.lowBatteryThreshold })} hint={t('settings.lowBattery.hint')}>
               <input
                 type="range"
                 min={5}
                 max={50}
                 value={settings.lowBatteryThreshold}
                 onChange={(e) => update({ lowBatteryThreshold: Number(e.target.value) })}
-                aria-label="低电量阈值"
+                aria-label={t('settings.lowBattery.label', { value: settings.lowBatteryThreshold })}
               />
             </SettingRow>
           </section>
 
           <section className="card settings-section">
             <div className="card-title">
-              <h2>安静灯光</h2>
-              <Tooltip label="夜间模式：按时间降低或关闭灯光，并在关闭后可靠恢复原状态。"><button className="icon-button" aria-label="安静灯光说明">?</button></Tooltip>
+              <h2>{t('settings.section.nightLight')}</h2>
+              <Tooltip label={t('settings.nightMode.tooltip')}><button className="icon-button" aria-label={t('settings.section.nightLight')}>?</button></Tooltip>
             </div>
-            <SettingRow title="启用夜间模式" hint="当前版本尚未实现灯光定时调度">
-              <Toggle checked={false} onChange={() => {}} label="启用夜间模式" disabled />
+            <SettingRow title={t('settings.nightMode.label')} hint={t('settings.nightMode.hint')}>
+              <Toggle checked={false} onChange={() => {}} label={t('settings.nightMode.label')} disabled />
             </SettingRow>
           </section>
 
           <section className="card settings-section">
-            <div className="card-title"><h2>配置导入导出</h2></div>
+            <div className="card-title"><h2>{t('settings.section.config')}</h2></div>
             <p className="setting-hint">
-              导出设备配置文件用于备份或迁移；导入时会检查插件兼容性并逐项应用。
+              {t('settings.config.hint')}
             </p>
             <div className="contact-links">
-              <button className="secondary" onClick={() => void handleExportConfig()} disabled={previewMode}>导出配置</button>
-              <button className="secondary" onClick={() => void handleImportConfig()} disabled={previewMode}>导入配置</button>
+              <button className="secondary" onClick={() => void handleExportConfig()} disabled={previewMode}>{t('settings.config.export')}</button>
+              <button className="secondary" onClick={() => void handleImportConfig()} disabled={previewMode}>{t('settings.config.import')}</button>
             </div>
           </section>
         </>
@@ -336,18 +359,18 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, previewMode = fal
 
       {tab === 'plugins' && (
         <section className="card settings-section">
-          <div className="card-title"><h2>已安装插件</h2></div>
-          <SettingRow title="启动时检查插件更新" hint="仅检查签名插件的新版本，不会静默替换插件">
-            <Toggle checked={settings.automaticPluginUpdateChecks} onChange={(v) => update({ automaticPluginUpdateChecks: v })} label="启动时检查插件更新" />
+          <div className="card-title"><h2>{t('settings.section.plugins')}</h2></div>
+          <SettingRow title={t('settings.pluginUpdateCheck.label')} hint={t('settings.pluginUpdateCheck.hint')}>
+            <Toggle checked={settings.automaticPluginUpdateChecks} onChange={(v) => update({ automaticPluginUpdateChecks: v })} label={t('settings.pluginUpdateCheck.label')} />
           </SettingRow>
           <div className="contact-links plugin-update-actions">
             <button className="secondary" onClick={() => void checkPluginUpdates()} disabled={previewMode || pluginUpdatesChecking || Boolean(pluginInstalling)}>
-              {pluginUpdatesChecking ? '检查中…' : '检查插件更新'}
+              {pluginUpdatesChecking ? t('settings.pluginUpdate.checking') : t('settings.pluginUpdate.check')}
             </button>
-            {pluginUpdates.length > 0 && pluginUpdates.every((item) => !item.updateAvailable) && <span className="save-badge">插件均为最新</span>}
+            {pluginUpdates.length > 0 && pluginUpdates.every((item) => !item.updateAvailable) && <span className="save-badge">{t('settings.pluginUpdate.allLatest')}</span>}
           </div>
           {plugins.length === 0 ? (
-            <p className="setting-hint">未发现已安装插件。正式安装包默认携带 mira.amaster。</p>
+            <p className="setting-hint">{t('settings.pluginUpdate.noPlugins')}</p>
           ) : (
             <div className="plugin-list">
               {plugins.map((plugin) => {
@@ -361,19 +384,19 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, previewMode = fal
                     <div className="plugin-meta">
                       {channel && <span className="badge">{channel}</span>}
                       <span className={`badge ${plugin.signatureVerified ? 'badge-ok' : 'badge-warn'}`}>
-                        {plugin.signatureVerified ? '签名已验证' : '签名未验证'}
+                        {plugin.signatureVerified ? t('settings.pluginUpdate.signatureVerified') : t('settings.pluginUpdate.signatureUnverified')}
                       </span>
-                      {plugin.bundleByDefault && <span className="badge">默认内置</span>}
+                      {plugin.bundleByDefault && <span className="badge">{t('settings.pluginUpdate.defaultBundled')}</span>}
                     </div>
                     {pluginUpdates.find((item) => item.pluginId === plugin.pluginId)?.updateAvailable && (
                       <div className="plugin-update-row">
-                        <span className="setting-hint">可更新至 v{pluginUpdates.find((item) => item.pluginId === plugin.pluginId)?.availableVersion}</span>
+                        <span className="setting-hint">{t('settings.pluginUpdate.updatable', { version: pluginUpdates.find((item) => item.pluginId === plugin.pluginId)?.availableVersion })}</span>
                         <button
                           className="primary"
                           disabled={Boolean(pluginInstalling)}
                           onClick={() => void installPluginUpdate(plugin.pluginId)}
                         >
-                          {pluginInstalling === plugin.pluginId ? '验证并安装中…' : '更新插件'}
+                          {pluginInstalling === plugin.pluginId ? t('settings.pluginUpdate.updating') : t('settings.pluginUpdate.update')}
                         </button>
                       </div>
                     )}
@@ -387,15 +410,15 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, previewMode = fal
 
       {tab === 'privacy' && (
         <section className="card settings-section">
-          <div className="card-title"><h2>隐私</h2></div>
-          <SettingRow title="禁用遥测" hint="Mira 不内置遥测，此选项始终开启">
-            <Toggle checked={true} onChange={() => {}} label="禁用遥测" disabled />
+          <div className="card-title"><h2>{t('settings.section.privacy')}</h2></div>
+          <SettingRow title={t('settings.privacy.telemetryLabel')} hint={t('settings.privacy.telemetryHint')}>
+            <Toggle checked={true} onChange={() => {}} label={t('settings.privacy.telemetryLabel')} disabled />
           </SettingRow>
-          <SettingRow title="扫描 HID 设备" hint="列出与已安装插件匹配的真实 HID 设备（硬件测试用）">
-            <button className="secondary" onClick={scanDevices} disabled={previewMode}>扫描</button>
+          <SettingRow title={t('settings.privacy.scanLabel')} hint={t('settings.privacy.scanHint')}>
+            <button className="secondary" onClick={scanDevices} disabled={previewMode}>{t('settings.privacy.scanButton')}</button>
           </SettingRow>
-          <SettingRow title="导出诊断" hint="诊断数据已脱敏，不含序列号或 HID 负载">
-            <button className="secondary" onClick={handleExportDiagnostics} disabled={previewMode}>导出诊断</button>
+          <SettingRow title={t('settings.privacy.diagnosticsLabel')} hint={t('settings.privacy.diagnosticsHint')}>
+            <button className="secondary" onClick={handleExportDiagnostics} disabled={previewMode}>{t('settings.privacy.diagnosticsButton')}</button>
           </SettingRow>
           {discovered.length > 0 && (
             <div className="plugin-list">
@@ -421,9 +444,9 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, previewMode = fal
 
       {tab === 'about' && (
         <section className="card settings-section">
-          <div className="card-title"><h2>关于 Mira</h2></div>
-          <SettingRow title="查看关于页" hint="版本、插件、联系方式、许可证和免责声明">
-            <button className="secondary" onClick={onNavigateAbout}>打开关于页</button>
+          <div className="card-title"><h2>{t('settings.section.about')}</h2></div>
+          <SettingRow title={t('settings.about.label')} hint={t('settings.about.hint')}>
+            <button className="secondary" onClick={onNavigateAbout}>{t('settings.about.button')}</button>
           </SettingRow>
         </section>
       )}

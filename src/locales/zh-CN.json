@@ -1,0 +1,453 @@
+{
+  "nav": {
+    "dashboard": "设备",
+    "settings": "设置",
+    "about": "关于 Mira",
+    "exitDemo": "退出演示"
+  },
+  "connection": {
+    "usb": "USB",
+    "wireless": "无线",
+    "bluetooth": "蓝牙",
+    "virtual": "虚拟",
+    "unknown": "未知连接"
+  },
+  "common": {
+    "apply": "应用",
+    "cancel": "取消",
+    "execute": "执行",
+    "refresh": "刷新",
+    "open": "打开",
+    "close": "关闭",
+    "on": "开启",
+    "off": "关闭",
+    "notReported": "未报告",
+    "saved": "已保存",
+    "back": "返回",
+    "color": "颜色",
+    "connected": "已连接",
+    "charging": "充电中",
+    "unknownDevice": "未知设备",
+    "profilePrefix": "配置",
+    "minute": "{{count}} 分钟",
+    "second": "{{count}} 秒"
+  },
+  "dashboard": {
+    "eyebrow": "Mira Mouse",
+    "noDevice": "没有找到支持的鼠标",
+    "plugInHint": "插上鼠标后，可用的设置会出现在这里。",
+    "deviceAndDiagnostics": "设备与诊断",
+    "openFixture": "打开 Fixture 演示",
+    "connectedDevice": "已连接设备",
+    "deviceCount": "{{count}} 台设备",
+    "deviceBattery": "设备电量",
+    "deviceControl": "设备控制",
+    "deviceStatus": "设备状态",
+    "deviceSummary": "设备摘要",
+    "currentDpiEdit": "当前 DPI：{{value}}，点击编辑",
+    "dpiNotReported": "DPI 未报告",
+    "dpiStages": "DPI 档位",
+    "switchToStage": "切换到第 {{stage}} 档",
+    "editStageDpi": "编辑第 {{stage}} 档 DPI",
+    "noDpiStages": "设备未报告 DPI 档位信息。",
+    "dpiWriteUnavailable": "当前设备或插件未开放 DPI 写入。",
+    "lightingTarget": "灯光对象",
+    "lightingGroups": "灯光分组",
+    "mouseLighting": "鼠标灯光",
+    "receiverLighting": "接收器灯光",
+    "status": "状态",
+    "endColor": "结束色",
+    "mouseLightEndColor": "鼠标灯光结束色",
+    "mouseLightColor": "鼠标灯光颜色",
+    "lightingSeparateHint": "鼠标与接收器灯光分别读取，互不混用。",
+    "writing": "正在写入并回读确认…",
+    "writeConfirmed": "已写入，回读确认一致。",
+    "writeFailed": "写入失败，界面已保留设备真实状态：{{error}}",
+    "currentPollingRate": "当前回报率",
+    "pollingRateOptions": "回报率选项",
+    "pollingWriteHint": "选择回报率后将立即写入设备并回读确认。",
+    "pollingReadonlyHint": "显示设备当前报告的状态；当前设备或插件未开放写入。",
+    "writeUnavailableHint": "当前设备未开放这项写入。",
+    "readonlyReport": "只读设备报告",
+    "allReadInfo": "全部读取信息",
+    "closeDeviceDetails": "关闭设备详情",
+    "detailsNote": "以下是已签名设备插件返回的完整只读报告；经过验证的可写项目会在主界面提供独立控件。",
+    "noCapabilities": "设备没有报告扩展能力字段。",
+    "dpiValue": "DPI 数值",
+    "timeoutSeconds": "超时时间（秒）",
+    "setSleepTitle": "设置{{label}}",
+    "editReceiverLightingTitle": "编辑接收器{{field}}",
+    "lastUpdate": "最后更新：{{time}}",
+    "closeNotification": "关闭通知",
+    "windowsControls": "Windows 窗口控件",
+    "minimizeWindow": "最小化窗口",
+    "maximizeWindow": "最大化窗口",
+    "closeWindow": "关闭窗口",
+    "pluginUpdateFound": "发现插件更新",
+    "pluginUpdateFoundBody": "{{count}} 个已安装插件有新版本，可在“设置 → 插件”中更新。"
+  },
+  "lighting": {
+    "hardwareSync": "硬件同步",
+    "off": "已关闭",
+    "on": "已开启",
+    "effectN": "灯效 {{value}}",
+    "modeN": "模式 {{value}}"
+  },
+  "capability": {
+    "group": {
+      "device": "设备连接",
+      "deviceInfo": "设备标识",
+      "deviceName": "设备名称",
+      "deviceNameLength": "名称信息",
+      "battery": "电池",
+      "batteryCapability": "电池能力",
+      "unifiedBatteryCapability": "统一电池能力",
+      "dpi": "DPI 档位",
+      "featureIndexBattery": "电池功能索引",
+      "featureIndexDeviceName": "名称功能索引",
+      "featureIndexDpi": "DPI 功能索引",
+      "featureIndexUnifiedBattery": "统一电池功能索引",
+      "settings": "传感器与连接",
+      "lighting": "主灯光（旧插件）",
+      "mouseEffect": "鼠标灯效",
+      "receiverLighting": "接收器灯光",
+      "fps": "传感器帧率",
+      "dpiButton": "DPI 快切",
+      "firmwareUsb": "鼠标 USB 固件",
+      "firmwareSoc": "鼠标主控固件",
+      "receiverFirmwareUsb": "接收器 USB 固件",
+      "receiverFirmwareSoc": "接收器主控固件",
+      "receiverFirmwareLed": "接收器灯光固件",
+      "buttonMappings": "按键映射"
+    },
+    "field": {
+      "deviceIndex": "设备索引",
+      "featureIndex": "功能索引",
+      "featureVersion": "功能版本",
+      "connection": "连接方式",
+      "name": "设备名称",
+      "length": "名称长度",
+      "entityCount": "固件实体数量",
+      "unitId": "设备单元 ID",
+      "transport": "传输类型",
+      "modelId": "型号 ID",
+      "percentage": "电量",
+      "charging": "充电中",
+      "valid": "数据有效",
+      "profile": "配置编号",
+      "currentStage": "当前档位",
+      "stageCount": "档位数量",
+      "nextPercentage": "下一电量阈值",
+      "statusRaw": "充电状态原始值",
+      "statusName": "充电状态",
+      "chargingStatus": "充电状态值",
+      "externalPowerStatus": "外部供电状态",
+      "levelFlags": "电量等级",
+      "supportedLevels": "支持的电量等级",
+      "capabilityFlags": "能力标志",
+      "sensorIndex": "传感器索引",
+      "dpiValue": "当前 DPI",
+      "defaultDpi": "默认 DPI",
+      "dpiX": "X 轴 DPI",
+      "dpiY": "Y 轴 DPI",
+      "stageColors": "档位颜色",
+      "pollingRaw": "回报率原始值",
+      "pollingRate": "回报率",
+      "usbDebounce": "USB 防抖",
+      "wirelessDebounce": "2.4G 防抖",
+      "bluetoothDebounce": "蓝牙防抖",
+      "rippleCorrection": "波纹修正",
+      "buttonChangeTime": "按键切换时间",
+      "wheelToButton": "滚轮转按键",
+      "buttonToWheel": "按键转滚轮",
+      "bluetoothSleepValue": "蓝牙休眠值",
+      "wirelessSleepValue": "2.4G 休眠值",
+      "liftCutOff": "抬升高度",
+      "angleSnap": "角度吸附",
+      "motionSync": "运动同步",
+      "mouseLightStartColor": "鼠标灯光颜色",
+      "mouseLightEndColor": "鼠标灯光结束色",
+      "mouseLightEnabled": "鼠标灯光启用",
+      "effect": "灯效",
+      "speed": "速度",
+      "brightness": "亮度",
+      "option": "颜色模式",
+      "color": "灯光颜色",
+      "enabled": "启用",
+      "versionRaw": "固件原始版本值",
+      "effectName": "灯效名称",
+      "optionName": "颜色模式名称",
+      "speedLabel": "速度等级",
+      "brightnessLabel": "亮度等级"
+    }
+  },
+  "plugin": {
+    "label": {
+      "capability.battery": "电量",
+      "capability.dpi": "DPI",
+      "capability.polling-rate": "回报率",
+      "capability.sleep-time": "休眠时间",
+      "capability.profile": "配置文件",
+      "capability.firmware": "固件",
+      "capability.lighting": "灯光",
+      "capability.mouse-lighting": "鼠标灯光",
+      "capability.control-mode": "配置控制",
+      "capability.onboard-profile": "板载配置"
+    }
+  },
+  "receiverLighting": {
+    "field": {
+      "effect": "灯效",
+      "option": "颜色模式",
+      "speed": "速度",
+      "brightness": "亮度",
+      "color": "颜色"
+    }
+  },
+  "settings": {
+    "title": "设置",
+    "category": "设置分类",
+    "tab": {
+      "general": "通用",
+      "device": "设备",
+      "plugins": "插件",
+      "privacy": "隐私",
+      "about": "关于"
+    },
+    "language": {
+      "label": "语言",
+      "hint": "选择界面语言",
+      "auto": "跟随系统",
+      "zhCN": "中文",
+      "en": "English"
+    },
+    "section": {
+      "theme": "主题",
+      "startup": "开机与菜单栏",
+      "polling": "轮询",
+      "update": "软件更新",
+      "battery": "电量提醒",
+      "nightLight": "安静灯光",
+      "config": "配置导入导出",
+      "plugins": "已安装插件",
+      "privacy": "隐私",
+      "about": "关于 Mira"
+    },
+    "theme": {
+      "label": "主题模式",
+      "hint": "跟随系统会自动适配浅色或深色",
+      "system": "跟随系统",
+      "light": "浅色",
+      "dark": "深色"
+    },
+    "autostart": {
+      "label": "开机自动启动",
+      "hint": "登录系统时自动启动 Mira"
+    },
+    "startHidden": {
+      "label": "启动时隐藏窗口",
+      "hint": "仅驻留菜单栏/托盘，不显示主窗口"
+    },
+    "trayBattery": {
+      "label": "显示电量百分比",
+      "hint": "鼠标图标仍会按电量填充，这里只控制旁边的数字"
+    },
+    "trayIconColor": {
+      "label": "托盘图标颜色",
+      "hint": "白色适合深色菜单栏背景，黑色适合浅色背景，跟随主题自动切换",
+      "white": "白色",
+      "black": "黑色",
+      "auto": "跟随主题"
+    },
+    "receiverBattery": {
+      "label": "标题附带接收器电量",
+      "hint": "托盘菜单中始终保留所有设备电量"
+    },
+    "trayConnection": {
+      "label": "菜单显示连接状态",
+      "hint": "在托盘菜单中显示连接方式和设备名称"
+    },
+    "refreshInterval": {
+      "label": "刷新间隔：{{seconds}} 秒",
+      "hint": "窗口可见时的兜底轮询间隔；事件触发时立即读取，窗口隐藏时自动降为 60 秒"
+    },
+    "updateCheck": {
+      "label": "启动时检查 Mira 更新",
+      "hint": "启动后联网检查新版本，并在应用内提示结果"
+    },
+    "updateInstall": {
+      "label": "自动下载并安装",
+      "hint": "发现新版本后自动安装，完成后提示重启，不会强制中断当前工作"
+    },
+    "lowBattery": {
+      "label": "低电量阈值：{{value}}%",
+      "hint": "电量跨过阈值时通过系统通知提醒一次，充电期间不提醒",
+      "tooltip": "低电量提醒：仅在电量跨过阈值时提醒一次，不会反复弹窗。"
+    },
+    "nightMode": {
+      "label": "启用夜间模式",
+      "hint": "当前版本尚未实现灯光定时调度",
+      "tooltip": "夜间模式：按时间降低或关闭灯光，并在关闭后可靠恢复原状态。"
+    },
+    "config": {
+      "hint": "导出设备配置文件用于备份或迁移；导入时会检查插件兼容性并逐项应用。",
+      "export": "导出配置",
+      "import": "导入配置",
+      "filterName": "Mira 配置"
+    },
+    "pluginUpdateCheck": {
+      "label": "启动时检查插件更新",
+      "hint": "仅检查签名插件的新版本，不会静默替换插件"
+    },
+    "pluginUpdate": {
+      "check": "检查插件更新",
+      "checking": "检查中…",
+      "allLatest": "插件均为最新",
+      "noPlugins": "未发现已安装插件。正式安装包默认携带 mira.amaster。",
+      "signatureVerified": "签名已验证",
+      "signatureUnverified": "签名未验证",
+      "defaultBundled": "默认内置",
+      "updatable": "可更新至 v{{version}}",
+      "updating": "验证并安装中…",
+      "update": "更新插件"
+    },
+    "privacy": {
+      "telemetryLabel": "禁用遥测",
+      "telemetryHint": "Mira 不内置遥测，此选项始终开启",
+      "scanLabel": "扫描 HID 设备",
+      "scanHint": "列出与已安装插件匹配的真实 HID 设备（硬件测试用）",
+      "scanButton": "扫描",
+      "diagnosticsLabel": "导出诊断",
+      "diagnosticsHint": "诊断数据已脱敏，不含序列号或 HID 负载",
+      "diagnosticsButton": "导出诊断"
+    },
+    "about": {
+      "label": "查看关于页",
+      "hint": "版本、插件、联系方式、许可证和免责声明",
+      "button": "打开关于页"
+    }
+  },
+  "about": {
+    "title": "关于",
+    "eyebrow": "Mira Mouse",
+    "unofficial": "非官方 · 兼容客户端",
+    "disclaimer": "Mira 与任何厂商之间不存在授权、合作或背书关系——要对自己诚实嘛。未经真机验证的能力不会在界面中宣称稳定支持。",
+    "loadFailed": "加载关于信息失败：{{error}}",
+    "loading": "加载中…",
+    "buildDatePreview": "本地预览",
+    "section": {
+      "version": "版本",
+      "bundledPlugins": "内置插件",
+      "contact": "联系",
+      "checkUpdate": "检查更新",
+      "license": "开源许可",
+      "privacy": "隐私说明",
+      "reportIssue": "报告问题"
+    },
+    "label": {
+      "appName": "应用名称",
+      "version": "版本",
+      "buildDate": "构建日期",
+      "gitCommit": "Git Commit",
+      "identifier": "Bundle Identifier",
+      "platform": "平台",
+      "architecture": "架构",
+      "rustVersion": "Rust 版本",
+      "autoUpdate": "自动更新",
+      "sha256": "SHA-256",
+      "publisherKey": "发布者 Key ID",
+      "asset": "资产名"
+    },
+    "autoUpdateEnabled": "已启用",
+    "autoUpdateDisabled": "未启用",
+    "noBundledPlugins": "未发现内置插件。正式安装包默认携带 mira.amaster。",
+    "signatureVerified": "签名已验证",
+    "signatureUnverified": "签名未验证",
+    "defaultBundled": "默认内置",
+    "userUpdated": "用户更新",
+    "developer": "开发者：{{name}}",
+    "copyright": "版权：{{name}}",
+    "updateEnabledHint": "自动更新已启用，可手动检查新版本。",
+    "updateDisabledHint": "自动更新未启用。请前往 GitHub Release 页面手动下载新版本。",
+    "updateCheck": "检查更新",
+    "updateChecking": "检查中…",
+    "updateUpToDate": "已是最新",
+    "downloadInstall": "下载并安装 v{{version}}",
+    "relaunch": "重启完成更新",
+    "releaseDate": "发布日期：{{date}}",
+    "downloadedPercent": "已下载 {{percent}}%",
+    "downloadedMib": "已下载 {{mib}} MiB",
+    "licenseHint": "Mira 使用 AGPL-3.0-or-later 许可证，原创文档使用 CC-BY-SA-4.0。第三方依赖保留各自原许可证。",
+    "viewLicense": "查看开源许可证",
+    "viewLicenseDisabled": "查看开源许可证（需配置 GitHub 链接）",
+    "viewThirdParty": "查看第三方许可",
+    "viewThirdPartyDisabled": "查看第三方许可（需配置 GitHub 链接）",
+    "privacyHint": "Mira 不内置遥测、账户、广告或常驻网络服务。诊断导出已脱敏，不含设备序列号或 HID 负载。未经你确认不上传任何数据。",
+    "exportDiagnostics": "导出诊断",
+    "reportIssueHint": "报告问题时请勿粘贴未脱敏的序列号或敏感日志。",
+    "reportIssue": "报告问题",
+    "reportIssueDisabled": "报告问题（需配置 GitHub 链接）"
+  },
+  "notification": {
+    "lowBattery": {
+      "title": "低电量提醒",
+      "body": "鼠标电量已低于 {{threshold}}%（当前 {{percent}}%）"
+    },
+    "updateFound": {
+      "title": "发现 Mira 新版本",
+      "body": "v{{version}} 已可用，可在“关于”页查看并安装。"
+    },
+    "updateInstalled": {
+      "title": "Mira 更新已安装",
+      "body": "新版本将在你点击“重启完成更新”后生效。"
+    },
+    "pluginUpdateFound": {
+      "title": "发现插件更新",
+      "body": "{{count}} 个已安装插件有新版本，可在“设置 → 插件”中更新。"
+    },
+    "saveFailed": "保存失败",
+    "exportFailed": "导出失败",
+    "exportSuccess": "导出成功",
+    "exportSuccessBody": "配置已保存至 {{path}}",
+    "importFailed": "导入失败",
+    "importSuccess": "导入成功",
+    "importSuccessBody": "配置已应用，设备状态已更新",
+    "scanFailed": "扫描失败",
+    "autostartFailed": "设置开机启动失败",
+    "checkPluginUpdateFailed": "检查插件更新失败",
+    "installPluginUpdateFailed": "安装插件更新失败",
+    "loadAboutFailed": "加载关于信息失败",
+    "checkUpdateFailed": "检查更新失败",
+    "installUpdateFailed": "安装更新失败"
+  },
+  "tray": {
+    "open": "打开 Mira",
+    "quit": "退出 Mira",
+    "disconnected": "未连接受支持的鼠标",
+    "batteryItem": "{{label}}电量：{{percent}}%{{charging}}",
+    "charging": " · 充电中",
+    "connectionStatus": "连接：{{connection}} · {{name}}",
+    "tooltipConnected": "Mira · {{connection}} · {{name}}",
+    "tooltipDisconnected": "Mira · 未连接受支持的鼠标",
+    "mouseLabel": "鼠",
+    "receiverLabel": "接",
+    "batteryFallbackLabel": "鼠标"
+  },
+  "mock": {
+    "mouseLabel": "鼠标",
+    "receiverLabel": "接收器",
+    "profile": "配置 1",
+    "justNow": "刚刚",
+    "breathing": "呼吸",
+    "neon": "霓虹",
+    "pollingRate": "回报率",
+    "sleepTime": "休眠时间",
+    "profileLabel": "配置文件",
+    "lighting": "灯光",
+    "motionSync": "运动同步",
+    "angleSnap": "角度吸附",
+    "liftCutOff": "抬升高度",
+    "bluetoothSleep": "蓝牙休眠",
+    "wirelessSleep": "2.4G 休眠"
+  }
+}

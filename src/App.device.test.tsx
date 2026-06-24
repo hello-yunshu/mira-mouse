@@ -17,6 +17,7 @@ const settings: AppSettings = {
   nightModeEnabled: false, nightModeStart: '22:00', nightModeEnd: '07:00',
   refreshIntervalSeconds: 5, telemetryDisabled: true,
   automaticUpdateChecks: true, automaticUpdateInstall: false, automaticPluginUpdateChecks: true,
+  language: 'auto',
 };
 
 const snapshot: DeviceSnapshot = {
@@ -45,7 +46,7 @@ const snapshot: DeviceSnapshot = {
       metadata: {
         label: '休眠时间', section: 'status', status: true,
         bindings: [
-          { when: { path: 'connection', eq: '无线' }, label: '插件声明的无线休眠', source: 'capabilities.settings.wirelessSleepValue', mutation: 'set-wireless-sleep-time', param: 'seconds' },
+          { when: { path: 'connection', eq: 'wireless' }, label: '插件声明的无线休眠', source: 'capabilities.settings.wirelessSleepValue', mutation: 'set-wireless-sleep-time', param: 'seconds' },
         ],
       },
     },
