@@ -14,6 +14,7 @@ const settings: AppSettings = {
   nightModeEnabled: false, nightModeStart: '22:00', nightModeEnd: '07:00',
   refreshIntervalSeconds: 5, telemetryDisabled: true,
   automaticUpdateChecks: true, automaticUpdateInstall: false, automaticPluginUpdateChecks: true,
+  language: 'auto',
 };
 
 describe('SettingsPage', () => {

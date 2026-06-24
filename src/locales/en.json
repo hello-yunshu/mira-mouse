@@ -1,0 +1,453 @@
+{
+  "nav": {
+    "dashboard": "Device",
+    "settings": "Settings",
+    "about": "About Mira",
+    "exitDemo": "Exit Demo"
+  },
+  "connection": {
+    "usb": "USB",
+    "wireless": "Wireless",
+    "bluetooth": "Bluetooth",
+    "virtual": "Virtual",
+    "unknown": "Unknown"
+  },
+  "common": {
+    "apply": "Apply",
+    "cancel": "Cancel",
+    "execute": "Execute",
+    "refresh": "Refresh",
+    "open": "Open",
+    "close": "Close",
+    "on": "On",
+    "off": "Off",
+    "notReported": "Not reported",
+    "saved": "Saved",
+    "back": "Back",
+    "color": "Color",
+    "connected": "Connected",
+    "charging": "Charging",
+    "unknownDevice": "Unknown Device",
+    "profilePrefix": "Profile",
+    "minute": "{{count}} min",
+    "second": "{{count}} s"
+  },
+  "dashboard": {
+    "eyebrow": "Mira Mouse",
+    "noDevice": "No supported mouse found",
+    "plugInHint": "Plug in a mouse and available settings will appear here.",
+    "deviceAndDiagnostics": "Device & Diagnostics",
+    "openFixture": "Open Fixture Demo",
+    "connectedDevice": "Connected device",
+    "deviceCount": "{{count}} devices",
+    "deviceBattery": "Device battery",
+    "deviceControl": "Device controls",
+    "deviceStatus": "Device status",
+    "deviceSummary": "Device summary",
+    "currentDpiEdit": "Current DPI: {{value}}, click to edit",
+    "dpiNotReported": "DPI not reported",
+    "dpiStages": "DPI stages",
+    "switchToStage": "Switch to stage {{stage}}",
+    "editStageDpi": "Edit stage {{stage}} DPI",
+    "noDpiStages": "Device did not report DPI stage information.",
+    "dpiWriteUnavailable": "DPI writing is not available for this device or plugin.",
+    "lightingTarget": "Lighting target",
+    "lightingGroups": "Lighting groups",
+    "mouseLighting": "Mouse lighting",
+    "receiverLighting": "Receiver lighting",
+    "status": "Status",
+    "endColor": "End color",
+    "mouseLightEndColor": "Mouse lighting end color",
+    "mouseLightColor": "Mouse lighting color",
+    "lightingSeparateHint": "Mouse and receiver lighting are read separately and never mixed.",
+    "writing": "Writing and read-back confirming…",
+    "writeConfirmed": "Written, read-back confirmed.",
+    "writeFailed": "Write failed, UI retained the device's real state: {{error}}",
+    "currentPollingRate": "Current polling rate",
+    "pollingRateOptions": "Polling rate options",
+    "pollingWriteHint": "Selecting a polling rate writes to the device immediately and confirms via read-back.",
+    "pollingReadonlyHint": "Showing the device's current reported state; writing is not available for this device or plugin.",
+    "writeUnavailableHint": "This write is not available for the current device.",
+    "readonlyReport": "Read-only device report",
+    "allReadInfo": "All read information",
+    "closeDeviceDetails": "Close device details",
+    "detailsNote": "Below is the full read-only report returned by the signed device plugin; verified writable items are provided as separate controls in the main interface.",
+    "noCapabilities": "Device did not report extended capability fields.",
+    "dpiValue": "DPI value",
+    "timeoutSeconds": "Timeout (seconds)",
+    "setSleepTitle": "Set {{label}}",
+    "editReceiverLightingTitle": "Edit receiver {{field}}",
+    "lastUpdate": "Last updated: {{time}}",
+    "closeNotification": "Close notification",
+    "windowsControls": "Windows window controls",
+    "minimizeWindow": "Minimize window",
+    "maximizeWindow": "Maximize window",
+    "closeWindow": "Close window",
+    "pluginUpdateFound": "Plugin updates found",
+    "pluginUpdateFoundBody": "{{count}} installed plugin(s) have new versions available. Update them in Settings → Plugins."
+  },
+  "lighting": {
+    "hardwareSync": "Hardware sync",
+    "off": "Off",
+    "on": "On",
+    "effectN": "Effect {{value}}",
+    "modeN": "Mode {{value}}"
+  },
+  "capability": {
+    "group": {
+      "device": "Device connection",
+      "deviceInfo": "Device identity",
+      "deviceName": "Device name",
+      "deviceNameLength": "Name info",
+      "battery": "Battery",
+      "batteryCapability": "Battery capability",
+      "unifiedBatteryCapability": "Unified battery capability",
+      "dpi": "DPI stages",
+      "featureIndexBattery": "Battery feature index",
+      "featureIndexDeviceName": "Name feature index",
+      "featureIndexDpi": "DPI feature index",
+      "featureIndexUnifiedBattery": "Unified battery feature index",
+      "settings": "Sensor & connection",
+      "lighting": "Main lighting (legacy plugin)",
+      "mouseEffect": "Mouse effect",
+      "receiverLighting": "Receiver lighting",
+      "fps": "Sensor frame rate",
+      "dpiButton": "DPI quick switch",
+      "firmwareUsb": "Mouse USB firmware",
+      "firmwareSoc": "Mouse SoC firmware",
+      "receiverFirmwareUsb": "Receiver USB firmware",
+      "receiverFirmwareSoc": "Receiver SoC firmware",
+      "receiverFirmwareLed": "Receiver lighting firmware",
+      "buttonMappings": "Button mappings"
+    },
+    "field": {
+      "deviceIndex": "Device index",
+      "featureIndex": "Feature index",
+      "featureVersion": "Feature version",
+      "connection": "Connection type",
+      "name": "Device name",
+      "length": "Name length",
+      "entityCount": "Firmware entity count",
+      "unitId": "Device unit ID",
+      "transport": "Transport type",
+      "modelId": "Model ID",
+      "percentage": "Battery",
+      "charging": "Charging",
+      "valid": "Data valid",
+      "profile": "Profile number",
+      "currentStage": "Current stage",
+      "stageCount": "Stage count",
+      "nextPercentage": "Next battery threshold",
+      "statusRaw": "Charging status raw value",
+      "statusName": "Charging status",
+      "chargingStatus": "Charging status value",
+      "externalPowerStatus": "External power status",
+      "levelFlags": "Battery level flags",
+      "supportedLevels": "Supported battery levels",
+      "capabilityFlags": "Capability flags",
+      "sensorIndex": "Sensor index",
+      "dpiValue": "Current DPI",
+      "defaultDpi": "Default DPI",
+      "dpiX": "X-axis DPI",
+      "dpiY": "Y-axis DPI",
+      "stageColors": "Stage colors",
+      "pollingRaw": "Polling rate raw value",
+      "pollingRate": "Polling rate",
+      "usbDebounce": "USB debounce",
+      "wirelessDebounce": "2.4G debounce",
+      "bluetoothDebounce": "Bluetooth debounce",
+      "rippleCorrection": "Ripple correction",
+      "buttonChangeTime": "Button change time",
+      "wheelToButton": "Wheel to button",
+      "buttonToWheel": "Button to wheel",
+      "bluetoothSleepValue": "Bluetooth sleep value",
+      "wirelessSleepValue": "2.4G sleep value",
+      "liftCutOff": "Lift-off distance",
+      "angleSnap": "Angle snapping",
+      "motionSync": "Motion sync",
+      "mouseLightStartColor": "Mouse lighting color",
+      "mouseLightEndColor": "Mouse lighting end color",
+      "mouseLightEnabled": "Mouse lighting enabled",
+      "effect": "Effect",
+      "speed": "Speed",
+      "brightness": "Brightness",
+      "option": "Color mode",
+      "color": "Lighting color",
+      "enabled": "Enabled",
+      "versionRaw": "Firmware raw version",
+      "effectName": "Effect name",
+      "optionName": "Color mode name",
+      "speedLabel": "Speed level",
+      "brightnessLabel": "Brightness level"
+    }
+  },
+  "plugin": {
+    "label": {
+      "capability.battery": "Battery",
+      "capability.dpi": "DPI",
+      "capability.polling-rate": "Polling rate",
+      "capability.sleep-time": "Sleep time",
+      "capability.profile": "Profile",
+      "capability.firmware": "Firmware",
+      "capability.lighting": "Lighting",
+      "capability.mouse-lighting": "Mouse lighting",
+      "capability.control-mode": "Control mode",
+      "capability.onboard-profile": "Onboard profile"
+    }
+  },
+  "receiverLighting": {
+    "field": {
+      "effect": "Effect",
+      "option": "Color mode",
+      "speed": "Speed",
+      "brightness": "Brightness",
+      "color": "Color"
+    }
+  },
+  "settings": {
+    "title": "Settings",
+    "category": "Settings categories",
+    "tab": {
+      "general": "General",
+      "device": "Device",
+      "plugins": "Plugins",
+      "privacy": "Privacy",
+      "about": "About"
+    },
+    "language": {
+      "label": "Language",
+      "hint": "Choose the interface language",
+      "auto": "Follow system",
+      "zhCN": "中文",
+      "en": "English"
+    },
+    "section": {
+      "theme": "Theme",
+      "startup": "Startup & menu bar",
+      "polling": "Polling",
+      "update": "Software update",
+      "battery": "Battery alert",
+      "nightLight": "Quiet lighting",
+      "config": "Config import & export",
+      "plugins": "Installed plugins",
+      "privacy": "Privacy",
+      "about": "About Mira"
+    },
+    "theme": {
+      "label": "Theme mode",
+      "hint": "Follow system adapts to light or dark automatically",
+      "system": "Follow system",
+      "light": "Light",
+      "dark": "Dark"
+    },
+    "autostart": {
+      "label": "Launch at login",
+      "hint": "Start Mira automatically when you log in"
+    },
+    "startHidden": {
+      "label": "Hide window on launch",
+      "hint": "Stay in the menu bar/tray without showing the main window"
+    },
+    "trayBattery": {
+      "label": "Show battery percentage",
+      "hint": "The mouse icon still fills by battery level; this only controls the number beside it"
+    },
+    "trayIconColor": {
+      "label": "Tray icon color",
+      "hint": "White suits dark menu bar backgrounds, black suits light backgrounds, auto follows the theme",
+      "white": "White",
+      "black": "Black",
+      "auto": "Follow theme"
+    },
+    "receiverBattery": {
+      "label": "Include receiver battery in title",
+      "hint": "Always show all device batteries in the tray menu"
+    },
+    "trayConnection": {
+      "label": "Show connection in menu",
+      "hint": "Display connection type and device name in the tray menu"
+    },
+    "refreshInterval": {
+      "label": "Refresh interval: {{seconds}} s",
+      "hint": "Fallback polling interval when the window is visible; event-triggered reads are immediate, hidden windows drop to 60 s"
+    },
+    "updateCheck": {
+      "label": "Check for Mira updates on launch",
+      "hint": "Check for new versions online after launch and notify in-app"
+    },
+    "updateInstall": {
+      "label": "Auto download & install",
+      "hint": "Automatically install new versions when found, prompt to restart when done, never force-interrupt your work"
+    },
+    "lowBattery": {
+      "label": "Low battery threshold: {{value}}%",
+      "hint": "Notify once via system notification when battery crosses the threshold; no alert while charging",
+      "tooltip": "Low battery alert: notifies only once when crossing the threshold, no repeated pop-ups."
+    },
+    "nightMode": {
+      "label": "Enable night mode",
+      "hint": "Scheduled lighting is not implemented in this version",
+      "tooltip": "Night mode: dims or turns off lighting by schedule and reliably restores the previous state afterwards."
+    },
+    "config": {
+      "hint": "Export device config for backup or migration; import checks plugin compatibility and applies item by item.",
+      "export": "Export config",
+      "import": "Import config",
+      "filterName": "Mira config"
+    },
+    "pluginUpdateCheck": {
+      "label": "Check for plugin updates on launch",
+      "hint": "Only checks signed plugins for new versions, never silently replaces plugins"
+    },
+    "pluginUpdate": {
+      "check": "Check for plugin updates",
+      "checking": "Checking…",
+      "allLatest": "All plugins up to date",
+      "noPlugins": "No installed plugins found. The official installer bundles mira.amaster by default.",
+      "signatureVerified": "Signature verified",
+      "signatureUnverified": "Signature unverified",
+      "defaultBundled": "Bundled by default",
+      "updatable": "Updatable to v{{version}}",
+      "updating": "Verifying & installing…",
+      "update": "Update plugin"
+    },
+    "privacy": {
+      "telemetryLabel": "Disable telemetry",
+      "telemetryHint": "Mira has no built-in telemetry; this option is always on",
+      "scanLabel": "Scan HID devices",
+      "scanHint": "List real HID devices matching installed plugins (for hardware testing)",
+      "scanButton": "Scan",
+      "diagnosticsLabel": "Export diagnostics",
+      "diagnosticsHint": "Diagnostics data is sanitized, no serial numbers or HID payloads",
+      "diagnosticsButton": "Export diagnostics"
+    },
+    "about": {
+      "label": "View about page",
+      "hint": "Version, plugins, contact, license and disclaimer",
+      "button": "Open about page"
+    }
+  },
+  "about": {
+    "title": "About",
+    "eyebrow": "Mira Mouse",
+    "unofficial": "Unofficial · Compatible client",
+    "disclaimer": "Mira has no authorization, partnership, or endorsement with any manufacturer—be honest with yourself. Capabilities not verified on real hardware are not claimed as stable in the interface.",
+    "loadFailed": "Failed to load about info: {{error}}",
+    "loading": "Loading…",
+    "buildDatePreview": "Local preview",
+    "section": {
+      "version": "Version",
+      "bundledPlugins": "Bundled plugins",
+      "contact": "Contact",
+      "checkUpdate": "Check for updates",
+      "license": "Open source license",
+      "privacy": "Privacy notice",
+      "reportIssue": "Report an issue"
+    },
+    "label": {
+      "appName": "Application name",
+      "version": "Version",
+      "buildDate": "Build date",
+      "gitCommit": "Git Commit",
+      "identifier": "Bundle Identifier",
+      "platform": "Platform",
+      "architecture": "Architecture",
+      "rustVersion": "Rust version",
+      "autoUpdate": "Auto update",
+      "sha256": "SHA-256",
+      "publisherKey": "Publisher Key ID",
+      "asset": "Asset name"
+    },
+    "autoUpdateEnabled": "Enabled",
+    "autoUpdateDisabled": "Disabled",
+    "noBundledPlugins": "No bundled plugins found. The official installer bundles mira.amaster by default.",
+    "signatureVerified": "Signature verified",
+    "signatureUnverified": "Signature unverified",
+    "defaultBundled": "Bundled by default",
+    "userUpdated": "User updated",
+    "developer": "Developer: {{name}}",
+    "copyright": "Copyright: {{name}}",
+    "updateEnabledHint": "Auto update is enabled; you can manually check for new versions.",
+    "updateDisabledHint": "Auto update is disabled. Download new versions manually from the GitHub Release page.",
+    "updateCheck": "Check for updates",
+    "updateChecking": "Checking…",
+    "updateUpToDate": "Up to date",
+    "downloadInstall": "Download & install v{{version}}",
+    "relaunch": "Relaunch to finish update",
+    "releaseDate": "Release date: {{date}}",
+    "downloadedPercent": "Downloaded {{percent}}%",
+    "downloadedMib": "Downloaded {{mib}} MiB",
+    "licenseHint": "Mira is licensed under AGPL-3.0-or-later; original documentation uses CC-BY-SA-4.0. Third-party dependencies retain their original licenses.",
+    "viewLicense": "View open source license",
+    "viewLicenseDisabled": "View open source license (requires GitHub link)",
+    "viewThirdParty": "View third-party licenses",
+    "viewThirdPartyDisabled": "View third-party licenses (requires GitHub link)",
+    "privacyHint": "Mira has no built-in telemetry, accounts, ads, or always-on network services. Diagnostics export is sanitized, no device serial numbers or HID payloads. No data is uploaded without your confirmation.",
+    "exportDiagnostics": "Export diagnostics",
+    "reportIssueHint": "Do not paste unsanitized serial numbers or sensitive logs when reporting issues.",
+    "reportIssue": "Report an issue",
+    "reportIssueDisabled": "Report an issue (requires GitHub link)"
+  },
+  "notification": {
+    "lowBattery": {
+      "title": "Low battery alert",
+      "body": "Mouse battery is below {{threshold}}% (currently {{percent}}%)"
+    },
+    "updateFound": {
+      "title": "New Mira version available",
+      "body": "v{{version}} is available. View and install it on the About page."
+    },
+    "updateInstalled": {
+      "title": "Mira update installed",
+      "body": "The new version takes effect after you click \"Relaunch to finish update\"."
+    },
+    "pluginUpdateFound": {
+      "title": "Plugin updates found",
+      "body": "{{count}} installed plugin(s) have new versions available. Update them in Settings → Plugins."
+    },
+    "saveFailed": "Save failed",
+    "exportFailed": "Export failed",
+    "exportSuccess": "Export succeeded",
+    "exportSuccessBody": "Config saved to {{path}}",
+    "importFailed": "Import failed",
+    "importSuccess": "Import succeeded",
+    "importSuccessBody": "Config applied, device state updated",
+    "scanFailed": "Scan failed",
+    "autostartFailed": "Failed to set launch at login",
+    "checkPluginUpdateFailed": "Failed to check for plugin updates",
+    "installPluginUpdateFailed": "Failed to install plugin update",
+    "loadAboutFailed": "Failed to load about info",
+    "checkUpdateFailed": "Failed to check for updates",
+    "installUpdateFailed": "Failed to install update"
+  },
+  "tray": {
+    "open": "Open Mira",
+    "quit": "Quit Mira",
+    "disconnected": "No supported mouse connected",
+    "batteryItem": "{{label}} battery: {{percent}}%{{charging}}",
+    "charging": " · Charging",
+    "connectionStatus": "Connection: {{connection}} · {{name}}",
+    "tooltipConnected": "Mira · {{connection}} · {{name}}",
+    "tooltipDisconnected": "Mira · No supported mouse connected",
+    "mouseLabel": "M",
+    "receiverLabel": "R",
+    "batteryFallbackLabel": "Mouse"
+  },
+  "mock": {
+    "mouseLabel": "Mouse",
+    "receiverLabel": "Receiver",
+    "profile": "Profile 1",
+    "justNow": "Just now",
+    "breathing": "Breathing",
+    "neon": "Neon",
+    "pollingRate": "Polling rate",
+    "sleepTime": "Sleep time",
+    "profileLabel": "Profile",
+    "lighting": "Lighting",
+    "motionSync": "Motion sync",
+    "angleSnap": "Angle snap",
+    "liftCutOff": "Lift-off",
+    "bluetoothSleep": "Bluetooth sleep",
+    "wirelessSleep": "2.4G sleep"
+  }
+}

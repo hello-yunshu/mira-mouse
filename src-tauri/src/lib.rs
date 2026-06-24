@@ -18,6 +18,7 @@ use std::{
     sync::{Arc, Condvar, Mutex},
     time::{Duration, Instant},
 };
+use sys_locale::get_locale;
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
@@ -494,6 +495,7 @@ struct ContactLinks {
 #[serde(default)]
 #[serde(rename_all = "camelCase")]
 struct AppSettings {
+    language: String,
     theme: String,
     autostart: bool,
     start_hidden: bool,
@@ -530,6 +532,7 @@ struct SoftwareProfile {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
+            language: "auto".into(),
             theme: "system".into(),
             autostart: false,
             start_hidden: false,
@@ -553,6 +556,9 @@ impl Default for AppSettings {
 impl AppSettings {
     fn normalized(mut self) -> Self {
         let defaults = Self::default();
+        if !matches!(self.language.as_str(), "auto" | "zh-CN" | "en") {
+            self.language = defaults.language;
+        }
         if !matches!(self.theme.as_str(), "system" | "light" | "dark") {
             self.theme = defaults.theme;
         }
@@ -2521,14 +2527,12 @@ fn read_device_once(app: &AppHandle) {
                     .update(battery_value, threshold);
                 if notify {
                     if let Some(percent) = battery_value {
+                        let lang = effective_language(&settings.language);
                         let _ = app
                             .notification()
                             .builder()
-                            .title("低电量提醒")
-                            .body(format!(
-                                "鼠标电量已低于 {}%（当前 {}%）",
-                                threshold, percent
-                            ))
+                            .title(tr_low_battery_title(lang))
+                            .body(tr_low_battery_body(lang, threshold, percent))
                             .show();
                     }
                 }
@@ -3207,19 +3211,117 @@ fn apply_windows_backdrop(window: &WebviewWindow) {
 
 const TRAY_ID: &str = "mira-status";
 
-fn connection_label(connection: mira_core::Connection) -> &'static str {
-    match connection {
-        mira_core::Connection::Usb => "USB",
-        mira_core::Connection::Wireless => "无线",
-        mira_core::Connection::Bluetooth => "蓝牙",
-        mira_core::Connection::Virtual => "虚拟",
+/// Resolve a settings language value ("auto"|"zh-CN"|"en") to a concrete language code.
+/// "auto" follows the system locale via `sys_locale`; defaults to Chinese when undetectable.
+fn effective_language(settings_language: &str) -> &'static str {
+    match settings_language {
+        "zh-CN" => "zh-CN",
+        "en" => "en",
+        _ => {
+            let locale = get_locale().unwrap_or_default();
+            if locale.starts_with("en") {
+                "en"
+            } else {
+                "zh-CN"
+            }
+        }
     }
+}
+
+fn tr_connection(connection: mira_core::Connection, lang: &str) -> &'static str {
+    match (connection, lang) {
+        (mira_core::Connection::Usb, _) => "USB",
+        (mira_core::Connection::Wireless, "en") => "Wireless",
+        (mira_core::Connection::Wireless, _) => "无线",
+        (mira_core::Connection::Bluetooth, "en") => "Bluetooth",
+        (mira_core::Connection::Bluetooth, _) => "蓝牙",
+        (mira_core::Connection::Virtual, "en") => "Virtual",
+        (mira_core::Connection::Virtual, _) => "虚拟",
+    }
+}
+
+fn tr_open(lang: &str) -> &'static str {
+    if lang == "en" { "Open Mira" } else { "打开 Mira" }
+}
+
+fn tr_quit(lang: &str) -> &'static str {
+    if lang == "en" { "Quit Mira" } else { "退出 Mira" }
+}
+
+fn tr_disconnected(lang: &str) -> &'static str {
+    if lang == "en" { "No supported mouse connected" } else { "未连接受支持的鼠标" }
+}
+
+fn tr_charging_suffix(lang: &str) -> &'static str {
+    if lang == "en" { " · Charging" } else { " · 充电中" }
+}
+
+fn tr_mouse_label(lang: &str) -> &'static str {
+    if lang == "en" { "M" } else { "鼠" }
+}
+
+fn tr_receiver_label(lang: &str) -> &'static str {
+    if lang == "en" { "R" } else { "接" }
+}
+
+fn tr_battery_fallback_label(lang: &str) -> &'static str {
+    if lang == "en" { "Mouse" } else { "鼠标" }
+}
+
+fn tr_low_battery_title(lang: &str) -> &'static str {
+    if lang == "en" { "Low battery alert" } else { "低电量提醒" }
+}
+
+fn tr_low_battery_body(lang: &str, threshold: u8, percent: u8) -> String {
+    if lang == "en" {
+        format!("Mouse battery is below {}% (currently {}%)", threshold, percent)
+    } else {
+        format!("鼠标电量已低于 {}%（当前 {}%）", threshold, percent)
+    }
+}
+
+fn tr_tooltip_connected(lang: &str, connection: &str, name: &str) -> String {
+    if lang == "en" {
+        format!("Mira · {} · {}", connection, name)
+    } else {
+        format!("Mira · {} · {}", connection, name)
+    }
+}
+
+fn tr_tooltip_disconnected(lang: &str) -> String {
+    if lang == "en" {
+        "Mira · No supported mouse connected".to_string()
+    } else {
+        "Mira · 未连接受支持的鼠标".to_string()
+    }
+}
+
+fn tr_connection_status(lang: &str, connection: &str, name: &str) -> String {
+    if lang == "en" {
+        format!("Connection: {} · {}", connection, name)
+    } else {
+        format!("连接：{} · {}", connection, name)
+    }
+}
+
+fn tr_battery_item(lang: &str, label: &str, percentage: u8, charging: bool) -> String {
+    let charging_suffix = if charging { tr_charging_suffix(lang) } else { "" };
+    if lang == "en" {
+        format!("{} battery: {}%{}", label, percentage, charging_suffix)
+    } else {
+        format!("{}电量：{}%{}", label, percentage, charging_suffix)
+    }
+}
+
+fn connection_label(connection: mira_core::Connection, lang: &str) -> &'static str {
+    tr_connection(connection, lang)
 }
 
 fn battery_title(snapshot: &DeviceSnapshot, settings: &AppSettings) -> Option<String> {
     if !settings.tray_show_battery_title {
         return None;
     }
+    let lang = effective_language(&settings.language);
     let mouse_percentage = mouse_battery_percentage(snapshot)?;
     let mut title = format!("{mouse_percentage}%");
     if settings.tray_include_receiver_battery {
@@ -3228,7 +3330,7 @@ fn battery_title(snapshot: &DeviceSnapshot, settings: &AppSettings) -> Option<St
             .iter()
             .find(|battery| battery.id == "receiver")
         {
-            title = format!("鼠 {mouse_percentage}% · 接 {}%", receiver.percentage);
+            title = format!("{} {mouse_percentage}% · {} {}%", tr_mouse_label(lang), tr_receiver_label(lang), receiver.percentage);
         }
     }
     Some(title)
@@ -3433,6 +3535,8 @@ fn update_tray(
     }
     let menu = Menu::new(app)?;
 
+    let lang = effective_language(&settings.language);
+
     // 计算当前菜单签名，用于判断是否需要重建菜单
     let current_signature = if let Some(snapshot) = snapshot {
         let mut batteries = snapshot.batteries.clone();
@@ -3440,7 +3544,7 @@ fn update_tray(
             if let Some(percentage) = snapshot.battery_percent {
                 batteries.push(mira_core::DeviceBattery {
                     id: "mouse".into(),
-                    label: "鼠标".into(),
+                    label: tr_battery_fallback_label(lang).into(),
                     percentage,
                     charging: snapshot.charging,
                 });
@@ -3453,7 +3557,7 @@ fn update_tray(
                 .map(|b| (b.label.clone(), b.percentage, b.charging))
                 .collect(),
             show_connection: settings.tray_show_connection,
-            connection_label: connection_label(snapshot.connection).to_string(),
+            connection_label: connection_label(snapshot.connection, lang).to_string(),
             display_name: snapshot.display_name.clone(),
         }
     } else {
@@ -3480,18 +3584,17 @@ fn update_tray(
                 if let Some(percentage) = snapshot.battery_percent {
                     batteries.push(mira_core::DeviceBattery {
                         id: "mouse".into(),
-                        label: "鼠标".into(),
+                        label: tr_battery_fallback_label(lang).into(),
                         percentage,
                         charging: snapshot.charging,
                     });
                 }
             }
             for (index, battery) in batteries.iter().enumerate() {
-                let charging = if battery.charging { " · 充电中" } else { "" };
                 let item = MenuItem::with_id(
                     app,
                     format!("battery-{index}"),
-                    format!("{}电量：{}%{charging}", battery.label, battery.percentage),
+                    tr_battery_item(lang, &battery.label, battery.percentage, battery.charging),
                     true,
                     None::<&str>,
                 )?;
@@ -3501,10 +3604,10 @@ fn update_tray(
                 let connection = MenuItem::with_id(
                     app,
                     "connection-status",
-                    format!(
-                        "连接：{} · {}",
-                        connection_label(snapshot.connection),
-                        snapshot.display_name
+                    tr_connection_status(
+                        lang,
+                        connection_label(snapshot.connection, lang),
+                        &snapshot.display_name,
                     ),
                     true,
                     None::<&str>,
@@ -3515,7 +3618,7 @@ fn update_tray(
             let disconnected = MenuItem::with_id(
                 app,
                 "disconnected",
-                "未连接受支持的鼠标",
+                tr_disconnected(lang),
                 true,
                 None::<&str>,
             )?;
@@ -3526,14 +3629,14 @@ fn update_tray(
         menu.append(&MenuItem::with_id(
             app,
             "open",
-            "打开 Mira",
+            tr_open(lang),
             true,
             None::<&str>,
         )?)?;
-        menu.append(&MenuItem::with_id(
+        menu.append(& MenuItem::with_id(
             app,
             "quit",
-            "退出 Mira",
+            tr_quit(lang),
             true,
             None::<&str>,
         )?)?;
@@ -3548,21 +3651,22 @@ fn update_tray(
         // On macOS, `None` means "leave the existing title unchanged".
         // An empty string is required to actually hide a previously shown percentage.
         tray.set_title(Some(battery_title(snapshot, settings).unwrap_or_default()))?;
-        tray.set_tooltip(Some(format!(
-            "Mira · {} · {}",
-            connection_label(snapshot.connection),
-            snapshot.display_name
+        tray.set_tooltip(Some(tr_tooltip_connected(
+            lang,
+            connection_label(snapshot.connection, lang),
+            &snapshot.display_name,
         )))?;
     } else {
         tray.set_title(Some(""))?;
-        tray.set_tooltip(Some("Mira · 未连接受支持的鼠标"))?;
+        tray.set_tooltip(Some(tr_tooltip_disconnected(lang)))?;
     }
     Ok(())
 }
 
 fn build_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
-    let open_i = MenuItem::with_id(app, "open", "打开 Mira", true, None::<&str>)?;
-    let quit_i = MenuItem::with_id(app, "quit", "退出 Mira", true, None::<&str>)?;
+    let lang = effective_language("auto");
+    let open_i = MenuItem::with_id(app, "open", tr_open(lang), true, None::<&str>)?;
+    let quit_i = MenuItem::with_id(app, "quit", tr_quit(lang), true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&open_i, &quit_i])?;
     let initial_icon = tauri::image::Image::from_bytes(tray_app_icon_bytes())?;
 

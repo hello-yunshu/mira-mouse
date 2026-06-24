@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { invoke } from '@tauri-apps/api/core';
 import { notifyError } from './notify';
+import i18n from './i18n';
 
 /**
  * Extract the release channel suffix from a release tag.
@@ -22,7 +23,7 @@ export async function exportDiagnostics(): Promise<string | undefined> {
     const data = await invoke<unknown>('export_diagnostics');
     return JSON.stringify(data, null, 2);
   } catch (err) {
-    notifyError('导出失败', String(err));
+    notifyError(i18n.t('notification.exportFailed'), String(err));
     return undefined;
   }
 }
