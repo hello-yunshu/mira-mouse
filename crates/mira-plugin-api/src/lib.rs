@@ -26,6 +26,62 @@ pub struct PluginManifest {
     pub capabilities: Vec<Capability>,
     #[serde(default)]
     pub writes_enabled: bool,
+    /// #11 配置导入/导出：声明可导出的设备配置字段白名单。
+    /// Host 按此白名单读写配置文件，仅导出/导入声明的字段。
+    /// 未声明时该插件不参与配置导入/导出。
+    #[serde(default)]
+    pub exportable_fields: Vec<ExportableField>,
+    /// #12 插件间依赖复用：声明当前插件依赖的其他插件。
+    /// runtime 解析依赖关系，可复用被依赖插件的传输层定义。
+    /// 未声明时插件独立运行（向后兼容）。
+    #[serde(default)]
+    pub depends_on: Vec<PluginDependency>,
+}
+
+/// #11 配置导入/导出：可导出字段声明。
+/// 插件声明哪些设备配置字段可以被导入/导出，Host 按白名单操作。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExportableField {
+    /// 字段标识，对应 capability id 或 mutation id。
+    pub id: String,
+    /// 导入/导出时的字段名（用于配置文件中的 key）。
+    pub export_key: String,
+    /// 字段类型描述（如 "number"、"select"、"color"、"object"），用于配置文件格式化。
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// 导入时调用的 mutation 名称。
+    /// 未声明时，Host 从 capability metadata 的 `mutation` 字段推导。
+    #[serde(default)]
+    pub mutation: Option<String>,
+    /// 导入时 mutation 的参数名（标量字段使用）。
+    /// 未声明时默认为 "value"。
+    #[serde(default)]
+    pub param: Option<String>,
+    /// 导出时从设备快照中读取的源路径（如 "capabilities.settings.pollingRate"）。
+    /// 未声明时，Host 使用 capability metadata 的 `source` 字段。
+    #[serde(default)]
+    pub source: Option<String>,
+    /// 复合字段的参数源路径映射：参数名 → 快照路径。
+    /// 声明后，导出值为 object，导入时将其键值展开为 mutation 参数。
+    #[serde(default)]
+    pub sources: Option<BTreeMap<String, String>>,
+}
+
+/// #12 插件间依赖复用：插件依赖声明。
+/// 声明当前插件依赖的其他插件，runtime 可复用被依赖插件的传输层。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PluginDependency {
+    /// 被依赖插件的 plugin_id。
+    pub plugin_id: String,
+    /// 被依赖插件的版本要求（semver range）。
+    #[serde(default)]
+    pub version: Option<String>,
+    /// 是否复用被依赖插件的传输层定义。
+    /// true 时，runtime 从被依赖插件加载 transports.json 作为补充。
+    #[serde(default)]
+    pub reuse_transport: bool,
 }
 
 impl PluginManifest {
@@ -65,6 +121,20 @@ impl PluginManifest {
                     }
                     CapabilityRegion::Status => status_items += 1,
                     CapabilityRegion::Hero | CapabilityRegion::Details => {}
+                }
+            }
+            // #4 固件门槛：minFirmware 必须是合法 semver。运行时解析失败会静默
+            // fail-closed（能力隐藏），插件作者难以排查；此处预校验快速失败。
+            if let Some(min) = &capability.min_firmware {
+                if semver::Version::parse(min).is_err() {
+                    return Err(ApiError::CapabilityMinFirmware(capability.id.clone()));
+                }
+            }
+            // #3 连接类型：connections 必须是已知连接类型。未知值会被运行时
+            // 静默判定为不可见，此处预校验避免插件作者拼写错误。
+            if let Some(connections) = &capability.connections {
+                if connections.iter().any(|conn| !valid_connection(conn)) {
+                    return Err(ApiError::CapabilityConnections(capability.id.clone()));
                 }
             }
             if capability
@@ -118,6 +188,15 @@ fn valid_options(value: &serde_json::Value, max_items: usize) -> bool {
                 })
             })
     })
+}
+
+/// 校验连接类型是否为已知值。允许规范值（usb/receiver/bluetooth）
+/// 与 runtime 归一化支持的别名（wireless/wireless-receiver）。
+fn valid_connection(value: &str) -> bool {
+    matches!(
+        value,
+        "usb" | "receiver" | "bluetooth" | "wireless" | "wireless-receiver"
+    )
 }
 
 fn valid_plugin_id(value: &str) -> bool {
@@ -179,6 +258,31 @@ pub struct Capability {
     pub placements: Vec<CapabilityPlacement>,
     #[serde(default)]
     pub metadata: BTreeMap<String, serde_json::Value>,
+    /// 能力探测声明：引用 workflow 输出的某个字段，值为 0 表示设备不支持该能力。
+    /// Host 读取设备后据此标记 `available`，前端只渲染 available=true 的能力。
+    /// 未声明 probe 的能力默认 available=true（向后兼容）。
+    #[serde(default)]
+    pub probe: Option<CapabilityProbe>,
+    /// 连接类型能力分支（#3）：声明该能力仅在指定连接类型下可见。
+    /// 可选值："usb"、"receiver"、"bluetooth"。未声明时所有连接类型均可见。
+    #[serde(default)]
+    pub connections: Option<Vec<String>>,
+    /// 固件版本门槛（#4）：声明该能力所需的最低固件版本。
+    /// Host 校验设备固件版本，低于此版本时能力被隐藏/禁用。
+    /// 格式为 semver（如 "1.2.3"）。未声明时无版本限制。
+    #[serde(default)]
+    pub min_firmware: Option<String>,
+}
+
+/// 能力探测声明，引用 workflow 输出的 `{output, field}`。
+/// 当引用字段值为 0 时，该能力被标记为不可用。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CapabilityProbe {
+    /// workflow 输出对象名（如 "dpi"、"lighting"）。
+    pub output: String,
+    /// 输出对象中的字段名（如 "value"、"featureIndex"）。
+    pub field: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -270,6 +374,10 @@ pub enum ApiError {
     CapabilityOptions(String),
     #[error("plugin exceeds the host dashboard layout limits")]
     CapabilityLayout,
+    #[error("capability {0} declares an invalid minFirmware semver")]
+    CapabilityMinFirmware(String),
+    #[error("capability {0} declares unknown connection types")]
+    CapabilityConnections(String),
 }
 
 #[cfg(test)]
@@ -289,6 +397,8 @@ mod tests {
             permissions: vec![],
             capabilities: vec![],
             writes_enabled: true,
+            exportable_fields: vec![],
+            depends_on: vec![],
         };
         assert_eq!(manifest.validate(), Err(ApiError::UnsafeWriteEvidence));
     }
@@ -311,6 +421,9 @@ mod tests {
                     {"label": "5", "source": "five"}
                 ]),
             )]),
+            probe: None,
+            connections: None,
+            min_firmware: None,
         };
         let manifest = PluginManifest {
             schema_version: 1,
@@ -323,6 +436,8 @@ mod tests {
             permissions: vec![],
             capabilities: vec![capability],
             writes_enabled: false,
+            exportable_fields: vec![],
+            depends_on: vec![],
         };
         assert_eq!(
             manifest.validate(),
@@ -346,6 +461,9 @@ mod tests {
                     icon: None,
                 }],
                 metadata: BTreeMap::new(),
+                probe: None,
+                connections: None,
+                min_firmware: None,
             })
             .collect();
         let manifest = PluginManifest {
@@ -359,6 +477,8 @@ mod tests {
             permissions: vec![],
             capabilities,
             writes_enabled: false,
+            exportable_fields: vec![],
+            depends_on: vec![],
         };
         assert_eq!(manifest.validate(), Err(ApiError::CapabilityLayout));
     }
