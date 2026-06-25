@@ -287,9 +287,29 @@
       "tooltip": "低电量提醒：仅在电量跨过阈值时提醒一次，不会反复弹窗。"
     },
     "nightMode": {
-      "label": "启用夜间模式",
-      "hint": "当前版本尚未实现灯光定时调度",
-      "tooltip": "夜间模式：按时间降低或关闭灯光，并在关闭后可靠恢复原状态。"
+      "label": "启用安静灯光",
+      "hint": "在指定条件下自动关闭灯光，条件解除后恢复原状态",
+      "tooltip": "安静灯光：按触发场景自动关闭灯光，并在条件解除后可靠恢复进入前的状态。仅在灯光可写时生效。",
+      "triggerSection": "触发场景（任一满足即关闭灯光）",
+      "triggerTime": "特定时间",
+      "triggerTimeHint": "在指定时段关闭灯光",
+      "triggerTheme": "跟随系统主题",
+      "triggerThemeHint": "系统切换到指定主题时关闭灯光",
+      "triggerCharging": "仅在充电时",
+      "triggerChargingHint": "鼠标正在充电时关闭灯光",
+      "triggerLowBattery": "电量低于阈值时",
+      "triggerLowBatteryHint": "电量低于 {{value}}% 时关闭灯光",
+      "themeDark": "深色模式时关灯",
+      "themeLight": "浅色模式时关灯",
+      "targetSection": "灯光对象",
+      "targetMouse": "鼠标灯光",
+      "targetMouseHint": "关闭/恢复鼠标灯光",
+      "targetReceiver": "接收器灯光",
+      "targetReceiverHint": "关闭/恢复接收器灯光（仅设备支持时可设置）",
+      "startLabel": "开始时间",
+      "startHint": "关闭灯光的时间",
+      "endLabel": "结束时间",
+      "endHint": "恢复灯光的时间"
     },
     "config": {
       "hint": "导出设备配置文件用于备份或迁移；导入时会检查插件兼容性并逐项应用。",
@@ -426,6 +446,7 @@
     "checkPluginUpdateFailed": "检查插件更新失败",
     "installPluginUpdateFailed": "安装插件更新失败",
     "loadAboutFailed": "加载关于信息失败",
+    "openExternalFailed": "打开网页失败",
     "checkUpdateFailed": "检查更新失败",
     "installUpdateFailed": "安装更新失败"
   },
