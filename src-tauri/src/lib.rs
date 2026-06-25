@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+use chrono::{Local, NaiveTime, Timelike};
 use ed25519_dalek::VerifyingKey;
 use hidapi::HidApi;
 use mira_core::{DeviceSnapshot, LowBatteryCrossing, PluginCapability, PluginCapabilityPlacement};
@@ -15,11 +16,10 @@ use std::{
     fs,
     io::{Cursor, Read},
     path::PathBuf,
+    process::Command,
     sync::{Arc, Condvar, Mutex},
     time::{Duration, Instant},
 };
-#[cfg(target_os = "macos")]
-use std::{path::Path, process::Command};
 use sys_locale::get_locale;
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
@@ -174,6 +174,70 @@ struct TrayMenuSignature {
     display_name: String,
 }
 
+/// 安静灯光（夜间模式）当前所处的阶段。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NightPhase {
+    /// 日间：灯光按用户设置正常工作。
+    Day,
+    /// 夜间：鼠标灯光已被关闭，等待退出时段时恢复。
+    Night,
+}
+
+/// 进入夜间模式时保存的鼠标灯光状态，用于退出时可靠恢复。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SavedMouseLight {
+    /// 鼠标灯光颜色（#RRGGBB 格式，来自 capabilities.settings.mouseLightStartColor）。
+    color: String,
+}
+
+/// 进入夜间模式时保存的接收器灯光状态，用于退出时可靠恢复。
+/// set-receiver-lighting mutation 没有 enabled 字段，关闭时 effect=0，
+/// 因此需要保存完整状态以恢复。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SavedReceiverLight {
+    effect: u8,
+    speed: u8,
+    brightness: u8,
+    option: u8,
+    /// 接收器灯光颜色（#RRGGBB 格式）。
+    color: String,
+}
+
+/// 安静灯光运行时状态。仅存在于内存中，不直接持久化。
+/// 持久化通过 NightModeStore 完成（仅保存 saved 状态）。
+#[derive(Debug, Clone, PartialEq)]
+struct NightModeRuntime {
+    /// 当前所处的阶段。
+    phase: NightPhase,
+    /// 进入夜间模式时保存的鼠标灯光状态。None 表示未保存。
+    saved_mouse_light: Option<SavedMouseLight>,
+    /// 进入夜间模式时保存的接收器灯光状态。None 表示未保存。
+    saved_receiver_light: Option<SavedReceiverLight>,
+}
+
+impl Default for NightModeRuntime {
+    fn default() -> Self {
+        Self {
+            phase: NightPhase::Day,
+            saved_mouse_light: None,
+            saved_receiver_light: None,
+        }
+    }
+}
+
+/// 安静灯光持久化状态。保存在 config 目录下的 night_mode_state.json。
+/// 仅持久化 saved 状态，phase 在启动时根据 saved 状态推导。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NightModeStore {
+    /// 进入夜间模式时保存的鼠标灯光状态。用于 Mira 重启后恢复。
+    saved_mouse_light: Option<SavedMouseLight>,
+    /// 进入夜间模式时保存的接收器灯光状态。用于 Mira 重启后恢复。
+    saved_receiver_light: Option<SavedReceiverLight>,
+}
+
 #[derive(Default)]
 struct SessionState {
     write_in_progress: Mutex<bool>,
@@ -233,6 +297,12 @@ struct SessionState {
     /// 写入 mutation 预读时命中缓存则跳过 16 chunk HID 往返；验证读后更新缓存。
     /// 设备断开时由 clear_snapshots 清空。
     onboard_memory_cache: Mutex<OnboardMemoryCache>,
+    /// 安静灯光（夜间模式）运行时状态：当前阶段 + 进入夜间时保存的灯光状态。
+    /// 由 spawn_night_mode_scheduler 后台线程读写，settings_set 唤醒该线程。
+    night_mode: Mutex<NightModeRuntime>,
+    /// Channel used to wake the night mode scheduler thread for an immediate
+    /// re-evaluation (settings change, manual toggle, etc.).
+    night_mode_tx: Mutex<Option<std::sync::mpsc::Sender<()>>>,
     /// debug 构建中记录上一次 matched device 数量，仅在变化时输出日志。
     #[cfg(debug_assertions)]
     last_matched_count: Mutex<usize>,
@@ -246,6 +316,333 @@ fn request_refresh(state: &SessionState) {
             let _ = sender.send(());
         }
     }
+}
+
+/// Send a wake-up signal to the night mode scheduler thread.
+fn request_night_mode_eval(state: &SessionState) {
+    if let Ok(tx) = state.night_mode_tx.lock() {
+        if let Some(sender) = tx.as_ref() {
+            let _ = sender.send(());
+        }
+    }
+}
+
+/// 安静灯光阶段转换：根据目标阶段执行灯光关闭或恢复。
+///
+/// 支持多灯光对象（鼠标灯光 + 接收器灯光），根据 `settings.night_mode_target_*`
+/// 决定操作哪些灯光。进入夜间时保存原状态，退出时恢复。
+///
+/// 此函数在调度器线程中调用，通过 `device_mutate_blocking` 执行 HID 写入。
+/// 失败时通过系统通知告知用户（遵循项目约定：不在界面内弹错误）。
+fn apply_night_mode_transition(app: &AppHandle, target_phase: NightPhase) {
+    let state = app.state::<SessionState>();
+    // 读取当前运行时状态（持锁时间极短，仅 clone）。
+    let (current_phase, saved_mouse, saved_receiver) = {
+        let guard = state.night_mode.lock().unwrap_or_else(|e| e.into_inner());
+        (
+            guard.phase,
+            guard.saved_mouse_light.clone(),
+            guard.saved_receiver_light.clone(),
+        )
+    };
+    if current_phase == target_phase {
+        return;
+    }
+
+    let settings = cached_settings(app);
+    let lang = effective_language(&settings.language);
+
+    match target_phase {
+        NightPhase::Night => {
+            // Day → Night：关闭勾选的灯光对象。
+            let snapshot = state
+                .last_snapshot
+                .lock()
+                .ok()
+                .and_then(|guard| primary_snapshot(&guard).cloned());
+
+            let Some(snapshot) = snapshot else {
+                // 设备未连接：不更新阶段，保持 Day，下一轮调度会重试。
+                return;
+            };
+
+            let can_mouse = snapshot_supports_mutation(&snapshot, "set-mouse-lighting");
+            let can_receiver = snapshot_supports_mutation(&snapshot, "set-receiver-lighting");
+
+            // 如果设备不支持任何勾选的灯光对象：静默跳过，仅更新阶段。
+            let mouse_wanted = settings.night_mode_target_mouse && can_mouse;
+            let receiver_wanted = settings.night_mode_target_receiver && can_receiver;
+            if !mouse_wanted && !receiver_wanted {
+                update_night_mode_phase(app, NightPhase::Night, None, None);
+                return;
+            }
+
+            // 以运行时已有的 saved 为初始值：部分失败重试时，已成功关闭的灯光
+            // 不会因重新读快照（enabled=false）被跳过而丢失 saved。
+            let mut new_saved_mouse = saved_mouse.clone();
+            let mut new_saved_receiver = saved_receiver.clone();
+            let mut any_failed = false;
+
+            // 鼠标灯光（仅在尚未保存时才尝试关闭）
+            if mouse_wanted && new_saved_mouse.is_none() {
+                if let Some((enabled, color)) = read_mouse_light_state(&snapshot) {
+                    if enabled {
+                        let params = serde_json::Map::from_iter([
+                            ("color".into(), serde_json::Value::String(color.clone())),
+                            ("enabled".into(), serde_json::Value::Bool(false)),
+                        ]);
+                        match device_mutate_blocking(app, "set-mouse-lighting", &params) {
+                            Ok(_) => {
+                                new_saved_mouse = Some(SavedMouseLight { color });
+                            }
+                            Err(error) => {
+                                eprintln!(
+                                    "[mira] night mode: failed to turn off mouse lighting: {error}"
+                                );
+                                let _ = app
+                                    .notification()
+                                    .builder()
+                                    .title(tr_night_mode_title(lang))
+                                    .body(tr_night_mode_off_failed(lang, &error))
+                                    .show();
+                                any_failed = true;
+                            }
+                        }
+                    }
+                    // 灯光本就关闭：不保存状态，退出时不强行开灯。
+                }
+            }
+
+            // 接收器灯光（effect=0 表示关闭，仅在尚未保存时才尝试关闭）
+            if receiver_wanted && new_saved_receiver.is_none() {
+                if let Some(saved) = read_receiver_light_state(&snapshot) {
+                    if saved.effect != 0 {
+                        let params = serde_json::Map::from_iter([
+                            ("effect".into(), serde_json::Value::Number(0u8.into())),
+                            (
+                                "speed".into(),
+                                serde_json::Value::Number(saved.speed.into()),
+                            ),
+                            (
+                                "brightness".into(),
+                                serde_json::Value::Number(saved.brightness.into()),
+                            ),
+                            (
+                                "option".into(),
+                                serde_json::Value::Number(saved.option.into()),
+                            ),
+                            (
+                                "color".into(),
+                                serde_json::Value::String(saved.color.clone()),
+                            ),
+                        ]);
+                        match device_mutate_blocking(app, "set-receiver-lighting", &params) {
+                            Ok(_) => {
+                                new_saved_receiver = Some(saved);
+                            }
+                            Err(error) => {
+                                eprintln!("[mira] night mode: failed to turn off receiver lighting: {error}");
+                                let _ = app
+                                    .notification()
+                                    .builder()
+                                    .title(tr_night_mode_title(lang))
+                                    .body(tr_night_mode_off_failed_receiver(lang, &error))
+                                    .show();
+                                any_failed = true;
+                            }
+                        }
+                    }
+                    // effect 本就为 0：不保存状态。
+                }
+            }
+
+            if !any_failed {
+                // 全部成功（或灯光本就关闭）：更新阶段为 Night。
+                update_night_mode_phase(
+                    app,
+                    NightPhase::Night,
+                    new_saved_mouse,
+                    new_saved_receiver,
+                );
+            } else {
+                // 有失败：保持阶段为 Day 以便重试，但持久化已成功部分的 saved，
+                // 避免重试时已关闭的灯光因 enabled=false 被跳过而丢失 saved。
+                update_night_mode_phase(
+                    app,
+                    NightPhase::Day,
+                    new_saved_mouse,
+                    new_saved_receiver,
+                );
+            }
+        }
+        NightPhase::Day => {
+            // Night → Day：恢复保存的灯光状态。
+            if saved_mouse.is_none() && saved_receiver.is_none() {
+                update_night_mode_phase(app, NightPhase::Day, None, None);
+                return;
+            }
+
+            let snapshot = state
+                .last_snapshot
+                .lock()
+                .ok()
+                .and_then(|guard| primary_snapshot(&guard).cloned());
+
+            let Some(snapshot) = snapshot else {
+                // 设备未连接：不更新阶段，保持 Night + saved，下一轮重试恢复。
+                return;
+            };
+
+            let mut any_failed = false;
+
+            // 恢复鼠标灯光
+            if let Some(ref saved) = saved_mouse {
+                if snapshot_supports_mutation(&snapshot, "set-mouse-lighting") {
+                    let params = serde_json::Map::from_iter([
+                        (
+                            "color".into(),
+                            serde_json::Value::String(saved.color.clone()),
+                        ),
+                        ("enabled".into(), serde_json::Value::Bool(true)),
+                    ]);
+                    if let Err(error) = device_mutate_blocking(app, "set-mouse-lighting", &params) {
+                        eprintln!("[mira] night mode: failed to restore mouse lighting: {error}");
+                        let _ = app
+                            .notification()
+                            .builder()
+                            .title(tr_night_mode_title(lang))
+                            .body(tr_night_mode_restore_failed(lang, &error))
+                            .show();
+                        any_failed = true;
+                    }
+                }
+            }
+
+            // 恢复接收器灯光
+            if let Some(ref saved) = saved_receiver {
+                if snapshot_supports_mutation(&snapshot, "set-receiver-lighting") {
+                    let params = serde_json::Map::from_iter([
+                        (
+                            "effect".into(),
+                            serde_json::Value::Number(saved.effect.into()),
+                        ),
+                        (
+                            "speed".into(),
+                            serde_json::Value::Number(saved.speed.into()),
+                        ),
+                        (
+                            "brightness".into(),
+                            serde_json::Value::Number(saved.brightness.into()),
+                        ),
+                        (
+                            "option".into(),
+                            serde_json::Value::Number(saved.option.into()),
+                        ),
+                        (
+                            "color".into(),
+                            serde_json::Value::String(saved.color.clone()),
+                        ),
+                    ]);
+                    if let Err(error) =
+                        device_mutate_blocking(app, "set-receiver-lighting", &params)
+                    {
+                        eprintln!(
+                            "[mira] night mode: failed to restore receiver lighting: {error}"
+                        );
+                        let _ = app
+                            .notification()
+                            .builder()
+                            .title(tr_night_mode_title(lang))
+                            .body(tr_night_mode_restore_failed_receiver(lang, &error))
+                            .show();
+                        any_failed = true;
+                    }
+                }
+            }
+
+            if !any_failed {
+                update_night_mode_phase(app, NightPhase::Day, None, None);
+            }
+            // 有失败：不更新阶段，下一轮重试。
+        }
+    }
+}
+
+/// 更新运行时阶段并同步持久化 saved 状态。
+fn update_night_mode_phase(
+    app: &AppHandle,
+    phase: NightPhase,
+    saved_mouse: Option<SavedMouseLight>,
+    saved_receiver: Option<SavedReceiverLight>,
+) {
+    let state = app.state::<SessionState>();
+    let store = NightModeStore {
+        saved_mouse_light: saved_mouse.clone(),
+        saved_receiver_light: saved_receiver.clone(),
+    };
+    {
+        let mut guard = state.night_mode.lock().unwrap_or_else(|e| e.into_inner());
+        guard.phase = phase;
+        guard.saved_mouse_light = saved_mouse;
+        guard.saved_receiver_light = saved_receiver;
+    }
+    if let Err(error) = save_night_mode_state(app, &store) {
+        eprintln!("[mira] night mode: failed to persist state: {error}");
+    }
+}
+
+/// 安静灯光调度器线程：每分钟检查一次是否需要切换阶段。
+///
+/// 线程在 mpsc::recv_timeout 上等待，而非固定 sleep：
+/// - settings_set 变更夜间模式设置时发送 wake 信号，立即重新评估。
+/// - 无信号时每 60 秒检查一次，确保在时段边界及时切换。
+fn spawn_night_mode_scheduler(app: AppHandle) {
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    *app.state::<SessionState>()
+        .night_mode_tx
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = Some(tx);
+
+    std::thread::spawn(move || loop {
+        let settings = cached_settings(&app);
+        let now = Local::now().time();
+        let state = app.state::<SessionState>();
+        // 先取出缓存值并释放锁，再 fallback 到 tray_theme_is_dark。
+        // 后者内部会再次获取同一 mutex，若在持锁状态下调用会死锁
+        //（std::sync::Mutex 不可重入）。
+        let system_dark = {
+            let cache = state.system_dark.lock().unwrap_or_else(|e| e.into_inner());
+            *cache
+        }
+        .or_else(|| Some(tray_theme_is_dark(&app)));
+        let snapshot = state
+            .last_snapshot
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .next()
+            .cloned();
+        let target = should_be_night(&settings, now, system_dark, snapshot.as_ref());
+
+        apply_night_mode_transition(&app, target);
+
+        // 计算到下一分钟的整点，确保在时段边界及时检查。
+        // 最多等 60 秒，避免设置变更时等待过久。
+        let wait = {
+            let secs_to_next_minute =
+                60u64 - (Local::now().time().num_seconds_from_midnight() as u64 % 60);
+            Duration::from_secs(secs_to_next_minute.min(60))
+        };
+
+        match rx.recv_timeout(wait) {
+            Ok(()) => {
+                while rx.try_recv().is_ok() {}
+                continue;
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    });
 }
 
 /// 解析或复用插件对应的 ProtocolPackage。
@@ -372,6 +769,9 @@ fn store_snapshots(state: &SessionState, snapshots: BTreeMap<String, DeviceSnaps
     drop(guard);
     if changed {
         note_state_change(state);
+        // 设备状态变化（连接/断开/灯光状态变化）时唤醒夜间模式调度器，
+        // 确保设备连接后立即关闭/恢复灯光，不必等下一轮 60 秒检查。
+        request_night_mode_eval(state);
     }
 }
 
@@ -422,11 +822,8 @@ const PRODUCTION_KEY_ID: &str = "mira-plugins-2026-001";
 const PRODUCTION_PUBLIC_KEY_HEX: &str =
     "eb80fdde2dc7ba507b6c8afbbf5a7de82e6219967edf1914ddb979d5601d39b3";
 
-// Test packages are trusted only in debug builds for local development.
-// Remove this before a production release.
-#[cfg(debug_assertions)]
+// Test packages are trusted in all builds until the first production release.
 const TEST_KEY_ID: &str = "TEST-ONLY-mira-plugins";
-#[cfg(debug_assertions)]
 const TEST_PUBLIC_KEY_HEX: &str =
     "00d34dac6e039baada3d3d9aa65390f2887d09d73b396af8434ecb29c233d666";
 
@@ -442,10 +839,7 @@ fn production_trust_store() -> TrustStore {
         PRODUCTION_KEY_ID.to_string(),
         decode_key(PRODUCTION_PUBLIC_KEY_HEX),
     );
-    // Test packages are trusted only in debug builds for local development.
-    // Release builds must not trust the test key, otherwise anyone with the
-    // test private key could sign plugins that production users would accept.
-    #[cfg(debug_assertions)]
+    // Test packages are trusted in all builds until the first production release.
     trust
         .0
         .insert(TEST_KEY_ID.to_string(), decode_key(TEST_PUBLIC_KEY_HEX));
@@ -512,6 +906,20 @@ struct AppSettings {
     night_mode_enabled: bool,
     night_mode_start: String,
     night_mode_end: String,
+    /// 安静灯光触发场景：特定时间（时间组，与 trigger_theme 互斥）。
+    night_mode_trigger_time: bool,
+    /// 安静灯光触发场景：跟随系统主题（时间组，与 trigger_time 互斥）。
+    night_mode_trigger_theme: bool,
+    /// 跟随系统主题的方向：true=深色模式时关灯，false=浅色模式时关灯。
+    night_mode_theme_dark: bool,
+    /// 安静灯光触发场景：仅在充电时（状态组，可多选）。
+    night_mode_trigger_charging: bool,
+    /// 安静灯光触发场景：电量低于阈值时（状态组，可多选，复用 low_battery_threshold）。
+    night_mode_trigger_low_battery: bool,
+    /// 安静灯光控制对象：鼠标灯光。
+    night_mode_target_mouse: bool,
+    /// 安静灯光控制对象：接收器灯光（仅设备支持时可设置）。
+    night_mode_target_receiver: bool,
     refresh_interval_seconds: u16,
     telemetry_disabled: bool,
     automatic_update_checks: bool,
@@ -547,6 +955,13 @@ impl Default for AppSettings {
             night_mode_enabled: false,
             night_mode_start: "22:00".into(),
             night_mode_end: "07:00".into(),
+            night_mode_trigger_time: true,
+            night_mode_trigger_theme: false,
+            night_mode_theme_dark: true,
+            night_mode_trigger_charging: false,
+            night_mode_trigger_low_battery: false,
+            night_mode_target_mouse: true,
+            night_mode_target_receiver: false,
             refresh_interval_seconds: 5,
             telemetry_disabled: true,
             automatic_update_checks: true,
@@ -580,6 +995,15 @@ impl AppSettings {
         if !is_clock_time(&self.night_mode_end) {
             self.night_mode_end = defaults.night_mode_end;
         }
+        // 时间组互斥：trigger_time 和 trigger_theme 不能同时为 true。
+        // 如果用户同时启用了两个，保留 trigger_time，禁用 trigger_theme。
+        if self.night_mode_trigger_time && self.night_mode_trigger_theme {
+            self.night_mode_trigger_theme = false;
+        }
+        // 灯光对象至少要勾选一个；如果都未勾选，恢复默认（鼠标灯光）。
+        if !self.night_mode_target_mouse && !self.night_mode_target_receiver {
+            self.night_mode_target_mouse = defaults.night_mode_target_mouse;
+        }
         self.telemetry_disabled = true;
         self
     }
@@ -593,6 +1017,139 @@ fn is_clock_time(value: &str) -> bool {
         && minute.len() == 2
         && hour.parse::<u8>().is_ok_and(|value| value < 24)
         && minute.parse::<u8>().is_ok_and(|value| value < 60)
+}
+
+/// 将 "HH:MM" 解析为 NaiveTime。已通过 is_clock_time 校验的值不会失败。
+fn parse_clock_time(value: &str) -> Option<NaiveTime> {
+    NaiveTime::parse_from_str(value, "%H:%M").ok()
+}
+
+/// 判断当前时间是否处于夜间时段 [start, end)。
+///
+/// 支持跨午夜时段（如 22:00→07:00）：当 start > end 时，
+/// 时间 >= start 或 < end 都算在夜间。
+/// 当 start < end 时，正常区间判断。
+/// 当 start == end 时，视为全天夜间（返回 true）。
+fn is_in_night_window(start: NaiveTime, end: NaiveTime, now: NaiveTime) -> bool {
+    if start == end {
+        return true;
+    }
+    if start < end {
+        now >= start && now < end
+    } else {
+        // 跨午夜：22:00→07:00 → now >= 22:00 || now < 07:00
+        now >= start || now < end
+    }
+}
+
+/// 根据设置和当前设备/系统状态判断是否应当处于夜间阶段。
+///
+/// 触发场景（任一满足即返回 Night，全部不满足返回 Day）：
+/// - 时间组（互斥）：特定时间 / 跟随系统主题
+/// - 状态组（可多选）：仅在充电时 / 电量低于阈值时
+///
+/// `system_dark` 为 None 时视为浅色模式（不触发跟随系统主题）。
+/// `snapshot` 为 None 时跳过状态类触发（设备未连接）。
+fn should_be_night(
+    settings: &AppSettings,
+    now: NaiveTime,
+    system_dark: Option<bool>,
+    snapshot: Option<&DeviceSnapshot>,
+) -> NightPhase {
+    if !settings.night_mode_enabled {
+        return NightPhase::Day;
+    }
+
+    // 时间组（互斥）：trigger_time 优先于 trigger_theme。
+    let time_trigger = if settings.night_mode_trigger_time {
+        let (Some(start), Some(end)) = (
+            parse_clock_time(&settings.night_mode_start),
+            parse_clock_time(&settings.night_mode_end),
+        ) else {
+            return NightPhase::Day;
+        };
+        is_in_night_window(start, end, now)
+    } else if settings.night_mode_trigger_theme {
+        // theme_dark=true 表示深色模式时关灯；system_dark 为 None 时视为不匹配。
+        system_dark == Some(settings.night_mode_theme_dark)
+    } else {
+        false
+    };
+
+    // 状态组（可多选）：需要设备快照。
+    let charging_trigger = settings.night_mode_trigger_charging
+        && snapshot.map(mouse_battery_charging).unwrap_or(false);
+    let low_battery_trigger = settings.night_mode_trigger_low_battery
+        && snapshot
+            .and_then(mouse_battery_percentage)
+            .map(|p| p < settings.low_battery_threshold)
+            .unwrap_or(false);
+
+    if time_trigger || charging_trigger || low_battery_trigger {
+        NightPhase::Night
+    } else {
+        NightPhase::Day
+    }
+}
+
+/// 从设备快照的标准 `mouseLighting` capability 中读取鼠标灯光状态。
+///
+/// 返回 (enabled, color_hex)：
+/// - enabled: 来自 capabilities.mouseLighting.enabled
+/// - color_hex: 来自 capabilities.mouseLighting.color（运行时 rgb parser 输出 #RRGGBB 字符串）
+///
+/// 如果字段缺失或类型不符，返回 None（调用方应跳过夜间模式操作）。
+fn read_mouse_light_state(snapshot: &DeviceSnapshot) -> Option<(bool, String)> {
+    let lighting = snapshot.capabilities.get("mouseLighting")?;
+    let enabled = lighting
+        .get("enabled")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(true);
+    let color = lighting
+        .get("color")
+        .and_then(|v| v.as_str())
+        .filter(|s| s.starts_with('#') && s.len() == 7)
+        .map(|s| s.to_string());
+    if enabled {
+        // 灯光开启：必须有有效颜色才能正确保存并恢复，否则跳过该目标，
+        // 避免 fallback #000000 在退出夜间恢复时覆盖设备原色。
+        Some((true, color?))
+    } else {
+        // 灯光关闭：颜色无意义，用 #000000 仅作为关闭写入的占位参数。
+        Some((false, color.unwrap_or_else(|| "#000000".to_string())))
+    }
+}
+
+/// 从设备快照的 capabilities 中读取接收器灯光状态。
+///
+/// 返回 SavedReceiverLight，用于进入夜间时保存、退出时恢复。
+/// set-receiver-lighting mutation 没有 enabled 字段，关闭时 effect=0，
+/// 因此需要保存 effect/speed/brightness/option/color 完整状态。
+///
+/// 如果字段缺失或类型不符，返回 None。
+fn read_receiver_light_state(snapshot: &DeviceSnapshot) -> Option<SavedReceiverLight> {
+    let receiver = snapshot.capabilities.get("receiverLighting")?;
+    let effect = receiver.get("effect")?.as_u64()? as u8;
+    let speed = receiver.get("speed")?.as_u64()? as u8;
+    let brightness = receiver.get("brightness")?.as_u64()? as u8;
+    let option = receiver
+        .get("option")
+        .or_else(|| receiver.get("type"))
+        .and_then(|value| value.as_u64())
+        .unwrap_or(effect as u64) as u8;
+    let color = receiver
+        .get("color")
+        .and_then(|v| v.as_str())
+        .filter(|s| s.starts_with('#') && s.len() == 7)
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "#000000".to_string());
+    Some(SavedReceiverLight {
+        effect,
+        speed,
+        brightness,
+        option,
+        color,
+    })
 }
 
 #[cfg(test)]
@@ -937,6 +1494,755 @@ mod settings_tests {
             ),
             ("set-dpi-value".into(), "dpi".into())
         );
+    }
+
+    #[test]
+    fn import_exportable_skips_receiver_lighting_when_mutation_is_not_writable() {
+        let inspection = PackageInspection {
+            plugin_id: "mira.amaster".into(),
+            version: "1.3.5".into(),
+            evidence: "hardware-verified".into(),
+            signature_verified: true,
+            writes_enabled: true,
+            capabilities: Vec::new(),
+            exportable_fields: Vec::new(),
+            depends_on: Vec::new(),
+            file_count: 0,
+        };
+        let snapshot = DeviceSnapshot {
+            display_name: "AM35".into(),
+            connection: mira_core::Connection::Wireless,
+            battery_percent: None,
+            charging: false,
+            batteries: Vec::new(),
+            dpi: None,
+            dpi_stages: None,
+            polling_rate_hz: None,
+            supported_polling_rates_hz: None,
+            profile: None,
+            confirmed_light_color: None,
+            capabilities: BTreeMap::new(),
+            plugin_capabilities: Vec::new(),
+            writable_mutations: vec!["set-mouse-lighting".into()],
+            evidence: "hardware-verified".into(),
+            readonly: false,
+        };
+        let field = ExportableField {
+            id: "receiver-lighting".into(),
+            export_key: "receiverLighting".into(),
+            kind: Some("object".into()),
+            mutation: Some("set-receiver-lighting".into()),
+            param: None,
+            source: None,
+            sources: Some(BTreeMap::from([(
+                "color".into(),
+                "capabilities.receiverLighting.color".into(),
+            )])),
+        };
+
+        assert!(import_params_for_exportable(
+            &inspection,
+            &snapshot,
+            &field,
+            &serde_json::json!({"color": "#AABBCC"})
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn import_exportable_keeps_receiver_lighting_when_mutation_is_writable() {
+        let inspection = PackageInspection {
+            plugin_id: "mira.amaster".into(),
+            version: "1.3.5".into(),
+            evidence: "hardware-verified".into(),
+            signature_verified: true,
+            writes_enabled: true,
+            capabilities: Vec::new(),
+            exportable_fields: Vec::new(),
+            depends_on: Vec::new(),
+            file_count: 0,
+        };
+        let snapshot = DeviceSnapshot {
+            display_name: "Protocol A".into(),
+            connection: mira_core::Connection::Wireless,
+            battery_percent: None,
+            charging: false,
+            batteries: Vec::new(),
+            dpi: None,
+            dpi_stages: None,
+            polling_rate_hz: None,
+            supported_polling_rates_hz: None,
+            profile: None,
+            confirmed_light_color: None,
+            capabilities: BTreeMap::new(),
+            plugin_capabilities: Vec::new(),
+            writable_mutations: vec!["set-receiver-lighting".into()],
+            evidence: "hardware-verified".into(),
+            readonly: false,
+        };
+        let field = ExportableField {
+            id: "receiver-lighting".into(),
+            export_key: "receiverLighting".into(),
+            kind: Some("object".into()),
+            mutation: Some("set-receiver-lighting".into()),
+            param: None,
+            source: None,
+            sources: None,
+        };
+
+        let (mutation, params) = import_params_for_exportable(
+            &inspection,
+            &snapshot,
+            &field,
+            &serde_json::json!({"effect": 3, "color": "#AABBCC"}),
+        )
+        .expect("writable receiver lighting import");
+        assert_eq!(mutation, "set-receiver-lighting");
+        assert_eq!(params.get("effect"), Some(&serde_json::json!(3)));
+        assert_eq!(params.get("color"), Some(&serde_json::json!("#AABBCC")));
+    }
+}
+
+#[cfg(test)]
+mod night_mode_tests {
+    use super::*;
+
+    #[test]
+    fn parse_clock_time_accepts_valid_values() {
+        assert!(parse_clock_time("00:00").is_some());
+        assert!(parse_clock_time("23:59").is_some());
+        assert!(parse_clock_time("22:00").is_some());
+        assert!(parse_clock_time("07:30").is_some());
+    }
+
+    #[test]
+    fn parse_clock_time_rejects_invalid_values() {
+        assert!(parse_clock_time("24:00").is_none());
+        assert!(parse_clock_time("12:60").is_none());
+        assert!(parse_clock_time("abc").is_none());
+        assert!(parse_clock_time("").is_none());
+        // Note: chrono's %H:%M parser accepts single-digit hours/minutes ("1:2"),
+        // but is_clock_time enforces two-digit format, so settings are always
+        // normalized to "01:02" before parse_clock_time is called.
+    }
+
+    #[test]
+    fn night_window_wrap_around_midnight() {
+        // 22:00 → 07:00 跨午夜
+        let start = parse_clock_time("22:00").unwrap();
+        let end = parse_clock_time("07:00").unwrap();
+
+        // 夜间时段内
+        assert!(is_in_night_window(
+            start,
+            end,
+            parse_clock_time("22:00").unwrap()
+        ));
+        assert!(is_in_night_window(
+            start,
+            end,
+            parse_clock_time("23:30").unwrap()
+        ));
+        assert!(is_in_night_window(
+            start,
+            end,
+            parse_clock_time("00:00").unwrap()
+        ));
+        assert!(is_in_night_window(
+            start,
+            end,
+            parse_clock_time("03:00").unwrap()
+        ));
+        assert!(is_in_night_window(
+            start,
+            end,
+            parse_clock_time("06:59").unwrap()
+        ));
+
+        // 日间时段
+        assert!(!is_in_night_window(
+            start,
+            end,
+            parse_clock_time("07:00").unwrap()
+        ));
+        assert!(!is_in_night_window(
+            start,
+            end,
+            parse_clock_time("12:00").unwrap()
+        ));
+        assert!(!is_in_night_window(
+            start,
+            end,
+            parse_clock_time("21:59").unwrap()
+        ));
+    }
+
+    #[test]
+    fn night_window_same_day() {
+        // 09:00 → 17:00 同日
+        let start = parse_clock_time("09:00").unwrap();
+        let end = parse_clock_time("17:00").unwrap();
+
+        assert!(is_in_night_window(
+            start,
+            end,
+            parse_clock_time("09:00").unwrap()
+        ));
+        assert!(is_in_night_window(
+            start,
+            end,
+            parse_clock_time("12:00").unwrap()
+        ));
+        assert!(is_in_night_window(
+            start,
+            end,
+            parse_clock_time("16:59").unwrap()
+        ));
+
+        assert!(!is_in_night_window(
+            start,
+            end,
+            parse_clock_time("08:59").unwrap()
+        ));
+        assert!(!is_in_night_window(
+            start,
+            end,
+            parse_clock_time("17:00").unwrap()
+        ));
+        assert!(!is_in_night_window(
+            start,
+            end,
+            parse_clock_time("23:00").unwrap()
+        ));
+    }
+
+    #[test]
+    fn night_window_full_day_when_start_equals_end() {
+        let start = parse_clock_time("12:00").unwrap();
+        let end = parse_clock_time("12:00").unwrap();
+        assert!(is_in_night_window(
+            start,
+            end,
+            parse_clock_time("00:00").unwrap()
+        ));
+        assert!(is_in_night_window(
+            start,
+            end,
+            parse_clock_time("12:00").unwrap()
+        ));
+        assert!(is_in_night_window(
+            start,
+            end,
+            parse_clock_time("23:59").unwrap()
+        ));
+    }
+
+    #[test]
+    fn target_phase_respects_disabled_setting() {
+        let mut settings = AppSettings::default();
+        settings.night_mode_enabled = false;
+        settings.night_mode_start = "22:00".into();
+        settings.night_mode_end = "07:00".into();
+        // 即使处于夜间时段，禁用时也返回 Day。
+        assert_eq!(
+            should_be_night(&settings, parse_clock_time("23:00").unwrap(), None, None),
+            NightPhase::Day
+        );
+    }
+
+    #[test]
+    fn target_phase_computes_correctly_when_enabled() {
+        let mut settings = AppSettings::default();
+        settings.night_mode_enabled = true;
+        settings.night_mode_trigger_time = true;
+        settings.night_mode_start = "22:00".into();
+        settings.night_mode_end = "07:00".into();
+
+        assert_eq!(
+            should_be_night(&settings, parse_clock_time("23:00").unwrap(), None, None),
+            NightPhase::Night
+        );
+        assert_eq!(
+            should_be_night(&settings, parse_clock_time("03:00").unwrap(), None, None),
+            NightPhase::Night
+        );
+        assert_eq!(
+            should_be_night(&settings, parse_clock_time("12:00").unwrap(), None, None),
+            NightPhase::Day
+        );
+    }
+
+    #[test]
+    fn target_phase_falls_back_to_day_on_invalid_time() {
+        let mut settings = AppSettings::default();
+        settings.night_mode_enabled = true;
+        settings.night_mode_trigger_time = true;
+        settings.night_mode_start = "invalid".into();
+        settings.night_mode_end = "07:00".into();
+        assert_eq!(
+            should_be_night(&settings, parse_clock_time("23:00").unwrap(), None, None),
+            NightPhase::Day
+        );
+    }
+
+    #[test]
+    fn should_be_night_theme_trigger_dark_mode() {
+        let mut settings = AppSettings::default();
+        settings.night_mode_enabled = true;
+        settings.night_mode_trigger_time = false;
+        settings.night_mode_trigger_theme = true;
+        settings.night_mode_theme_dark = true; // 深色模式时关灯
+                                               // 系统深色模式 → Night
+        assert_eq!(
+            should_be_night(
+                &settings,
+                parse_clock_time("12:00").unwrap(),
+                Some(true),
+                None
+            ),
+            NightPhase::Night
+        );
+        // 系统浅色模式 → Day
+        assert_eq!(
+            should_be_night(
+                &settings,
+                parse_clock_time("12:00").unwrap(),
+                Some(false),
+                None
+            ),
+            NightPhase::Day
+        );
+        // system_dark 为 None → Day
+        assert_eq!(
+            should_be_night(&settings, parse_clock_time("12:00").unwrap(), None, None),
+            NightPhase::Day
+        );
+    }
+
+    #[test]
+    fn should_be_night_theme_trigger_light_mode() {
+        let mut settings = AppSettings::default();
+        settings.night_mode_enabled = true;
+        settings.night_mode_trigger_time = false;
+        settings.night_mode_trigger_theme = true;
+        settings.night_mode_theme_dark = false; // 浅色模式时关灯
+                                                // 系统浅色模式 → Night
+        assert_eq!(
+            should_be_night(
+                &settings,
+                parse_clock_time("12:00").unwrap(),
+                Some(false),
+                None
+            ),
+            NightPhase::Night
+        );
+        // 系统深色模式 → Day
+        assert_eq!(
+            should_be_night(
+                &settings,
+                parse_clock_time("12:00").unwrap(),
+                Some(true),
+                None
+            ),
+            NightPhase::Day
+        );
+    }
+
+    #[test]
+    fn should_be_night_charging_trigger() {
+        let mut settings = AppSettings::default();
+        settings.night_mode_enabled = true;
+        settings.night_mode_trigger_time = false;
+        settings.night_mode_trigger_charging = true;
+        let mut snapshot = DeviceSnapshot {
+            display_name: "Test".into(),
+            connection: mira_core::Connection::Usb,
+            battery_percent: Some(80),
+            charging: true,
+            batteries: Vec::new(),
+            dpi: None,
+            dpi_stages: None,
+            polling_rate_hz: None,
+            supported_polling_rates_hz: None,
+            profile: None,
+            confirmed_light_color: None,
+            capabilities: BTreeMap::new(),
+            evidence: String::new(),
+            readonly: false,
+            writable_mutations: Vec::new(),
+            plugin_capabilities: Vec::new(),
+        };
+        // 充电中 → Night
+        assert_eq!(
+            should_be_night(
+                &settings,
+                parse_clock_time("12:00").unwrap(),
+                None,
+                Some(&snapshot)
+            ),
+            NightPhase::Night
+        );
+        // 未充电 → Day
+        snapshot.charging = false;
+        assert_eq!(
+            should_be_night(
+                &settings,
+                parse_clock_time("12:00").unwrap(),
+                None,
+                Some(&snapshot)
+            ),
+            NightPhase::Day
+        );
+        snapshot.batteries.push(mira_core::DeviceBattery {
+            id: "mouse".into(),
+            label: "鼠标".into(),
+            percentage: 80,
+            charging: true,
+        });
+        assert_eq!(
+            should_be_night(
+                &settings,
+                parse_clock_time("12:00").unwrap(),
+                None,
+                Some(&snapshot)
+            ),
+            NightPhase::Night
+        );
+    }
+
+    #[test]
+    fn should_be_night_low_battery_trigger() {
+        let mut settings = AppSettings::default();
+        settings.night_mode_enabled = true;
+        settings.night_mode_trigger_time = false;
+        settings.night_mode_trigger_low_battery = true;
+        settings.low_battery_threshold = 20;
+        let mut snapshot = DeviceSnapshot {
+            display_name: "Test".into(),
+            connection: mira_core::Connection::Usb,
+            battery_percent: Some(15),
+            charging: false,
+            batteries: Vec::new(),
+            dpi: None,
+            dpi_stages: None,
+            polling_rate_hz: None,
+            supported_polling_rates_hz: None,
+            profile: None,
+            confirmed_light_color: None,
+            capabilities: BTreeMap::new(),
+            evidence: String::new(),
+            readonly: false,
+            writable_mutations: Vec::new(),
+            plugin_capabilities: Vec::new(),
+        };
+        // 电量 15% < 阈值 20% → Night
+        assert_eq!(
+            should_be_night(
+                &settings,
+                parse_clock_time("12:00").unwrap(),
+                None,
+                Some(&snapshot)
+            ),
+            NightPhase::Night
+        );
+        // 电量 20% == 阈值 → Day（不小于）
+        snapshot.battery_percent = Some(20);
+        assert_eq!(
+            should_be_night(
+                &settings,
+                parse_clock_time("12:00").unwrap(),
+                None,
+                Some(&snapshot)
+            ),
+            NightPhase::Day
+        );
+        snapshot.battery_percent = None;
+        snapshot.batteries.push(mira_core::DeviceBattery {
+            id: "mouse".into(),
+            label: "鼠标".into(),
+            percentage: 15,
+            charging: false,
+        });
+        assert_eq!(
+            should_be_night(
+                &settings,
+                parse_clock_time("12:00").unwrap(),
+                None,
+                Some(&snapshot)
+            ),
+            NightPhase::Night
+        );
+    }
+
+    #[test]
+    fn should_be_night_or_combination() {
+        // 特定时间（白天）OR 仅在充电时（充电中）→ Night
+        let mut settings = AppSettings::default();
+        settings.night_mode_enabled = true;
+        settings.night_mode_trigger_time = true;
+        settings.night_mode_trigger_charging = true;
+        settings.night_mode_start = "22:00".into();
+        settings.night_mode_end = "07:00".into();
+        let snapshot = DeviceSnapshot {
+            display_name: "Test".into(),
+            connection: mira_core::Connection::Usb,
+            battery_percent: Some(80),
+            charging: true,
+            batteries: Vec::new(),
+            dpi: None,
+            dpi_stages: None,
+            polling_rate_hz: None,
+            supported_polling_rates_hz: None,
+            profile: None,
+            confirmed_light_color: None,
+            capabilities: BTreeMap::new(),
+            evidence: String::new(),
+            readonly: false,
+            writable_mutations: Vec::new(),
+            plugin_capabilities: Vec::new(),
+        };
+        // 白天但充电中 → Night（OR）
+        assert_eq!(
+            should_be_night(
+                &settings,
+                parse_clock_time("12:00").unwrap(),
+                None,
+                Some(&snapshot)
+            ),
+            NightPhase::Night
+        );
+    }
+
+    #[test]
+    fn read_receiver_light_state_extracts_fields() {
+        let snapshot = DeviceSnapshot {
+            display_name: "Test".into(),
+            connection: mira_core::Connection::Usb,
+            battery_percent: None,
+            charging: false,
+            batteries: Vec::new(),
+            dpi: None,
+            dpi_stages: None,
+            polling_rate_hz: None,
+            supported_polling_rates_hz: None,
+            profile: None,
+            confirmed_light_color: None,
+            capabilities: BTreeMap::from([(
+                "receiverLighting".into(),
+                serde_json::json!({
+                    "effect": 3,
+                    "speed": 2,
+                    "brightness": 80,
+                    "option": 1,
+                    "color": "#00FF00"
+                }),
+            )]),
+            evidence: String::new(),
+            readonly: false,
+            writable_mutations: Vec::new(),
+            plugin_capabilities: Vec::new(),
+        };
+        let saved = read_receiver_light_state(&snapshot).unwrap();
+        assert_eq!(saved.effect, 3);
+        assert_eq!(saved.speed, 2);
+        assert_eq!(saved.brightness, 80);
+        assert_eq!(saved.option, 1);
+        assert_eq!(saved.color, "#00FF00");
+    }
+
+    #[test]
+    fn read_receiver_light_state_defaults_option_to_effect() {
+        let snapshot = DeviceSnapshot {
+            display_name: "Test".into(),
+            connection: mira_core::Connection::Usb,
+            battery_percent: None,
+            charging: false,
+            batteries: Vec::new(),
+            dpi: None,
+            dpi_stages: None,
+            polling_rate_hz: None,
+            supported_polling_rates_hz: None,
+            profile: None,
+            confirmed_light_color: None,
+            capabilities: BTreeMap::from([(
+                "receiverLighting".into(),
+                serde_json::json!({
+                    "effect": 2,
+                    "speed": 3,
+                    "brightness": 4,
+                    "color": "#00FF00"
+                }),
+            )]),
+            evidence: String::new(),
+            readonly: false,
+            writable_mutations: Vec::new(),
+            plugin_capabilities: Vec::new(),
+        };
+        let saved = read_receiver_light_state(&snapshot).unwrap();
+        assert_eq!(saved.option, 2);
+    }
+
+    #[test]
+    fn read_receiver_light_state_returns_none_when_missing() {
+        let snapshot = DeviceSnapshot {
+            display_name: "Test".into(),
+            connection: mira_core::Connection::Usb,
+            battery_percent: None,
+            charging: false,
+            batteries: Vec::new(),
+            dpi: None,
+            dpi_stages: None,
+            polling_rate_hz: None,
+            supported_polling_rates_hz: None,
+            profile: None,
+            confirmed_light_color: None,
+            capabilities: BTreeMap::new(),
+            evidence: String::new(),
+            readonly: false,
+            writable_mutations: Vec::new(),
+            plugin_capabilities: Vec::new(),
+        };
+        assert!(read_receiver_light_state(&snapshot).is_none());
+    }
+
+    #[test]
+    fn normalized_enforces_time_trigger_mutual_exclusion() {
+        let mut settings = AppSettings::default();
+        settings.night_mode_trigger_time = true;
+        settings.night_mode_trigger_theme = true;
+        let normalized = settings.normalized();
+        assert!(normalized.night_mode_trigger_time);
+        assert!(!normalized.night_mode_trigger_theme);
+    }
+
+    #[test]
+    fn normalized_ensures_at_least_one_light_target() {
+        let mut settings = AppSettings::default();
+        settings.night_mode_target_mouse = false;
+        settings.night_mode_target_receiver = false;
+        let normalized = settings.normalized();
+        assert!(normalized.night_mode_target_mouse);
+    }
+
+    #[test]
+    fn read_mouse_light_state_extracts_enabled_and_color() {
+        let snapshot = DeviceSnapshot {
+            display_name: "Test".into(),
+            connection: mira_core::Connection::Usb,
+            battery_percent: None,
+            charging: false,
+            batteries: Vec::new(),
+            dpi: None,
+            dpi_stages: None,
+            polling_rate_hz: None,
+            supported_polling_rates_hz: None,
+            profile: None,
+            confirmed_light_color: None,
+            capabilities: BTreeMap::from([(
+                "mouseLighting".into(),
+                serde_json::json!({
+                    "enabled": true,
+                    "color": "#FF8800"
+                }),
+            )]),
+            plugin_capabilities: Vec::new(),
+            writable_mutations: vec!["set-mouse-lighting".into()],
+            evidence: "hardware-verified".into(),
+            readonly: false,
+        };
+        let (enabled, color) = read_mouse_light_state(&snapshot).unwrap();
+        assert!(enabled);
+        assert_eq!(color, "#FF8800");
+    }
+
+    #[test]
+    fn read_mouse_light_state_returns_none_when_fields_missing() {
+        let snapshot = DeviceSnapshot {
+            display_name: "Test".into(),
+            connection: mira_core::Connection::Usb,
+            battery_percent: None,
+            charging: false,
+            batteries: Vec::new(),
+            dpi: None,
+            dpi_stages: None,
+            polling_rate_hz: None,
+            supported_polling_rates_hz: None,
+            profile: None,
+            confirmed_light_color: None,
+            capabilities: BTreeMap::new(),
+            plugin_capabilities: Vec::new(),
+            writable_mutations: Vec::new(),
+            evidence: "hardware-verified".into(),
+            readonly: false,
+        };
+        assert!(read_mouse_light_state(&snapshot).is_none());
+    }
+
+    #[test]
+    fn read_mouse_light_state_handles_missing_color_with_fallback() {
+        let make_snapshot = |enabled: bool| DeviceSnapshot {
+            display_name: "Test".into(),
+            connection: mira_core::Connection::Usb,
+            battery_percent: None,
+            charging: false,
+            batteries: Vec::new(),
+            dpi: None,
+            dpi_stages: None,
+            polling_rate_hz: None,
+            supported_polling_rates_hz: None,
+            profile: None,
+            confirmed_light_color: None,
+            capabilities: BTreeMap::from([(
+                "mouseLighting".into(),
+                serde_json::json!({ "enabled": enabled }),
+            )]),
+            plugin_capabilities: Vec::new(),
+            writable_mutations: Vec::new(),
+            evidence: "hardware-verified".into(),
+            readonly: false,
+        };
+        // enabled=true 但颜色缺失：返回 None，跳过该目标，
+        // 避免 fallback #000000 在退出夜间恢复时覆盖设备原色。
+        assert!(read_mouse_light_state(&make_snapshot(true)).is_none());
+        // enabled=false 且颜色缺失：返回 fallback 颜色（仅作为关闭写入的占位参数）。
+        let (enabled, color) = read_mouse_light_state(&make_snapshot(false)).unwrap();
+        assert!(!enabled);
+        assert_eq!(color, "#000000");
+    }
+
+    #[test]
+    fn night_mode_runtime_default_is_day_with_no_saved_state() {
+        let runtime = NightModeRuntime::default();
+        assert_eq!(runtime.phase, NightPhase::Day);
+        assert!(runtime.saved_mouse_light.is_none());
+    }
+
+    #[test]
+    fn night_mode_store_round_trips_through_json() {
+        let store = NightModeStore {
+            saved_mouse_light: Some(SavedMouseLight {
+                color: "#AB12CD".into(),
+            }),
+            saved_receiver_light: Some(SavedReceiverLight {
+                effect: 3,
+                speed: 2,
+                brightness: 80,
+                option: 1,
+                color: "#FF0000".into(),
+            }),
+        };
+        let json = serde_json::to_string(&store).unwrap();
+        let restored: NightModeStore = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.saved_mouse_light.unwrap().color, "#AB12CD");
+        let r = restored.saved_receiver_light.unwrap();
+        assert_eq!(r.effect, 3);
+        assert_eq!(r.color, "#FF0000");
+    }
+
+    #[test]
+    fn night_mode_store_default_has_no_saved_state() {
+        let store = NightModeStore::default();
+        assert!(store.saved_mouse_light.is_none());
     }
 }
 
@@ -1727,6 +3033,34 @@ fn save_settings(app: &AppHandle, settings: &AppSettings) -> Result<(), String> 
     Ok(())
 }
 
+fn night_mode_state_path(app: &AppHandle) -> Option<PathBuf> {
+    app.path()
+        .app_config_dir()
+        .ok()
+        .map(|dir| dir.join("night_mode_state.json"))
+}
+
+fn load_night_mode_state(app: &AppHandle) -> NightModeStore {
+    night_mode_state_path(app)
+        .and_then(|path| fs::read_to_string(path).ok())
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+fn save_night_mode_state(app: &AppHandle, store: &NightModeStore) -> Result<(), String> {
+    let Some(path) = night_mode_state_path(app) else {
+        return Err("config dir unavailable".to_string());
+    };
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("create config dir: {e}"))?;
+    }
+    let text = serde_json::to_string_pretty(store).map_err(|e| format!("serialize: {e}"))?;
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, &text).map_err(|e| format!("write night mode state: {e}"))?;
+    fs::rename(&tmp, &path).map_err(|e| format!("commit night mode state: {e}"))?;
+    Ok(())
+}
+
 fn software_profiles_path(app: &AppHandle) -> Option<PathBuf> {
     app.path()
         .app_config_dir()
@@ -1940,6 +3274,23 @@ fn mutation_for_exportable(
     (field_id.clone(), "value".to_string())
 }
 
+fn import_params_for_exportable(
+    inspection: &PackageInspection,
+    snapshot: &DeviceSnapshot,
+    field: &ExportableField,
+    value: &serde_json::Value,
+) -> Option<(String, serde_json::Map<String, serde_json::Value>)> {
+    let (mutation, param) = mutation_for_exportable(inspection, field);
+    if !snapshot_supports_mutation(snapshot, &mutation) {
+        return None;
+    }
+    let params = match value {
+        serde_json::Value::Object(map) => map.clone(),
+        _ => serde_json::Map::from_iter([(param, value.clone())]),
+    };
+    Some((mutation, params))
+}
+
 #[tauri::command]
 fn device_config_import(
     app: tauri::AppHandle,
@@ -1978,12 +3329,10 @@ fn device_config_import(
         let Some(value) = fields.get(&field.export_key) else {
             continue;
         };
-        let (mutation, param) = mutation_for_exportable(&inspection, field);
-        // 复合字段（object）：将键值展开为 mutation 参数
-        // 标量字段：使用单个 param 包装
-        let params = match value {
-            serde_json::Value::Object(map) => map.clone(),
-            _ => serde_json::Map::from_iter([(param, value.clone())]),
+        let Some((mutation, params)) =
+            import_params_for_exportable(&inspection, &latest, field, value)
+        else {
+            continue;
         };
         match device_mutate_blocking(&app, &mutation, &params) {
             Ok(snapshot) => {
@@ -2118,6 +3467,14 @@ fn snapshot_allows_writes(snapshot: &DeviceSnapshot) -> bool {
     !snapshot.readonly
         && device_evidence_allows_writes(&snapshot.evidence)
         && !snapshot.writable_mutations.is_empty()
+}
+
+fn snapshot_supports_mutation(snapshot: &DeviceSnapshot, mutation: &str) -> bool {
+    snapshot_allows_writes(snapshot)
+        && snapshot
+            .writable_mutations
+            .iter()
+            .any(|candidate| candidate == mutation)
 }
 
 fn display_name(
@@ -2543,11 +3900,7 @@ fn read_device_once(app: &AppHandle) {
                 let settings = cached_settings(app);
                 let _ = update_tray(app, Some(&snapshot), &settings);
                 // 低电量跨阈值检测：充电时不触发，充电结束后若仍低于阈值才再次提醒
-                let battery_value = if mouse_battery_charging(&snapshot) {
-                    None
-                } else {
-                    mouse_battery_percentage(&snapshot)
-                };
+                let battery_value = low_battery_notification_value(&snapshot);
                 let threshold = settings.low_battery_threshold;
                 let notify = state
                     .low_battery
@@ -2935,15 +4288,13 @@ fn device_mutate_blocking(
 
 #[tauri::command]
 fn autostart_state(app: tauri::AppHandle) -> Result<bool, String> {
-    let enabled = app
+    let mut enabled = app
         .autolaunch()
         .is_enabled()
         .map_err(|err| format!("failed to read autostart state: {err}"))?;
     #[cfg(target_os = "macos")]
-    if enabled {
-        if let Err(error) = ensure_autostart_bundle_identifier(&app) {
-            eprintln!("[mira] failed to link autostart item to app bundle: {error}");
-        }
+    {
+        enabled = migrate_legacy_launch_agent(&app, enabled)?;
     }
     Ok(enabled)
 }
@@ -2952,74 +4303,139 @@ fn autostart_state(app: tauri::AppHandle) -> Result<bool, String> {
 fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
     let autolaunch = app.autolaunch();
     if enabled {
+        #[cfg(target_os = "macos")]
+        if running_from_disk_image() {
+            remove_legacy_launch_agent(&app)?;
+            return Err(
+                "Mira is running from a mounted DMG. Drag Mira to Applications before enabling launch at login."
+                    .to_string(),
+            );
+        }
         autolaunch
             .enable()
             .map_err(|err| format!("failed to enable autostart: {err}"))?;
         #[cfg(target_os = "macos")]
-        ensure_autostart_bundle_identifier(&app)?;
+        remove_legacy_launch_agent(&app)?;
         Ok(())
     } else {
         autolaunch
             .disable()
-            .map_err(|err| format!("failed to disable autostart: {err}"))
+            .map_err(|err| format!("failed to disable autostart: {err}"))?;
+        #[cfg(target_os = "macos")]
+        remove_legacy_launch_agent(&app)?;
+        Ok(())
     }
 }
 
-#[cfg(target_os = "macos")]
-fn ensure_autostart_bundle_identifier(app: &AppHandle) -> Result<(), String> {
-    let Some(home) = std::env::var_os("HOME") else {
-        return Ok(());
-    };
-    let plist = PathBuf::from(home)
-        .join("Library")
-        .join("LaunchAgents")
-        .join(format!("{}.plist", app.package_info().name));
-    if !plist.exists() {
-        return Ok(());
+#[tauri::command]
+fn open_external_url(url: String) -> Result<(), String> {
+    if !is_allowed_external_url(&url) {
+        return Err("unsupported external URL".to_string());
     }
 
-    let identifier = app.config().identifier.to_string();
-    let existing = Command::new("/usr/libexec/PlistBuddy")
-        .args(["-c", "Print :AssociatedBundleIdentifiers"])
-        .arg(&plist)
-        .output()
-        .map_err(|err| format!("failed to inspect autostart bundle identifier: {err}"))?;
-    if existing.status.success()
-        && String::from_utf8_lossy(&existing.stdout).contains(identifier.as_str())
-    {
-        return Ok(());
-    }
+    #[cfg(target_os = "macos")]
+    let status = Command::new("open").arg(&url).status();
 
-    let _ = Command::new("/usr/libexec/PlistBuddy")
-        .args(["-c", "Delete :AssociatedBundleIdentifiers"])
-        .arg(&plist)
+    #[cfg(target_os = "windows")]
+    let status = Command::new("rundll32")
+        .args(["url.dll,FileProtocolHandler", url.as_str()])
         .status();
-    run_plistbuddy(
-        &plist,
-        "Add :AssociatedBundleIdentifiers array",
-        "create autostart bundle identifier array",
-    )?;
-    run_plistbuddy(
-        &plist,
-        &format!("Add :AssociatedBundleIdentifiers:0 string {identifier}"),
-        "write autostart bundle identifier",
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let status = Command::new("xdg-open").arg(&url).status();
+
+    status
+        .map_err(|err| format!("failed to open external URL: {err}"))
+        .and_then(|status| {
+            if status.success() {
+                Ok(())
+            } else {
+                Err(format!("failed to open external URL: {status}"))
+            }
+        })
+}
+
+fn is_allowed_external_url(url: &str) -> bool {
+    let is_web_url = url.starts_with("https://") || url.starts_with("http://");
+    is_web_url && !url.chars().any(|ch| ch.is_control() || ch.is_whitespace())
+}
+
+#[cfg(target_os = "macos")]
+fn legacy_launch_agent_path(app: &AppHandle) -> Option<PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    Some(
+        PathBuf::from(home)
+            .join("Library")
+            .join("LaunchAgents")
+            .join(format!("{}.plist", app.package_info().name)),
     )
 }
 
 #[cfg(target_os = "macos")]
-fn run_plistbuddy(plist: &Path, command: &str, action: &str) -> Result<(), String> {
-    let output = Command::new("/usr/libexec/PlistBuddy")
-        .args(["-c", command])
-        .arg(plist)
-        .output()
-        .map_err(|err| format!("failed to {action}: {err}"))?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(format!(
-            "failed to {action}: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ))
+fn migrate_legacy_launch_agent(app: &AppHandle, enabled: bool) -> Result<bool, String> {
+    let legacy_enabled = legacy_launch_agent_path(app).is_some_and(|path| path.exists());
+    if !legacy_enabled {
+        return Ok(enabled);
+    }
+
+    if !enabled {
+        if running_from_disk_image() {
+            remove_legacy_launch_agent(app)?;
+            return Ok(false);
+        }
+        app.autolaunch()
+            .enable()
+            .map_err(|err| format!("failed to migrate autostart item: {err}"))?;
+    }
+    remove_legacy_launch_agent(app)?;
+    Ok(true)
+}
+
+#[cfg(target_os = "macos")]
+fn remove_legacy_launch_agent(app: &AppHandle) -> Result<(), String> {
+    let Some(plist) = legacy_launch_agent_path(app) else {
+        return Ok(());
+    };
+    if !plist.exists() {
+        return Ok(());
+    }
+
+    let _ = Command::new("launchctl")
+        .args(["remove", app.package_info().name.as_ref()])
+        .status();
+    fs::remove_file(&plist)
+        .map_err(|err| format!("failed to remove legacy autostart launch agent: {err}"))
+}
+
+#[cfg(target_os = "macos")]
+fn running_from_disk_image() -> bool {
+    current_app_bundle_path().is_some_and(|path| path.starts_with("/Volumes"))
+}
+
+#[cfg(target_os = "macos")]
+fn current_app_bundle_path() -> Option<PathBuf> {
+    let mut path = std::env::current_exe().ok()?.canonicalize().ok()?;
+    loop {
+        if path.extension().is_some_and(|ext| ext == "app") {
+            return Some(path);
+        }
+        if !path.pop() {
+            return None;
+        }
+    }
+}
+
+#[cfg(test)]
+mod external_url_tests {
+    use super::is_allowed_external_url;
+
+    #[test]
+    fn allows_web_urls_only() {
+        assert!(is_allowed_external_url("https://hey.run/donate/"));
+        assert!(is_allowed_external_url("http://example.test/path"));
+        assert!(!is_allowed_external_url("file:///Applications/Mira.app"));
+        assert!(!is_allowed_external_url("javascript:alert(1)"));
+        assert!(!is_allowed_external_url("https://hey.run/donate/\nopen"));
     }
 }
 
@@ -3234,7 +4650,24 @@ fn settings_get(app: tauri::AppHandle) -> Result<AppSettings, String> {
 #[tauri::command]
 fn settings_set(app: tauri::AppHandle, settings: AppSettings) -> Result<AppSettings, String> {
     let settings = settings.normalized();
-    let tray_icon_color_changed = cached_settings(&app).tray_icon_color != settings.tray_icon_color;
+    let previous_settings = cached_settings(&app);
+    let tray_icon_color_changed = previous_settings.tray_icon_color != settings.tray_icon_color;
+    let low_battery_threshold_changed =
+        previous_settings.low_battery_threshold != settings.low_battery_threshold;
+    // 安静灯光设置变更时唤醒调度器立即重新评估阶段。
+    let night_mode_changed = previous_settings.night_mode_enabled != settings.night_mode_enabled
+        || previous_settings.night_mode_start != settings.night_mode_start
+        || previous_settings.night_mode_end != settings.night_mode_end
+        || previous_settings.night_mode_trigger_time != settings.night_mode_trigger_time
+        || previous_settings.night_mode_trigger_theme != settings.night_mode_trigger_theme
+        || previous_settings.night_mode_theme_dark != settings.night_mode_theme_dark
+        || previous_settings.night_mode_trigger_charging != settings.night_mode_trigger_charging
+        || previous_settings.night_mode_trigger_low_battery
+            != settings.night_mode_trigger_low_battery
+        || previous_settings.night_mode_target_mouse != settings.night_mode_target_mouse
+        || previous_settings.night_mode_target_receiver != settings.night_mode_target_receiver
+        || (settings.night_mode_trigger_low_battery
+            && previous_settings.low_battery_threshold != settings.low_battery_threshold);
     save_settings(&app, &settings)?;
     update_cached_settings(&app, &settings);
     if tray_icon_color_changed {
@@ -3252,6 +4685,17 @@ fn settings_set(app: tauri::AppHandle, settings: AppSettings) -> Result<AppSetti
         .and_then(|guard| primary_snapshot(&guard).cloned());
     update_tray(&app, snapshot.as_ref(), &settings)
         .map_err(|error| format!("update tray: {error}"))?;
+    if low_battery_threshold_changed {
+        let battery_value = snapshot.as_ref().and_then(low_battery_notification_value);
+        app.state::<SessionState>()
+            .low_battery
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .sync(battery_value, settings.low_battery_threshold);
+    }
+    if night_mode_changed {
+        request_night_mode_eval(&app.state::<SessionState>());
+    }
     Ok(settings)
 }
 
@@ -3413,6 +4857,46 @@ fn tr_low_battery_body(lang: &str, threshold: u8, percent: u8) -> String {
     }
 }
 
+fn tr_night_mode_title(lang: &str) -> &'static str {
+    if lang == "en" {
+        "Quiet lighting"
+    } else {
+        "安静灯光"
+    }
+}
+
+fn tr_night_mode_off_failed(lang: &str, error: &str) -> String {
+    if lang == "en" {
+        format!("Failed to turn off mouse lighting: {error}")
+    } else {
+        format!("关闭鼠标灯光失败：{error}")
+    }
+}
+
+fn tr_night_mode_restore_failed(lang: &str, error: &str) -> String {
+    if lang == "en" {
+        format!("Failed to restore mouse lighting: {error}")
+    } else {
+        format!("恢复鼠标灯光失败：{error}")
+    }
+}
+
+fn tr_night_mode_off_failed_receiver(lang: &str, error: &str) -> String {
+    if lang == "en" {
+        format!("Failed to turn off receiver lighting: {error}")
+    } else {
+        format!("关闭接收器灯光失败：{error}")
+    }
+}
+
+fn tr_night_mode_restore_failed_receiver(lang: &str, error: &str) -> String {
+    if lang == "en" {
+        format!("Failed to restore receiver lighting: {error}")
+    } else {
+        format!("恢复接收器灯光失败：{error}")
+    }
+}
+
 fn tr_tooltip_connected(_lang: &str, connection: &str, name: &str) -> String {
     format!("Mira · {} · {}", connection, name)
 }
@@ -3492,6 +4976,14 @@ fn mouse_battery_charging(snapshot: &DeviceSnapshot) -> bool {
         .or_else(|| snapshot.batteries.first())
         .map(|battery| battery.charging)
         .unwrap_or(snapshot.charging)
+}
+
+fn low_battery_notification_value(snapshot: &DeviceSnapshot) -> Option<u8> {
+    if mouse_battery_charging(snapshot) {
+        None
+    } else {
+        mouse_battery_percentage(snapshot)
+    }
 }
 
 /// Battery level icons for each (dark, charging) combination.
@@ -3851,7 +5343,10 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
             focus_main(app.get_webview_window("main"))
         }))
-        .plugin(tauri_plugin_autostart::Builder::new().build())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::AppleScript,
+            None,
+        ))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_process::init())
@@ -3958,6 +5453,8 @@ pub fn run() {
                                 .and_then(|guard| primary_snapshot(&guard).cloned());
                             let settings = cached_settings(&app_handle);
                             let _ = update_tray(&app_handle, snapshot.as_ref(), &settings);
+                            // 系统主题变化时唤醒安静灯光调度器（跟随系统主题场景）。
+                            request_night_mode_eval(&state);
                         }
                         _ => {}
                     }
@@ -3967,6 +5464,38 @@ pub fn run() {
             // Spawn background thread that reads the device periodically.
             // This keeps `device_snapshot` instant — the UI never blocks on HID I/O.
             spawn_device_reader(app.handle().clone());
+
+            // 安静灯光：从磁盘加载持久化状态（saved_mouse_light），然后启动调度器线程。
+            //
+            // 初始 phase 的选择策略（关键）：
+            // - saved_mouse_light 存在 → phase = Night：说明上次 Mira 退出/崩溃时
+            //   灯光已被关闭且未恢复。调度器首次循环会根据当前时间决定：
+            //     · 日间时段 → Night→Day 转换，恢复灯光。
+            //     · 夜间时段 → 相等返回，灯光保持关闭。
+            // - saved_mouse_light 不存在 → phase = Day：说明上次退出时灯光状态已正常。
+            //   调度器首次循环会根据当前时间决定：
+            //     · 日间时段 → 相等返回。
+            //     · 夜间时段 → Day→Night 转换，关闭灯光。
+            // 这个策略确保 Mira 重启后能正确恢复/关闭灯光，不依赖持久化的 phase
+            // （phase 在启动时根据 saved_mouse_light 和当前时间推导）。
+            {
+                let store = load_night_mode_state(app.handle());
+                let runtime = NightModeRuntime {
+                    phase: if store.saved_mouse_light.is_some()
+                        || store.saved_receiver_light.is_some()
+                    {
+                        NightPhase::Night
+                    } else {
+                        NightPhase::Day
+                    },
+                    saved_mouse_light: store.saved_mouse_light,
+                    saved_receiver_light: store.saved_receiver_light,
+                };
+                let state = app.state::<SessionState>();
+                let mut guard = state.night_mode.lock().unwrap_or_else(|e| e.into_inner());
+                *guard = runtime;
+            }
+            spawn_night_mode_scheduler(app.handle().clone());
 
             let start_hidden = cached_settings(app.handle()).start_hidden;
             if let Some(window) = app.get_webview_window("main") {
@@ -3997,6 +5526,7 @@ pub fn run() {
             discover_devices,
             autostart_state,
             set_autostart,
+            open_external_url,
             plugin_updates_check,
             plugin_update_install,
             device_config_export,

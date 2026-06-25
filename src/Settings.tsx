@@ -8,6 +8,7 @@ import { notifyError, notifyInfo } from './notify';
 import { extractChannel, exportDiagnostics } from './plugin-utils';
 import { applyLanguage, type AppLanguage } from './i18n';
 import { save, open } from '@tauri-apps/plugin-dialog';
+import { ExternalLink } from './ExternalLink';
 
 const DEFAULT_SETTINGS: AppSettings = {
   language: 'auto',
@@ -22,6 +23,13 @@ const DEFAULT_SETTINGS: AppSettings = {
   nightModeEnabled: false,
   nightModeStart: '22:00',
   nightModeEnd: '07:00',
+  nightModeTriggerTime: true,
+  nightModeTriggerTheme: false,
+  nightModeThemeDark: true,
+  nightModeTriggerCharging: false,
+  nightModeTriggerLowBattery: false,
+  nightModeTargetMouse: true,
+  nightModeTargetReceiver: false,
   refreshIntervalSeconds: 5,
   telemetryDisabled: true,
   automaticUpdateChecks: true,
@@ -58,7 +66,7 @@ function Toggle({ checked, onChange, label, disabled = false }: { checked: boole
   );
 }
 
-export function SettingsPage({ onNavigateAbout, onThemeChange, previewMode = false }: { onNavigateAbout: () => void; onThemeChange: (theme: ThemeMode) => void; previewMode?: boolean }) {
+export function SettingsPage({ onNavigateAbout, onThemeChange, previewMode = false, writableMutations = [] }: { onNavigateAbout: () => void; onThemeChange: (theme: ThemeMode) => void; previewMode?: boolean; writableMutations?: string[] }) {
   const { t } = useTranslation();
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [autostartEnabled, setAutostartEnabled] = useState(false);
@@ -340,8 +348,67 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, previewMode = fal
               <Tooltip label={t('settings.nightMode.tooltip')}><button className="icon-button" aria-label={t('settings.section.nightLight')}>?</button></Tooltip>
             </div>
             <SettingRow title={t('settings.nightMode.label')} hint={t('settings.nightMode.hint')}>
-              <Toggle checked={false} onChange={() => {}} label={t('settings.nightMode.label')} disabled />
+              <Toggle checked={settings.nightModeEnabled} onChange={(v) => update({ nightModeEnabled: v })} label={t('settings.nightMode.label')} />
             </SettingRow>
+            {settings.nightModeEnabled && (
+              <>
+                <p className="setting-hint" style={{ paddingTop: 4 }}>{t('settings.nightMode.triggerSection')}</p>
+                <SettingRow title={t('settings.nightMode.triggerTime')} hint={t('settings.nightMode.triggerTimeHint')}>
+                  <Toggle
+                    checked={settings.nightModeTriggerTime}
+                    onChange={(v) => update({ nightModeTriggerTime: v, ...(v ? { nightModeTriggerTheme: false } : {}) })}
+                    label={t('settings.nightMode.triggerTime')}
+                  />
+                </SettingRow>
+                {settings.nightModeTriggerTime && (
+                  <>
+                    <SettingRow title={t('settings.nightMode.startLabel')} hint={t('settings.nightMode.startHint')}>
+                      <input type="time" value={settings.nightModeStart} onChange={(e) => update({ nightModeStart: e.target.value })} aria-label={t('settings.nightMode.startLabel')} />
+                    </SettingRow>
+                    <SettingRow title={t('settings.nightMode.endLabel')} hint={t('settings.nightMode.endHint')}>
+                      <input type="time" value={settings.nightModeEnd} onChange={(e) => update({ nightModeEnd: e.target.value })} aria-label={t('settings.nightMode.endLabel')} />
+                    </SettingRow>
+                  </>
+                )}
+                <SettingRow title={t('settings.nightMode.triggerTheme')} hint={t('settings.nightMode.triggerThemeHint')}>
+                  <Toggle
+                    checked={settings.nightModeTriggerTheme}
+                    onChange={(v) => update({ nightModeTriggerTheme: v, ...(v ? { nightModeTriggerTime: false } : {}) })}
+                    label={t('settings.nightMode.triggerTheme')}
+                  />
+                </SettingRow>
+                {settings.nightModeTriggerTheme && (
+                  <SettingRow title={t('settings.nightMode.triggerTheme')} hint={t('settings.nightMode.triggerThemeHint')}>
+                    <select
+                      value={settings.nightModeThemeDark ? 'dark' : 'light'}
+                      onChange={(e) => update({ nightModeThemeDark: e.target.value === 'dark' })}
+                      aria-label={t('settings.nightMode.triggerTheme')}
+                    >
+                      <option value="dark">{t('settings.nightMode.themeDark')}</option>
+                      <option value="light">{t('settings.nightMode.themeLight')}</option>
+                    </select>
+                  </SettingRow>
+                )}
+                <SettingRow title={t('settings.nightMode.triggerCharging')} hint={t('settings.nightMode.triggerChargingHint')}>
+                  <Toggle checked={settings.nightModeTriggerCharging} onChange={(v) => update({ nightModeTriggerCharging: v })} label={t('settings.nightMode.triggerCharging')} />
+                </SettingRow>
+                <SettingRow title={t('settings.nightMode.triggerLowBattery')} hint={t('settings.nightMode.triggerLowBatteryHint', { value: settings.lowBatteryThreshold })}>
+                  <Toggle checked={settings.nightModeTriggerLowBattery} onChange={(v) => update({ nightModeTriggerLowBattery: v })} label={t('settings.nightMode.triggerLowBattery')} />
+                </SettingRow>
+                <p className="setting-hint" style={{ paddingTop: 4 }}>{t('settings.nightMode.targetSection')}</p>
+                <SettingRow title={t('settings.nightMode.targetMouse')} hint={t('settings.nightMode.targetMouseHint')}>
+                  <Toggle checked={settings.nightModeTargetMouse} onChange={(v) => update({ nightModeTargetMouse: v })} label={t('settings.nightMode.targetMouse')} />
+                </SettingRow>
+                <SettingRow title={t('settings.nightMode.targetReceiver')} hint={t('settings.nightMode.targetReceiverHint')}>
+                  <Toggle
+                    checked={settings.nightModeTargetReceiver}
+                    onChange={(v) => update({ nightModeTargetReceiver: v })}
+                    label={t('settings.nightMode.targetReceiver')}
+                    disabled={!writableMutations.includes('set-receiver-lighting')}
+                  />
+                </SettingRow>
+              </>
+            )}
           </section>
 
           <section className="card settings-section">
@@ -455,7 +522,7 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, previewMode = fal
             <div className="card-title"><h2>{t('about.section.donate')}</h2></div>
             <p className="setting-hint donate-hint">{t('about.donate.hint')}</p>
             <div className="contact-links">
-              <a className="primary" href="https://hey.run/donate/" target="_blank" rel="noopener noreferrer">{t('about.donate.button')}</a>
+              <ExternalLink className="primary" href="https://hey.run/donate/" errorTitle={t('notification.openExternalFailed')}>{t('about.donate.button')}</ExternalLink>
             </div>
           </section>
         </>
