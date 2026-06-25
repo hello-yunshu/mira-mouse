@@ -24,18 +24,25 @@ DMG_DIR="$ROOT_DIR/target/release/bundle/dmg"
 DMG_NAME="${APP_NAME}_${VERSION}_${ARCH}.dmg"
 DMG_PATH="${2:-$DMG_DIR/$DMG_NAME}"
 TMP_DMG="/tmp/${APP_NAME}-build-$$.dmg"
+ATTACH_PLIST="/tmp/${APP_NAME}-attach-$$.plist"
 VOL_NAME="$APP_NAME"
-MOUNT_POINT="/Volumes/$VOL_NAME"
+MOUNT_POINT=""
 
 echo "==> 创建可读写 DMG"
 hdiutil create -ov -volname "$VOL_NAME" -fs HFS+ -size 300m "$TMP_DMG" >/dev/null
 
 echo "==> 挂载"
-hdiutil attach -readwrite -nobrowse -noautoopen "$TMP_DMG" >/dev/null
+hdiutil attach -readwrite -nobrowse -noautoopen -plist "$TMP_DMG" > "$ATTACH_PLIST"
+MOUNT_POINT=$(/usr/libexec/PlistBuddy -c "Print :system-entities:0:mount-point" "$ATTACH_PLIST")
+if [ -z "$MOUNT_POINT" ] || [ ! -d "$MOUNT_POINT" ]; then
+  echo "错误: 无法确定 DMG 挂载点" >&2
+  exit 1
+fi
 
 cleanup() {
-  hdiutil detach "$MOUNT_POINT" -force >/dev/null 2>&1 || true
+  [ -n "$MOUNT_POINT" ] && hdiutil detach "$MOUNT_POINT" -force >/dev/null 2>&1 || true
   rm -f "$TMP_DMG"
+  rm -f "$ATTACH_PLIST"
 }
 trap cleanup EXIT
 
@@ -47,13 +54,13 @@ cp "$BACKGROUND" "$MOUNT_POINT/.background/background.png"
 [ -f "$BACKGROUND_2X" ] && cp "$BACKGROUND_2X" "$MOUNT_POINT/.background/background@2x.png"
 
 echo "==> 设置窗口布局"
-osascript <<APPLESCRIPT
+osascript <<APPLESCRIPT >/dev/null
 tell application "Finder"
-    set diskName to "$VOL_NAME"
-    open disk diskName
+    set dmgFolder to (POSIX file "$MOUNT_POINT") as alias
+    open dmgFolder
     delay 1
 
-    set theWindow to container window of disk diskName
+    set theWindow to container window of dmgFolder
     set current view of theWindow to icon view
     set toolbar visible of theWindow to false
     set statusbar visible of theWindow to false
@@ -64,8 +71,8 @@ tell application "Finder"
     set icon size of theViewOptions to 80
     set background picture of theViewOptions to (POSIX file "$MOUNT_POINT/.background/background.png") as alias
 
-    set position of item "$APP_NAME" of theWindow to {160, 200}
-    set position of item "Applications" of theWindow to {500, 200}
+    set position of item "$APP_NAME" of dmgFolder to {160, 200}
+    set position of item "Applications" of dmgFolder to {500, 200}
 end tell
 APPLESCRIPT
 
@@ -81,6 +88,7 @@ mkdir -p "$DMG_DIR"
 rm -f "$DMG_PATH"
 hdiutil convert -ov -format UDZO "$TMP_DMG" -o "$DMG_PATH" >/dev/null
 rm -f "$TMP_DMG"
+rm -f "$ATTACH_PLIST"
 
 echo ""
 echo "✓ DMG 已生成: $DMG_PATH"

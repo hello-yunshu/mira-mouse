@@ -108,7 +108,9 @@ pub fn enumerate_matched_devices(
                         candidate.path.clone(),
                     );
                     if let Some(&idx) = dedup_index.get(&key) {
-                        if evidence_rank(&candidate.evidence) > evidence_rank(&matches[idx].evidence) {
+                        if evidence_rank(&candidate.evidence)
+                            > evidence_rank(&matches[idx].evidence)
+                        {
                             matches[idx] = candidate;
                         }
                     } else {

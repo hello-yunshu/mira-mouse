@@ -1490,6 +1490,7 @@ function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceCh
       <section
         className="status-strip"
         aria-label={t('dashboard.deviceStatus')}
+        data-status-count={statusItems.length}
         style={{ gridTemplateColumns: `repeat(${statusItems.length}, minmax(0, 1fr))` }}
       >
         {statusItems.map(({ id, label, value, icon: StatusIcon, disabled, color, onClick }) => {
