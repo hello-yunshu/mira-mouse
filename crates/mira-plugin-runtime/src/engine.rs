@@ -514,9 +514,11 @@ impl ProtocolPackage {
                 continue;
             }
             // 检查所有 byte 定义是否无 param 依赖
-            let cacheable = command.request.bytes.iter().all(|byte| {
-                byte.param.is_none() && byte.indexed_by.is_none()
-            });
+            let cacheable = command
+                .request
+                .bytes
+                .iter()
+                .all(|byte| byte.param.is_none() && byte.indexed_by.is_none());
             if !cacheable {
                 continue;
             }
@@ -638,9 +640,18 @@ impl ProtocolPackage {
         workflow_id: &str,
         cache: Option<&Mutex<FeatureIndexCache>>,
     ) -> Result<BTreeMap<String, Value>, String> {
-        self.execute_with_initial_outputs(api, path, workflow_id, BTreeMap::new(), None, None, cache)
+        self.execute_with_initial_outputs(
+            api,
+            path,
+            workflow_id,
+            BTreeMap::new(),
+            None,
+            None,
+            cache,
+        )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn execute_with_initial_outputs(
         &self,
         api: &HidApi,
@@ -685,7 +696,8 @@ impl ProtocolPackage {
                 if let Some(cache) = feature_index_cache {
                     if let Some(feature_id) = params.get("featureId").and_then(Value::as_u64) {
                         let cache_hit = cache.lock().ok().and_then(|guard| {
-                            guard.get(path)
+                            guard
+                                .get(path)
                                 .and_then(|device_cache| device_cache.get(&(feature_id as u16)))
                                 .copied()
                         });
@@ -731,12 +743,15 @@ impl ProtocolPackage {
                 if let Some(cache) = feature_index_cache {
                     if let (Some(feature_id), Some(feature_index)) = (
                         params.get("featureId").and_then(Value::as_u64),
-                        session.outputs.get(&step.output)
+                        session
+                            .outputs
+                            .get(&step.output)
                             .and_then(|v| v.get("featureIndex"))
                             .and_then(Value::as_u64),
                     ) {
                         if let Ok(mut guard) = cache.lock() {
-                            guard.entry(path.to_string())
+                            guard
+                                .entry(path.to_string())
                                 .or_insert_with(HashMap::new)
                                 .insert(feature_id as u16, feature_index as u8);
                         }
@@ -912,7 +927,15 @@ impl ProtocolPackage {
                 onboard_memory_cache,
             );
         }
-        self.mutate_inner(api, path, mutation_id, params, ctx_outputs, None, onboard_memory_cache)
+        self.mutate_inner(
+            api,
+            path,
+            mutation_id,
+            params,
+            ctx_outputs,
+            None,
+            onboard_memory_cache,
+        )
     }
 
     /// 查找声明了目标 mutation 的事务。
@@ -943,6 +966,7 @@ impl ProtocolPackage {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn mutate_in_transaction(
         &self,
         api: &HidApi,
@@ -1010,6 +1034,7 @@ impl ProtocolPackage {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn mutate_inner(
         &self,
         api: &HidApi,
@@ -2789,9 +2814,7 @@ mod tests {
             }"#,
         );
         // 同一 mutation 属于多个事务时必须报错，避免 snapshot/rollback 选择不确定。
-        assert!(package
-            .transaction_for_mutation("mouse-set-dpi")
-            .is_err());
+        assert!(package.transaction_for_mutation("mouse-set-dpi").is_err());
     }
 
     #[test]
@@ -2851,7 +2874,14 @@ mod tests {
         );
         let api = test_hid_api();
         let outputs = BTreeMap::from([("dpi".into(), serde_json::json!({"value": 0}))]);
-        let result = package.mutate(api, "test-path", "test-set-dpi", &Map::new(), &outputs, None);
+        let result = package.mutate(
+            api,
+            "test-path",
+            "test-set-dpi",
+            &Map::new(),
+            &outputs,
+            None,
+        );
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("not available on this device"));
     }
@@ -2882,7 +2912,14 @@ mod tests {
         );
         let api = test_hid_api();
         let outputs = BTreeMap::new();
-        let result = package.mutate(api, "test-path", "test-set-dpi", &Map::new(), &outputs, None);
+        let result = package.mutate(
+            api,
+            "test-path",
+            "test-set-dpi",
+            &Map::new(),
+            &outputs,
+            None,
+        );
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("settle delay exceeds limit"));
     }
@@ -2912,7 +2949,14 @@ mod tests {
         );
         let api = test_hid_api();
         let outputs = BTreeMap::new();
-        let result = package.mutate(api, "test-path", "test-set-dpi", &Map::new(), &outputs, None);
+        let result = package.mutate(
+            api,
+            "test-path",
+            "test-set-dpi",
+            &Map::new(),
+            &outputs,
+            None,
+        );
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("missing command"));
     }
@@ -2955,7 +2999,14 @@ mod tests {
         );
         let api = test_hid_api();
         let outputs = BTreeMap::new();
-        let result = package.mutate(api, "test-path", "test-set-dpi", &Map::new(), &outputs, None);
+        let result = package.mutate(
+            api,
+            "test-path",
+            "test-set-dpi",
+            &Map::new(),
+            &outputs,
+            None,
+        );
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
