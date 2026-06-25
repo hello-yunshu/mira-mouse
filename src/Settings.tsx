@@ -68,6 +68,10 @@ function Toggle({ checked, onChange, label, disabled = false }: { checked: boole
 
 export function SettingsPage({ onNavigateAbout, onThemeChange, previewMode = false, writableMutations = [] }: { onNavigateAbout: () => void; onThemeChange: (theme: ThemeMode) => void; previewMode?: boolean; writableMutations?: string[] }) {
   const { t } = useTranslation();
+  // 设备是否支持任何灯光写入：鼠标灯光或接收器灯光。
+  // 不支持时安静灯光整体 disabled，避免用户配置后无效。
+  const supportsAnyLighting = writableMutations.includes('set-mouse-lighting')
+    || writableMutations.includes('set-receiver-lighting');
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [autostartEnabled, setAutostartEnabled] = useState(false);
   const [plugins, setPlugins] = useState<BundledPluginInfo[]>([]);
@@ -348,7 +352,7 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, previewMode = fal
               <Tooltip label={t('settings.nightMode.tooltip')}><button className="icon-button" aria-label={t('settings.section.nightLight')}>?</button></Tooltip>
             </div>
             <SettingRow title={t('settings.nightMode.label')} hint={t('settings.nightMode.hint')}>
-              <Toggle checked={settings.nightModeEnabled} onChange={(v) => update({ nightModeEnabled: v })} label={t('settings.nightMode.label')} />
+              <Toggle checked={settings.nightModeEnabled} onChange={(v) => update({ nightModeEnabled: v })} label={t('settings.nightMode.label')} disabled={!supportsAnyLighting} />
             </SettingRow>
             {settings.nightModeEnabled && (
               <>
