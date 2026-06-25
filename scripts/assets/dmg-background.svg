@@ -2,41 +2,31 @@
 <svg viewBox="0 0 660 400" width="660" height="400" xmlns="http://www.w3.org/2000/svg">
   <defs>
     <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#1E1A28"/>
-      <stop offset="50%" stop-color="#241F30"/>
-      <stop offset="100%" stop-color="#2D2638"/>
+      <stop offset="0%" stop-color="#16131E"/>
+      <stop offset="48%" stop-color="#241F30"/>
+      <stop offset="100%" stop-color="#2A2336"/>
     </linearGradient>
-    <radialGradient id="auraPink" cx="50%" cy="50%" r="50%">
-      <stop offset="0%" stop-color="#D8B0B7" stop-opacity="0.22"/>
-      <stop offset="60%" stop-color="#D8B0B7" stop-opacity="0.08"/>
+    <radialGradient id="pink" cx="15%" cy="18%" r="42%">
+      <stop offset="0%" stop-color="#D8B0B7" stop-opacity="0.20"/>
       <stop offset="100%" stop-color="#D8B0B7" stop-opacity="0"/>
     </radialGradient>
-    <radialGradient id="auraPurple" cx="50%" cy="50%" r="50%">
-      <stop offset="0%" stop-color="#9B7BB0" stop-opacity="0.20"/>
-      <stop offset="60%" stop-color="#9B7BB0" stop-opacity="0.07"/>
-      <stop offset="100%" stop-color="#9B7BB0" stop-opacity="0"/>
-    </radialGradient>
-    <radialGradient id="auraCyan" cx="50%" cy="50%" r="50%">
-      <stop offset="0%" stop-color="#7BA0B8" stop-opacity="0.14"/>
-      <stop offset="60%" stop-color="#7BA0B8" stop-opacity="0.05"/>
-      <stop offset="100%" stop-color="#7BA0B8" stop-opacity="0"/>
+    <radialGradient id="violet" cx="80%" cy="75%" r="48%">
+      <stop offset="0%" stop-color="#8068A0" stop-opacity="0.24"/>
+      <stop offset="100%" stop-color="#8068A0" stop-opacity="0"/>
     </radialGradient>
   </defs>
-
   <rect width="660" height="400" fill="url(#bg)"/>
-
-  <circle cx="110" cy="90" r="180" fill="url(#auraPink)"/>
-  <circle cx="560" cy="320" r="200" fill="url(#auraPurple)"/>
-  <circle cx="330" cy="210" r="160" fill="url(#auraCyan)" opacity="0.7"/>
-
-  <text x="330" y="46" text-anchor="middle" font-family="-apple-system, 'PingFang SC', system-ui, sans-serif" font-size="22" font-weight="700" fill="#E0DCE8" letter-spacing="1.5">Mira</text>
-  <text x="330" y="65" text-anchor="middle" font-family="-apple-system, 'PingFang SC', system-ui, sans-serif" font-size="9" font-weight="400" fill="#9B91A8" letter-spacing="0.5">鼠标配置工具 · Mouse Configuration</text>
-
-  <g opacity="0.3">
-    <line x1="230" y1="200" x2="420" y2="200" stroke="#D8B0B7" stroke-width="1.5" stroke-dasharray="6,5"/>
-    <polygon points="420,193 436,200 420,207" fill="#D8B0B7"/>
+  <rect width="660" height="400" fill="url(#pink)"/>
+  <rect width="660" height="400" fill="url(#violet)"/>
+  <path d="M0 145 H160 C198 145 202 132 284 132 C332 132 350 118 370 96" fill="none" stroke="#D8B0B7" stroke-opacity="0.33" stroke-width="1"/>
+  <path d="M276 308 H392 C430 308 438 286 460 286 H620 C640 286 648 268 660 250" fill="none" stroke="#8091DC" stroke-opacity="0.32" stroke-width="1"/>
+  <g font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', system-ui, sans-serif" text-anchor="middle">
+    <text x="330" y="46" font-size="24" font-weight="700" fill="#E8E4EE">Mira</text>
+    <text x="330" y="66" font-size="10" fill="#9A91A8">鼠标配置工具 · Mouse Configuration</text>
+    <line x1="248" y1="198" x2="395" y2="198" stroke="#D8B0B7" stroke-opacity="0.67" stroke-width="2" stroke-dasharray="9 7"/>
+    <polygon points="412,198 392,188 392,208" fill="#D8B0B7" fill-opacity="0.74"/>
+    <text x="330" y="338" font-size="15" font-weight="700" fill="#E8E2EE">拖动 Mira 到 Applications</text>
+    <text x="330" y="356" font-size="12" font-weight="600" fill="#C7BED6">完成安装</text>
+    <text x="330" y="376" font-size="10" fill="#827A91">Drag Mira to Applications to install</text>
   </g>
-
-  <text x="330" y="350" text-anchor="middle" font-family="-apple-system, 'PingFang SC', system-ui, sans-serif" font-size="12" font-weight="600" fill="#C8C2D4">将 Mira 拖到 Applications 文件夹完成安装</text>
-  <text x="330" y="366" text-anchor="middle" font-family="-apple-system, system-ui, sans-serif" font-size="9" font-weight="400" fill="#7E7588">Drag Mira to the Applications folder to install</text>
 </svg>

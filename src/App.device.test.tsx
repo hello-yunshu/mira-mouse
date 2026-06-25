@@ -134,6 +134,7 @@ describe('real device snapshot mapping', () => {
     expect(screen.getByRole('tab', { name: 'DPI' })).toBeInTheDocument();
     expect(screen.getByRole('region', { name: '设备状态' })).toHaveTextContent('配置控制板载');
     expect(screen.getByRole('region', { name: '设备状态' })).toHaveStyle({ gridTemplateColumns: 'repeat(1, minmax(0, 1fr))' });
+    expect(screen.getByRole('region', { name: '设备状态' })).toHaveAttribute('data-status-count', '1');
     expect(screen.getByRole('region', { name: '设备状态' }).firstElementChild).not.toHaveStyle({ gridColumn: 'span 2' });
     fireEvent.click(screen.getByRole('tab', { name: '配置控制' }));
     expect(screen.getByLabelText('设备摘要')).toHaveTextContent('连接无线电量80 %');

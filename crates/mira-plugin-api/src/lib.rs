@@ -139,6 +139,13 @@ impl PluginManifest {
             }
             if capability
                 .metadata
+                .get("bindings")
+                .is_some_and(|bindings| !valid_bindings(bindings))
+            {
+                return Err(ApiError::CapabilityBinding(capability.id.clone()));
+            }
+            if capability
+                .metadata
                 .get("options")
                 .is_some_and(|options| !valid_options(options, MAX_CONTROL_OPTIONS))
             {
@@ -197,6 +204,32 @@ fn valid_connection(value: &str) -> bool {
         value,
         "usb" | "receiver" | "bluetooth" | "wireless" | "wireless-receiver"
     )
+}
+
+fn valid_binding_connection(value: &str) -> bool {
+    matches!(value, "usb" | "wireless" | "bluetooth" | "virtual")
+}
+
+fn valid_bindings(value: &serde_json::Value) -> bool {
+    value.as_array().is_some_and(|items| {
+        items.iter().all(|item| {
+            let Some(item) = item.as_object() else {
+                return false;
+            };
+            let Some(when) = item.get("when") else {
+                return true;
+            };
+            let Some(when) = when.as_object() else {
+                return false;
+            };
+            if when.get("path").and_then(serde_json::Value::as_str) != Some("connection") {
+                return true;
+            }
+            when.get("eq")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(valid_binding_connection)
+        })
+    })
 }
 
 fn valid_plugin_id(value: &str) -> bool {
@@ -378,6 +411,8 @@ pub enum ApiError {
     CapabilityMinFirmware(String),
     #[error("capability {0} declares unknown connection types")]
     CapabilityConnections(String),
+    #[error("capability {0} has invalid binding conditions")]
+    CapabilityBinding(String),
 }
 
 #[cfg(test)]
@@ -443,6 +478,86 @@ mod tests {
             manifest.validate(),
             Err(ApiError::CapabilitySummary("polling-rate".into()))
         );
+    }
+
+    #[test]
+    fn rejects_display_labels_in_connection_bindings() {
+        let capability = Capability {
+            id: "sleep-time".into(),
+            control: Control::Number,
+            label_key: "capability.sleep-time".into(),
+            read_only: false,
+            placements: vec![],
+            metadata: BTreeMap::from([(
+                "bindings".into(),
+                serde_json::json!([
+                    {
+                        "when": { "path": "connection", "eq": "无线" },
+                        "label": "2.4G 休眠",
+                        "source": "capabilities.settings.wirelessSleepValue"
+                    }
+                ]),
+            )]),
+            probe: None,
+            connections: None,
+            min_firmware: None,
+        };
+        let manifest = PluginManifest {
+            schema_version: 1,
+            plugin_id: "mira.example".into(),
+            name: "Example".into(),
+            version: "1.0.0".into(),
+            plugin_api: ">=1.0.0, <2.0.0".parse().unwrap(),
+            publisher_key_id: None,
+            evidence: EvidenceLevel::FixtureVerified,
+            permissions: vec![],
+            capabilities: vec![capability],
+            writes_enabled: false,
+            exportable_fields: vec![],
+            depends_on: vec![],
+        };
+        assert_eq!(
+            manifest.validate(),
+            Err(ApiError::CapabilityBinding("sleep-time".into()))
+        );
+    }
+
+    #[test]
+    fn accepts_host_connection_values_in_bindings() {
+        let capability = Capability {
+            id: "sleep-time".into(),
+            control: Control::Number,
+            label_key: "capability.sleep-time".into(),
+            read_only: false,
+            placements: vec![],
+            metadata: BTreeMap::from([(
+                "bindings".into(),
+                serde_json::json!([
+                    {"when": { "path": "connection", "eq": "usb" }, "source": "usbSleep"},
+                    {"when": { "path": "connection", "eq": "wireless" }, "source": "wirelessSleep"},
+                    {"when": { "path": "connection", "eq": "bluetooth" }, "source": "bluetoothSleep"},
+                    {"when": { "path": "connection", "eq": "virtual" }, "source": "virtualSleep"}
+                ]),
+            )]),
+            probe: None,
+            connections: None,
+            min_firmware: None,
+        };
+        let manifest = PluginManifest {
+            schema_version: 1,
+            plugin_id: "mira.example".into(),
+            name: "Example".into(),
+            version: "1.0.0".into(),
+            plugin_api: ">=1.0.0, <2.0.0".parse().unwrap(),
+            publisher_key_id: None,
+            evidence: EvidenceLevel::FixtureVerified,
+            permissions: vec![],
+            capabilities: vec![capability],
+            writes_enabled: false,
+            exportable_fields: vec![],
+            depends_on: vec![],
+        };
+        assert_eq!(manifest.validate(), Ok(()));
     }
 
     #[test]
