@@ -64,17 +64,17 @@ pub fn read_device_with_package(
     ctx: &ProtocolContext,
 ) -> Result<DeviceReading, String> {
     let workflow_id = format!("{}-read", ctx.family);
-    let outputs = package.execute_with_cache(
-        ctx.api,
-        ctx.path,
-        &workflow_id,
-        ctx.feature_index_cache,
-    )?;
+    let outputs =
+        package.execute_with_cache(ctx.api, ctx.path, &workflow_id, ctx.feature_index_cache)?;
     #[cfg(debug_assertions)]
     eprintln!(
         "[mira] plugin workflow {workflow_id}: {} outputs: [{}]",
         outputs.len(),
-        outputs.keys().map(|k| k.as_str()).collect::<Vec<_>>().join(", ")
+        outputs
+            .keys()
+            .map(|k| k.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
     );
     let capabilities = package.capabilities().cloned();
     Ok(standard_reading(outputs, capabilities))

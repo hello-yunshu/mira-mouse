@@ -11,9 +11,9 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: github/codeql-action/init@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v3 peeled commit
+      - uses: github/codeql-action/init@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4.36.2 peeled commit
         with: { languages: 'javascript-typescript,actions' }
-      - uses: github/codeql-action/analyze@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v3 peeled commit
+      - uses: github/codeql-action/analyze@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4.36.2 peeled commit
   rust-and-workflows:
     runs-on: ubuntu-22.04
     timeout-minutes: 25
@@ -22,4 +22,3 @@ jobs:
       - run: cargo install cargo-audit --locked
       - run: cargo audit
       - run: node scripts/check-boundaries.mjs
-

@@ -8,7 +8,7 @@
       "releaseTag": "plugin/amaster/v1.3.3",
       "version": "1.3.3",
       "asset": "mira-amaster-1.3.3.mira-plugin",
-      "sha256": "03a1ab96f51fd5a73a2825f433212b8c13cac91b5df1a2d07a29f9c0ab60f381",
+      "sha256": "9acc846f700e8e6faffa43c81df23390acd62e621fb54ff25f1ef52666d66b25",
       "publisherKeyId": "TEST-ONLY-mira-plugins",
       "pluginApi": ">=1.0.0 <2.0.0",
       "cachePath": "src-tauri/resources/plugins/mira-amaster-1.3.3.mira-plugin",

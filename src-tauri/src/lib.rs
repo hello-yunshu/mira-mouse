@@ -18,6 +18,8 @@ use std::{
     sync::{Arc, Condvar, Mutex},
     time::{Duration, Instant},
 };
+#[cfg(target_os = "macos")]
+use std::{path::Path, process::Command};
 use sys_locale::get_locale;
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
@@ -102,7 +104,7 @@ fn plugin_capabilities(
             // probe 引用的字段值为 0 → 设备不支持该能力 → available=false。
             // 无 probe 声明 → 默认 available=true（向后兼容）。
             // 修复 #1：支持整数和浮点（0/0.0 均视为不支持），非数字或字段缺失默认可用。
-            let probe_available = capability.probe.as_ref().map_or(true, |probe| {
+            let probe_available = capability.probe.as_ref().is_none_or(|probe| {
                 match outputs.get(&probe.output) {
                     None => {
                         // probe 引用的 output 不存在：产生该 output 的 workflow 未执行
@@ -124,7 +126,7 @@ fn plugin_capabilities(
                 }
             });
             // #3 连接类型能力分支：归一化后比较，兼容 "wireless"/"wireless-receiver" 别名。
-            let connection_available = capability.connections.as_ref().map_or(true, |allowed| {
+            let connection_available = capability.connections.as_ref().is_none_or(|allowed| {
                 allowed
                     .iter()
                     .any(|conn| normalize_connection(conn) == normalized_connection)
@@ -1788,7 +1790,10 @@ fn read_json_path<'a>(value: &'a serde_json::Value, path: &str) -> Option<&'a se
     })
 }
 
-fn exportable_value(snapshot: &DeviceSnapshot, field: &ExportableField) -> Option<serde_json::Value> {
+fn exportable_value(
+    snapshot: &DeviceSnapshot,
+    field: &ExportableField,
+) -> Option<serde_json::Value> {
     // 复合字段：从多个快照路径组合为 object
     if let Some(sources) = &field.sources {
         let snapshot_value = serde_json::to_value(snapshot).ok()?;
@@ -1859,7 +1864,10 @@ fn current_plugin_for_primary_snapshot(
 }
 
 #[tauri::command]
-fn device_config_export(app: tauri::AppHandle, path: Option<String>) -> Result<serde_json::Value, String> {
+fn device_config_export(
+    app: tauri::AppHandle,
+    path: Option<String>,
+) -> Result<serde_json::Value, String> {
     let (inspection, snapshot) = current_plugin_for_primary_snapshot(&app)?;
     if inspection.exportable_fields.is_empty() {
         return Err(format!(
@@ -1894,7 +1902,10 @@ fn device_config_export(app: tauri::AppHandle, path: Option<String>) -> Result<s
     Ok(config)
 }
 
-fn mutation_for_exportable(inspection: &PackageInspection, field: &ExportableField) -> (String, String) {
+fn mutation_for_exportable(
+    inspection: &PackageInspection,
+    field: &ExportableField,
+) -> (String, String) {
     // 优先使用字段声明的 mutation 和 param
     if let Some(mutation) = &field.mutation {
         let param = field.param.clone().unwrap_or_else(|| "value".to_string());
@@ -1930,7 +1941,10 @@ fn mutation_for_exportable(inspection: &PackageInspection, field: &ExportableFie
 }
 
 #[tauri::command]
-fn device_config_import(app: tauri::AppHandle, path: Option<String>) -> Result<DeviceSnapshot, String> {
+fn device_config_import(
+    app: tauri::AppHandle,
+    path: Option<String>,
+) -> Result<DeviceSnapshot, String> {
     // #11 支持用户指定导入路径（文件选择器），未指定时用默认 app config 路径。
     let path = match path {
         Some(p) => PathBuf::from(p),
@@ -2390,21 +2404,13 @@ fn read_device_once(app: &AppHandle) {
 
             // #9 防抖式 TTL 缓存：非 settling 状态下，500ms 内复用快照跳过 HID 往返。
             // settling 期间需要快速轮询捕捉状态变化，不缓存。
-            let settling = state
-                .settling_polls
-                .lock()
-                .map(|s| *s > 0)
-                .unwrap_or(false);
+            let settling = state.settling_polls.lock().map(|s| *s > 0).unwrap_or(false);
             if !settling {
-                let cache_hit = state
-                    .last_read_at
-                    .lock()
-                    .ok()
-                    .is_some_and(|cache| {
-                        cache
-                            .get(&device.path)
-                            .is_some_and(|t| t.elapsed() < READ_DEBOUNCE_TTL)
-                    });
+                let cache_hit = state.last_read_at.lock().ok().is_some_and(|cache| {
+                    cache
+                        .get(&device.path)
+                        .is_some_and(|t| t.elapsed() < READ_DEBOUNCE_TTL)
+                });
                 if cache_hit {
                     if let Some(snapshot) = state
                         .last_snapshot
@@ -2929,9 +2935,17 @@ fn device_mutate_blocking(
 
 #[tauri::command]
 fn autostart_state(app: tauri::AppHandle) -> Result<bool, String> {
-    app.autolaunch()
+    let enabled = app
+        .autolaunch()
         .is_enabled()
-        .map_err(|err| format!("failed to read autostart state: {err}"))
+        .map_err(|err| format!("failed to read autostart state: {err}"))?;
+    #[cfg(target_os = "macos")]
+    if enabled {
+        if let Err(error) = ensure_autostart_bundle_identifier(&app) {
+            eprintln!("[mira] failed to link autostart item to app bundle: {error}");
+        }
+    }
+    Ok(enabled)
 }
 
 #[tauri::command]
@@ -2940,11 +2954,72 @@ fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
     if enabled {
         autolaunch
             .enable()
-            .map_err(|err| format!("failed to enable autostart: {err}"))
+            .map_err(|err| format!("failed to enable autostart: {err}"))?;
+        #[cfg(target_os = "macos")]
+        ensure_autostart_bundle_identifier(&app)?;
+        Ok(())
     } else {
         autolaunch
             .disable()
             .map_err(|err| format!("failed to disable autostart: {err}"))
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn ensure_autostart_bundle_identifier(app: &AppHandle) -> Result<(), String> {
+    let Some(home) = std::env::var_os("HOME") else {
+        return Ok(());
+    };
+    let plist = PathBuf::from(home)
+        .join("Library")
+        .join("LaunchAgents")
+        .join(format!("{}.plist", app.package_info().name));
+    if !plist.exists() {
+        return Ok(());
+    }
+
+    let identifier = app.config().identifier.to_string();
+    let existing = Command::new("/usr/libexec/PlistBuddy")
+        .args(["-c", "Print :AssociatedBundleIdentifiers"])
+        .arg(&plist)
+        .output()
+        .map_err(|err| format!("failed to inspect autostart bundle identifier: {err}"))?;
+    if existing.status.success()
+        && String::from_utf8_lossy(&existing.stdout).contains(identifier.as_str())
+    {
+        return Ok(());
+    }
+
+    let _ = Command::new("/usr/libexec/PlistBuddy")
+        .args(["-c", "Delete :AssociatedBundleIdentifiers"])
+        .arg(&plist)
+        .status();
+    run_plistbuddy(
+        &plist,
+        "Add :AssociatedBundleIdentifiers array",
+        "create autostart bundle identifier array",
+    )?;
+    run_plistbuddy(
+        &plist,
+        &format!("Add :AssociatedBundleIdentifiers:0 string {identifier}"),
+        "write autostart bundle identifier",
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn run_plistbuddy(plist: &Path, command: &str, action: &str) -> Result<(), String> {
+    let output = Command::new("/usr/libexec/PlistBuddy")
+        .args(["-c", command])
+        .arg(plist)
+        .output()
+        .map_err(|err| format!("failed to {action}: {err}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "failed to {action}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
     }
 }
 
@@ -3264,51 +3339,82 @@ fn tr_connection(connection: mira_core::Connection, lang: &str) -> &'static str 
 }
 
 fn tr_open(lang: &str) -> &'static str {
-    if lang == "en" { "Open Mira" } else { "打开 Mira" }
+    if lang == "en" {
+        "Open Mira"
+    } else {
+        "打开 Mira"
+    }
 }
 
 fn tr_quit(lang: &str) -> &'static str {
-    if lang == "en" { "Quit Mira" } else { "退出 Mira" }
+    if lang == "en" {
+        "Quit Mira"
+    } else {
+        "退出 Mira"
+    }
 }
 
 fn tr_disconnected(lang: &str) -> &'static str {
-    if lang == "en" { "No supported mouse connected" } else { "未连接受支持的鼠标" }
+    if lang == "en" {
+        "No supported mouse connected"
+    } else {
+        "未连接受支持的鼠标"
+    }
 }
 
 fn tr_charging_suffix(lang: &str) -> &'static str {
-    if lang == "en" { " · Charging" } else { " · 充电中" }
+    if lang == "en" {
+        " · Charging"
+    } else {
+        " · 充电中"
+    }
 }
 
 fn tr_mouse_label(lang: &str) -> &'static str {
-    if lang == "en" { "M" } else { "鼠" }
+    if lang == "en" {
+        "M"
+    } else {
+        "鼠"
+    }
 }
 
 fn tr_receiver_label(lang: &str) -> &'static str {
-    if lang == "en" { "R" } else { "接" }
+    if lang == "en" {
+        "R"
+    } else {
+        "接"
+    }
 }
 
 fn tr_battery_fallback_label(lang: &str) -> &'static str {
-    if lang == "en" { "Mouse" } else { "鼠标" }
+    if lang == "en" {
+        "Mouse"
+    } else {
+        "鼠标"
+    }
 }
 
 fn tr_low_battery_title(lang: &str) -> &'static str {
-    if lang == "en" { "Low battery alert" } else { "低电量提醒" }
+    if lang == "en" {
+        "Low battery alert"
+    } else {
+        "低电量提醒"
+    }
 }
 
 fn tr_low_battery_body(lang: &str, threshold: u8, percent: u8) -> String {
     if lang == "en" {
-        format!("Mouse battery is below {}% (currently {}%)", threshold, percent)
+        format!(
+            "Mouse battery is below {}% (currently {}%)",
+            threshold, percent
+        )
     } else {
         format!("鼠标电量已低于 {}%（当前 {}%）", threshold, percent)
     }
 }
 
-fn tr_tooltip_connected(lang: &str, connection: &str, name: &str) -> String {
-    if lang == "en" {
-        format!("Mira · {} · {}", connection, name)
-    } else {
-        format!("Mira · {} · {}", connection, name)
-    }
+fn tr_tooltip_connected(_lang: &str, connection: &str, name: &str) -> String {
+    format!("Mira · {} · {}", connection, name)
 }
 
 fn tr_tooltip_disconnected(lang: &str) -> String {
@@ -3328,7 +3434,11 @@ fn tr_connection_status(lang: &str, connection: &str, name: &str) -> String {
 }
 
 fn tr_battery_item(lang: &str, label: &str, percentage: u8, charging: bool) -> String {
-    let charging_suffix = if charging { tr_charging_suffix(lang) } else { "" };
+    let charging_suffix = if charging {
+        tr_charging_suffix(lang)
+    } else {
+        ""
+    };
     if lang == "en" {
         format!("{} battery: {}%{}", label, percentage, charging_suffix)
     } else {
@@ -3353,7 +3463,12 @@ fn battery_title(snapshot: &DeviceSnapshot, settings: &AppSettings) -> Option<St
             .iter()
             .find(|battery| battery.id == "receiver")
         {
-            title = format!("{} {mouse_percentage}% · {} {}%", tr_mouse_label(lang), tr_receiver_label(lang), receiver.percentage);
+            title = format!(
+                "{} {mouse_percentage}% · {} {}%",
+                tr_mouse_label(lang),
+                tr_receiver_label(lang),
+                receiver.percentage
+            );
         }
     }
     Some(title)
@@ -3656,7 +3771,7 @@ fn update_tray(
             true,
             None::<&str>,
         )?)?;
-        menu.append(& MenuItem::with_id(
+        menu.append(&MenuItem::with_id(
             app,
             "quit",
             tr_quit(lang),
