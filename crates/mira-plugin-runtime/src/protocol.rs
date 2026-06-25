@@ -184,11 +184,11 @@ fn standard_reading(
     if let Some(battery) = object(&outputs, "battery") {
         reading.battery_percent =
             number(battery, "percentage").and_then(|value| u8::try_from(value).ok());
-        reading.charging = boolean(battery, "charging").unwrap_or(false);
+        reading.charging = boolean_like(battery, "charging").unwrap_or(false);
         if let Some(percentage) = reading.battery_percent {
             reading.batteries.push(mira_core::DeviceBattery {
                 id: "mouse".into(),
-                label: "鼠标".into(),
+                label: "mock.mouseLabel".into(),
                 percentage,
                 charging: reading.charging,
             });
@@ -209,7 +209,7 @@ fn standard_reading(
             {
                 reading.batteries.push(mira_core::DeviceBattery {
                     id: "mouse".into(),
-                    label: "鼠标".into(),
+                    label: "mock.mouseLabel".into(),
                     percentage,
                     charging: false,
                 });
@@ -220,10 +220,25 @@ fn standard_reading(
         {
             reading.batteries.push(mira_core::DeviceBattery {
                 id: "receiver".into(),
-                label: "接收器".into(),
+                label: "mock.receiverLabel".into(),
                 percentage,
                 charging: false,
             });
+        }
+    }
+    if let Some(receiver_battery) = object(&outputs, "receiverBattery") {
+        if let Some(percentage) =
+            number(receiver_battery, "percentage").and_then(|value| u8::try_from(value).ok())
+        {
+            upsert_battery(
+                &mut reading.batteries,
+                mira_core::DeviceBattery {
+                    id: "receiver".into(),
+                    label: "mock.receiverLabel".into(),
+                    percentage,
+                    charging: boolean_like(receiver_battery, "charging").unwrap_or(false),
+                },
+            );
         }
     }
 
@@ -317,25 +332,108 @@ fn standard_reading(
             number(settings, "pollingRate").and_then(|value| u16::try_from(value).ok());
     }
 
-    reading.light_color = object(&outputs, "settings")
-        .and_then(|settings| settings.get("mouseLightStartColor"))
+    normalize_lighting_capabilities(&outputs, &mut reading.capabilities);
+
+    reading.light_color = object(&reading.capabilities, "mouseLighting")
+        .and_then(|lighting| lighting.get("color"))
         .and_then(Value::as_str)
-        .map(str::to_string)
-        .or_else(|| {
-            object(&outputs, "mouseLightColor")
-                .and_then(|lighting| lighting.get("color"))
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        })
-        .or_else(|| {
-            object(&outputs, "mouseEffect")
-                .or_else(|| object(&outputs, "mouseLighting"))
-                .and_then(|lighting| lighting.get("color"))
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        });
+        .map(str::to_string);
 
     reading
+}
+
+fn normalize_lighting_capabilities(
+    outputs: &BTreeMap<String, Value>,
+    capabilities: &mut BTreeMap<String, Value>,
+) {
+    if let Some(mouse_lighting) = normalized_mouse_lighting(outputs) {
+        capabilities.insert("mouseLighting".into(), Value::Object(mouse_lighting));
+    }
+    if let Some(receiver_lighting) = normalized_receiver_lighting(outputs) {
+        capabilities.insert("receiverLighting".into(), Value::Object(receiver_lighting));
+    }
+}
+
+fn normalized_mouse_lighting(
+    outputs: &BTreeMap<String, Value>,
+) -> Option<serde_json::Map<String, Value>> {
+    let settings = object(outputs, "settings");
+    let mode = object(outputs, "mouseLightMode").or_else(|| object(outputs, "mouseEffect"));
+    let color = settings
+        .and_then(|settings| settings.get("mouseLightStartColor"))
+        .or_else(|| object(outputs, "mouseLightColor").and_then(|lighting| lighting.get("color")))
+        .or_else(|| mode.and_then(|lighting| lighting.get("color")))
+        .and_then(Value::as_str);
+    let enabled = settings
+        .and_then(|settings| boolean_like(settings, "mouseLightEnabled"))
+        .or_else(|| {
+            object(outputs, "mouseLightSwitch").and_then(|switch| boolean_like(switch, "enabled"))
+        })
+        .or_else(|| mode.and_then(|lighting| boolean_like(lighting, "enabled")));
+
+    if color.is_none() && enabled.is_none() && mode.is_none() {
+        return None;
+    }
+
+    let mut lighting = serde_json::Map::new();
+    if let Some(enabled) = enabled {
+        lighting.insert("enabled".into(), json!(enabled));
+    }
+    if let Some(color) = color {
+        lighting.insert("color".into(), json!(color));
+    }
+    if let Some(settings) = settings {
+        if let Some(color) = settings.get("mouseLightEndColor").and_then(Value::as_str) {
+            lighting.insert("endColor".into(), json!(color));
+        }
+    }
+    if let Some(mode) = mode {
+        copy_field(mode, &mut lighting, "effect");
+        copy_field(mode, &mut lighting, "effectName");
+        copy_field(mode, &mut lighting, "mode");
+        copy_field(mode, &mut lighting, "modeName");
+        copy_field(mode, &mut lighting, "speed");
+        copy_field(mode, &mut lighting, "speedLabel");
+        copy_field(mode, &mut lighting, "brightness");
+        copy_field(mode, &mut lighting, "brightnessLabel");
+    }
+    Some(lighting)
+}
+
+fn normalized_receiver_lighting(
+    outputs: &BTreeMap<String, Value>,
+) -> Option<serde_json::Map<String, Value>> {
+    if let Some(receiver) = object(outputs, "receiverLighting") {
+        return Some(receiver.clone());
+    }
+    let receiver = object(outputs, "receiverLight")?;
+    let mut lighting = serde_json::Map::new();
+    if let Some(enabled) = boolean_like(receiver, "enabled") {
+        lighting.insert("enabled".into(), json!(enabled));
+        if !enabled {
+            lighting.insert("effect".into(), json!(0));
+        }
+    }
+    if let Some(effect) = receiver.get("type").and_then(Value::as_u64) {
+        lighting.entry("effect").or_insert_with(|| json!(effect));
+        lighting.insert("option".into(), json!(effect));
+    }
+    if let Some(color) = receiver.get("color1").and_then(Value::as_str) {
+        lighting.insert("color".into(), json!(color));
+    }
+    copy_field(receiver, &mut lighting, "speed");
+    copy_field(receiver, &mut lighting, "brightness");
+    (!lighting.is_empty()).then_some(lighting)
+}
+
+fn copy_field(
+    source: &serde_json::Map<String, Value>,
+    target: &mut serde_json::Map<String, Value>,
+    key: &str,
+) {
+    if let Some(value) = source.get(key) {
+        target.insert(key.into(), value.clone());
+    }
 }
 
 fn object<'a>(
@@ -349,8 +447,26 @@ fn number(object: &serde_json::Map<String, Value>, key: &str) -> Option<u64> {
     object.get(key)?.as_u64()
 }
 
-fn boolean(object: &serde_json::Map<String, Value>, key: &str) -> Option<bool> {
-    object.get(key)?.as_bool()
+fn boolean_like(object: &serde_json::Map<String, Value>, key: &str) -> Option<bool> {
+    object.get(key).and_then(|value| {
+        value
+            .as_bool()
+            .or_else(|| value.as_u64().map(|number| number != 0))
+    })
+}
+
+fn upsert_battery(
+    batteries: &mut Vec<mira_core::DeviceBattery>,
+    battery: mira_core::DeviceBattery,
+) {
+    if let Some(existing) = batteries
+        .iter_mut()
+        .find(|existing| existing.id == battery.id)
+    {
+        *existing = battery;
+    } else {
+        batteries.push(battery);
+    }
 }
 
 fn array<'a>(object: &'a serde_json::Map<String, Value>, key: &str) -> Option<&'a Vec<Value>> {
@@ -391,7 +507,8 @@ mod tests {
         assert_eq!(reading.dpi, Some(800));
         assert_eq!(reading.polling_rate_hz, Some(1000));
         assert_eq!(reading.light_color.as_deref(), Some("#AABBCC"));
-        assert_eq!(reading.capabilities.len(), 4);
+        assert_eq!(reading.capabilities.len(), 5);
+        assert!(reading.capabilities.contains_key("mouseLighting"));
     }
 
     #[test]
@@ -408,9 +525,36 @@ mod tests {
         ]);
         let reading = standard_reading(outputs, None);
         assert_eq!(reading.batteries.len(), 2);
-        assert_eq!(reading.batteries[0].label, "鼠标");
-        assert_eq!(reading.batteries[1].label, "接收器");
+        assert_eq!(reading.batteries[0].label, "mock.mouseLabel");
+        assert_eq!(reading.batteries[1].label, "mock.receiverLabel");
         assert_eq!(reading.batteries[1].percentage, 100);
+    }
+
+    #[test]
+    fn normalizes_am35_numeric_charging_and_receiver_battery_output() {
+        let outputs = BTreeMap::from([
+            (
+                "battery".into(),
+                json!({"percentage": 76, "charging": 1, "health": 100, "present": 1}),
+            ),
+            (
+                "receiverBattery".into(),
+                json!({"percentage": 95, "charging": 1, "health": 100, "present": 1}),
+            ),
+            (
+                "receiver".into(),
+                json!({"mouseBattery": 74, "receiverBattery": 88}),
+            ),
+        ]);
+        let reading = standard_reading(outputs, None);
+        assert_eq!(reading.battery_percent, Some(76));
+        assert!(reading.charging);
+        assert_eq!(reading.batteries.len(), 2);
+        assert_eq!(reading.batteries[0].id, "mouse");
+        assert!(reading.batteries[0].charging);
+        assert_eq!(reading.batteries[1].id, "receiver");
+        assert_eq!(reading.batteries[1].percentage, 95);
+        assert!(reading.batteries[1].charging);
     }
 
     #[test]
@@ -438,6 +582,14 @@ mod tests {
         ]);
         let reading = standard_reading(outputs, None);
         assert_eq!(reading.light_color.as_deref(), Some("#FB223C"));
+        assert_eq!(
+            reading
+                .capabilities
+                .get("mouseLighting")
+                .and_then(|value| value.get("color"))
+                .and_then(Value::as_str),
+            Some("#FB223C")
+        );
     }
 
     #[test]
@@ -458,6 +610,41 @@ mod tests {
         ]);
         let reading = standard_reading(outputs, None);
         assert_eq!(reading.light_color.as_deref(), Some("#FB223C"));
+    }
+
+    #[test]
+    fn normalizes_am35_mouse_and_receiver_lighting_separately() {
+        let outputs = BTreeMap::from([
+            (
+                "mouseLightMode".into(),
+                json!({"mode": 2, "modeName": "霓虹", "speed": 1, "brightness": 3}),
+            ),
+            ("mouseLightColor".into(), json!({"color": "#112233"})),
+            (
+                "receiverLight".into(),
+                json!({"enabled": 1, "type": 7, "color1": "#AABBCC", "speed": 2, "brightness": 4}),
+            ),
+        ]);
+        let reading = standard_reading(outputs, None);
+        let mouse = reading
+            .capabilities
+            .get("mouseLighting")
+            .and_then(Value::as_object)
+            .unwrap();
+        let receiver = reading
+            .capabilities
+            .get("receiverLighting")
+            .and_then(Value::as_object)
+            .unwrap();
+        assert_eq!(reading.light_color.as_deref(), Some("#112233"));
+        assert_eq!(mouse.get("color").and_then(Value::as_str), Some("#112233"));
+        assert_eq!(mouse.get("mode").and_then(Value::as_u64), Some(2));
+        assert_eq!(
+            receiver.get("color").and_then(Value::as_str),
+            Some("#AABBCC")
+        );
+        assert_eq!(receiver.get("effect").and_then(Value::as_u64), Some(7));
+        assert_eq!(receiver.get("option").and_then(Value::as_u64), Some(7));
     }
 
     #[test]

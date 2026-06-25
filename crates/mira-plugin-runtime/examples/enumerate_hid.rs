@@ -4,12 +4,17 @@
 // Usage:
 //   cargo run --example enumerate_hid                          # defaults to mira.amaster
 //   MIRA_PLUGIN=mira.logitech-hidpp cargo run --example enumerate_hid
+//   MIRA_PLUGIN_PATH=/path/to/extracted/plugin cargo run --example enumerate_hid
 //
 // The tool loads plugins.lock.json, finds the requested plugin entry,
 // verifies the package signature against the production + TEST-ONLY trust
 // store, enumerates matched HID devices, and runs the signed plugin
 // workflow. Set MIRA_WRITE_SMOKE=1 to additionally exercise no-op
 // write/readback smoke tests (only for plugins with writesEnabled).
+//
+// If MIRA_PLUGIN_PATH points to a directory, the example loads the extracted
+// plugin files directly without signature verification (useful for local
+// plugin development).
 use ed25519_dalek::VerifyingKey;
 use hidapi::HidApi;
 use mira_plugin_runtime::{
@@ -42,6 +47,70 @@ fn trust_store() -> TrustStore {
     trust
 }
 
+fn collect_files_recursive(base: &PathBuf, dir: &PathBuf, files: &mut BTreeMap<String, Vec<u8>>) {
+    for entry in fs::read_dir(dir).expect("read plugin directory") {
+        let entry = entry.expect("directory entry");
+        let path = entry.path();
+        if entry.file_type().expect("file type").is_dir() {
+            collect_files_recursive(base, &path, files);
+        } else if entry.file_type().expect("file type").is_file() {
+            let rel = path
+                .strip_prefix(base)
+                .expect("entry under plugin dir")
+                .to_string_lossy()
+                .replace('\\', "/");
+            let bytes = fs::read(&path).expect("read plugin file");
+            files.insert(rel, bytes);
+        }
+    }
+}
+
+fn load_extracted_plugin(
+    path: &PathBuf,
+) -> (
+    mira_plugin_runtime::PackageInspection,
+    BTreeMap<String, Vec<u8>>,
+) {
+    let manifest: Value =
+        serde_json::from_slice(&fs::read(path.join("plugin.json")).expect("read plugin.json"))
+            .expect("parse plugin.json");
+    let mut files = BTreeMap::new();
+    collect_files_recursive(path, path, &mut files);
+    let inspection = mira_plugin_runtime::PackageInspection {
+        plugin_id: manifest["pluginId"]
+            .as_str()
+            .unwrap_or("unknown")
+            .to_string(),
+        version: manifest["version"].as_str().unwrap_or("0.0.0").to_string(),
+        evidence: "development-extracted".to_string(),
+        signature_verified: false,
+        writes_enabled: manifest["writesEnabled"].as_bool().unwrap_or(false),
+        capabilities: serde_json::from_value(manifest["capabilities"].clone()).unwrap_or_default(),
+        exportable_fields: serde_json::from_value(manifest["exportableFields"].clone())
+            .unwrap_or_default(),
+        depends_on: serde_json::from_value(manifest["dependsOn"].clone()).unwrap_or_default(),
+        file_count: files.len(),
+    };
+    println!("source: extracted directory {}", path.display());
+    println!("sha256: (not computed for extracted source)");
+    (inspection, files)
+}
+
+fn load_packaged_plugin(
+    path: &PathBuf,
+) -> (
+    mira_plugin_runtime::PackageInspection,
+    BTreeMap<String, Vec<u8>>,
+) {
+    let bytes = fs::read(path).expect("read plugin package");
+    println!("sha256: {}", hex::encode(Sha256::digest(&bytes)));
+
+    let trust = trust_store();
+    let inspection = inspect_package(Cursor::new(&bytes), &trust, true).expect("verify package");
+    let (_, files) = extract_package(Cursor::new(&bytes), &trust, true).expect("extract package");
+    (inspection, files)
+}
+
 fn main() {
     let plugin_id = std::env::var("MIRA_PLUGIN").unwrap_or_else(|_| "mira.amaster".to_string());
     let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -60,12 +129,13 @@ fn main() {
     let package_path = std::env::var_os("MIRA_PLUGIN_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|| workspace.join(entry["cachePath"].as_str().expect("plugin cachePath")));
-    let bytes = fs::read(&package_path).expect("read plugin package");
     println!("plugin: {plugin_id}");
-    println!("sha256: {}", hex::encode(Sha256::digest(&bytes)));
 
-    let trust = trust_store();
-    let inspection = inspect_package(Cursor::new(&bytes), &trust, true).expect("verify package");
+    let (inspection, files) = if package_path.is_dir() {
+        load_extracted_plugin(&package_path)
+    } else {
+        load_packaged_plugin(&package_path)
+    };
     println!(
         "version: {} signature_verified={} writes_enabled={} evidence={:?}",
         inspection.version,
@@ -73,7 +143,6 @@ fn main() {
         inspection.writes_enabled,
         inspection.evidence
     );
-    let (_, files) = extract_package(Cursor::new(&bytes), &trust, true).expect("extract package");
     let devices = hid::parse_devices_json(files.get("devices.json").expect("devices.json"))
         .expect("parse devices.json");
     println!("device descriptors: {}", devices.devices.len());
@@ -143,8 +212,13 @@ fn main() {
     let reading = read_device(&context).expect("execute signed plugin workflow");
 
     println!(
-        "battery={:?} dpi={:?} polling_rate={:?} profile={:?}",
-        reading.battery_percent, reading.dpi, reading.polling_rate_hz, reading.profile
+        "battery={:?} charging={} batteries={:?} dpi={:?} polling_rate={:?} profile={:?}",
+        reading.battery_percent,
+        reading.charging,
+        reading.batteries,
+        reading.dpi,
+        reading.polling_rate_hz,
+        reading.profile
     );
     println!(
         "capabilities: {}",

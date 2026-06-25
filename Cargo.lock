@@ -2300,6 +2300,7 @@ dependencies = [
 name = "mira-app"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "ed25519-dalek",
  "hex",
  "hidapi",

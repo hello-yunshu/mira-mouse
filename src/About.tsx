@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useTranslation } from 'react-i18next';
+import { ExternalLink } from './ExternalLink';
 import type { AboutInfo } from './types';
 import { notifyError } from './notify';
 import { extractChannel, exportDiagnostics } from './plugin-utils';
@@ -104,6 +105,7 @@ export function AboutPage({ onBack, previewMode = false }: { onBack: () => void;
 
   const contact = info.contact;
   const repositoryUrl = contact.repository ?? contact.github;
+  const linkError = t('notification.openExternalFailed');
 
   return (
     <main className="about-page">
@@ -143,7 +145,7 @@ export function AboutPage({ onBack, previewMode = false }: { onBack: () => void;
         <div className="card-title"><h2>{t('about.section.donate')}</h2></div>
         <p className="setting-hint donate-hint">{t('about.donate.hint')}</p>
         <div className="contact-links">
-          <a className="primary" href="https://hey.run/donate/" target="_blank" rel="noopener noreferrer">{t('about.donate.button')}</a>
+          <ExternalLink className="primary" href="https://hey.run/donate/" errorTitle={linkError}>{t('about.donate.button')}</ExternalLink>
         </div>
       </section>
 
@@ -187,9 +189,9 @@ export function AboutPage({ onBack, previewMode = false }: { onBack: () => void;
           {contact.developerName && <p className="setting-hint">{t('about.developer', { name: contact.developerName })}</p>}
           {contact.copyright && <p className="setting-hint">{t('about.copyright', { name: contact.copyright })}</p>}
           <div className="contact-links">
-            {contact.github && <a className="secondary" href={contact.github} target="_blank" rel="noopener noreferrer">GitHub</a>}
-            {contact.x && <a className="secondary" href={contact.x} target="_blank" rel="noopener noreferrer">X</a>}
-            {contact.telegram && <a className="secondary" href={contact.telegram} target="_blank" rel="noopener noreferrer">Telegram</a>}
+            {contact.github && <ExternalLink className="secondary" href={contact.github} errorTitle={linkError}>GitHub</ExternalLink>}
+            {contact.x && <ExternalLink className="secondary" href={contact.x} errorTitle={linkError}>X</ExternalLink>}
+            {contact.telegram && <ExternalLink className="secondary" href={contact.telegram} errorTitle={linkError}>Telegram</ExternalLink>}
           </div>
         </section>
       ) : null}
@@ -241,12 +243,12 @@ export function AboutPage({ onBack, previewMode = false }: { onBack: () => void;
         </p>
         <div className="contact-links">
           {repositoryUrl ? (
-            <a className="secondary" href={`${repositoryUrl}/blob/main/LICENSE`} target="_blank" rel="noopener noreferrer">{t('about.viewLicense')}</a>
+            <ExternalLink className="secondary" href={`${repositoryUrl}/blob/main/LICENSE`} errorTitle={linkError}>{t('about.viewLicense')}</ExternalLink>
           ) : (
             <button className="secondary" disabled>{t('about.viewLicenseDisabled')}</button>
           )}
           {repositoryUrl ? (
-            <a className="secondary" href={`${repositoryUrl}/tree/main/NOTICE`} target="_blank" rel="noopener noreferrer">{t('about.viewThirdParty')}</a>
+            <ExternalLink className="secondary" href={`${repositoryUrl}/tree/main/NOTICE`} errorTitle={linkError}>{t('about.viewThirdParty')}</ExternalLink>
           ) : (
             <button className="secondary" disabled>{t('about.viewThirdPartyDisabled')}</button>
           )}
@@ -273,7 +275,7 @@ export function AboutPage({ onBack, previewMode = false }: { onBack: () => void;
         </p>
         <div className="contact-links">
           {repositoryUrl ? (
-            <a className="secondary" href={`${repositoryUrl}/issues/new/choose`} target="_blank" rel="noopener noreferrer">{t('about.reportIssue')}</a>
+            <ExternalLink className="secondary" href={`${repositoryUrl}/issues/new/choose`} errorTitle={linkError}>{t('about.reportIssue')}</ExternalLink>
           ) : (
             <button className="secondary" disabled>{t('about.reportIssueDisabled')}</button>
           )}

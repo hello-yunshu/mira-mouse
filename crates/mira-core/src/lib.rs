@@ -104,11 +104,19 @@ pub struct LowBatteryCrossing {
 
 impl LowBatteryCrossing {
     pub fn update(&mut self, value: Option<u8>, threshold: u8) -> bool {
-        let now = value.is_some_and(|v| v <= threshold);
+        let now = is_low_battery(value, threshold);
         let notify = now && !self.below;
         self.below = now;
         notify
     }
+
+    pub fn sync(&mut self, value: Option<u8>, threshold: u8) {
+        self.below = is_low_battery(value, threshold);
+    }
+}
+
+fn is_low_battery(value: Option<u8>, threshold: u8) -> bool {
+    value.is_some_and(|v| v <= threshold)
 }
 
 #[cfg(test)]
@@ -121,5 +129,15 @@ mod tests {
         assert!(!crossing.update(Some(19), 20));
         assert!(!crossing.update(Some(50), 20));
         assert!(crossing.update(Some(20), 20));
+    }
+
+    #[test]
+    fn low_battery_threshold_change_syncs_without_notifying() {
+        let mut crossing = LowBatteryCrossing::default();
+        crossing.sync(Some(25), 30);
+        assert!(!crossing.update(Some(25), 30));
+        assert!(!crossing.update(Some(24), 30));
+        assert!(!crossing.update(Some(31), 30));
+        assert!(crossing.update(Some(30), 30));
     }
 }

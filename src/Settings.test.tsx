@@ -12,6 +12,9 @@ const settings: AppSettings = {
   trayShowBatteryTitle: true, trayIncludeReceiverBattery: false, trayShowConnection: true,
   trayIconColor: 'white',
   nightModeEnabled: false, nightModeStart: '22:00', nightModeEnd: '07:00',
+  nightModeTriggerTime: true, nightModeTriggerTheme: false, nightModeThemeDark: true,
+  nightModeTriggerCharging: false, nightModeTriggerLowBattery: false,
+  nightModeTargetMouse: true, nightModeTargetReceiver: false,
   refreshIntervalSeconds: 5, telemetryDisabled: true,
   automaticUpdateChecks: true, automaticUpdateInstall: false, automaticPluginUpdateChecks: true,
   language: 'auto',
@@ -47,7 +50,35 @@ describe('SettingsPage', () => {
     })));
 
     fireEvent.click(screen.getByRole('button', { name: '设备' }));
-    expect(screen.getByRole('switch', { name: '启用夜间模式' })).toBeDisabled();
+    // 安静灯光：开关已启用，触发场景在开关关闭时不显示。
+    const nightModeToggle = screen.getByRole('switch', { name: '启用安静灯光' });
+    expect(nightModeToggle).not.toBeDisabled();
+    expect(nightModeToggle).not.toBeChecked();
+    expect(screen.queryByLabelText('开始时间')).toBeNull();
+    // 开启后显示触发场景。
+    fireEvent.click(nightModeToggle);
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('settings_set', expect.objectContaining({
+      settings: expect.objectContaining({ nightModeEnabled: true }),
+    })));
+    // 默认 trigger_time 开启，显示时间输入。
+    const startInput = await screen.findByLabelText('开始时间');
+    fireEvent.change(startInput, { target: { value: '23:00' } });
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('settings_set', expect.objectContaining({
+      settings: expect.objectContaining({ nightModeStart: '23:00' }),
+    })));
+    // 切换到跟随系统主题（互斥：trigger_time 关闭，trigger_theme 开启）。
+    fireEvent.click(screen.getByRole('switch', { name: '跟随系统主题' }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('settings_set', expect.objectContaining({
+      settings: expect.objectContaining({ nightModeTriggerTheme: true, nightModeTriggerTime: false }),
+    })));
+    // 启用仅在充电时。
+    fireEvent.click(screen.getByRole('switch', { name: '仅在充电时' }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('settings_set', expect.objectContaining({
+      settings: expect.objectContaining({ nightModeTriggerCharging: true }),
+    })));
+    // 接收器灯光在设备不支持时 disabled。
+    const receiverToggle = screen.getByRole('switch', { name: '接收器灯光' });
+    expect(receiverToggle).toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: '隐私' }));
     expect(screen.getByRole('switch', { name: '禁用遥测' })).toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: '插件' }));

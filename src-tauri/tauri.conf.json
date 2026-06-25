@@ -24,9 +24,18 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": ["resources/plugins/mira-amaster-1.3.3.mira-plugin", "resources/plugins/mira-logitech-hidpp-0.6.1.mira-plugin"],
+    "resources": ["resources/plugins/mira-amaster-1.3.5.mira-plugin", "resources/plugins/mira-logitech-hidpp-0.6.1.mira-plugin"],
     "fileAssociations": [{ "ext": ["mira-plugin"], "name": "Mira Plugin", "description": "Declarative Mira device plugin", "role": "Editor" }],
-    "macOS": { "minimumSystemVersion": "12.0", "signingIdentity": "-" },
+    "macOS": {
+      "minimumSystemVersion": "12.0",
+      "signingIdentity": "-",
+      "dmg": {
+        "background": "../scripts/assets/dmg-background.png",
+        "windowSize": { "width": 660, "height": 400 },
+        "appPosition": { "x": 160, "y": 200 },
+        "applicationFolderPosition": { "x": 500, "y": 200 }
+      }
+    },
     "windows": { "webviewInstallMode": { "type": "downloadBootstrapper", "silent": true }, "nsis": { "installMode": "currentUser" } },
     "linux": { "appimage": { "bundleMediaFramework": false } }
   },

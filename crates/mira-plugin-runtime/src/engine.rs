@@ -1309,6 +1309,17 @@ impl ProtocolPackage {
     }
 
     fn parse_response(&self, id: &str, response: &[u8]) -> Result<Value, String> {
+        #[cfg(debug_assertions)]
+        if id == "battery"
+            || id == "am35-battery"
+            || id == "am35-receiver-battery"
+            || id == "receiver-status"
+        {
+            eprintln!(
+                "[mira] raw {id}: {:02x?}",
+                &response[..response.len().min(32)]
+            );
+        }
         let parser = self
             .parsers
             .parsers
@@ -2720,6 +2731,46 @@ mod tests {
                 workflows.as_bytes().to_vec(),
             ),
         ])
+    }
+
+    #[test]
+    fn mutation_ids_keep_lighting_writes_scoped_to_protocol_family() {
+        let package = build_test_package(
+            r#"{"schemaVersion": 1, "commands": {}}"#,
+            r#"{"schemaVersion": 1, "parsers": {}}"#,
+            r#"{"schemaVersion": 1, "transports": {}}"#,
+            r#"{
+                "schemaVersion": 1,
+                "workflows": {},
+                "mutations": {
+                    "am35-receiver-set-mouse-lighting": {
+                        "transport": "am35-receiver",
+                        "inputs": {},
+                        "read": { "command": "noop", "parser": "noop" },
+                        "writeCommand": "noop",
+                        "preserveUnknown": false,
+                        "verify": { "command": "noop", "parser": "noop", "assertions": [] }
+                    },
+                    "protocol-a-receiver-set-receiver-lighting": {
+                        "transport": "protocol-a",
+                        "inputs": {},
+                        "read": { "command": "noop", "parser": "noop" },
+                        "writeCommand": "noop",
+                        "preserveUnknown": false,
+                        "verify": { "command": "noop", "parser": "noop", "assertions": [] }
+                    }
+                }
+            }"#,
+        );
+
+        assert_eq!(
+            package.mutation_ids("am35-receiver", None),
+            vec!["set-mouse-lighting"]
+        );
+        assert_eq!(
+            package.mutation_ids("protocol-a-receiver", None),
+            vec!["set-receiver-lighting"]
+        );
     }
 
     #[test]

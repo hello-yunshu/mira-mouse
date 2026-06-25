@@ -82,9 +82,9 @@ function capabilityObject(capabilities: DeviceCapabilities | undefined, key: str
   return value && typeof value === 'object' ? value : undefined;
 }
 
-function lightingCapability(capabilities: DeviceCapabilities | undefined, group: 'mouseEffect' | 'receiverLighting'): Record<string, unknown> | undefined {
+function lightingCapability(capabilities: DeviceCapabilities | undefined, group: 'mouseLighting' | 'receiverLighting'): Record<string, unknown> | undefined {
   if (group === 'receiverLighting') return capabilityObject(capabilities, 'receiverLighting');
-  return capabilityObject(capabilities, 'mouseEffect') ?? capabilityObject(capabilities, 'mouseLighting');
+  return capabilityObject(capabilities, 'mouseLighting') ?? capabilityObject(capabilities, 'mouseEffect');
 }
 
 function confirmedMouseLightColor(snapshot: DeviceSnapshot, receiverLighting: Record<string, unknown> | undefined): string | undefined {
@@ -93,7 +93,7 @@ function confirmedMouseLightColor(snapshot: DeviceSnapshot, receiverLighting: Re
   return snapshot.confirmedLightColor;
 }
 
-function getLightingEffectName(capabilities?: DeviceCapabilities, group: 'mouseEffect' | 'receiverLighting' = 'mouseEffect'): string {
+function getLightingEffectName(capabilities?: DeviceCapabilities, group: 'mouseLighting' | 'receiverLighting' = 'mouseLighting'): string {
   const lighting = lightingCapability(capabilities, group);
   if (!lighting) return i18n.t('lighting.hardwareSync');
   // 仅使用插件提供的 effectName（来自 parsers.json derived.lookup）
@@ -104,7 +104,7 @@ function getLightingEffectName(capabilities?: DeviceCapabilities, group: 'mouseE
   return i18n.t('lighting.effectN', { value: effect });
 }
 
-function getLightingColorMode(capabilities?: DeviceCapabilities, group: 'mouseEffect' | 'receiverLighting' = 'mouseEffect'): string {
+function getLightingColorMode(capabilities?: DeviceCapabilities, group: 'mouseLighting' | 'receiverLighting' = 'mouseLighting'): string {
   const lighting = lightingCapability(capabilities, group);
   if (!lighting) return i18n.t('common.notReported');
   // 仅使用插件提供的 optionName（来自 parsers.json derived.lookup）
@@ -132,7 +132,7 @@ function snapshotToState(snapshot: DeviceSnapshot): DeviceState {
       ? [{ value: snapshot.dpi, color: '#9a8bd0', enabled: true, active: true }]
       : [];
   const caps = snapshot.capabilities ?? {};
-  const mouseEffect = lightingCapability(caps, 'mouseEffect');
+  const mouseLighting = lightingCapability(caps, 'mouseLighting');
   const receiverLighting = lightingCapability(caps, 'receiverLighting');
   const mouseLightColorOutput = capabilityObject(caps, 'mouseLightColor');
   const settings = caps.settings;
@@ -144,11 +144,13 @@ function snapshotToState(snapshot: DeviceSnapshot): DeviceState {
     ? settings.mouseLightEnabled
     : typeof mouseLightSwitch?.enabled === 'boolean'
       ? mouseLightSwitch.enabled
-      : typeof mouseEffect?.enabled === 'boolean' ? mouseEffect.enabled : undefined;
-  const mouseLightColor = rgbToHex(settings?.mouseLightStartColor)
+      : typeof mouseLighting?.enabled === 'boolean' ? mouseLighting.enabled : undefined;
+  const mouseLightColor = (typeof mouseLighting?.color === 'string' ? mouseLighting.color : undefined)
+    ?? rgbToHex(settings?.mouseLightStartColor)
     ?? rgbToHex(mouseLightColorOutput?.color)
-    ?? (typeof mouseEffect?.color === 'string' ? mouseEffect.color : confirmedMouseLightColor(snapshot, receiverLighting));
-  const mouseLightEndColor = rgbToHex(settings?.mouseLightEndColor);
+    ?? confirmedMouseLightColor(snapshot, receiverLighting);
+  const mouseLightEndColor = (typeof mouseLighting?.endColor === 'string' ? mouseLighting.endColor : undefined)
+    ?? rgbToHex(settings?.mouseLightEndColor);
   const fallbackBatteries: DeviceBattery[] = snapshot.batteryPercent === undefined ? [] : [{
     id: 'mouse', label: i18n.t('mock.mouseLabel'), percentage: snapshot.batteryPercent, charging: snapshot.charging,
   }];
@@ -156,7 +158,7 @@ function snapshotToState(snapshot: DeviceSnapshot): DeviceState {
   // Avoid defaulting to 'enabled' when the device never reported lighting.
   const hasLightingData = mouseLightColor !== undefined
     || mouseLightEndColor !== undefined
-    || mouseEffect !== undefined
+    || mouseLighting !== undefined
     || receiverLighting !== undefined;
   return {
     name: snapshot.displayName ?? i18n.t('common.unknownDevice'),
@@ -174,10 +176,10 @@ function snapshotToState(snapshot: DeviceSnapshot): DeviceState {
     lighting: hasLightingData
       ? {
           enabled: mouseLightEnabled !== false,
-          mode: mouseEffect ? getLightingEffectName(caps, 'mouseEffect') : mouseLightEnabled === false ? i18n.t('lighting.off') : i18n.t('lighting.on'),
+          mode: mouseLighting ? getLightingEffectName(caps, 'mouseLighting') : mouseLightEnabled === false ? i18n.t('lighting.off') : i18n.t('lighting.on'),
           color: mouseLightColor,
-          supportsSpeed: typeof mouseEffect?.speed === 'number',
-          supportsBrightness: typeof mouseEffect?.brightness === 'number',
+          supportsSpeed: typeof mouseLighting?.speed === 'number',
+          supportsBrightness: typeof mouseLighting?.brightness === 'number',
           receiverLinked: snapshot.connection === 'wireless',
           mouseLightEnabled,
           mouseLightColor,
@@ -506,7 +508,7 @@ function compatibilityCapabilities(device: DeviceState): PluginCapability[] {
       id: 'compat-lighting', control: 'LightingZone', labelKey: 'capability.lighting', readOnly: false,
       placements: [{ region: 'control', group: 'compat-lighting', order: 30, span: 1, icon: 'lightbulb' }],
       metadata: {
-        label: i18n.t('plugin.label.capability.lighting'), source: 'lighting.mouseLightColor',
+        label: i18n.t('plugin.label.capability.lighting'), source: 'capabilities.mouseLighting.color',
         mutations: { mouse: 'set-mouse-lighting', receiver: 'set-receiver-lighting' },
       },
     });
@@ -1622,7 +1624,7 @@ export default function App() {
       </div>
     </nav>
     {view === 'dashboard' && (device ? <Dashboard device={device} onDeviceChange={setDevice} /> : <EmptyState onRefresh={() => { setDemoMode(false); setDevice(undefined); setRefreshNonce((value) => value + 1); invoke('device_refresh').catch(() => {}); }} onDemo={() => { setDemoMode(true); setDevice(MOCK_DEVICE); }} onOpenSettings={() => setView('settings')} />)}
-    {view === 'settings' && <SettingsPage previewMode={pureWeb} onNavigateAbout={() => setView('about')} onThemeChange={setTheme} />}
+    {view === 'settings' && <SettingsPage previewMode={pureWeb} onNavigateAbout={() => setView('about')} onThemeChange={setTheme} writableMutations={device?.writableMutations ?? []} />}
     {view === 'about' && <AboutPage previewMode={pureWeb} onBack={() => setView('settings')} />}
     {appNotification && (
       <aside className={`app-notification ${appNotification.kind}`} role={appNotification.kind === 'error' ? 'alert' : 'status'} aria-live={appNotification.kind === 'error' ? 'assertive' : 'polite'}>

@@ -287,9 +287,29 @@
       "tooltip": "Low battery alert: notifies only once when crossing the threshold, no repeated pop-ups."
     },
     "nightMode": {
-      "label": "Enable night mode",
-      "hint": "Scheduled lighting is not implemented in this version",
-      "tooltip": "Night mode: dims or turns off lighting by schedule and reliably restores the previous state afterwards."
+      "label": "Enable quiet lighting",
+      "hint": "Automatically turn off lighting when triggers are met and restore the previous state afterwards",
+      "tooltip": "Quiet lighting: turns off lighting based on trigger scenes and reliably restores the previous state when conditions clear. Only applies when lighting is writable.",
+      "triggerSection": "Triggers (any match turns off lighting)",
+      "triggerTime": "Specific time",
+      "triggerTimeHint": "Turn off lighting during a scheduled period",
+      "triggerTheme": "Follow system theme",
+      "triggerThemeHint": "Turn off lighting when system switches to the specified theme",
+      "triggerCharging": "While charging",
+      "triggerChargingHint": "Turn off lighting while the mouse is charging",
+      "triggerLowBattery": "Low battery",
+      "triggerLowBatteryHint": "Turn off lighting when battery is below {{value}}%",
+      "themeDark": "Turn off in dark mode",
+      "themeLight": "Turn off in light mode",
+      "targetSection": "Lighting targets",
+      "targetMouse": "Mouse lighting",
+      "targetMouseHint": "Turn off/restore mouse lighting",
+      "targetReceiver": "Receiver lighting",
+      "targetReceiverHint": "Turn off/restore receiver lighting (only settable when device supports it)",
+      "startLabel": "Start time",
+      "startHint": "Time to turn off lighting",
+      "endLabel": "End time",
+      "endHint": "Time to restore lighting"
     },
     "config": {
       "hint": "Export device config for backup or migration; import checks plugin compatibility and applies item by item.",
@@ -426,6 +446,7 @@
     "checkPluginUpdateFailed": "Failed to check for plugin updates",
     "installPluginUpdateFailed": "Failed to install plugin update",
     "loadAboutFailed": "Failed to load about info",
+    "openExternalFailed": "Failed to open web page",
     "checkUpdateFailed": "Failed to check for updates",
     "installUpdateFailed": "Failed to install update"
   },

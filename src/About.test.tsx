@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { AboutPage } from './About';
 
@@ -33,5 +33,24 @@ describe('AboutPage', () => {
     render(<AboutPage onBack={vi.fn()} />);
     expect(await screen.findByRole('button', { name: '下载并安装 v0.2.0' })).toBeInTheDocument();
     expect(screen.getByText('更新说明')).toBeInTheDocument();
+  });
+
+  it('opens donate link through the native browser bridge in Tauri', async () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'about_info') {
+        return Promise.resolve({
+          name: 'Mira', version: '0.1.0', identifier: 'run.hey.mira', platform: 'macos', architecture: 'aarch64',
+          rustVersion: '1.82', buildDate: '2026-06-23', gitCommit: 'test', bundledPlugins: [], contact: {}, updaterActive: false,
+        });
+      }
+      return Promise.resolve(undefined);
+    });
+
+    render(<AboutPage onBack={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('link', { name: '打赏支持' }));
+
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('open_external_url', { url: 'https://hey.run/donate/' }));
+    delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__;
   });
 });
