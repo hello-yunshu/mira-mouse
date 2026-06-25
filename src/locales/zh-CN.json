@@ -93,7 +93,16 @@
     "off": "已关闭",
     "on": "已开启",
     "effectN": "灯效 {{value}}",
-    "modeN": "模式 {{value}}"
+    "modeN": "模式 {{value}}",
+    "fixed": "常亮",
+    "cycle": "循环",
+    "wave": "光波",
+    "starlight": "星夜",
+    "breathing": "呼吸",
+    "ripple": "涟漪",
+    "custom": "自定义",
+    "extraColor": "第二色",
+    "editMouseLightingTitle": "鼠标灯光 — {{field}}"
   },
   "capability": {
     "group": {

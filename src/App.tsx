@@ -151,6 +151,12 @@ function snapshotToState(snapshot: DeviceSnapshot): DeviceState {
     ?? confirmedMouseLightColor(snapshot, receiverLighting);
   const mouseLightEndColor = (typeof mouseLighting?.endColor === 'string' ? mouseLighting.endColor : undefined)
     ?? rgbToHex(settings?.mouseLightEndColor);
+  // HID++ 扩展灯效参数：从 mouseLighting capability 读取 effect/speed/brightness/extraColor。
+  // amaster 等旧插件不提供这些字段时为 undefined，UI 自动回退到简单颜色编辑。
+  const mouseLightEffect = typeof mouseLighting?.effect === 'number' ? mouseLighting.effect : undefined;
+  const mouseLightSpeed = typeof mouseLighting?.speed === 'number' ? mouseLighting.speed : undefined;
+  const mouseLightBrightness = typeof mouseLighting?.brightness === 'number' ? mouseLighting.brightness : undefined;
+  const mouseLightExtraColor = typeof mouseLighting?.extraColor === 'string' ? mouseLighting.extraColor : undefined;
   const fallbackBatteries: DeviceBattery[] = snapshot.batteryPercent === undefined ? [] : [{
     id: 'mouse', label: i18n.t('mock.mouseLabel'), percentage: snapshot.batteryPercent, charging: snapshot.charging,
   }];
@@ -184,6 +190,10 @@ function snapshotToState(snapshot: DeviceSnapshot): DeviceState {
           mouseLightEnabled,
           mouseLightColor,
           mouseLightEndColor,
+          mouseLightEffect,
+          mouseLightSpeed,
+          mouseLightBrightness,
+          mouseLightExtraColor,
           receiverLightEnabled: typeof receiverLighting?.enabled === 'boolean' ? receiverLighting.enabled : undefined,
           receiverLightMode: receiverLighting ? getLightingEffectName(caps, 'receiverLighting') : undefined,
           receiverLightColor: typeof receiverLighting?.color === 'string' ? receiverLighting.color : undefined,
@@ -1011,6 +1021,121 @@ function ReceiverLightingEditModal({ field, initial, options, writeBusy, onClose
   );
 }
 
+type MouseLightingField = 'effect' | 'speed' | 'brightness' | 'color' | 'extraColor';
+
+interface MouseLightingEffectOption { value: number; labelKey: string }
+
+interface MouseLightingEditModalProps {
+  field: MouseLightingField;
+  initial: {
+    effect: number;
+    speed: number;
+    brightness: number;
+    color: string;
+    extraColor?: string;
+  };
+  effectOptions: MouseLightingEffectOption[];
+  supportedEffects: number[];
+  speedRange: { min: number; max: number; step: number };
+  brightnessRange: { min: number; max: number; step: number };
+  writeBusy: boolean;
+  onClose: () => void;
+  onApply: (params: {
+    color: string;
+    enabled: boolean;
+    effect: number;
+    speed: number;
+    brightness: number;
+    extraColor?: string;
+  }) => void;
+}
+
+function mouseLightingFieldLabel(field: MouseLightingField): string {
+  if (field === 'extraColor') return i18n.t('lighting.extraColor');
+  return i18n.t(`receiverLighting.field.${field}`, { defaultValue: field });
+}
+
+function MouseLightingEditModal({ field, initial, effectOptions, supportedEffects, speedRange, brightnessRange, writeBusy, onClose, onApply }: MouseLightingEditModalProps) {
+  const [draft, setDraft] = useState(initial);
+  const submitDisabled = useMemo(
+    () => writeBusy || JSON.stringify(draft) === JSON.stringify(initial),
+    [writeBusy, draft, initial],
+  );
+  const visibleEffects = effectOptions.filter((opt) => supportedEffects.includes(opt.value));
+  return (
+    <EditModal
+      title={i18n.t('lighting.editMouseLightingTitle', { field: mouseLightingFieldLabel(field) })}
+      submitDisabled={submitDisabled}
+      onClose={onClose}
+      onSubmit={() => onApply({
+        color: draft.color,
+        enabled: draft.effect !== 0,
+        effect: draft.effect,
+        speed: draft.speed,
+        brightness: draft.brightness,
+        extraColor: draft.extraColor ?? '#000000',
+      })}
+    >
+      {field === 'effect' && <label className="edit-field">
+        <span>{i18n.t('receiverLighting.field.effect')}</span>
+        <select
+          value={draft.effect}
+          disabled={writeBusy}
+          onChange={(event) => setDraft({ ...draft, effect: Number(event.target.value) })}
+        >
+          {visibleEffects.map((opt) => (
+            <option key={opt.value} value={opt.value}>{i18n.t(opt.labelKey, { defaultValue: `Effect ${opt.value}` })}</option>
+          ))}
+        </select>
+      </label>}
+      {field === 'speed' && <label className="edit-field">
+        <span>{i18n.t('receiverLighting.field.speed')}</span>
+        <input
+          type="range"
+          min={speedRange.min}
+          max={speedRange.max}
+          step={speedRange.step}
+          value={draft.speed}
+          disabled={writeBusy}
+          onChange={(event) => setDraft({ ...draft, speed: Number(event.target.value) })}
+        />
+        <span className="range-value">{draft.speed}</span>
+      </label>}
+      {field === 'brightness' && <label className="edit-field">
+        <span>{i18n.t('receiverLighting.field.brightness')}</span>
+        <input
+          type="range"
+          min={brightnessRange.min}
+          max={brightnessRange.max}
+          step={brightnessRange.step}
+          value={draft.brightness}
+          disabled={writeBusy}
+          onChange={(event) => setDraft({ ...draft, brightness: Number(event.target.value) })}
+        />
+        <span className="range-value">{draft.brightness}%</span>
+      </label>}
+      {field === 'color' && <label className="edit-field color-field">
+        <span>{i18n.t('common.color')}</span>
+        <input
+          type="color"
+          value={draft.color}
+          disabled={writeBusy}
+          onChange={(event) => setDraft({ ...draft, color: event.target.value })}
+        />
+      </label>}
+      {field === 'extraColor' && <label className="edit-field color-field">
+        <span>{i18n.t('lighting.extraColor')}</span>
+        <input
+          type="color"
+          value={draft.extraColor ?? '#000000'}
+          disabled={writeBusy}
+          onChange={(event) => setDraft({ ...draft, extraColor: event.target.value })}
+        />
+      </label>}
+    </EditModal>
+  );
+}
+
 function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceChange: (device: DeviceState) => void }) {
   const { t } = useTranslation();
   const stages = device.dpiStages.filter((stage) => stage.enabled);
@@ -1028,6 +1153,7 @@ function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceCh
   const [editingDpiStage, setEditingDpiStage] = useState<number | null>(null);
   const [editingMouseLightColor, setEditingMouseLightColor] = useState(false);
   const [editingMouseLightEndColor, setEditingMouseLightEndColor] = useState(false);
+  const [editingMouseLightField, setEditingMouseLightField] = useState<MouseLightingField | null>(null);
   const [editingReceiverLighting, setEditingReceiverLighting] = useState<ReceiverLightingField | null>(null);
   const activeDpi = initialDpi;
   const writable = useCallback(
@@ -1103,6 +1229,36 @@ function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceCh
     || Boolean(device.lighting?.receiverLightColor)
     || Boolean(device.capabilities.receiverLighting);
   const activeLightingView = lightingView === 'receiver' && !supportsReceiverLighting ? 'mouse' : lightingView;
+  // HID++ 灯效扩展：从插件 metadata 读取 effectOptions，从设备能力读取实际支持的灯效。
+  // amaster 等旧插件无 effectOptions 时 hasMouseEffectOptions=false，UI 回退到简单颜色编辑。
+  const mouseEffectOptions = activeLightingDescriptor?.metadata?.effectOptions as {
+    effect?: MouseLightingEffectOption[];
+    speed?: { min: number; max: number; step: number };
+    brightness?: { min: number; max: number; step: number };
+  } | undefined;
+  const hasMouseEffectOptions = Boolean(mouseEffectOptions?.effect?.length);
+  const supportedEffectsSource = activeLightingDescriptor?.metadata?.supportedEffectsSource as string[] | undefined;
+  const supportedEffectsField = activeLightingDescriptor?.metadata?.supportedEffectsField as string | undefined;
+  const mouseSupportedEffects = useMemo(() => {
+    if (!mouseEffectOptions?.effect) return [];
+    const result = new Set<number>([0]); // off 始终可用
+    if (supportedEffectsSource && supportedEffectsField) {
+      const fieldNames = supportedEffectsField.split('|');
+      const effectValues = mouseEffectOptions.effect.map((e) => e.value).filter((v) => v !== 0);
+      for (const source of supportedEffectsSource) {
+        const capKey = source.replace('capabilities.', '');
+        const cap = device.capabilities?.[capKey];
+        if (!cap) continue;
+        effectValues.forEach((effectValue, index) => {
+          const fieldName = fieldNames[index];
+          if (fieldName && cap[fieldName] === true) result.add(effectValue);
+        });
+      }
+    } else {
+      mouseEffectOptions.effect.forEach((e) => result.add(e.value));
+    }
+    return Array.from(result).sort((a, b) => a - b);
+  }, [mouseEffectOptions, supportedEffectsSource, supportedEffectsField, device.capabilities]);
   const statusPlacements = useMemo(() => pluginDescriptors
     .flatMap((capability) => placementsFor(capability, 'status').map((placement) => ({ capability, placement })))
     .filter(({ capability }) => capabilityVisible(capability, device))
@@ -1316,7 +1472,7 @@ function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceCh
                   <div
                     className="lighting-rows"
                     style={{
-                      gridTemplateColumns: `repeat(${device.lighting?.mouseLightEndColor && device.lighting.mouseLightEndColor !== device.lighting.mouseLightColor ? 3 : 2}, minmax(0, 1fr))`,
+                      gridTemplateColumns: `repeat(${hasMouseEffectOptions ? 5 : device.lighting?.mouseLightEndColor && device.lighting.mouseLightEndColor !== device.lighting.mouseLightColor ? 3 : 2}, minmax(0, 1fr))`,
                     }}
                   >
                     <button
@@ -1324,35 +1480,114 @@ function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceCh
                       className="lighting-row"
                       disabled={writeBusy || !mouseLightingMutation || !writable(mouseLightingMutation)}
                       onClick={() => {
-                        const enabled = device.lighting?.mouseLightEnabled === false;
-                        void runMutation(mouseLightingMutation!, {
-                          color: device.lighting?.mouseLightColor ?? '#b87ab0',
-                          enabled,
-                        });
+                        if (hasMouseEffectOptions) {
+                          // HID++ 模式：切换 effect 0↔1（off↔fixed），保留其他参数
+                          const currentEffect = device.lighting?.mouseLightEffect ?? 1;
+                          const newEffect = currentEffect === 0 ? 1 : 0;
+                          void runMutation(mouseLightingMutation!, {
+                            color: device.lighting?.mouseLightColor ?? '#b87ab0',
+                            enabled: newEffect !== 0,
+                            effect: newEffect,
+                            speed: device.lighting?.mouseLightSpeed ?? 0,
+                            brightness: device.lighting?.mouseLightBrightness ?? 100,
+                            extraColor: device.lighting?.mouseLightExtraColor ?? '#000000',
+                          });
+                        } else {
+                          const enabled = device.lighting?.mouseLightEnabled === false;
+                          void runMutation(mouseLightingMutation!, {
+                            color: device.lighting?.mouseLightColor ?? '#b87ab0',
+                            enabled,
+                          });
+                        }
                       }}
                     >
                       <span>{t('dashboard.status')}</span>
-                      <strong>{device.lighting?.mouseLightEnabled === false ? i18n.t('common.off') : i18n.t('common.on')}</strong>
+                      <strong>{hasMouseEffectOptions
+                        ? (device.lighting?.mouseLightEffect === 0 ? i18n.t('common.off') : i18n.t('common.on'))
+                        : (device.lighting?.mouseLightEnabled === false ? i18n.t('common.off') : i18n.t('common.on'))}</strong>
                     </button>
-                    <button
-                      type="button"
-                      className="lighting-row"
-                      disabled={writeBusy || !mouseLightingMutation || !writable(mouseLightingMutation)}
-                      onClick={() => setEditingMouseLightColor(true)}
-                    >
-                      <span>{i18n.t('common.color')}</span>
-                      <strong>{device.lighting?.mouseLightColor ?? i18n.t('common.notReported')}</strong>
-                    </button>
-                    {device.lighting?.mouseLightEndColor && device.lighting.mouseLightEndColor !== device.lighting.mouseLightColor && (
-                      <button
-                        type="button"
-                        className="lighting-row"
-                        disabled={writeBusy || !mouseLightingMutation || !writable(mouseLightingMutation)}
-                        onClick={() => setEditingMouseLightEndColor(true)}
-                      >
-                        <span>{t('dashboard.endColor')}</span>
-                        <strong>{device.lighting.mouseLightEndColor}</strong>
-                      </button>
+                    {hasMouseEffectOptions ? (
+                      <>
+                        <button
+                          type="button"
+                          className="lighting-row"
+                          disabled={writeBusy || !mouseLightingMutation || !writable(mouseLightingMutation)}
+                          onClick={() => setEditingMouseLightField('effect')}
+                        >
+                          <span>{i18n.t('receiverLighting.field.effect')}</span>
+                          <strong>{(() => {
+                            const eff = device.lighting?.mouseLightEffect;
+                            if (eff === undefined) return i18n.t('common.notReported');
+                            const opt = mouseEffectOptions?.effect?.find((e) => e.value === eff);
+                            return opt ? i18n.t(opt.labelKey, { defaultValue: `Effect ${eff}` }) : i18n.t('lighting.effectN', { value: eff });
+                          })()}</strong>
+                        </button>
+                        {device.lighting?.supportsSpeed && (
+                          <button
+                            type="button"
+                            className="lighting-row"
+                            disabled={writeBusy || !mouseLightingMutation || !writable(mouseLightingMutation)}
+                            onClick={() => setEditingMouseLightField('speed')}
+                          >
+                            <span>{i18n.t('receiverLighting.field.speed')}</span>
+                            <strong>{device.lighting?.mouseLightSpeed ?? 0}</strong>
+                          </button>
+                        )}
+                        {device.lighting?.supportsBrightness && (
+                          <button
+                            type="button"
+                            className="lighting-row"
+                            disabled={writeBusy || !mouseLightingMutation || !writable(mouseLightingMutation)}
+                            onClick={() => setEditingMouseLightField('brightness')}
+                          >
+                            <span>{i18n.t('receiverLighting.field.brightness')}</span>
+                            <strong>{(device.lighting?.mouseLightBrightness ?? 100)}%</strong>
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          className="lighting-row"
+                          disabled={writeBusy || !mouseLightingMutation || !writable(mouseLightingMutation)}
+                          onClick={() => setEditingMouseLightField('color')}
+                        >
+                          <span>{i18n.t('common.color')}</span>
+                          <strong>{device.lighting?.mouseLightColor ?? i18n.t('common.notReported')}</strong>
+                        </button>
+                        {device.lighting?.mouseLightEffect === 5 && (
+                          <button
+                            type="button"
+                            className="lighting-row"
+                            disabled={writeBusy || !mouseLightingMutation || !writable(mouseLightingMutation)}
+                            onClick={() => setEditingMouseLightField('extraColor')}
+                          >
+                            <span>{i18n.t('lighting.extraColor')}</span>
+                            <strong>{device.lighting?.mouseLightExtraColor ?? '#000000'}</strong>
+                          </button>
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          className="lighting-row"
+                          disabled={writeBusy || !mouseLightingMutation || !writable(mouseLightingMutation)}
+                          onClick={() => setEditingMouseLightColor(true)}
+                        >
+                          <span>{i18n.t('common.color')}</span>
+                          <strong>{device.lighting?.mouseLightColor ?? i18n.t('common.notReported')}</strong>
+                        </button>
+                        {device.lighting?.mouseLightEndColor && device.lighting.mouseLightEndColor !== device.lighting.mouseLightColor && (
+                          <button
+                            type="button"
+                            className="lighting-row"
+                            disabled={writeBusy || !mouseLightingMutation || !writable(mouseLightingMutation)}
+                            onClick={() => setEditingMouseLightEndColor(true)}
+                          >
+                            <span>{t('dashboard.endColor')}</span>
+                            <strong>{device.lighting.mouseLightEndColor}</strong>
+                          </button>
+                        )}
+                      </>
                     )}
                   </div>
                   {editingMouseLightEndColor && (
@@ -1367,6 +1602,28 @@ function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceCh
                           { color, enabled: device.lighting?.mouseLightEnabled !== false },
                         );
                         setEditingMouseLightEndColor(false);
+                      }}
+                    />
+                  )}
+                  {editingMouseLightField && hasMouseEffectOptions && mouseEffectOptions?.effect && (
+                    <MouseLightingEditModal
+                      field={editingMouseLightField}
+                      initial={{
+                        effect: device.lighting?.mouseLightEffect ?? 0,
+                        speed: device.lighting?.mouseLightSpeed ?? 0,
+                        brightness: device.lighting?.mouseLightBrightness ?? 100,
+                        color: device.lighting?.mouseLightColor ?? '#b87ab0',
+                        extraColor: device.lighting?.mouseLightExtraColor,
+                      }}
+                      effectOptions={mouseEffectOptions.effect}
+                      supportedEffects={mouseSupportedEffects}
+                      speedRange={mouseEffectOptions.speed ?? { min: 0, max: 255, step: 1 }}
+                      brightnessRange={mouseEffectOptions.brightness ?? { min: 0, max: 100, step: 1 }}
+                      writeBusy={writeBusy}
+                      onClose={() => setEditingMouseLightField(null)}
+                      onApply={(params) => {
+                        void runMutation(mouseLightingMutation!, params);
+                        setEditingMouseLightField(null);
                       }}
                     />
                   )}
@@ -1480,7 +1737,14 @@ function Dashboard({ device, onDeviceChange }: { device: DeviceState; onDeviceCh
               if (!mutation) return;
               void runMutation(
                 mutation,
-                { color, enabled: device.lighting?.mouseLightEnabled !== false },
+                {
+                  color,
+                  enabled: device.lighting?.mouseLightEnabled !== false,
+                  effect: device.lighting?.mouseLightEffect ?? 1,
+                  speed: device.lighting?.mouseLightSpeed ?? 0,
+                  brightness: device.lighting?.mouseLightBrightness ?? 100,
+                  extraColor: device.lighting?.mouseLightExtraColor ?? '#000000',
+                },
               );
               setEditingMouseLightColor(false);
             }}
