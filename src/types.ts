@@ -126,6 +126,13 @@ export interface AppSettings {
   nightModeEnabled: boolean;
   nightModeStart: string;
   nightModeEnd: string;
+  nightModeTriggerTime: boolean;
+  nightModeTriggerTheme: boolean;
+  nightModeThemeDark: boolean;
+  nightModeTriggerCharging: boolean;
+  nightModeTriggerLowBattery: boolean;
+  nightModeTargetMouse: boolean;
+  nightModeTargetReceiver: boolean;
   refreshIntervalSeconds: number;
   telemetryDisabled: boolean;
   automaticUpdateChecks: boolean;

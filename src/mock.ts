@@ -54,7 +54,7 @@ export const MOCK_DEVICE: DeviceState = {
       },
     },
     { id: 'profile', control: 'ReadOnlyValue', labelKey: 'capability.profile', readOnly: true, placements: [{ region: 'status', order: 20, span: 1, icon: 'profile' }], metadata: { section: 'status', status: true, source: 'profile' } },
-    { id: 'lighting', control: 'LightingZone', labelKey: 'capability.lighting', readOnly: false, placements: [{ region: 'control', group: 'lighting', order: 30, span: 1, icon: 'lightbulb' }, { region: 'status', order: 30, span: 1, icon: 'lightbulb' }], metadata: { section: 'control', status: true, source: 'lighting.mouseLightColor', mutations: { mouse: 'set-mouse-lighting', receiver: 'set-receiver-lighting' } } },
+    { id: 'lighting', control: 'LightingZone', labelKey: 'capability.lighting', readOnly: false, placements: [{ region: 'control', group: 'lighting', order: 30, span: 1, icon: 'lightbulb' }, { region: 'status', order: 30, span: 1, icon: 'lightbulb' }], metadata: { section: 'control', status: true, source: 'capabilities.mouseLighting.color', mutations: { mouse: 'set-mouse-lighting', receiver: 'set-receiver-lighting' } } },
     { id: 'firmware', control: 'ReadOnlyValue', labelKey: 'capability.firmware', readOnly: true, placements: [{ region: 'details', order: 10, span: 1, icon: 'info' }], metadata: {} },
   ],
   writableMutations: ['set-dpi-stage', 'set-dpi-value', 'set-polling-rate', 'set-mouse-lighting', 'set-receiver-lighting', 'set-wireless-sleep-time', 'set-bluetooth-sleep-time'],
