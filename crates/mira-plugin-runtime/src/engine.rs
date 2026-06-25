@@ -143,6 +143,10 @@ struct DerivedDefinition {
     table: BTreeMap<String, Value>,
     #[serde(default)]
     bitmap: Vec<BitmapEntry>,
+    /// `bit` derived kind: 从 source 字段（u64）提取指定位 → bool。
+    /// 用于拆解 nvCaps/capabilities 位域为独立的 supports* 布尔字段。
+    #[serde(default)]
+    bit: Option<u8>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -316,6 +320,10 @@ struct MutationDefinition {
     skip_if_non_zero: Vec<OutputReference>,
     #[serde(default)]
     skip_if_all_zero: Vec<OutputReference>,
+    /// memory-only 路径跳过 writeCommand 的条件：任一引用为 0 则跳过。
+    /// 用于设备无直写 feature（如 0x8070）但需走 memory 补丁的场景。
+    #[serde(default)]
+    write_skip_if_zero: Vec<OutputReference>,
     read: MutationCall,
     write_command: String,
     write_transport: Option<String>,
@@ -365,7 +373,23 @@ struct MemoryMutationDefinition {
 struct OutputCondition {
     output: String,
     field: String,
-    eq: Value,
+    #[serde(default)]
+    eq: Option<Value>,
+    #[serde(default)]
+    ne: Option<Value>,
+}
+
+impl OutputCondition {
+    /// 检查给定值是否满足条件。eq/ne 均为 Option，支持单独使用或组合。
+    /// 当值缺失时返回 false；当 eq/ne 均为 None 时视为无约束（返回 true）。
+    fn matches(&self, value: Option<&Value>) -> bool {
+        match (value, &self.eq, &self.ne) {
+            (Some(v), Some(eq), _) => v == eq,
+            (Some(v), _, Some(ne)) => v != ne,
+            (None, _, _) => false,
+            (Some(_), None, None) => true,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -699,13 +723,12 @@ impl ProtocolPackage {
                             guard
                                 .get(path)
                                 .and_then(|device_cache| device_cache.get(&(feature_id as u16)))
-                                .copied()
+                                .cloned()
                         });
-                        if let Some(feature_index) = cache_hit {
-                            session.outputs.insert(
-                                step.output.clone(),
-                                serde_json::json!({ "featureIndex": feature_index }),
-                            );
+                        if let Some(cached_output) = cache_hit {
+                            // 恢复完整的 parsed output（含 featureIndex、deviceIndex、connection 等），
+                            // 避免后续 step 引用 device.deviceIndex 时报 "missing output reference"。
+                            session.outputs.insert(step.output.clone(), cached_output);
                             continue;
                         }
                     }
@@ -738,22 +761,22 @@ impl ProtocolPackage {
                 })?;
             session.outputs.insert(step.output.clone(), parsed);
 
-            // 缓存 root-get-feature 结果供后续轮询使用
+            // 缓存 root-get-feature 的完整 parsed output 供后续轮询使用。
+            // 存储 complete Value（含 deviceIndex、connection 等）而非仅 featureIndex，
+            // 确保缓存命中时后续 step 能正确引用所有 derived 字段。
             if step.command == "root-get-feature" {
                 if let Some(cache) = feature_index_cache {
-                    if let (Some(feature_id), Some(feature_index)) = (
+                    if let (Some(feature_id), Some(parsed_output)) = (
                         params.get("featureId").and_then(Value::as_u64),
-                        session
-                            .outputs
-                            .get(&step.output)
-                            .and_then(|v| v.get("featureIndex"))
-                            .and_then(Value::as_u64),
+                        session.outputs.get(&step.output).cloned(),
                     ) {
-                        if let Ok(mut guard) = cache.lock() {
-                            guard
-                                .entry(path.to_string())
-                                .or_insert_with(HashMap::new)
-                                .insert(feature_id as u16, feature_index as u8);
+                        if parsed_output.get("featureIndex").is_some() {
+                            if let Ok(mut guard) = cache.lock() {
+                                guard
+                                    .entry(path.to_string())
+                                    .or_insert_with(HashMap::new)
+                                    .insert(feature_id as u16, parsed_output);
+                            }
                         }
                     }
                 }
@@ -1103,21 +1126,21 @@ impl ProtocolPackage {
                 // profiles from hardware controls or another app during the same
                 // connection, and using it here would overwrite those changes.
                 let (outputs, bytes) = self.read_memory_mutation(api, path, memory)?;
-                let enabled = output_value(
+                let enabled = memory.enabled_when.matches(output_value(
                     &outputs,
                     &OutputReference {
                         output: memory.enabled_when.output.clone(),
                         field: memory.enabled_when.field.clone(),
                     },
-                ) == Some(&memory.enabled_when.eq)
+                ))
                     && memory.required_when.iter().all(|condition| {
-                        output_value(
+                        condition.matches(output_value(
                             &outputs,
                             &OutputReference {
                                 output: condition.output.clone(),
                                 field: condition.field.clone(),
                             },
-                        ) == Some(&condition.eq)
+                        ))
                     });
                 enabled.then_some((outputs, bytes))
             }
@@ -1182,19 +1205,26 @@ impl ProtocolPackage {
             self.execute_memory_mutation(mutation_id, memory, &params, &mut session, original)?;
         }
 
-        let write_params = resolve_workflow_params(&mutation.write_params, &session.outputs)
-            .map_err(|error| format!("mutation {mutation_id} write params: {error}"))?;
-        let mut write_inputs = write_params;
-        write_inputs.extend(params.clone());
-        session.execute_command(
-            write_transport,
-            &mutation.write_command,
-            &write_inputs,
-            false,
-            Some(&before),
-            mutation_timeout_ms,
-        )?;
-        session.delay(mutation.settle_ms)?;
+        // writeSkipIfZero: memory-only 路径下，当直写 feature 不存在（如无 0x8070）时跳过 writeCommand。
+        // memory 补丁已由 execute_memory_mutation 完成，直写命令无意义且会失败。
+        let write_skipped = mutation.write_skip_if_zero.iter().any(|reference| {
+            output_value(&session.outputs, reference).and_then(Value::as_u64) == Some(0)
+        });
+        if !write_skipped {
+            let write_params = resolve_workflow_params(&mutation.write_params, &session.outputs)
+                .map_err(|error| format!("mutation {mutation_id} write params: {error}"))?;
+            let mut write_inputs = write_params;
+            write_inputs.extend(params.clone());
+            session.execute_command(
+                write_transport,
+                &mutation.write_command,
+                &write_inputs,
+                false,
+                Some(&before),
+                mutation_timeout_ms,
+            )?;
+            session.delay(mutation.settle_ms)?;
+        }
 
         let verify_transport = mutation
             .verify
@@ -1372,6 +1402,16 @@ impl ProtocolPackage {
                         .map(|entry| entry.value.clone())
                         .collect();
                     fields.insert(name.clone(), Value::Array(values));
+                }
+                "bit" => {
+                    let source = fields
+                        .get(&derived.source)
+                        .and_then(Value::as_u64)
+                        .ok_or_else(|| format!("invalid bit source {}", derived.source))?;
+                    let bit = derived.bit.ok_or_else(|| {
+                        format!("bit derived {} missing 'bit' field", name)
+                    })?;
+                    fields.insert(name.clone(), Value::Bool((source >> bit) & 1 == 1));
                 }
                 _ => return Err(format!("unsupported derived kind {}", derived.kind)),
             }
@@ -2222,9 +2262,8 @@ fn validate_mutation_inputs(
     definitions: &BTreeMap<String, MutationInput>,
     supplied: &Map<String, Value>,
 ) -> Result<BTreeMap<String, Value>, String> {
-    if supplied.len() != definitions.len() {
-        return Err("mutation parameters do not match the declared schema".into());
-    }
+    // 只校验已声明的参数，忽略 supplied 中多余的字段。
+    // 向后兼容：后端可向只声明 color+enabled 的旧插件 mutation 传递 effect/speed/brightness 等扩展参数。
     definitions
         .iter()
         .map(|(name, definition)| {
@@ -2579,11 +2618,85 @@ mod tests {
             &Map::from_iter([("dpi".into(), Value::from(825))])
         )
         .is_err());
+        // 多余参数被忽略（向后兼容：后端可向旧插件传递扩展参数）
         assert!(validate_mutation_inputs(
             &definitions,
             &Map::from_iter([
                 ("dpi".into(), Value::from(800)),
                 ("raw".into(), Value::from(1)),
+            ])
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn validate_mutation_inputs_ignores_extra_params() {
+        // 模拟 amaster set-mouse-lighting：只声明 color+enabled，但后端传递 effect/speed/brightness
+        let definitions = BTreeMap::from([
+            (
+                "color".into(),
+                MutationInput {
+                    kind: "color".into(),
+                    min: None,
+                    max: None,
+                    step: None,
+                    allowed: Vec::new(),
+                },
+            ),
+            (
+                "enabled".into(),
+                MutationInput {
+                    kind: "boolean".into(),
+                    min: None,
+                    max: None,
+                    step: None,
+                    allowed: Vec::new(),
+                },
+            ),
+        ]);
+        let supplied = Map::from_iter([
+            ("color".into(), Value::from("#FF0000")),
+            ("enabled".into(), Value::from(true)),
+            ("effect".into(), Value::from(0)),
+            ("speed".into(), Value::from(100)),
+            ("brightness".into(), Value::from(50)),
+        ]);
+        let result = validate_mutation_inputs(&definitions, &supplied);
+        assert!(result.is_ok(), "extra params should be ignored");
+        let validated = result.unwrap();
+        assert_eq!(validated.len(), 2, "only declared params should be returned");
+        assert_eq!(validated.get("color"), Some(&Value::from("#FF0000")));
+        assert_eq!(validated.get("enabled"), Some(&Value::from(true)));
+    }
+
+    #[test]
+    fn validate_mutation_inputs_still_validates_declared_params() {
+        // 多余参数被忽略，但已声明参数仍被校验
+        let definitions = BTreeMap::from([(
+            "effect".into(),
+            MutationInput {
+                kind: "integer".into(),
+                min: Some(0),
+                max: Some(12),
+                step: None,
+                allowed: vec![0, 1, 3, 4, 5, 10, 11, 12],
+            },
+        )]);
+        // 有效值 + 多余参数
+        assert!(validate_mutation_inputs(
+            &definitions,
+            &Map::from_iter([
+                ("effect".into(), Value::from(5)),
+                ("extra".into(), Value::from("ignored")),
+            ])
+        )
+        .is_ok());
+        // 无效值（不在 allowed 列表中）
+        assert!(validate_mutation_inputs(
+            &definitions,
+            &Map::from_iter([
+                ("effect".into(), Value::from(99)),
+                ("extra".into(), Value::from("ignored")),
             ])
         )
         .is_err());
@@ -2935,6 +3048,142 @@ mod tests {
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("not available on this device"));
+    }
+
+    /// `skipIfNonZero` must reject the mutation when any referenced output is non-zero.
+    /// This gates `set-mouse-lighting-onboard` away from devices that have COLOR_LED_EFFECTS (0x8070)
+    /// or already use the onboard format V5 path.
+    #[test]
+    fn mutate_rejects_when_skip_if_non_zero_matches() {
+        let workflows = r#"{
+            "schemaVersion": 1,
+            "workflows": {},
+            "mutations": {
+                "test-set-lighting": {
+                    "transport": "feature",
+                    "inputs": {},
+                    "skipIfNonZero": [{"output": "colorLed", "field": "featureIndex"}],
+                    "read": {"command": "read-dpi", "parser": "dpi", "params": {}},
+                    "writeCommand": "write-dpi",
+                    "preserveUnknown": false,
+                    "verify": {"command": "verify-dpi", "parser": "dpi", "params": {}, "assertions": []}
+                }
+            }
+        }"#;
+        let package = build_test_package(
+            r#"{"schemaVersion": 1, "commands": {}}"#,
+            r#"{"schemaVersion": 1, "parsers": {}}"#,
+            r#"{"schemaVersion": 1, "transports": {}}"#,
+            workflows,
+        );
+        let api = test_hid_api();
+        // featureIndex=1 (non-zero) → skipIfNonZero triggers
+        let outputs = BTreeMap::from([("colorLed".into(), serde_json::json!({"featureIndex": 1}))]);
+        let result = package.mutate(
+            api,
+            "test-path",
+            "test-set-lighting",
+            &Map::new(),
+            &outputs,
+            None,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not available on this device"));
+    }
+
+    /// `skipIfAllZero` must reject the mutation when ALL referenced outputs are zero.
+    /// This gates `set-mouse-lighting-onboard` away from devices that lack ONBOARD_PROFILES (0x8100).
+    #[test]
+    fn mutate_rejects_when_skip_if_all_zero_matches() {
+        let workflows = r#"{
+            "schemaVersion": 1,
+            "workflows": {},
+            "mutations": {
+                "test-set-lighting": {
+                    "transport": "feature",
+                    "inputs": {},
+                    "skipIfAllZero": [{"output": "onboardProfiles", "field": "featureIndex"}],
+                    "read": {"command": "read-dpi", "parser": "dpi", "params": {}},
+                    "writeCommand": "write-dpi",
+                    "preserveUnknown": false,
+                    "verify": {"command": "verify-dpi", "parser": "dpi", "params": {}, "assertions": []}
+                }
+            }
+        }"#;
+        let package = build_test_package(
+            r#"{"schemaVersion": 1, "commands": {}}"#,
+            r#"{"schemaVersion": 1, "parsers": {}}"#,
+            r#"{"schemaVersion": 1, "transports": {}}"#,
+            workflows,
+        );
+        let api = test_hid_api();
+        // featureIndex=0 → skipIfAllZero triggers (all refs are zero)
+        let outputs = BTreeMap::from([("onboardProfiles".into(), serde_json::json!({"featureIndex": 0}))]);
+        let result = package.mutate(
+            api,
+            "test-path",
+            "test-set-lighting",
+            &Map::new(),
+            &outputs,
+            None,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not available on this device"));
+    }
+
+    /// `lookup` derived kind must return the mapped value when the source matches a table key,
+    /// and `Value::Null` when the source does not match any key.
+    /// This mirrors the `onboardFormatV5` derived field: profileFormatId=5 → 1, other → null.
+    #[test]
+    fn parses_lookup_derived_field() {
+        let mut files = BTreeMap::new();
+        files.insert(
+            "protocol/commands.json".into(),
+            br#"{"schemaVersion": 1, "commands": {}}"#.to_vec(),
+        );
+        files.insert(
+            "protocol/parsers.json".into(),
+            br#"{
+                "schemaVersion": 1,
+                "parsers": {
+                    "onboard-description": {
+                        "validWhen": [],
+                        "fields": {
+                            "profileFormatId": {"offset": 3, "kind": "u8"}
+                        },
+                        "derived": {
+                            "onboardFormatV5": {
+                                "kind": "lookup",
+                                "source": "profileFormatId",
+                                "table": {"5": 1}
+                            }
+                        }
+                    }
+                }
+            }"#
+            .to_vec(),
+        );
+        files.insert(
+            "protocol/transports.json".into(),
+            br#"{"schemaVersion": 1, "transports": {}}"#.to_vec(),
+        );
+        files.insert(
+            "protocol/workflows.json".into(),
+            br#"{"schemaVersion": 1, "workflows": {}, "mutations": {}}"#.to_vec(),
+        );
+        let package = ProtocolPackage::from_files(&files).unwrap();
+
+        // profileFormatId=5 → onboardFormatV5=1
+        let mut response = [0u8; 20];
+        response[3] = 5;
+        let parsed = package.parse_response("onboard-description", &response).unwrap();
+        assert_eq!(parsed.get("onboardFormatV5"), Some(&Value::from(1)));
+
+        // profileFormatId=3 → onboardFormatV5=null (not in table)
+        let mut response = [0u8; 20];
+        response[3] = 3;
+        let parsed = package.parse_response("onboard-description", &response).unwrap();
+        assert_eq!(parsed.get("onboardFormatV5"), Some(&Value::Null));
     }
 
     /// `mutate` must reject `settleMs` exceeding the 1-second safety limit.

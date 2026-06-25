@@ -189,6 +189,27 @@ enum NightPhase {
 struct SavedMouseLight {
     /// 鼠标灯光颜色（#RRGGBB 格式，来自 capabilities.settings.mouseLightStartColor）。
     color: String,
+    /// 灯效编号（0=off, 1=fixed, 3=cycle, 4=wave, 5=starlight, 10=breathing, 11=ripple, 12=custom）。
+    /// 旧版持久化文件可能没有此字段，default=1（fixed）以兼容 amaster 等只支持 color+enabled 的插件。
+    #[serde(default = "default_mouse_light_effect")]
+    effect: u8,
+    /// 灯效速度（0-255）。default=0。
+    #[serde(default)]
+    speed: u8,
+    /// 亮度百分比（0-100）。default=100。
+    #[serde(default = "default_mouse_light_brightness")]
+    brightness: u8,
+    /// starlight 第二色（#RRGGBB），其他灯效无此字段。
+    #[serde(default)]
+    extra_color: Option<String>,
+}
+
+fn default_mouse_light_effect() -> u8 {
+    1
+}
+
+fn default_mouse_light_brightness() -> u8 {
+    100
 }
 
 /// 进入夜间模式时保存的接收器灯光状态，用于退出时可靠恢复。
@@ -385,15 +406,23 @@ fn apply_night_mode_transition(app: &AppHandle, target_phase: NightPhase) {
 
             // 鼠标灯光（仅在尚未保存时才尝试关闭）
             if mouse_wanted && new_saved_mouse.is_none() {
-                if let Some((enabled, color)) = read_mouse_light_state(&snapshot) {
-                    if enabled {
-                        let params = serde_json::Map::from_iter([
-                            ("color".into(), serde_json::Value::String(color.clone())),
+                if let Some((is_on, saved)) = read_mouse_light_state(&snapshot) {
+                    if is_on {
+                        // 关闭灯光：effect=0 表示 off，同时传递 speed/brightness 以满足
+                        // HID++ mutation inputs 的校验（即使设备走 memory 路径也兼容）。
+                        let mut params = serde_json::Map::from_iter([
+                            ("color".into(), serde_json::Value::String(saved.color.clone())),
                             ("enabled".into(), serde_json::Value::Bool(false)),
+                            ("effect".into(), serde_json::Value::Number(0u8.into())),
+                            ("speed".into(), serde_json::Value::Number(saved.speed.into())),
+                            ("brightness".into(), serde_json::Value::Number(saved.brightness.into())),
                         ]);
+                        if let Some(ref ec) = saved.extra_color {
+                            params.insert("extraColor".into(), serde_json::Value::String(ec.clone()));
+                        }
                         match device_mutate_blocking(app, "set-mouse-lighting", &params) {
                             Ok(_) => {
-                                new_saved_mouse = Some(SavedMouseLight { color });
+                                new_saved_mouse = Some(saved);
                             }
                             Err(error) => {
                                 eprintln!(
@@ -498,13 +527,19 @@ fn apply_night_mode_transition(app: &AppHandle, target_phase: NightPhase) {
             // 恢复鼠标灯光
             if let Some(ref saved) = saved_mouse {
                 if snapshot_supports_mutation(&snapshot, "set-mouse-lighting") {
-                    let params = serde_json::Map::from_iter([
+                    let mut params = serde_json::Map::from_iter([
                         (
                             "color".into(),
                             serde_json::Value::String(saved.color.clone()),
                         ),
                         ("enabled".into(), serde_json::Value::Bool(true)),
+                        ("effect".into(), serde_json::Value::Number(saved.effect.into())),
+                        ("speed".into(), serde_json::Value::Number(saved.speed.into())),
+                        ("brightness".into(), serde_json::Value::Number(saved.brightness.into())),
                     ]);
+                    if let Some(ref ec) = saved.extra_color {
+                        params.insert("extraColor".into(), serde_json::Value::String(ec.clone()));
+                    }
                     if let Err(error) = device_mutate_blocking(app, "set-mouse-lighting", &params) {
                         eprintln!("[mira] night mode: failed to restore mouse lighting: {error}");
                         let _ = app
@@ -1099,7 +1134,7 @@ fn should_be_night(
 /// - color_hex: 来自 capabilities.mouseLighting.color（运行时 rgb parser 输出 #RRGGBB 字符串）
 ///
 /// 如果字段缺失或类型不符，返回 None（调用方应跳过夜间模式操作）。
-fn read_mouse_light_state(snapshot: &DeviceSnapshot) -> Option<(bool, String)> {
+fn read_mouse_light_state(snapshot: &DeviceSnapshot) -> Option<(bool, SavedMouseLight)> {
     let lighting = snapshot.capabilities.get("mouseLighting")?;
     let enabled = lighting
         .get("enabled")
@@ -1110,13 +1145,54 @@ fn read_mouse_light_state(snapshot: &DeviceSnapshot) -> Option<(bool, String)> {
         .and_then(|v| v.as_str())
         .filter(|s| s.starts_with('#') && s.len() == 7)
         .map(|s| s.to_string());
-    if enabled {
+    // 读取扩展灯效参数（HID++ 插件提供；amaster 等旧插件无这些字段时使用默认值）。
+    let effect = lighting
+        .get("effect")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u8);
+    let speed = lighting
+        .get("speed")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u8)
+        .unwrap_or(0);
+    let brightness = lighting
+        .get("brightness")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u8)
+        .unwrap_or(100);
+    let extra_color = lighting
+        .get("extraColor")
+        .and_then(|v| v.as_str())
+        .filter(|s| s.starts_with('#') && s.len() == 7)
+        .map(|s| s.to_string());
+    // 判断灯光是否开启：优先用 effect（HID++ 设备），无 effect 时回退到 enabled。
+    let is_on = effect.map(|e| e != 0).unwrap_or(enabled);
+    if is_on {
         // 灯光开启：必须有有效颜色才能正确保存并恢复，否则跳过该目标，
         // 避免 fallback #000000 在退出夜间恢复时覆盖设备原色。
-        Some((true, color?))
+        let color = color?;
+        Some((
+            true,
+            SavedMouseLight {
+                color,
+                effect: effect.unwrap_or(1),
+                speed,
+                brightness,
+                extra_color: extra_color,
+            },
+        ))
     } else {
         // 灯光关闭：颜色无意义，用 #000000 仅作为关闭写入的占位参数。
-        Some((false, color.unwrap_or_else(|| "#000000".to_string())))
+        Some((
+            false,
+            SavedMouseLight {
+                color: color.unwrap_or_else(|| "#000000".to_string()),
+                effect: effect.unwrap_or(0),
+                speed,
+                brightness,
+                extra_color: extra_color,
+            },
+        ))
     }
 }
 
@@ -2150,9 +2226,11 @@ mod night_mode_tests {
             evidence: "hardware-verified".into(),
             readonly: false,
         };
-        let (enabled, color) = read_mouse_light_state(&snapshot).unwrap();
-        assert!(enabled);
-        assert_eq!(color, "#FF8800");
+        let (is_on, saved) = read_mouse_light_state(&snapshot).unwrap();
+        assert!(is_on);
+        assert_eq!(saved.color, "#FF8800");
+        // 无 effect 字段时默认为 fixed(1)
+        assert_eq!(saved.effect, 1);
     }
 
     #[test]
@@ -2205,9 +2283,9 @@ mod night_mode_tests {
         // 避免 fallback #000000 在退出夜间恢复时覆盖设备原色。
         assert!(read_mouse_light_state(&make_snapshot(true)).is_none());
         // enabled=false 且颜色缺失：返回 fallback 颜色（仅作为关闭写入的占位参数）。
-        let (enabled, color) = read_mouse_light_state(&make_snapshot(false)).unwrap();
-        assert!(!enabled);
-        assert_eq!(color, "#000000");
+        let (is_on, saved) = read_mouse_light_state(&make_snapshot(false)).unwrap();
+        assert!(!is_on);
+        assert_eq!(saved.color, "#000000");
     }
 
     #[test]
@@ -2222,6 +2300,10 @@ mod night_mode_tests {
         let store = NightModeStore {
             saved_mouse_light: Some(SavedMouseLight {
                 color: "#AB12CD".into(),
+                effect: 5,
+                speed: 128,
+                brightness: 80,
+                extra_color: Some("#00FF00".into()),
             }),
             saved_receiver_light: Some(SavedReceiverLight {
                 effect: 3,
@@ -2233,7 +2315,12 @@ mod night_mode_tests {
         };
         let json = serde_json::to_string(&store).unwrap();
         let restored: NightModeStore = serde_json::from_str(&json).unwrap();
-        assert_eq!(restored.saved_mouse_light.unwrap().color, "#AB12CD");
+        let m = restored.saved_mouse_light.unwrap();
+        assert_eq!(m.color, "#AB12CD");
+        assert_eq!(m.effect, 5);
+        assert_eq!(m.speed, 128);
+        assert_eq!(m.brightness, 80);
+        assert_eq!(m.extra_color.as_deref(), Some("#00FF00"));
         let r = restored.saved_receiver_light.unwrap();
         assert_eq!(r.effect, 3);
         assert_eq!(r.color, "#FF0000");

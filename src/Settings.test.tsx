@@ -31,7 +31,7 @@ describe('SettingsPage', () => {
       return Promise.resolve(undefined);
     });
     const onThemeChange = vi.fn();
-    render(<SettingsPage onNavigateAbout={vi.fn()} onThemeChange={onThemeChange} />);
+    render(<SettingsPage onNavigateAbout={vi.fn()} onThemeChange={onThemeChange} writableMutations={['set-mouse-lighting']} />);
 
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('settings_get'));
     fireEvent.change(screen.getByRole('combobox', { name: '主题模式' }), { target: { value: 'dark' } });

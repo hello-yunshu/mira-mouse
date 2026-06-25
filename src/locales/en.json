@@ -93,7 +93,16 @@
     "off": "Off",
     "on": "On",
     "effectN": "Effect {{value}}",
-    "modeN": "Mode {{value}}"
+    "modeN": "Mode {{value}}",
+    "fixed": "Fixed",
+    "cycle": "Cycle",
+    "wave": "Wave",
+    "starlight": "Starlight",
+    "breathing": "Breathing",
+    "ripple": "Ripple",
+    "custom": "Custom",
+    "extraColor": "Secondary color",
+    "editMouseLightingTitle": "Mouse lighting — {{field}}"
   },
   "capability": {
     "group": {

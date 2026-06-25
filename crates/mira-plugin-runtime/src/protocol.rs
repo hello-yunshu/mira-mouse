@@ -5,9 +5,12 @@ use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Mutex;
 
-/// Feature index 缓存：按设备路径索引，存储 featureId → featureIndex 映射。
+/// Feature index 缓存：按设备路径索引，存储 featureId → 完整 parsed output 映射。
 /// feature index 在设备连接期间不变，缓存可避免每轮轮询重复查询。
-pub type FeatureIndexCache = HashMap<String, HashMap<u16, u8>>;
+/// 存储 complete Value（而非仅 featureIndex: u8）以保留 deviceIndex、connection 等
+/// derived 字段，防止后续 step 引用 `{fromOutput: "device", field: "deviceIndex"}` 时
+/// 因缓存命中丢失字段而报 "missing output reference"。
+pub type FeatureIndexCache = HashMap<String, HashMap<u16, Value>>;
 
 /// Onboard memory 缓存：按设备路径索引，存储最近一次 onboard read 的 (outputs, bytes)。
 /// 写入 mutation 的预读阶段检查缓存，命中则跳过 16 chunk HID 往返。
