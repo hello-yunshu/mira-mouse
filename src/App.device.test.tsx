@@ -303,7 +303,8 @@ describe('real device snapshot mapping', () => {
     fireEvent.change(screen.getByLabelText('颜色'), { target: { value: '#445566' } });
     fireEvent.click(screen.getByRole('button', { name: '应用' }));
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('device_mutate', {
-      mutation: 'set-mouse-lighting', params: { color: '#445566', enabled: true },
+      mutation: 'set-mouse-lighting',
+      params: { color: '#445566', enabled: true, effect: 1, speed: 0, brightness: 100, extraColor: '#000000' },
     }));
 
     fireEvent.click(screen.getByRole('tab', { name: '灯光' }));
@@ -528,6 +529,89 @@ describe('real device snapshot mapping', () => {
     fireEvent.click(screen.getByRole('button', { name: '应用' }));
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('device_mutate', {
       mutation: 'set-polling-rate', params: { rate: 125 },
+    }));
+  });
+
+  it('renders HID++ mouse lighting with multi-field editor and submits full params', async () => {
+    const hidppSnapshot: DeviceSnapshot = {
+      displayName: 'HID++ Light Mouse',
+      connection: 'wireless',
+      batteryPercent: 80,
+      charging: false,
+      batteries: [{ id: 'mouse', label: '鼠标', percentage: 80, charging: false }],
+      dpi: 1600,
+      dpiStages: [{ value: 1600, color: '#9a8bd0', active: true, enabled: true }],
+      capabilities: {
+        mouseLighting: { effect: 1, speed: 128, brightness: 50, color: '#FF0000', enabled: true, effectName: '常亮' },
+        colorLedInfo: { supportsFixed: true, supportsCycle: true, supportsWave: true, supportsStarlight: true, supportsBreathing: true, supportsRipple: true, supportsCustom: true },
+      },
+      pluginCapabilities: [
+        {
+          id: 'mouse-lighting', control: 'LightingZone', labelKey: 'capability.mouse-lighting', readOnly: false,
+          placements: [{ region: 'control', group: 'lighting', order: 30, span: 1, icon: 'lightbulb' }],
+          metadata: {
+            label: '灯光', section: 'control', status: true,
+            mutations: { mouse: ['set-mouse-lighting-onboard', 'set-mouse-lighting'], receiver: 'set-receiver-lighting' },
+            effectOptions: {
+              effect: [
+                { value: 0, labelKey: 'lighting.off' },
+                { value: 1, labelKey: 'lighting.fixed' },
+                { value: 3, labelKey: 'lighting.cycle' },
+                { value: 4, labelKey: 'lighting.wave' },
+                { value: 5, labelKey: 'lighting.starlight' },
+                { value: 10, labelKey: 'lighting.breathing' },
+                { value: 11, labelKey: 'lighting.ripple' },
+                { value: 12, labelKey: 'lighting.custom' },
+              ],
+              speed: { min: 0, max: 255, step: 1 },
+              brightness: { min: 0, max: 100, step: 1 },
+            },
+            supportedEffectsSource: ['capabilities.colorLedInfo', 'capabilities.rgbEffectsInfo'],
+            supportedEffectsField: 'supportsFixed|supportsCycle|supportsWave|supportsStarlight|supportsBreathing|supportsRipple|supportsCustom',
+          },
+        },
+      ],
+      writableMutations: ['set-mouse-lighting-onboard', 'set-mouse-lighting'],
+      evidence: 'hardware-verified',
+    };
+    invokeMock.mockImplementation((command: string, args?: { mutation?: string; params?: Record<string, unknown> }) => {
+      if (command === 'settings_get') return Promise.resolve(settings);
+      if (command === 'device_snapshot') return Promise.resolve(hidppSnapshot);
+      if (command === 'device_mutate' && args?.mutation === 'set-mouse-lighting-onboard') {
+        const caps = hidppSnapshot.capabilities ?? {};
+        return Promise.resolve({
+          ...hidppSnapshot,
+          capabilities: {
+            ...caps,
+            mouseLighting: { ...caps.mouseLighting, effect: args.params?.effect },
+          },
+        });
+      }
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+
+    render(<App />);
+    expect(await screen.findByText('HID++ Light Mouse')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('tab', { name: '灯光' }));
+
+    // HID++ multi-field UI: effect/speed/brightness/color buttons visible
+    expect(screen.getByText('常亮')).toBeInTheDocument();
+    expect(screen.getByText('128')).toBeInTheDocument();
+    expect(screen.getByText('50%')).toBeInTheDocument();
+
+    // Click effect button to open edit modal
+    fireEvent.click(screen.getByRole('button', { name: /灯效/ }));
+    expect(screen.getByRole('dialog', { name: '鼠标灯光 — 灯效' })).toBeInTheDocument();
+
+    // Change effect to 'wave' (value 4) and submit
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 4 } });
+    fireEvent.click(screen.getByRole('button', { name: '应用' }));
+
+    // Verify full params (effect/speed/brightness/color/extraColor) are submitted
+    // extraColor defaults to #000000 when device hasn't reported it (non-starlight effect)
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('device_mutate', {
+      mutation: 'set-mouse-lighting-onboard',
+      params: { color: '#FF0000', enabled: true, effect: 4, speed: 128, brightness: 50, extraColor: '#000000' },
     }));
   });
 });

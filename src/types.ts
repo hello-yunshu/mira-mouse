@@ -14,6 +14,14 @@ export interface Lighting {
   mouseLightEnabled?: boolean;
   mouseLightColor?: string;
   mouseLightEndColor?: string;
+  /** HID++ 灯效编号（0=off, 1=fixed, 3=cycle, 4=wave, 5=starlight, 10=breathing, 11=ripple, 12=custom） */
+  mouseLightEffect?: number;
+  /** 灯效速度（0-255） */
+  mouseLightSpeed?: number;
+  /** 亮度百分比（0-100） */
+  mouseLightBrightness?: number;
+  /** starlight 第二色（#RRGGBB），其他灯效无此字段 */
+  mouseLightExtraColor?: string;
   receiverLightEnabled?: boolean;
   receiverLightMode?: string;
   receiverLightColor?: string;
