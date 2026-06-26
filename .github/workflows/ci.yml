@@ -28,12 +28,22 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libudev-dev  
       - run: rustup toolchain install stable --profile minimal --component rustfmt,clippy
+      - name: Cache cargo
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-rust-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-rust-${{ runner.os }}-
       - run: cargo fmt --all --check
+      - run: cargo run --package xtask -- plugins sync --locked
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
-      - run: cargo build --workspace --release --locked
   configuration:
     strategy: { fail-fast: false, matrix: { os: [macos-14, windows-2022, ubuntu-22.04] } }
     runs-on: ${{ matrix.os }}
@@ -79,9 +89,20 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libudev-dev
       - run: rustup toolchain install stable --profile minimal --component rustfmt,clippy --target ${{ matrix.target }}
-      - run: cargo run --package xtask -- plugins sync --locked --offline
+      - name: Cache cargo
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-bundle-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-bundle-${{ runner.os }}-${{ matrix.target }}-
+            cargo-bundle-${{ runner.os }}-
+      - run: cargo run --package xtask -- plugins sync --locked
       - run: npx tauri build --target ${{ matrix.target }}
       - name: Upload bundle artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -92,4 +113,54 @@ jobs:
       - name: Job summary
         shell: bash
         run: echo 'Tauri bundle produced for ${{ matrix.target }}; unsigned community artifact.' >> "$GITHUB_STEP_SUMMARY"
+  auto-release:
+    needs: [frontend, rust, configuration, tauri-bundle]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    concurrency:
+      group: app-auto-release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Determine release action
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          current_version=$(node -p "require('./package.json').version")
+          latest_tag=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null || echo "")
+          if [ -z "$latest_tag" ]; then
+            echo "action=new" >> "$GITHUB_OUTPUT"
+            echo "tag=app/v$current_version" >> "$GITHUB_OUTPUT"
+            echo "No previous release; creating app/v$current_version"
+          else
+            latest_version="${latest_tag#app/v}"
+            if [ "$current_version" != "$latest_version" ]; then
+              echo "action=new" >> "$GITHUB_OUTPUT"
+              echo "tag=app/v$current_version" >> "$GITHUB_OUTPUT"
+              echo "Version changed: $latest_version -> $current_version"
+            else
+              echo "action=overwrite" >> "$GITHUB_OUTPUT"
+              echo "tag=$latest_tag" >> "$GITHUB_OUTPUT"
+              echo "Version unchanged ($current_version); overwriting $latest_tag"
+            fi
+          fi
+      - name: Trigger release workflow
+        run: |
+          if [ "$ACTION" = "new" ]; then
+            gh workflow run release.yml --repo "$GITHUB_REPOSITORY" \
+              -f overwrite_latest=false \
+              -f tag="$TAG"
+          else
+            gh workflow run release.yml --repo "$GITHUB_REPOSITORY" \
+              -f overwrite_latest=true
+          fi
+        env:
+          ACTION: ${{ steps.decide.outputs.action }}
+          TAG: ${{ steps.decide.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
 

@@ -1,27 +1,49 @@
 name: Release
 on:
-  push:
-    tags: ['app/v*']
+  workflow_dispatch:
+    inputs:
+      overwrite_latest:
+        description: 'Overwrite latest release (rebuild without version bump)'
+        required: false
+        default: 'true'
+        type: boolean
+      tag:
+        description: 'Release tag (required when overwrite_latest is false, e.g. app/v0.1.0)'
+        required: false
+        type: string
 permissions:
   contents: read
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.tag || 'overwrite' }}
   cancel-in-progress: false
 jobs:
   gate:
     runs-on: ubuntu-22.04
     timeout-minutes: 10
-    outputs: { version: '${{ steps.meta.outputs.version }}' }
+    outputs:
+      version: '${{ steps.meta.outputs.version }}'
+      tag: '${{ steps.meta.outputs.tag }}'
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - id: meta
-        env: { RELEASE_TAG: '${{ github.ref_name }}' }
+        env:
+          INPUT_TAG: '${{ inputs.tag }}'
+          OVERWRITE: "${{ inputs.overwrite_latest == true }}"
+          GH_TOKEN: '${{ github.token }}'
         run: |
           set -euo pipefail
           node -e "const l=require('./plugins.lock.json');if(!l.releaseReady)throw Error('plugins.lock.json is not release-ready')"
-          version="${RELEASE_TAG#app/v}"
-          test "$version" = "$(node -p "require('./package.json').version")"
+          if [ "$OVERWRITE" = "true" ]; then
+            tag=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null || echo "")
+            test -n "$tag" || { echo "No existing release to overwrite"; exit 1; }
+            version="${tag#app/v}"
+          else
+            tag="$INPUT_TAG"
+            version="${tag#app/v}"
+            test "$version" = "$(node -p "require('./package.json').version")"
+          fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
   build:
     needs: gate
     strategy: { fail-fast: false, matrix: { os: [macos-14, windows-2022, ubuntu-22.04] } }
@@ -33,8 +55,18 @@ jobs:
         with: { node-version: 22, cache: npm }
       - run: npm ci
       - run: rustup toolchain install stable --profile minimal
+      - name: Cache cargo
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-release-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-release-${{ runner.os }}-
       - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libudev-dev
       - name: Sync locked default plugins
         run: cargo run --package xtask -- plugins sync --locked
       - name: Build signed updater packages
@@ -74,7 +106,7 @@ jobs:
         shell: bash
         env:
           VERSION: '${{ needs.gate.outputs.version }}'
-          TAG: '${{ github.ref_name }}'
+          TAG: '${{ needs.gate.outputs.tag }}'
         run: |
           set -euo pipefail
           REPO="hello-yunshu/mira-mouse"
@@ -111,9 +143,19 @@ jobs:
             }
           }
           EOF
-      - env: { GH_TOKEN: '${{ github.token }}', TAG: '${{ github.ref_name }}' }
+      - env:
+          GH_TOKEN: '${{ github.token }}'
+          TAG: '${{ needs.gate.outputs.tag }}'
+          VERSION: '${{ needs.gate.outputs.version }}'
+          TARGET: '${{ github.sha }}'
         run: |
-          gh release create "$TAG" publish-assets/* latest.json \
-            --verify-tag \
-            --title "Mira ${TAG#app/v}" \
-            --notes "Official Mira release with Tauri Updater signing. Platform notarization and OS code-signing evidence are tracked separately."
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG exists; uploading assets."
+            gh release upload "$TAG" publish-assets/* latest.json --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" publish-assets/* latest.json \
+              --target "$TARGET" \
+              --title "Mira $VERSION" \
+              --notes "Official Mira release with Tauri Updater signing. Platform notarization and OS code-signing evidence are tracked separately."
+          fi
