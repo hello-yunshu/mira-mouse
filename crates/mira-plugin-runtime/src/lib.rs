@@ -8,8 +8,9 @@ pub mod protocol;
 
 // Re-export mira_plugin_api 的关键类型，便于下游 crate（含测试）构造插件声明。
 pub use mira_plugin_api::{
-    Capability, CapabilityPlacement, CapabilityProbe, CapabilityRegion, Control, EvidenceLevel,
-    ExportableField, Permission, PluginDependency, PluginManifest, ReportType,
+    Capability, CapabilityPlacement, CapabilityProbe, CapabilityRegion, Control, EffectOption,
+    EffectOptions, EvidenceLevel, ExportableField, LightingRole, Permission, PluginDependency,
+    PluginManifest, RangeSpec, ReceiverLightingOption, ReceiverLightingOptions, ReportType,
 };
 
 pub use dsl::{execute_workflow, DslError, Limits, Operation, Transport, Workflow};

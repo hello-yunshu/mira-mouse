@@ -24,7 +24,7 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": ["resources/plugins/mira-amaster-1.3.5.mira-plugin", "resources/plugins/mira-logitech-hidpp-0.6.1.mira-plugin"],
+    "resources": ["resources/plugins/mira-amaster-1.3.6.mira-plugin", "resources/plugins/mira-logitech-hidpp-0.6.3.mira-plugin"],
     "fileAssociations": [{ "ext": ["mira-plugin"], "name": "Mira Plugin", "description": "Declarative Mira device plugin", "role": "Editor" }],
     "macOS": {
       "minimumSystemVersion": "12.0",

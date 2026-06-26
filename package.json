@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:dmg": "npm exec tauri build -- --bundles app && bash scripts/create-dmg.sh",
     "typecheck": "tsc -b --pretty false",
     "test": "vitest run",
     "lint": "eslint .",

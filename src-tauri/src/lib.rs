@@ -34,6 +34,7 @@ type CachedPlugins = Vec<(
     hid::DevicesFile,
     std::collections::BTreeMap<String, Vec<u8>>,
 )>;
+type PluginLocales = BTreeMap<String, BTreeMap<String, BTreeMap<String, String>>>;
 
 const PLUGIN_REGISTRY_URL: &str =
     "https://raw.githubusercontent.com/hello-yunshu/mira-mouse-plugins/main/registry/index.json";
@@ -299,6 +300,10 @@ struct SessionState {
     /// 缓存 inspect_bundled_plugins 结果。内置插件在构建时打包，运行时不变，
     /// 因此只需计算一次（SHA-256 + 签名验证）。
     cached_bundled_plugins: Mutex<Option<Vec<BundledPluginInfo>>>,
+    /// 缓存插件 locale 文件（locales/*.json），按 plugin_id 索引。
+    /// 结构: pluginId → locale code → key → translation。
+    /// 前端启动时通过 plugin_locales 命令获取，合并到 i18n 命名空间。
+    cached_plugin_locales: Mutex<Option<PluginLocales>>,
     /// 缓存 load_software_profiles 结果。由 save_software_profiles 写入后失效。
     cached_software_profiles: Mutex<Option<SoftwareProfileStore>>,
     /// 缓存 ProtocolPackage 解析结果，按 plugin_id 索引。
@@ -387,8 +392,15 @@ fn apply_night_mode_transition(app: &AppHandle, target_phase: NightPhase) {
                 return;
             };
 
-            let can_mouse = snapshot_supports_mutation(&snapshot, "set-mouse-lighting");
-            let can_receiver = snapshot_supports_mutation(&snapshot, "set-receiver-lighting");
+            // 从插件 capability 的 lightingRole 强类型字段动态查询 mutation 名。
+            // 旧插件未声明 lightingRole 时回退到 metadata.mutations，仍无则使用 Host 默认。
+            let (mouse_mutation, receiver_mutation) = resolve_lighting_mutations(&snapshot);
+            let mouse_mutation = mouse_mutation.as_deref().unwrap_or("set-mouse-lighting");
+            let receiver_mutation = receiver_mutation
+                .as_deref()
+                .unwrap_or("set-receiver-lighting");
+            let can_mouse = snapshot_supports_mutation(&snapshot, mouse_mutation);
+            let can_receiver = snapshot_supports_mutation(&snapshot, receiver_mutation);
 
             // 如果设备不支持任何勾选的灯光对象：静默跳过，仅更新阶段。
             let mouse_wanted = settings.night_mode_target_mouse && can_mouse;
@@ -408,19 +420,33 @@ fn apply_night_mode_transition(app: &AppHandle, target_phase: NightPhase) {
             if mouse_wanted && new_saved_mouse.is_none() {
                 if let Some((is_on, saved)) = read_mouse_light_state(&snapshot) {
                     if is_on {
-                        // 关闭灯光：effect=0 表示 off，同时传递 speed/brightness 以满足
+                        // 关闭灯光：off effect 由插件声明，同时传递 speed/brightness 以满足
                         // HID++ mutation inputs 的校验（即使设备走 memory 路径也兼容）。
+                        let off_effect = mouse_lighting_off_effect(&snapshot);
                         let mut params = serde_json::Map::from_iter([
-                            ("color".into(), serde_json::Value::String(saved.color.clone())),
+                            (
+                                "color".into(),
+                                serde_json::Value::String(saved.color.clone()),
+                            ),
                             ("enabled".into(), serde_json::Value::Bool(false)),
-                            ("effect".into(), serde_json::Value::Number(0u8.into())),
-                            ("speed".into(), serde_json::Value::Number(saved.speed.into())),
-                            ("brightness".into(), serde_json::Value::Number(saved.brightness.into())),
+                            (
+                                "effect".into(),
+                                serde_json::Value::Number(off_effect.into()),
+                            ),
+                            (
+                                "speed".into(),
+                                serde_json::Value::Number(saved.speed.into()),
+                            ),
+                            (
+                                "brightness".into(),
+                                serde_json::Value::Number(saved.brightness.into()),
+                            ),
                         ]);
                         if let Some(ref ec) = saved.extra_color {
-                            params.insert("extraColor".into(), serde_json::Value::String(ec.clone()));
+                            params
+                                .insert("extraColor".into(), serde_json::Value::String(ec.clone()));
                         }
-                        match device_mutate_blocking(app, "set-mouse-lighting", &params) {
+                        match device_mutate_blocking(app, mouse_mutation, &params) {
                             Ok(_) => {
                                 new_saved_mouse = Some(saved);
                             }
@@ -465,7 +491,7 @@ fn apply_night_mode_transition(app: &AppHandle, target_phase: NightPhase) {
                                 serde_json::Value::String(saved.color.clone()),
                             ),
                         ]);
-                        match device_mutate_blocking(app, "set-receiver-lighting", &params) {
+                        match device_mutate_blocking(app, receiver_mutation, &params) {
                             Ok(_) => {
                                 new_saved_receiver = Some(saved);
                             }
@@ -496,12 +522,7 @@ fn apply_night_mode_transition(app: &AppHandle, target_phase: NightPhase) {
             } else {
                 // 有失败：保持阶段为 Day 以便重试，但持久化已成功部分的 saved，
                 // 避免重试时已关闭的灯光因 enabled=false 被跳过而丢失 saved。
-                update_night_mode_phase(
-                    app,
-                    NightPhase::Day,
-                    new_saved_mouse,
-                    new_saved_receiver,
-                );
+                update_night_mode_phase(app, NightPhase::Day, new_saved_mouse, new_saved_receiver);
             }
         }
         NightPhase::Day => {
@@ -524,23 +545,39 @@ fn apply_night_mode_transition(app: &AppHandle, target_phase: NightPhase) {
 
             let mut any_failed = false;
 
+            // 恢复阶段同样动态查询 mutation 名（与关闭阶段保持一致）
+            let (mouse_mutation, receiver_mutation) = resolve_lighting_mutations(&snapshot);
+            let mouse_mutation = mouse_mutation.as_deref().unwrap_or("set-mouse-lighting");
+            let receiver_mutation = receiver_mutation
+                .as_deref()
+                .unwrap_or("set-receiver-lighting");
+
             // 恢复鼠标灯光
             if let Some(ref saved) = saved_mouse {
-                if snapshot_supports_mutation(&snapshot, "set-mouse-lighting") {
+                if snapshot_supports_mutation(&snapshot, mouse_mutation) {
                     let mut params = serde_json::Map::from_iter([
                         (
                             "color".into(),
                             serde_json::Value::String(saved.color.clone()),
                         ),
                         ("enabled".into(), serde_json::Value::Bool(true)),
-                        ("effect".into(), serde_json::Value::Number(saved.effect.into())),
-                        ("speed".into(), serde_json::Value::Number(saved.speed.into())),
-                        ("brightness".into(), serde_json::Value::Number(saved.brightness.into())),
+                        (
+                            "effect".into(),
+                            serde_json::Value::Number(saved.effect.into()),
+                        ),
+                        (
+                            "speed".into(),
+                            serde_json::Value::Number(saved.speed.into()),
+                        ),
+                        (
+                            "brightness".into(),
+                            serde_json::Value::Number(saved.brightness.into()),
+                        ),
                     ]);
                     if let Some(ref ec) = saved.extra_color {
                         params.insert("extraColor".into(), serde_json::Value::String(ec.clone()));
                     }
-                    if let Err(error) = device_mutate_blocking(app, "set-mouse-lighting", &params) {
+                    if let Err(error) = device_mutate_blocking(app, mouse_mutation, &params) {
                         eprintln!("[mira] night mode: failed to restore mouse lighting: {error}");
                         let _ = app
                             .notification()
@@ -555,7 +592,7 @@ fn apply_night_mode_transition(app: &AppHandle, target_phase: NightPhase) {
 
             // 恢复接收器灯光
             if let Some(ref saved) = saved_receiver {
-                if snapshot_supports_mutation(&snapshot, "set-receiver-lighting") {
+                if snapshot_supports_mutation(&snapshot, receiver_mutation) {
                     let params = serde_json::Map::from_iter([
                         (
                             "effect".into(),
@@ -578,9 +615,7 @@ fn apply_night_mode_transition(app: &AppHandle, target_phase: NightPhase) {
                             serde_json::Value::String(saved.color.clone()),
                         ),
                     ]);
-                    if let Err(error) =
-                        device_mutate_blocking(app, "set-receiver-lighting", &params)
-                    {
+                    if let Err(error) = device_mutate_blocking(app, receiver_mutation, &params) {
                         eprintln!(
                             "[mira] night mode: failed to restore receiver lighting: {error}"
                         );
@@ -1136,6 +1171,7 @@ fn should_be_night(
 /// 如果字段缺失或类型不符，返回 None（调用方应跳过夜间模式操作）。
 fn read_mouse_light_state(snapshot: &DeviceSnapshot) -> Option<(bool, SavedMouseLight)> {
     let lighting = snapshot.capabilities.get("mouseLighting")?;
+    let off_effect = mouse_lighting_off_effect(snapshot);
     let enabled = lighting
         .get("enabled")
         .and_then(|value| value.as_bool())
@@ -1165,8 +1201,8 @@ fn read_mouse_light_state(snapshot: &DeviceSnapshot) -> Option<(bool, SavedMouse
         .and_then(|v| v.as_str())
         .filter(|s| s.starts_with('#') && s.len() == 7)
         .map(|s| s.to_string());
-    // 判断灯光是否开启：优先用 effect（HID++ 设备），无 effect 时回退到 enabled。
-    let is_on = effect.map(|e| e != 0).unwrap_or(enabled);
+    // 判断灯光是否开启：优先用插件声明的 off effect（HID++ 设备），无 effect 时回退到 enabled。
+    let is_on = effect.map(|e| e != off_effect).unwrap_or(enabled);
     if is_on {
         // 灯光开启：必须有有效颜色才能正确保存并恢复，否则跳过该目标，
         // 避免 fallback #000000 在退出夜间恢复时覆盖设备原色。
@@ -1178,7 +1214,7 @@ fn read_mouse_light_state(snapshot: &DeviceSnapshot) -> Option<(bool, SavedMouse
                 effect: effect.unwrap_or(1),
                 speed,
                 brightness,
-                extra_color: extra_color,
+                extra_color,
             },
         ))
     } else {
@@ -1187,13 +1223,25 @@ fn read_mouse_light_state(snapshot: &DeviceSnapshot) -> Option<(bool, SavedMouse
             false,
             SavedMouseLight {
                 color: color.unwrap_or_else(|| "#000000".to_string()),
-                effect: effect.unwrap_or(0),
+                effect: effect.unwrap_or(off_effect),
                 speed,
                 brightness,
-                extra_color: extra_color,
+                extra_color,
             },
         ))
     }
+}
+
+fn mouse_lighting_off_effect(snapshot: &DeviceSnapshot) -> u8 {
+    snapshot
+        .plugin_capabilities
+        .iter()
+        .find(|capability| capability.control == "LightingZone")
+        .and_then(|capability| capability.metadata.get("effectOptions"))
+        .and_then(|effect_options| effect_options.get("offValue"))
+        .and_then(|value| value.as_u64())
+        .and_then(|value| u8::try_from(value).ok())
+        .unwrap_or(0)
 }
 
 /// 从设备快照的 capabilities 中读取接收器灯光状态。
@@ -1345,6 +1393,7 @@ mod settings_tests {
             writable_mutations: Vec::new(),
             evidence: "hardware-verified".into(),
             readonly: false,
+            plugin_id: None,
         };
         let mut settings = AppSettings::default();
         assert_eq!(battery_title(&snapshot, &settings).as_deref(), Some("64%"));
@@ -1383,6 +1432,7 @@ mod settings_tests {
             writable_mutations,
             evidence: evidence.into(),
             readonly,
+            plugin_id: None,
         }
     }
 
@@ -1510,6 +1560,7 @@ mod settings_tests {
             writable_mutations: Vec::new(),
             evidence: "hardware-verified".into(),
             readonly: false,
+            plugin_id: None,
         };
         assert_eq!(
             exportable_value(
@@ -1602,6 +1653,7 @@ mod settings_tests {
             writable_mutations: vec!["set-mouse-lighting".into()],
             evidence: "hardware-verified".into(),
             readonly: false,
+            plugin_id: None,
         };
         let field = ExportableField {
             id: "receiver-lighting".into(),
@@ -1655,6 +1707,7 @@ mod settings_tests {
             writable_mutations: vec!["set-receiver-lighting".into()],
             evidence: "hardware-verified".into(),
             readonly: false,
+            plugin_id: None,
         };
         let field = ExportableField {
             id: "receiver-lighting".into(),
@@ -1681,6 +1734,8 @@ mod settings_tests {
 
 #[cfg(test)]
 mod night_mode_tests {
+    #![allow(clippy::field_reassign_with_default)]
+
     use super::*;
 
     #[test]
@@ -1947,6 +2002,7 @@ mod night_mode_tests {
             readonly: false,
             writable_mutations: Vec::new(),
             plugin_capabilities: Vec::new(),
+            plugin_id: None,
         };
         // 充电中 → Night
         assert_eq!(
@@ -2010,6 +2066,7 @@ mod night_mode_tests {
             readonly: false,
             writable_mutations: Vec::new(),
             plugin_capabilities: Vec::new(),
+            plugin_id: None,
         };
         // 电量 15% < 阈值 20% → Night
         assert_eq!(
@@ -2076,6 +2133,7 @@ mod night_mode_tests {
             readonly: false,
             writable_mutations: Vec::new(),
             plugin_capabilities: Vec::new(),
+            plugin_id: None,
         };
         // 白天但充电中 → Night（OR）
         assert_eq!(
@@ -2117,6 +2175,7 @@ mod night_mode_tests {
             readonly: false,
             writable_mutations: Vec::new(),
             plugin_capabilities: Vec::new(),
+            plugin_id: None,
         };
         let saved = read_receiver_light_state(&snapshot).unwrap();
         assert_eq!(saved.effect, 3);
@@ -2153,6 +2212,7 @@ mod night_mode_tests {
             readonly: false,
             writable_mutations: Vec::new(),
             plugin_capabilities: Vec::new(),
+            plugin_id: None,
         };
         let saved = read_receiver_light_state(&snapshot).unwrap();
         assert_eq!(saved.option, 2);
@@ -2177,6 +2237,7 @@ mod night_mode_tests {
             readonly: false,
             writable_mutations: Vec::new(),
             plugin_capabilities: Vec::new(),
+            plugin_id: None,
         };
         assert!(read_receiver_light_state(&snapshot).is_none());
     }
@@ -2225,6 +2286,7 @@ mod night_mode_tests {
             writable_mutations: vec!["set-mouse-lighting".into()],
             evidence: "hardware-verified".into(),
             readonly: false,
+            plugin_id: None,
         };
         let (is_on, saved) = read_mouse_light_state(&snapshot).unwrap();
         assert!(is_on);
@@ -2252,6 +2314,7 @@ mod night_mode_tests {
             writable_mutations: Vec::new(),
             evidence: "hardware-verified".into(),
             readonly: false,
+            plugin_id: None,
         };
         assert!(read_mouse_light_state(&snapshot).is_none());
     }
@@ -2278,6 +2341,7 @@ mod night_mode_tests {
             writable_mutations: Vec::new(),
             evidence: "hardware-verified".into(),
             readonly: false,
+            plugin_id: None,
         };
         // enabled=true 但颜色缺失：返回 None，跳过该目标，
         // 避免 fallback #000000 在退出夜间恢复时覆盖设备原色。
@@ -2286,6 +2350,102 @@ mod night_mode_tests {
         let (is_on, saved) = read_mouse_light_state(&make_snapshot(false)).unwrap();
         assert!(!is_on);
         assert_eq!(saved.color, "#000000");
+    }
+
+    #[test]
+    fn read_mouse_light_state_uses_declared_off_effect() {
+        let snapshot = DeviceSnapshot {
+            display_name: "Test".into(),
+            connection: mira_core::Connection::Usb,
+            battery_percent: None,
+            charging: false,
+            batteries: Vec::new(),
+            dpi: None,
+            dpi_stages: None,
+            polling_rate_hz: None,
+            supported_polling_rates_hz: None,
+            profile: None,
+            confirmed_light_color: None,
+            capabilities: BTreeMap::from([(
+                "mouseLighting".into(),
+                serde_json::json!({
+                    "enabled": true,
+                    "effect": 9,
+                    "color": "#2266AA"
+                }),
+            )]),
+            plugin_capabilities: vec![PluginCapability {
+                id: "mouse-lighting".into(),
+                control: "LightingZone".into(),
+                label_key: "capability.mouse-lighting".into(),
+                read_only: false,
+                placements: Vec::new(),
+                metadata: BTreeMap::from([(
+                    "effectOptions".into(),
+                    serde_json::json!({ "offValue": 9 }),
+                )]),
+                available: true,
+                connections: None,
+                min_firmware: None,
+            }],
+            writable_mutations: vec!["set-mouse-lighting".into()],
+            evidence: "hardware-verified".into(),
+            readonly: false,
+            plugin_id: Some("mira.logitech-hidpp".into()),
+        };
+
+        let (is_on, saved) = read_mouse_light_state(&snapshot).unwrap();
+        assert!(!is_on);
+        assert_eq!(saved.effect, 9);
+        assert_eq!(mouse_lighting_off_effect(&snapshot), 9);
+    }
+
+    #[test]
+    fn resolve_lighting_mutations_prefers_lighting_role_over_legacy_candidates() {
+        let snapshot = DeviceSnapshot {
+            display_name: "Test".into(),
+            connection: mira_core::Connection::Usb,
+            battery_percent: None,
+            charging: false,
+            batteries: Vec::new(),
+            dpi: None,
+            dpi_stages: None,
+            polling_rate_hz: None,
+            supported_polling_rates_hz: None,
+            profile: None,
+            confirmed_light_color: None,
+            capabilities: BTreeMap::new(),
+            plugin_capabilities: vec![PluginCapability {
+                id: "mouse-lighting".into(),
+                control: "LightingZone".into(),
+                label_key: "capability.mouse-lighting".into(),
+                read_only: false,
+                placements: Vec::new(),
+                metadata: BTreeMap::from([
+                    (
+                        "lightingRole".into(),
+                        serde_json::json!({ "mouse": "set-mouse-lighting" }),
+                    ),
+                    (
+                        "mutations".into(),
+                        serde_json::json!({
+                            "mouse": ["set-mouse-lighting-onboard", "set-mouse-lighting"]
+                        }),
+                    ),
+                ]),
+                available: true,
+                connections: None,
+                min_firmware: None,
+            }],
+            writable_mutations: vec!["set-mouse-lighting-onboard".into()],
+            evidence: "hardware-verified".into(),
+            readonly: false,
+            plugin_id: Some("mira.logitech-hidpp".into()),
+        };
+
+        let (mouse, receiver) = resolve_lighting_mutations(&snapshot);
+        assert_eq!(mouse.as_deref(), Some("set-mouse-lighting"));
+        assert!(receiver.is_none());
     }
 
     #[test]
@@ -2819,6 +2979,100 @@ fn cached_bundled_plugins(app: &AppHandle) -> Vec<BundledPluginInfo> {
     }
     // Lock failed (poisoned) — compute directly without caching.
     inspect_bundled_plugins(app, &production_trust_store())
+}
+
+/// 从插件包的文件映射中提取 locale 数据。
+/// 扫描 `locales/*.json` 文件，解析为 locale code → key → translation 映射。
+fn extract_plugin_locales(
+    files: &BTreeMap<String, Vec<u8>>,
+) -> BTreeMap<String, BTreeMap<String, String>> {
+    let mut locales = BTreeMap::new();
+    for (path, bytes) in files {
+        // 匹配 locales/zh-CN.json 或 locales/en.json 格式
+        if let Some(locale) = path
+            .strip_prefix("locales/")
+            .and_then(|rest| rest.strip_suffix(".json"))
+        {
+            if let Ok(dict) = serde_json::from_slice::<BTreeMap<String, String>>(bytes) {
+                locales.insert(locale.to_string(), dict);
+            }
+        }
+    }
+    locales
+}
+
+/// 加载所有插件的 locale 文件（bundled + installed），返回
+/// pluginId → locale code → key → translation 映射。
+fn load_all_plugin_locales(app: &AppHandle) -> PluginLocales {
+    let trust = production_trust_store();
+    let mut result: PluginLocales = BTreeMap::new();
+
+    // 内置插件
+    if let Some(plugins_dir) = bundled_plugins_dir(app) {
+        if let Some(lock) = read_lock_file() {
+            for plugin in &lock.plugins {
+                if !plugin.bundle_by_default {
+                    continue;
+                }
+                let asset_path = plugins_dir.join(&plugin.asset);
+                let Ok(bytes) = fs::read(&asset_path) else {
+                    continue;
+                };
+                let Ok((_, files)) = extract_package(Cursor::new(&bytes), &trust, true) else {
+                    continue;
+                };
+                let locales = extract_plugin_locales(&files);
+                if !locales.is_empty() {
+                    result.insert(plugin.plugin_id.clone(), locales);
+                }
+            }
+        }
+    }
+
+    // 已安装插件
+    if let Ok(directory) = installed_plugins_dir(app) {
+        if let Ok(versions) = active_plugin_versions(app) {
+            for (plugin_id, _version) in versions {
+                if result.contains_key(&plugin_id) {
+                    continue;
+                }
+                let Some(path) = find_installed_plugin_path(&directory, &plugin_id, &trust) else {
+                    continue;
+                };
+                let Ok(bytes) = fs::read(&path) else {
+                    continue;
+                };
+                let Ok((_, files)) = extract_package(Cursor::new(&bytes), &trust, true) else {
+                    continue;
+                };
+                let locales = extract_plugin_locales(&files);
+                if !locales.is_empty() {
+                    result.insert(plugin_id, locales);
+                }
+            }
+        }
+    }
+
+    result
+}
+
+/// 返回缓存的插件 locale 数据，首次访问时计算。
+fn cached_plugin_locales(app: &AppHandle) -> PluginLocales {
+    let state = app.state::<SessionState>();
+    if let Ok(mut cache) = state.cached_plugin_locales.lock() {
+        if let Some(ref locales) = *cache {
+            return locales.clone();
+        }
+        let locales = load_all_plugin_locales(app);
+        *cache = Some(locales.clone());
+        return locales;
+    }
+    load_all_plugin_locales(app)
+}
+
+#[tauri::command]
+async fn plugin_locales(app: AppHandle) -> PluginLocales {
+    cached_plugin_locales(&app)
 }
 
 fn active_plugins_info(app: &AppHandle) -> Vec<BundledPluginInfo> {
@@ -3564,6 +3818,69 @@ fn snapshot_supports_mutation(snapshot: &DeviceSnapshot, mutation: &str) -> bool
             .any(|candidate| candidate == mutation)
 }
 
+/// 从设备快照的 plugin_capabilities 中查询灯光 mutation 名。
+/// 优先读取 LightingZone capability 的 metadata.lightingRole（强类型字段）；
+/// 回退到 metadata.mutations（兼容旧插件 manifest）。
+/// 返回 (mouse_mutation, receiver_mutation)，未声明则为 None。
+fn pick_supported_lighting_mutation(
+    value: Option<&serde_json::Value>,
+    snapshot: &DeviceSnapshot,
+) -> Option<String> {
+    let value = value?;
+    if let Some(mutation) = value.as_str() {
+        return Some(mutation.to_string());
+    }
+    value.as_array().and_then(|items| {
+        let candidates = items.iter().filter_map(|item| item.as_str());
+        let mut first = None;
+        for candidate in candidates {
+            if first.is_none() {
+                first = Some(candidate.to_string());
+            }
+            if snapshot_supports_mutation(snapshot, candidate) {
+                return Some(candidate.to_string());
+            }
+        }
+        first
+    })
+}
+
+fn resolve_lighting_mutations(snapshot: &DeviceSnapshot) -> (Option<String>, Option<String>) {
+    for cap in &snapshot.plugin_capabilities {
+        if cap.control != "LightingZone" {
+            continue;
+        }
+        let role = cap
+            .metadata
+            .get("lightingRole")
+            .and_then(|value| value.as_object());
+        let mutations = cap
+            .metadata
+            .get("mutations")
+            .and_then(|value| value.as_object());
+        let role_mouse =
+            pick_supported_lighting_mutation(role.and_then(|value| value.get("mouse")), snapshot);
+        let role_receiver = pick_supported_lighting_mutation(
+            role.and_then(|value| value.get("receiver")),
+            snapshot,
+        );
+        let legacy_mouse = pick_supported_lighting_mutation(
+            mutations.and_then(|value| value.get("mouse")),
+            snapshot,
+        );
+        let legacy_receiver = pick_supported_lighting_mutation(
+            mutations.and_then(|value| value.get("receiver")),
+            snapshot,
+        );
+        let mouse = role_mouse.or(legacy_mouse);
+        let receiver = role_receiver.or(legacy_receiver);
+        if mouse.is_some() || receiver.is_some() {
+            return (mouse, receiver);
+        }
+    }
+    (None, None)
+}
+
 fn display_name(
     plugin_id: &str,
     family: &str,
@@ -3640,6 +3957,7 @@ fn build_device_snapshot(
         writable_mutations,
         evidence: device.evidence.clone(),
         readonly,
+        plugin_id: Some(inspection.plugin_id.clone()),
     }
 }
 
@@ -5621,7 +5939,8 @@ pub fn run() {
             about_info,
             settings_get,
             settings_set,
-            export_diagnostics
+            export_diagnostics,
+            plugin_locales
         ])
         .run(tauri::generate_context!())
         .expect("Mira application runtime failed");

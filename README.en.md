@@ -50,7 +50,7 @@ Bundled resources currently include:
 | Plugin | Purpose | Status |
 |---|---|---|
 | `mira.amaster` | AMaster / Angry Miao compatible devices, Protocol A and AM35 research path | Hardware verification in progress, bundled by default |
-| `mira.logitech-hidpp` | Logitech HID++ 2.0 feature discovery, DPI, report rate, profiles, RGB control | Hardware verification in progress, bundled by default |
+| `mira.logitech-hidpp` | Logitech HID++ 2.0 feature discovery, DPI, report rate, profiles, and lighting capability reads | Hardware verification in progress, bundled by default |
 | `mira.example-mock` | Runtime and UI sample plugin | Test-only, not bundled by default |
 
 Mira is not authorized, endorsed, or sponsored by any device manufacturer. Manufacturer names are used only to describe compatibility research.

@@ -307,6 +307,31 @@ pub struct Capability {
     pub min_firmware: Option<String>,
 }
 
+impl Capability {
+    /// 从 metadata 反序列化灯效选项（effectOptions 强类型字段）。
+    /// 替代 UI 中通过字符串 key 名访问开放 metadata 的隐式约定。
+    pub fn effect_options(&self) -> Option<EffectOptions> {
+        self.metadata
+            .get("effectOptions")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+    }
+
+    /// 从 metadata 反序列化接收器灯效选项（receiverLightingOptions 强类型字段）。
+    pub fn receiver_lighting_options(&self) -> Option<ReceiverLightingOptions> {
+        self.metadata
+            .get("receiverLightingOptions")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+    }
+
+    /// 从 metadata 反序列化灯光 mutation 角色映射（lightingRole 强类型字段）。
+    /// 供后端夜间模式动态发现 mutation 名。
+    pub fn lighting_role(&self) -> Option<LightingRole> {
+        self.metadata
+            .get("lightingRole")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+    }
+}
+
 /// 能力探测声明，引用 workflow 输出的 `{output, field}`。
 /// 当引用字段值为 0 时，该能力被标记为不可用。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -316,6 +341,78 @@ pub struct CapabilityProbe {
     pub output: String,
     /// 输出对象中的字段名（如 "value"、"featureIndex"）。
     pub field: String,
+}
+
+/// 灯效选项声明（强类型化，替代 HID++ 隐式 metadata 约定）。
+/// 由 LightingZone capability 在 metadata.effectOptions 中声明。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EffectOption {
+    /// 灯效数值（如 0=off, 1=fixed, 5=starlight）。
+    pub value: f64,
+    /// 指向插件 locale 的 i18n key（如 "lighting.fixed"）。
+    pub label_key: String,
+    /// 该灯效是否需要第二色（如 starlight 需要 extraColor）。
+    /// 替代 UI 中硬编码 effect===5 判断。
+    #[serde(default)]
+    pub requires_extra_color: bool,
+}
+
+/// 灯效速度/亮度范围声明。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RangeSpec {
+    pub min: f64,
+    pub max: f64,
+    #[serde(default)]
+    pub step: Option<f64>,
+}
+
+/// 灯效选项集（effectOptions 强类型字段）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EffectOptions {
+    /// 声明哪个数值表示"关闭"。替代 UI/后端硬编码 effect===0。
+    #[serde(default)]
+    pub off_value: Option<f64>,
+    pub effect: Vec<EffectOption>,
+    #[serde(default)]
+    pub speed: Option<RangeSpec>,
+    #[serde(default)]
+    pub brightness: Option<RangeSpec>,
+}
+
+/// 接收器灯效选项条目（labelKey 引用插件 locale）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReceiverLightingOption {
+    pub value: f64,
+    pub label_key: String,
+}
+
+/// 接收器灯效选项集（receiverLightingOptions 强类型字段）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReceiverLightingOptions {
+    #[serde(default)]
+    pub effect: Vec<ReceiverLightingOption>,
+    #[serde(default)]
+    pub speed: Vec<ReceiverLightingOption>,
+    #[serde(default)]
+    pub brightness: Vec<ReceiverLightingOption>,
+    #[serde(default)]
+    pub option: Vec<ReceiverLightingOption>,
+}
+
+/// 灯光 mutation 角色映射（lightingRole 强类型字段）。
+/// 供后端夜间模式动态发现 mutation 名，替代硬编码 'set-mouse-lighting'。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LightingRole {
+    #[serde(default)]
+    pub mouse: Option<String>,
+    #[serde(default)]
+    pub receiver: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

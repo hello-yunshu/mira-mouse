@@ -48,7 +48,7 @@ Mira 仍处于预发布阶段。仓库里已经有前端、运行时、插件包
 | 插件 | 作用 | 状态 |
 |---|---|---|
 | `mira.amaster` | AMaster / 怒喵兼容设备，Protocol A 与 AM35 研究路径 | 硬件验证中，默认打包 |
-| `mira.logitech-hidpp` | Logitech HID++ 2.0 设备，特性发现、DPI、回报率、配置、RGB 控制等 | 硬件验证中，默认打包 |
+| `mira.logitech-hidpp` | Logitech HID++ 2.0 设备，特性发现、DPI、回报率、配置和灯光能力读取等 | 硬件验证中，默认打包 |
 | `mira.example-mock` | 运行时和 UI 的示例插件 | 测试用途，不默认打包 |
 
 Mira 未获得任何设备厂商授权、认可或赞助。厂商名称只用于说明兼容性研究。
