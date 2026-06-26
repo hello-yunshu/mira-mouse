@@ -4693,6 +4693,7 @@ fn device_mutate_blocking(
 
 #[tauri::command]
 fn autostart_state(app: tauri::AppHandle) -> Result<bool, String> {
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
     let mut enabled = app
         .autolaunch()
         .is_enabled()
