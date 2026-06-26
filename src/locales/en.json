@@ -94,13 +94,6 @@
     "on": "On",
     "effectN": "Effect {{value}}",
     "modeN": "Mode {{value}}",
-    "fixed": "Fixed",
-    "cycle": "Cycle",
-    "wave": "Wave",
-    "starlight": "Starlight",
-    "breathing": "Breathing",
-    "ripple": "Ripple",
-    "custom": "Custom",
     "extraColor": "Secondary color",
     "editMouseLightingTitle": "Mouse lighting — {{field}}"
   },
@@ -194,16 +187,15 @@
   },
   "plugin": {
     "label": {
-      "capability.battery": "Battery",
-      "capability.dpi": "DPI",
-      "capability.polling-rate": "Polling rate",
-      "capability.sleep-time": "Sleep time",
-      "capability.profile": "Profile",
-      "capability.firmware": "Firmware",
-      "capability.lighting": "Lighting",
-      "capability.mouse-lighting": "Mouse lighting",
-      "capability.control-mode": "Control mode",
-      "capability.onboard-profile": "Onboard profile"
+      "capability": {
+        "battery": "Battery",
+        "dpi": "DPI",
+        "polling-rate": "Polling rate",
+        "sleep-time": "Sleep time",
+        "profile": "Profile",
+        "firmware": "Firmware",
+        "lighting": "Lighting"
+      }
     }
   },
   "receiverLighting": {

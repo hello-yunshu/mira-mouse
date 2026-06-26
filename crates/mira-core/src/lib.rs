@@ -86,6 +86,9 @@ pub struct DeviceSnapshot {
     /// UI 据此明确显示「未信任插件 · 只读模式」，而非静默隐藏写入控件。
     #[serde(default)]
     pub readonly: bool,
+    /// 匹配该设备的插件 ID（如 "mira.amaster"），用于前端 i18n namespace 解析。
+    #[serde(default)]
+    pub plugin_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

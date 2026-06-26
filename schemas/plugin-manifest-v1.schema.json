@@ -85,6 +85,110 @@
                     }
                   }
                 }
+              },
+              "effectOptions": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["effect"],
+                "properties": {
+                  "offValue": { "type": "number" },
+                  "effect": {
+                    "type": "array",
+                    "maxItems": 32,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": ["value", "labelKey"],
+                      "properties": {
+                        "value": { "type": "number" },
+                        "labelKey": { "type": "string", "minLength": 1 },
+                        "requiresExtraColor": { "type": "boolean", "default": false }
+                      }
+                    }
+                  },
+                  "speed": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["min", "max"],
+                    "properties": {
+                      "min": { "type": "number" },
+                      "max": { "type": "number" },
+                      "step": { "type": "number" }
+                    }
+                  },
+                  "brightness": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["min", "max"],
+                    "properties": {
+                      "min": { "type": "number" },
+                      "max": { "type": "number" },
+                      "step": { "type": "number" }
+                    }
+                  }
+                }
+              },
+              "receiverLightingOptions": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "effect": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": ["value", "labelKey"],
+                      "properties": {
+                        "value": { "type": "number" },
+                        "labelKey": { "type": "string", "minLength": 1 }
+                      }
+                    }
+                  },
+                  "speed": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": ["value", "labelKey"],
+                      "properties": {
+                        "value": { "type": "number" },
+                        "labelKey": { "type": "string", "minLength": 1 }
+                      }
+                    }
+                  },
+                  "brightness": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": ["value", "labelKey"],
+                      "properties": {
+                        "value": { "type": "number" },
+                        "labelKey": { "type": "string", "minLength": 1 }
+                      }
+                    }
+                  },
+                  "option": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": ["value", "labelKey"],
+                      "properties": {
+                        "value": { "type": "number" },
+                        "labelKey": { "type": "string", "minLength": 1 }
+                      }
+                    }
+                  }
+                }
+              },
+              "lightingRole": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "mouse": { "type": "string" },
+                  "receiver": { "type": "string" }
+                }
               }
             }
           },

@@ -19,13 +19,16 @@ fi
 
 APP_NAME=$(basename "$APP_PATH" .app)
 VERSION=$(defaults read "$APP_PATH/Contents/Info.plist" CFBundleShortVersionString 2>/dev/null || echo "0.0.0")
-ARCH=$(uname -m)
+case "$(uname -m)" in
+  arm64) ARCH="aarch64" ;;
+  *) ARCH="$(uname -m)" ;;
+esac
 DMG_DIR="$ROOT_DIR/target/release/bundle/dmg"
 DMG_NAME="${APP_NAME}_${VERSION}_${ARCH}.dmg"
 DMG_PATH="${2:-$DMG_DIR/$DMG_NAME}"
 TMP_DMG="/tmp/${APP_NAME}-build-$$.dmg"
 ATTACH_PLIST="/tmp/${APP_NAME}-attach-$$.plist"
-VOL_NAME="$APP_NAME"
+VOL_NAME="${DMG_VOLUME_NAME:-$APP_NAME Installer}"
 MOUNT_POINT=""
 
 echo "==> 创建可读写 DMG"
@@ -62,8 +65,12 @@ tell application "Finder"
 
     set theWindow to container window of dmgFolder
     set current view of theWindow to icon view
-    set toolbar visible of theWindow to false
-    set statusbar visible of theWindow to false
+    try
+        set toolbar visible of theWindow to false
+    end try
+    try
+        set statusbar visible of theWindow to false
+    end try
     set the bounds of theWindow to {0, 0, 660, 400}
 
     set theViewOptions to icon view options of theWindow
