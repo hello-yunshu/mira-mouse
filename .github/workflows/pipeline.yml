@@ -1,0 +1,284 @@
+name: CI / Release
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      overwrite_latest:
+        description: 'Overwrite latest release (rebuild without version bump)'
+        required: false
+        default: 'true'
+        type: boolean
+      tag:
+        description: 'Release tag (required when overwrite_latest is false, e.g. app/v0.1.0)'
+        required: false
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref || inputs.tag || 'dispatch' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  frontend:
+    if: github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - run: npm run lint && npm run typecheck && npm test && npm run build
+      - run: npm run check:boundaries && npm run check:structured
+  rust:
+    if: github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Install host libraries
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libudev-dev  
+      - run: rustup toolchain install stable --profile minimal --component rustfmt,clippy
+      - name: Cache cargo
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-rust-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-rust-${{ runner.os }}-
+      - run: cargo fmt --all --check
+      - run: cargo run --package xtask -- plugins sync --locked
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
+  configuration:
+    if: github.event_name != 'workflow_dispatch'
+    strategy: { fail-fast: false, matrix: { os: [macos-14, windows-2022, ubuntu-22.04] } }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Parse release configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          node -e "JSON.parse(require('fs').readFileSync('plugins.lock.json'));JSON.parse(require('fs').readFileSync('src-tauri/tauri.conf.json'))"
+      - name: Evidence summary
+        shell: bash
+        run: echo 'Configuration parsed; platform package and hardware status are not implied.' >> "$GITHUB_STEP_SUMMARY"
+
+  tauri-bundle:
+    needs: [frontend, rust, configuration]
+    if: ${{ !cancelled() && needs.frontend.result != 'failure' && needs.rust.result != 'failure' && needs.configuration.result != 'failure' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - name: Install host libraries (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libudev-dev
+      - run: rustup toolchain install stable --profile minimal --component rustfmt,clippy --target ${{ matrix.target }}
+      - name: Cache cargo
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-bundle-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-bundle-${{ runner.os }}-${{ matrix.target }}-
+            cargo-bundle-${{ runner.os }}-
+      - run: cargo run --package xtask -- plugins sync --locked
+      - name: Build Tauri bundle
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ github.event_name != 'pull_request' && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            echo "PR build: unsigned, single-target"
+            npx tauri build --target ${{ matrix.target }}
+          else
+            echo "Release build: signed, updater artifacts"
+            case "$RUNNER_OS" in
+              macOS)
+                rustup target add aarch64-apple-darwin x86_64-apple-darwin
+                npm exec tauri build -- --target universal-apple-darwin --bundles app,dmg --config '{"bundle":{"createUpdaterArtifacts":true}}'
+                ;;
+              Windows)
+                npm exec tauri build -- --bundles nsis --config '{"bundle":{"createUpdaterArtifacts":true}}'
+                ;;
+              Linux)
+                npm exec tauri build -- --bundles appimage --config '{"bundle":{"createUpdaterArtifacts":true}}'
+                ;;
+            esac
+          fi
+      - name: Upload bundle artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mira-bundle-${{ matrix.os }}
+          path: |
+            target/**/bundle/**/*.dmg
+            target/**/bundle/**/*.app.tar.gz
+            target/**/bundle/**/*.app.tar.gz.sig
+            target/**/bundle/**/*-setup.exe
+            target/**/bundle/**/*-setup.exe.sig
+            target/**/bundle/**/*.AppImage
+            target/**/bundle/**/*.AppImage.sig
+          if-no-files-found: error
+      - name: Job summary
+        shell: bash
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            echo 'Tauri bundle produced for ${{ matrix.target }}; unsigned community artifact.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'Signed Tauri bundle with updater artifacts produced for ${{ runner.os }}.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  release-publish:
+    needs: [tauri-bundle]
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    permissions: { contents: write, id-token: write, attestations: write }
+    environment: release
+    concurrency:
+      group: app-release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: release-assets
+          pattern: mira-bundle-*
+          merge-multiple: true
+      - name: Verify release-ready and determine tag
+        id: meta
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ inputs.tag }}
+          OVERWRITE: ${{ inputs.overwrite_latest == true }}
+        run: |
+          set -euo pipefail
+          node -e "const l=require('./plugins.lock.json');if(!l.releaseReady)throw Error('plugins.lock.json is not release-ready')"
+          current_version=$(node -p "require('./package.json').version")
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            if [ "$OVERWRITE" = "true" ]; then
+              tag=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null || echo "")
+              test -n "$tag" || { echo "No existing release to overwrite"; exit 1; }
+              version="${tag#app/v}"
+            else
+              tag="$INPUT_TAG"
+              version="${tag#app/v}"
+              test "$version" = "$current_version"
+            fi
+          else
+            latest_tag=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null || echo "")
+            if [ -z "$latest_tag" ]; then
+              tag="app/v$current_version"
+              version="$current_version"
+              echo "No previous release; creating $tag"
+            else
+              latest_version="${latest_tag#app/v}"
+              if [ "$current_version" != "$latest_version" ]; then
+                tag="app/v$current_version"
+                version="$current_version"
+                echo "Version changed: $latest_version -> $current_version"
+              else
+                tag="$latest_tag"
+                version="$current_version"
+                echo "Version unchanged ($current_version); overwriting $latest_tag"
+              fi
+            fi
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - name: Generate latest.json for Tauri Updater
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          set -euo pipefail
+          REPO="hello-yunshu/mira-mouse"
+          BASE="https://github.com/$REPO/releases/download/$TAG"
+          PUB_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          mkdir publish-assets
+          find release-assets -type f \( \
+            -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.app.tar.gz.sig' -o \
+            -name '*-setup.exe' -o -name '*-setup.exe.sig' -o \
+            -name '*.AppImage' -o -name '*.AppImage.sig' \
+          \) -exec cp {} publish-assets/ \;
+          echo "=== publish-assets contents ==="
+          ls -la publish-assets/
+          MAC_FILE=$(find publish-assets -name '*.app.tar.gz' -print -quit)
+          WIN_FILE=$(find publish-assets -name '*-setup.exe' -print -quit)
+          LINUX_FILE=$(find publish-assets -name '*.AppImage' -print -quit)
+          for f in "$MAC_FILE" "$WIN_FILE" "$LINUX_FILE"; do
+            if [ -z "$f" ] || [ ! -f "$f" ] || [ ! -f "$f.sig" ]; then
+              echo "Missing updater artifact or signature: ${f:-<empty>}" >&2
+              exit 1
+            fi
+          done
+          MAC_SIG=$(cat "$MAC_FILE.sig")
+          WIN_SIG=$(cat "$WIN_FILE.sig")
+          LINUX_SIG=$(cat "$LINUX_FILE.sig")
+          MAC_URL="$BASE/$(basename "$MAC_FILE")"
+          WIN_URL="$BASE/$(basename "$WIN_FILE")"
+          LINUX_URL="$BASE/$(basename "$LINUX_FILE")"
+          cat > latest.json <<EOF
+          {
+            "version": "$VERSION",
+            "notes": "Mira $VERSION. See release notes for details.",
+            "pub_date": "$PUB_DATE",
+            "platforms": {
+              "darwin-aarch64": { "signature": "$MAC_SIG", "url": "$MAC_URL" },
+              "darwin-x86_64": { "signature": "$MAC_SIG", "url": "$MAC_URL" },
+              "linux-x86_64": { "signature": "$LINUX_SIG", "url": "$LINUX_URL" },
+              "windows-x86_64": { "signature": "$WIN_SIG", "url": "$WIN_URL" }
+            }
+          }
+          EOF
+      - uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v3 peeled commit
+        with:
+          subject-path: 'publish-assets/*'
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          TARGET: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG exists; uploading assets."
+            gh release upload "$TAG" publish-assets/* latest.json --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" publish-assets/* latest.json \
+              --target "$TARGET" \
+              --title "Mira $VERSION" \
+              --notes "Official Mira release with Tauri Updater signing. Platform notarization and OS code-signing evidence are tracked separately."
+          fi
