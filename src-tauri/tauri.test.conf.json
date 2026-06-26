@@ -4,7 +4,7 @@
   "identifier": "run.hey.mira.test",
   "bundle": {
     "targets": ["dmg"],
-    "resources": ["resources/plugins/mira-amaster-1.3.1.mira-plugin"]
+    "resources": ["resources/plugins/mira-amaster-1.3.6.mira-plugin"]
   },
   "plugins": {
     "updater": {

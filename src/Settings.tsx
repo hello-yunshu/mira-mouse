@@ -66,12 +66,8 @@ function Toggle({ checked, onChange, label, disabled = false }: { checked: boole
   );
 }
 
-export function SettingsPage({ onNavigateAbout, onThemeChange, previewMode = false, writableMutations = [] }: { onNavigateAbout: () => void; onThemeChange: (theme: ThemeMode) => void; previewMode?: boolean; writableMutations?: string[] }) {
+export function SettingsPage({ onNavigateAbout, onThemeChange, previewMode = false, supportsAnyLighting = false, supportsReceiverLighting = false }: { onNavigateAbout: () => void; onThemeChange: (theme: ThemeMode) => void; previewMode?: boolean; supportsAnyLighting?: boolean; supportsReceiverLighting?: boolean }) {
   const { t } = useTranslation();
-  // 设备是否支持任何灯光写入：鼠标灯光或接收器灯光。
-  // 不支持时安静灯光整体 disabled，避免用户配置后无效。
-  const supportsAnyLighting = writableMutations.includes('set-mouse-lighting')
-    || writableMutations.includes('set-receiver-lighting');
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [autostartEnabled, setAutostartEnabled] = useState(false);
   const [plugins, setPlugins] = useState<BundledPluginInfo[]>([]);
@@ -408,7 +404,7 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, previewMode = fal
                     checked={settings.nightModeTargetReceiver}
                     onChange={(v) => update({ nightModeTargetReceiver: v })}
                     label={t('settings.nightMode.targetReceiver')}
-                    disabled={!writableMutations.includes('set-receiver-lighting')}
+                    disabled={!supportsReceiverLighting}
                   />
                 </SettingRow>
               </>

@@ -94,13 +94,6 @@
     "on": "已开启",
     "effectN": "灯效 {{value}}",
     "modeN": "模式 {{value}}",
-    "fixed": "常亮",
-    "cycle": "循环",
-    "wave": "光波",
-    "starlight": "星夜",
-    "breathing": "呼吸",
-    "ripple": "涟漪",
-    "custom": "自定义",
     "extraColor": "第二色",
     "editMouseLightingTitle": "鼠标灯光 — {{field}}"
   },
@@ -194,16 +187,15 @@
   },
   "plugin": {
     "label": {
-      "capability.battery": "电量",
-      "capability.dpi": "DPI",
-      "capability.polling-rate": "回报率",
-      "capability.sleep-time": "休眠时间",
-      "capability.profile": "配置文件",
-      "capability.firmware": "固件",
-      "capability.lighting": "灯光",
-      "capability.mouse-lighting": "鼠标灯光",
-      "capability.control-mode": "配置控制",
-      "capability.onboard-profile": "板载配置"
+      "capability": {
+        "battery": "电量",
+        "dpi": "DPI",
+        "polling-rate": "回报率",
+        "sleep-time": "休眠时间",
+        "profile": "配置文件",
+        "firmware": "固件",
+        "lighting": "灯光"
+      }
     }
   },
   "receiverLighting": {

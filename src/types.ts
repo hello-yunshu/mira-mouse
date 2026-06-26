@@ -14,17 +14,62 @@ export interface Lighting {
   mouseLightEnabled?: boolean;
   mouseLightColor?: string;
   mouseLightEndColor?: string;
-  /** HID++ 灯效编号（0=off, 1=fixed, 3=cycle, 4=wave, 5=starlight, 10=breathing, 11=ripple, 12=custom） */
+  /** 鼠标灯效数值，语义由插件 effectOptions 声明（offValue/requiresExtraColor）。 */
   mouseLightEffect?: number;
   /** 灯效速度（0-255） */
   mouseLightSpeed?: number;
   /** 亮度百分比（0-100） */
   mouseLightBrightness?: number;
-  /** starlight 第二色（#RRGGBB），其他灯效无此字段 */
+  /** 第二色（#RRGGBB），由插件 effectOptions.effect[].requiresExtraColor 声明是否需要。 */
   mouseLightExtraColor?: string;
   receiverLightEnabled?: boolean;
   receiverLightMode?: string;
   receiverLightColor?: string;
+}
+
+/** 灯效选项条目（强类型化，替代隐式 metadata 约定）。 */
+export interface EffectOption {
+  value: number;
+  /** 指向插件 locale 的 i18n key。 */
+  labelKey: string;
+  /** 该灯效是否需要第二色。 */
+  requiresExtraColor?: boolean;
+}
+
+/** 灯效范围声明（speed/brightness）。 */
+export interface RangeSpec {
+  min: number;
+  max: number;
+  step?: number;
+}
+
+/** 灯效选项集（effectOptions 强类型字段）。 */
+export interface EffectOptions {
+  /** 声明哪个数值表示"关闭"。 */
+  offValue?: number;
+  effect: EffectOption[];
+  speed?: RangeSpec;
+  brightness?: RangeSpec;
+}
+
+/** 接收器灯效选项条目。 */
+export interface ReceiverLightingOption {
+  value: number;
+  labelKey: string;
+}
+
+/** 接收器灯效选项集（receiverLightingOptions 强类型字段）。 */
+export interface ReceiverLightingOptions {
+  effect?: ReceiverLightingOption[];
+  speed?: ReceiverLightingOption[];
+  brightness?: ReceiverLightingOption[];
+  option?: ReceiverLightingOption[];
+}
+
+/** 灯光 mutation 角色映射（lightingRole 强类型字段）。 */
+export interface LightingRole {
+  mouse?: string;
+  receiver?: string;
 }
 export type DeviceCapabilities = Record<string, Record<string, unknown>>;
 export type PluginControl = 'Toggle' | 'Segmented' | 'Select' | 'Slider' | 'Number' | 'Color' | 'GradientStops' | 'DpiStages' | 'LightingZone' | 'ReadOnlyValue' | 'Action' | 'Info';
@@ -66,6 +111,8 @@ export interface DeviceState {
   evidence: Evidence;
   /** 插件未签名/未启用写入时为 true，UI 显示只读模式标记。 */
   readonly: boolean;
+  /** 匹配该设备的插件 ID，用于 i18n namespace 解析。 */
+  pluginId?: string;
   updatedAt: string;
 }
 
@@ -166,6 +213,8 @@ export interface DeviceSnapshot {
   evidence: Evidence;
   /** 插件未签名/签名失效/未启用写入时为 true，UI 显示只读模式标记。 */
   readonly?: boolean;
+  /** 匹配该设备的插件 ID，用于 i18n namespace 解析。 */
+  pluginId?: string;
 }
 
 export interface DiscoveredDevice {
