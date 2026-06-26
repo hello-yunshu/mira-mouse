@@ -26,8 +26,65 @@ i18n.use(initReactI18next).init({
   },
   lng: resolveLanguage('auto'),
   fallbackLng: 'zh-CN',
+  // 允许插件 namespace 回退到 host translation namespace：
+  // i18n.t(key, { ns: pluginId }) 找不到时自动查 translation namespace。
+  fallbackNS: ['translation'],
   interpolation: { escapeValue: false },
 });
+
+/** 加载插件 locale 并注册为 i18n namespace（以插件 ID 命名）。
+ * 在应用启动时调用，使插件特定的标签（灯效名、capability 名等）可解析。
+ */
+export async function loadPluginLocales(): Promise<boolean> {
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    const locales = await invoke<Record<string, Record<string, Record<string, string>>>>('plugin_locales');
+    let added = false;
+    for (const [pluginId, localeData] of Object.entries(locales)) {
+      for (const [lang, dict] of Object.entries(localeData)) {
+        // 后端返回扁平 key→value 映射（BTreeMap<String,String>），但 i18next 按 keySeparator '.'
+        // 拆分 key 查找嵌套路径。需将扁平 key 转换为嵌套对象后再注册。
+        i18n.addResourceBundle(lang, pluginId, unflattenKeys(dict), true, false);
+        added = true;
+      }
+    }
+    return added;
+  } catch {
+    // Tauri 未就绪或无插件 locale：静默跳过，使用 host 回退标签。
+    return false;
+  }
+}
+
+/** 将扁平 key（如 "a.b.c"）转换为嵌套对象（如 {a:{b:{c:value}}}）。
+ * i18next 默认按 '.' 拆分 key 查找嵌套资源，因此 addResourceBundle 需要嵌套结构。
+ */
+function unflattenKeys(flat: Record<string, string>): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(flat)) {
+    const parts = key.split('.');
+    let current: Record<string, unknown> = result;
+    for (let i = 0; i < parts.length - 1; i++) {
+      const existing = current[parts[i]];
+      if (typeof existing !== 'object' || existing === null || Array.isArray(existing)) {
+        current[parts[i]] = {};
+      }
+      current = current[parts[i]] as Record<string, unknown>;
+    }
+    current[parts[parts.length - 1]] = value;
+  }
+  return result;
+}
+
+/** 解析 labelKey，优先查找插件 namespace，回退到 host translation namespace。
+ * @param labelKey i18n key（如 "lighting.fixed" 或 "plugin.label.capability.mouse-lighting"）
+ * @param pluginId 当前设备匹配的插件 ID（如 "mira.logitech-hidpp"），用于 namespace 查找
+ */
+export function resolveLabelKey(labelKey: string, pluginId?: string): string {
+  if (pluginId && i18n.exists(labelKey, { ns: pluginId })) {
+    return i18n.t(labelKey, { ns: pluginId });
+  }
+  return i18n.t(labelKey, { defaultValue: labelKey });
+}
 
 /** Apply a settings language value: switch i18n language and update <html lang>. */
 export function applyLanguage(lang: AppLanguage): void {

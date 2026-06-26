@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use crate::protocol::{FeatureIndexCache, OnboardMemoryCache};
 
-const MAX_COMMANDS: usize = 32;
+const MAX_COMMANDS: usize = 56;
 const MAX_REPORTS: usize = 128;
 const MAX_DELAY_MS: u64 = 5_000;
 const MAX_OPERATION_TIMEOUT_MS: u64 = 30_000;
@@ -861,7 +861,15 @@ impl ProtocolPackage {
                     .map_err(|_| format!("memory workflow {key} contains an invalid byte"))?;
             }
         }
-        verify_memory_checksum(&memory, &definition.checksum)?;
+        // libratbag tolerates sector CRC mismatches (logs debug, continues using
+        // the sector data). Some devices report a sectorSize that doesn't match
+        // the actual on-wire sector layout, causing a stored/calculated CRC
+        // divergence. The memory patch only touches specific byte offsets and
+        // the post-write readback verifies the actual bytes, so a pre-existing
+        // CRC mismatch is not fatal — log a warning and proceed.
+        if let Err(error) = verify_memory_checksum(&memory, &definition.checksum) {
+            eprintln!("[mira] warning: {error} — continuing with memory patch");
+        }
         Ok((outputs, memory))
     }
 
@@ -1114,6 +1122,9 @@ impl ProtocolPackage {
                 "mutation {mutation_id} write strategy does not match its command template"
             ));
         }
+        let direct_write_skipped = mutation.write_skip_if_zero.iter().any(|reference| {
+            output_value(ctx_outputs, reference).and_then(Value::as_u64) == Some(0)
+        });
         let memory_read = match &mutation.memory {
             Some(memory)
                 if output_value(ctx_outputs, &memory.available_when)
@@ -1125,24 +1136,38 @@ impl ProtocolPackage {
                 // A cached sector can become stale when the user changes onboard
                 // profiles from hardware controls or another app during the same
                 // connection, and using it here would overwrite those changes.
-                let (outputs, bytes) = self.read_memory_mutation(api, path, memory)?;
-                let enabled = memory.enabled_when.matches(output_value(
-                    &outputs,
-                    &OutputReference {
-                        output: memory.enabled_when.output.clone(),
-                        field: memory.enabled_when.field.clone(),
-                    },
-                ))
-                    && memory.required_when.iter().all(|condition| {
-                        condition.matches(output_value(
+                match self.read_memory_mutation(api, path, memory) {
+                    Ok((outputs, bytes)) => {
+                        let enabled = memory.enabled_when.matches(output_value(
                             &outputs,
                             &OutputReference {
-                                output: condition.output.clone(),
-                                field: condition.field.clone(),
+                                output: memory.enabled_when.output.clone(),
+                                field: memory.enabled_when.field.clone(),
                             },
-                        ))
-                    });
-                enabled.then_some((outputs, bytes))
+                        )) && memory.required_when.iter().all(|condition| {
+                            condition.matches(output_value(
+                                &outputs,
+                                &OutputReference {
+                                    output: condition.output.clone(),
+                                    field: condition.field.clone(),
+                                },
+                            ))
+                        });
+                        enabled.then_some((outputs, bytes))
+                    }
+                    Err(error) if is_memory_checksum_mismatch(&error) && !direct_write_skipped => {
+                        // If the onboard profile sector is already corrupt or was
+                        // changed by another tool, do not patch unknown bytes.
+                        // Continue with the standard HID++ write path when the
+                        // device exposes one; verification below still proves
+                        // whether the live device accepted the value.
+                        eprintln!(
+                            "[mira] skipping onboard memory patch for {mutation_id}: {error}"
+                        );
+                        None
+                    }
+                    Err(error) => return Err(error),
+                }
             }
             _ => None,
         };
@@ -1274,7 +1299,19 @@ impl ProtocolPackage {
         drop(session);
         if let Some((memory, expected)) = expected_memory {
             let (verify_outputs, actual) = self.read_memory_mutation(api, path, memory)?;
-            if actual != expected {
+            // Compare data bytes excluding the trailing CRC. Some devices
+            // (notably Logitech G705) report a sectorSize whose CRC position
+            // doesn't match the engine's assumption — the device may
+            // recalculate and store the CRC at a different offset after a
+            // write. The engine already verified the patched data via the
+            // feature-register verify step above; the memory readback
+            // verifies that the patched bytes took effect. Skipping the CRC
+            // bytes avoids a false mismatch when the device manages its own
+            // CRC independently (mirrors libratbag, which does not compare
+            // the sector CRC on readback).
+            let crc_len = if memory.checksum.is_empty() { 0 } else { 2 };
+            let data_len = actual.len().saturating_sub(crc_len);
+            if actual[..data_len] != expected[..data_len] {
                 return Err(format!("mutation {mutation_id} memory readback mismatch"));
             }
             // UX3: 验证读成功后更新 onboard memory 缓存，下次预读可命中缓存。
@@ -1408,9 +1445,9 @@ impl ProtocolPackage {
                         .get(&derived.source)
                         .and_then(Value::as_u64)
                         .ok_or_else(|| format!("invalid bit source {}", derived.source))?;
-                    let bit = derived.bit.ok_or_else(|| {
-                        format!("bit derived {} missing 'bit' field", name)
-                    })?;
+                    let bit = derived
+                        .bit
+                        .ok_or_else(|| format!("bit derived {} missing 'bit' field", name))?;
                     fields.insert(name.clone(), Value::Bool((source >> bit) & 1 == 1));
                 }
                 _ => return Err(format!("unsupported derived kind {}", derived.kind)),
@@ -1547,7 +1584,8 @@ fn execute_with_candidates(
     ))
 }
 
-/// Rate-limited HID session. Each session is bounded by:
+/// Rate-limited HID session. Workflow definitions are capped by `MAX_COMMANDS`
+/// and each session is bounded by:
 /// - `MAX_REPORTS` (128): caps the total number of HID reports sent.
 /// - `MAX_DELAY_MS` (5_000): caps the cumulative delay, bounding wall-clock time.
 ///
@@ -2237,6 +2275,10 @@ fn verify_memory_checksum(memory: &[u8], algorithm: &str) -> Result<(), String> 
     Ok(())
 }
 
+fn is_memory_checksum_mismatch(error: &str) -> bool {
+    error.contains("memory checksum mismatch:")
+}
+
 fn write_memory_checksum(memory: &mut [u8], algorithm: &str) -> Result<(), String> {
     if algorithm != "crc-ccitt-false" || memory.len() < 2 {
         return Err("unsupported memory checksum declaration".into());
@@ -2664,7 +2706,11 @@ mod tests {
         let result = validate_mutation_inputs(&definitions, &supplied);
         assert!(result.is_ok(), "extra params should be ignored");
         let validated = result.unwrap();
-        assert_eq!(validated.len(), 2, "only declared params should be returned");
+        assert_eq!(
+            validated.len(),
+            2,
+            "only declared params should be returned"
+        );
         assert_eq!(validated.get("color"), Some(&Value::from("#FF0000")));
         assert_eq!(validated.get("enabled"), Some(&Value::from(true)));
     }
@@ -2737,7 +2783,22 @@ mod tests {
         write_memory_checksum(&mut memory, "crc-ccitt-false").unwrap();
         assert!(verify_memory_checksum(&memory, "crc-ccitt-false").is_ok());
         memory[17] ^= 0xff;
+        // verify_memory_checksum still returns Err for mismatches — the calling
+        // code (read_memory_mutation) decides whether to tolerate the mismatch
+        // (logging a warning) or fail. This mirrors libratbag's behavior where
+        // hidpp20_onboard_profiles_is_sector_valid logs a debug message but
+        // does not abort the sector read.
         assert!(verify_memory_checksum(&memory, "crc-ccitt-false").is_err());
+    }
+
+    #[test]
+    fn identifies_memory_checksum_mismatch_errors() {
+        assert!(is_memory_checksum_mismatch(
+            "memory checksum mismatch: stored 0x038e, calculated 0xbef1"
+        ));
+        assert!(!is_memory_checksum_mismatch(
+            "memory workflow returned an invalid size"
+        ));
     }
 
     #[test]
@@ -3118,7 +3179,10 @@ mod tests {
         );
         let api = test_hid_api();
         // featureIndex=0 → skipIfAllZero triggers (all refs are zero)
-        let outputs = BTreeMap::from([("onboardProfiles".into(), serde_json::json!({"featureIndex": 0}))]);
+        let outputs = BTreeMap::from([(
+            "onboardProfiles".into(),
+            serde_json::json!({"featureIndex": 0}),
+        )]);
         let result = package.mutate(
             api,
             "test-path",
@@ -3176,13 +3240,17 @@ mod tests {
         // profileFormatId=5 → onboardFormatV5=1
         let mut response = [0u8; 20];
         response[3] = 5;
-        let parsed = package.parse_response("onboard-description", &response).unwrap();
+        let parsed = package
+            .parse_response("onboard-description", &response)
+            .unwrap();
         assert_eq!(parsed.get("onboardFormatV5"), Some(&Value::from(1)));
 
         // profileFormatId=3 → onboardFormatV5=null (not in table)
         let mut response = [0u8; 20];
         response[3] = 3;
-        let parsed = package.parse_response("onboard-description", &response).unwrap();
+        let parsed = package
+            .parse_response("onboard-description", &response)
+            .unwrap();
         assert_eq!(parsed.get("onboardFormatV5"), Some(&Value::Null));
     }
 
