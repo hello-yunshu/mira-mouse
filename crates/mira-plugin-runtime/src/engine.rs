@@ -331,6 +331,8 @@ struct MutationDefinition {
     write_params: BTreeMap<String, Value>,
     #[serde(default)]
     memory: Option<MemoryMutationDefinition>,
+    #[serde(default)]
+    post_writes: Vec<MutationWriteCall>,
     preserve_unknown: bool,
     #[serde(default)]
     settle_ms: u64,
@@ -413,6 +415,21 @@ struct MutationCall {
     params: BTreeMap<String, Value>,
     #[serde(default)]
     skip_if_zero: Vec<OutputReference>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct MutationWriteCall {
+    command: String,
+    transport: Option<String>,
+    #[serde(default)]
+    params: BTreeMap<String, Value>,
+    #[serde(default)]
+    skip_if_zero: Vec<OutputReference>,
+    #[serde(default)]
+    settle_ms: u64,
+    #[serde(default)]
+    verify: Option<MutationVerify>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -642,6 +659,10 @@ impl ProtocolPackage {
 
     pub fn capabilities(&self) -> Option<&Value> {
         self.capabilities.as_ref()
+    }
+
+    pub fn has_workflow(&self, workflow_id: &str) -> bool {
+        self.workflows.workflows.contains_key(workflow_id)
     }
 
     pub fn execute(
@@ -1249,6 +1270,78 @@ impl ProtocolPackage {
                 mutation_timeout_ms,
             )?;
             session.delay(mutation.settle_ms)?;
+        }
+
+        for (index, post_write) in mutation.post_writes.iter().enumerate() {
+            let skipped = post_write.skip_if_zero.iter().any(|reference| {
+                output_value(&session.outputs, reference).and_then(Value::as_u64) == Some(0)
+            });
+            if skipped {
+                continue;
+            }
+            if post_write.settle_ms > 1_000 {
+                return Err(format!(
+                    "mutation {mutation_id} post write {index} settle delay exceeds limit"
+                ));
+            }
+            let command = self
+                .commands
+                .commands
+                .get(&post_write.command)
+                .ok_or_else(|| format!("missing command {}", post_write.command))?;
+            if command.request.base == RequestBase::ReadResponse {
+                return Err(format!(
+                    "mutation {mutation_id} post write {index} must use a direct write command"
+                ));
+            }
+            let transport = post_write.transport.as_deref().unwrap_or(write_transport);
+            let write_params = resolve_workflow_params(&post_write.params, &session.outputs)
+                .map_err(|error| {
+                    format!("mutation {mutation_id} post write {index} params: {error}")
+                })?;
+            let mut write_inputs = write_params;
+            write_inputs.extend(params.clone());
+            session.execute_command(
+                transport,
+                &post_write.command,
+                &write_inputs,
+                false,
+                None,
+                mutation_timeout_ms,
+            )?;
+            session.delay(post_write.settle_ms)?;
+            if let Some(verify) = &post_write.verify {
+                let verify_skipped = verify.skip_if_zero.iter().any(|reference| {
+                    output_value(&session.outputs, reference).and_then(Value::as_u64) == Some(0)
+                });
+                if !verify_skipped {
+                    let verify_transport = verify.transport.as_deref().unwrap_or(transport);
+                    let verify_params = resolve_workflow_params(&verify.params, &session.outputs)
+                        .map_err(|error| {
+                        format!("mutation {mutation_id} post write {index} verify params: {error}")
+                    })?;
+                    let response = session.execute_command(
+                        verify_transport,
+                        &verify.command,
+                        &verify_params,
+                        true,
+                        None,
+                        mutation_timeout_ms,
+                    )?;
+                    let parsed = self.parse_response(&verify.parser, &response).map_err(
+                        |error| {
+                            format!(
+                                "mutation {mutation_id} post write {index} verification read: {error}"
+                            )
+                        },
+                    )?;
+                    verify_assertions(&parsed, &params, &verify.assertions).map_err(|error| {
+                        format!(
+                            "mutation {mutation_id} post write {index} verification failed: {error}"
+                        )
+                    })?;
+                }
+            }
         }
 
         let verify_transport = mutation

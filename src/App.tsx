@@ -32,14 +32,18 @@ import {
   supportsLightingMutation as pluginSupportsLightingMutation,
   supportedEffectValues as pluginSupportedEffectValues,
   compatibilityCapabilities,
+  effectDefaults,
   type PluginSummaryItem,
   MAX_CONTROL_GROUPS,
   MAX_STATUS_ITEMS,
   pickMutation,
   pluginMutations,
   pluginOptions,
+  pluginRange,
   pluginSummaryItems,
+  pluginValueFormat,
 } from './pluginAdapter';
+import type { RangeSpec } from './types';
 import { onAppNotification, notifyError, notifyInfo, notifySuccess, type AppNotification } from './notify';
 import { startAutomaticAppUpdateCheck } from './updater';
 import './styles.css';
@@ -313,6 +317,46 @@ function capabilityValue(value: unknown, key: string): string {
   return String(value);
 }
 
+function valueLooksColor(value: unknown): boolean {
+  return typeof value === 'string' && /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(value.trim());
+}
+
+function shouldRenderColorValue(value: unknown, format?: string): boolean {
+  return format === 'color' || valueLooksColor(value);
+}
+
+function displayColor(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const color = value.trim();
+  return /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(color) ? color : undefined;
+}
+
+function colorValueStyle(value: unknown): React.CSSProperties | undefined {
+  const color = displayColor(value);
+  return color ? { '--value-color': color } as React.CSSProperties : undefined;
+}
+
+function ColorValue({ value, fallback, className }: { value: unknown; fallback?: string; className?: string }) {
+  const label = typeof value === 'string' && value ? value : fallback ?? i18n.t('common.notReported');
+  const style = colorValueStyle(value);
+  const classes = [className, style ? 'color-value' : undefined].filter(Boolean).join(' ') || undefined;
+  return <strong className={classes} style={style}>{label}</strong>;
+}
+
+function FormattedValue({ value, label, keyName, format, className }: {
+  value: unknown;
+  label?: string;
+  keyName: string;
+  format?: string;
+  className?: string;
+}) {
+  const resolvedFormat = pluginValueFormat(format);
+  const text = label ?? (resolvedFormat === 'sleep' ? formatSleepTime(value) : capabilityValue(value, keyName));
+  return shouldRenderColorValue(value, resolvedFormat)
+    ? <ColorValue className={className} value={value} fallback={text} />
+    : <strong className={className}>{text}</strong>;
+}
+
 function readCapability(capabilities: DeviceCapabilities, group: string, field: string): unknown {
   return capabilities[group]?.[field];
 }
@@ -348,8 +392,7 @@ function readPath(device: DeviceState, path: unknown): unknown {
   return value;
 }
 
-function pluginSummaryValue(item: PluginSummaryItem, device: DeviceState): string {
-  const value = readPath(device, item.source);
+function pluginSummaryValue(item: PluginSummaryItem, value: unknown): string {
   const option = item.options.find((candidate) => candidate.value === value);
   if (option) return option.label;
   if (item.format === 'sleep') return formatSleepTime(value);
@@ -367,7 +410,14 @@ function PluginSummary({ capability, device }: { capability: PluginCapability; d
       style={{ gridTemplateColumns: `repeat(${items.length}, minmax(0, 1fr))` }}
     >
       {items.map((item) => (
-        <span key={`${item.label}:${item.source}`}>{i18n.t(item.label, { defaultValue: item.label })}<strong>{pluginSummaryValue(item, device)}</strong></span>
+        <span key={`${item.label}:${item.source}`}>
+          {i18n.t(item.label, { defaultValue: item.label })}
+          {(() => {
+            const value = readPath(device, item.source);
+            const label = pluginSummaryValue(item, value);
+            return <FormattedValue value={value} label={label} keyName={item.source.split('.').at(-1) ?? 'value'} format={item.format} />;
+          })()}
+        </span>
       ))}
     </div>
   );
@@ -376,7 +426,7 @@ function PluginSummary({ capability, device }: { capability: PluginCapability; d
 function pluginValueLabel(capability: PluginCapability, value: unknown): string {
   const option = pluginOptions(capability).find((candidate) => candidate.value === value);
   if (option) return option.label;
-  if (capability.metadata.format === 'sleep') return formatSleepTime(value);
+  if (pluginValueFormat(capability.metadata.format) === 'sleep') return formatSleepTime(value);
   if (capability.metadata.unit === 'Hz' && typeof value === 'number') return `${value} Hz`;
   return capabilityValue(value, capability.id);
 }
@@ -442,7 +492,8 @@ function capabilityBinding(capability: PluginCapability, device: DeviceState): C
   return {
     label: pluginLabel(capability, device.pluginId),
     value: readPath(device, capability.metadata.source),
-    mutation: pickMutation(capability.metadata.mutation, device.writableMutations),
+    mutation: pluginMutations(capability, device.writableMutations).default
+      ?? pickMutation(capability.metadata.mutation, device.writableMutations),
     param: typeof capability.metadata.param === 'string' ? capability.metadata.param : 'value',
   };
 }
@@ -475,15 +526,17 @@ function GenericPluginControl({
   runMutation: (mutation: string, params: Record<string, unknown>) => Promise<void>;
 }) {
   const current = readPath(device, capability.metadata.source);
-  const mutation = pickMutation(capability.metadata.mutation, device.writableMutations) ?? `set-${capability.id}`;
+  const mutation = pluginMutations(capability, device.writableMutations).default;
   const param = typeof capability.metadata.param === 'string' ? capability.metadata.param : 'value';
   const options = pluginOptions(capability, device);
+  const valueFormat = pluginValueFormat(capability.metadata.format);
+  const range = pluginRange(capability);
   const [draft, setDraft] = useState<string | number>(() => typeof current === 'number' || typeof current === 'string' ? current : '');
   const [editingPollingRate, setEditingPollingRate] = useState(false);
   const [editingValue, setEditingValue] = useState(false);
 
-  const writable = !capability.readOnly && device.writableMutations.includes(mutation);
-  const apply = (value: unknown) => runMutation(mutation, { [param]: value });
+  const writable = Boolean(mutation && !capability.readOnly && device.writableMutations.includes(mutation));
+  const apply = (value: unknown) => mutation ? runMutation(mutation, { [param]: value }) : Promise.resolve();
   const openValueEditor = () => {
     if (capability.control === 'Select' && current === undefined && options[0]) {
       setDraft(String(options[0].value));
@@ -493,7 +546,7 @@ function GenericPluginControl({
     setEditingValue(true);
   };
   const valueLabel = pluginValueLabel(capability, current);
-  if (capability.labelKey === 'capability.polling-rate' || mutation.startsWith('set-polling-rate')) {
+  if (capability.labelKey === 'capability.polling-rate') {
     return (
       <div className="control-reading mode-reading polling-reading">
         <WaveSine weight="regular" />
@@ -569,7 +622,7 @@ function GenericPluginControl({
           onClick={openValueEditor}
         >
           {capability.control === 'Color' && typeof current === 'string' && <i style={{ '--light-color': current } as React.CSSProperties} />}
-          <strong>{valueLabel}</strong>
+          <FormattedValue value={current} label={valueLabel} keyName={capability.id} format={capability.control === 'Color' ? 'color' : valueFormat} />
         </button>
       )}
       {capability.control === 'Action' && (
@@ -580,7 +633,15 @@ function GenericPluginControl({
           onClick={() => void runMutation(mutation, (capability.metadata.params as Record<string, unknown>) ?? {})}
         >{typeof capability.metadata.actionLabel === 'string' ? capability.metadata.actionLabel : i18n.t('common.execute')}</button>
       )}
-      {(capability.readOnly || capability.control === 'ReadOnlyValue') && <strong className="plugin-current-value">{pluginValueLabel(capability, current)}</strong>}
+      {(capability.readOnly || capability.control === 'ReadOnlyValue') && (
+        <FormattedValue
+          className="plugin-current-value"
+          value={current}
+          label={pluginValueLabel(capability, current)}
+          keyName={capability.id}
+          format={valueFormat}
+        />
+      )}
       <PluginSummary capability={capability} device={device} />
       {!writable && !capability.readOnly && <p className="setting-hint">{i18n.t('dashboard.writeUnavailableHint')}</p>}
       {editingValue && (
@@ -618,9 +679,9 @@ function GenericPluginControl({
                 aria-label={pluginLabel(capability, device.pluginId)}
                 type={capability.control === 'Color' ? 'color' : capability.control === 'Slider' ? 'range' : 'number'}
                 value={draft}
-                min={typeof capability.metadata.min === 'number' ? capability.metadata.min : undefined}
-                max={typeof capability.metadata.max === 'number' ? capability.metadata.max : undefined}
-                step={typeof capability.metadata.step === 'number' ? capability.metadata.step : undefined}
+                min={range?.min}
+                max={range?.max}
+                step={range?.step}
                 disabled={writeBusy}
                 onChange={(event) => setDraft(capability.control === 'Color' ? event.target.value : Number(event.target.value))}
               />
@@ -664,7 +725,7 @@ function DeviceDetails({ capabilities, pluginCapabilities, onClose }: { capabili
                 {Object.entries(fields).map(([key, value]) => (
                   <div key={key}>
                     <dt>{capabilityFieldLabel(key)}</dt>
-                    <dd>{capabilityValue(value, key)}</dd>
+                    <dd><FormattedValue value={value} keyName={key} /></dd>
                   </div>
                 ))}
               </dl>
@@ -716,17 +777,19 @@ function EditModal({ title, children, submitLabel = i18n.t('common.apply'), subm
 interface DpiEditModalProps {
   stage: number;
   currentValue: number;
+  range?: RangeSpec;
   writeBusy: boolean;
   onClose: () => void;
   onApply: (value: number) => void;
 }
 
-function DpiEditModal({ stage, currentValue, writeBusy, onClose, onApply }: DpiEditModalProps) {
+function DpiEditModal({ stage, currentValue, range, writeBusy, onClose, onApply }: DpiEditModalProps) {
   const [draft, setDraft] = useState(currentValue);
+  const outOfRange = range ? draft < range.min || draft > range.max : false;
   return (
     <EditModal
       title={i18n.t('dashboard.editStageDpi', { stage })}
-      submitDisabled={writeBusy || draft < 50 || draft > 30000 || draft === currentValue}
+      submitDisabled={writeBusy || outOfRange || draft === currentValue}
       onClose={onClose}
       onSubmit={() => onApply(draft)}
     >
@@ -734,9 +797,9 @@ function DpiEditModal({ stage, currentValue, writeBusy, onClose, onApply }: DpiE
         <span>{i18n.t('dashboard.dpiValue')}</span>
         <input
           type="number"
-          min={50}
-          max={30000}
-          step={50}
+          min={range?.min}
+          max={range?.max}
+          step={range?.step}
           autoFocus
           value={draft}
           disabled={writeBusy}
@@ -811,18 +874,20 @@ function ColorEditModal({ title, currentColor, writeBusy, onClose, onApply }: Co
   );
 }
 
-function SleepEditModal({ label, currentSeconds, writeBusy, onClose, onApply }: {
+function SleepEditModal({ label, currentSeconds, range, writeBusy, onClose, onApply }: {
   label: string;
   currentSeconds: number;
+  range?: RangeSpec;
   writeBusy: boolean;
   onClose: () => void;
   onApply: (seconds: number) => void;
 }) {
   const [draft, setDraft] = useState(currentSeconds);
+  const outOfRange = range ? draft < range.min || draft > range.max : false;
   return (
     <EditModal
       title={i18n.t('dashboard.setSleepTitle', { label })}
-      submitDisabled={writeBusy || draft < 10 || draft > 65535 || draft === currentSeconds}
+      submitDisabled={writeBusy || outOfRange || draft === currentSeconds}
       onClose={onClose}
       onSubmit={() => onApply(draft)}
     >
@@ -830,9 +895,9 @@ function SleepEditModal({ label, currentSeconds, writeBusy, onClose, onApply }: 
         <span>{i18n.t('dashboard.timeoutSeconds')}</span>
         <input
           type="number"
-          min={10}
-          max={65535}
-          step={10}
+          min={range?.min}
+          max={range?.max}
+          step={range?.step}
           autoFocus
           value={draft}
           disabled={writeBusy}
@@ -980,6 +1045,20 @@ function mouseLightingFieldLabel(field: MouseLightingField): string {
   return i18n.t(`receiverLighting.field.${field}`, { defaultValue: field });
 }
 
+function mouseLightingOnState(device: DeviceState, capability?: PluginCapability): boolean | undefined {
+  if (device.lighting?.mouseLightEnabled === false) {
+    return false;
+  }
+  const effect = device.lighting?.mouseLightEffect;
+  if (typeof effect === 'number') {
+    const effectOptions = capability?.metadata?.effectOptions as { offValue?: number } | undefined;
+    return effect !== (effectOptions?.offValue ?? 0);
+  }
+  return typeof device.lighting?.mouseLightEnabled === 'boolean'
+    ? device.lighting.mouseLightEnabled
+    : undefined;
+}
+
 function MouseLightingEditModal({ field, pluginId, initial, effectOptions, offValue, supportedEffects, speedRange, brightnessRange, writeBusy, onClose, onApply }: MouseLightingEditModalProps) {
   const [draft, setDraft] = useState(initial);
   const submitDisabled = useMemo(
@@ -1014,7 +1093,7 @@ function MouseLightingEditModal({ field, pluginId, initial, effectOptions, offVa
           ))}
         </select>
       </label>}
-      {field === 'speed' && <label className="edit-field">
+      {field === 'speed' && <label className="edit-field range-field">
         <span>{i18n.t('receiverLighting.field.speed')}</span>
         <input
           type="range"
@@ -1027,7 +1106,7 @@ function MouseLightingEditModal({ field, pluginId, initial, effectOptions, offVa
         />
         <span className="range-value">{draft.speed}</span>
       </label>}
-      {field === 'brightness' && <label className="edit-field">
+      {field === 'brightness' && <label className="edit-field range-field">
         <span>{i18n.t('receiverLighting.field.brightness')}</span>
         <input
           type="range"
@@ -1129,7 +1208,7 @@ function Dashboard({
 
   const currentStage = Math.max(1, stages.findIndex((stage) => stage.active) + 1);
   const receiverLighting = lightingCapability(device.capabilities, 'receiverLighting');
-  const [sleepSetting, setSleepSetting] = useState<{ label: string; seconds: number; mutation: string; param: string }>();
+  const [sleepSetting, setSleepSetting] = useState<{ label: string; seconds: number; mutation: string; param: string; range?: RangeSpec }>();
   const [editingSleep, setEditingSleep] = useState(false);
   const pluginDescriptors = useMemo(() => compatibilityCapabilities(device), [device]);
   const controlPlacements = pluginDescriptors
@@ -1170,6 +1249,10 @@ function Dashboard({
   const hasMouseEffectOptions = Boolean(mouseEffectOptions?.effect?.length);
   const mouseOffEffect = mouseEffectOptions?.offValue ?? 0;
   const mouseOnEffect = mouseEffectOptions?.effect?.find((effect) => effect.value !== mouseOffEffect)?.value ?? 1;
+  const mouseLightOn = mouseLightingOnState(device, activeLightingDescriptor);
+  // 灯效写入默认值：从插件 effectOptions 提取（effect/speed/brightness），
+  // 替代 UI 硬编码 effect=1 / speed=0 / brightness=100。
+  const mouseEffectDefaults = effectDefaults(activeLightingDescriptor);
   const mouseHasEndColor = Boolean(
     device.lighting?.mouseLightEndColor
       && device.lighting.mouseLightEndColor !== device.lighting.mouseLightColor,
@@ -1207,22 +1290,26 @@ function Dashboard({
   for (const { capability, placement } of statusPlacements) {
     const binding = capabilityBinding(capability, device);
     const controlPlacement = placementsFor(capability, 'control')[0];
-    if (capability.metadata.format === 'sleep' || (capability.control === 'Number' && Array.isArray(capability.metadata.bindings))) {
+    if (pluginValueFormat(capability.metadata.format) === 'sleep' || (capability.control === 'Number' && Array.isArray(capability.metadata.bindings))) {
       const seconds = Number(binding.value);
       if (!Number.isFinite(seconds) || !binding.mutation) continue;
+      const sleepRange = pluginRange(capability);
       statusItems.push({
         id: capability.id, label: binding.label, value: formatSleepTime(seconds), icon: pluginIcon(placement.icon),
         disabled: !writable(binding.mutation),
         onClick: () => {
-          setSleepSetting({ label: binding.label, seconds, mutation: binding.mutation!, param: binding.param });
+          setSleepSetting({ label: binding.label, seconds, mutation: binding.mutation!, param: binding.param, range: sleepRange });
           setEditingSleep(true);
         },
       });
     } else if (capability.control === 'LightingZone') {
       const mutation = pluginMutations(capability, device.writableMutations).mouse;
+      const statusMouseLightOn = mouseLightingOnState(device, capability);
       statusItems.push({
         id: capability.id, label: binding.label,
-        value: device.lighting?.mouseLightEnabled === false ? i18n.t('lighting.off') : device.lighting?.mouseLightColor ?? i18n.t('common.notReported'),
+        value: typeof statusMouseLightOn === 'boolean'
+          ? (statusMouseLightOn ? i18n.t('lighting.on') : i18n.t('lighting.off'))
+          : device.lighting?.mouseLightColor ?? i18n.t('common.notReported'),
         icon: pluginIcon(placement.icon), color: device.lighting?.mouseLightColor,
         disabled: !mutation || !writable(mutation), onClick: () => setEditingMouseLightColor(true),
       });
@@ -1345,6 +1432,7 @@ function Dashboard({
               <DpiEditModal
                 stage={editingDpiStage}
                 currentValue={stages[editingDpiStage - 1]?.value ?? activeDpi}
+                range={activeDpiDescriptor ? pluginRange(activeDpiDescriptor) : undefined}
                 writeBusy={writeBusy}
                 onClose={() => setEditingDpiStage(null)}
                 onApply={(value) => {
@@ -1407,12 +1495,12 @@ function Dashboard({
                             color: device.lighting?.mouseLightColor ?? '#b87ab0',
                             enabled: newEffect !== mouseOffEffect,
                             effect: newEffect,
-                            speed: device.lighting?.mouseLightSpeed ?? 0,
-                            brightness: device.lighting?.mouseLightBrightness ?? 100,
+                            speed: device.lighting?.mouseLightSpeed ?? mouseEffectDefaults.speed,
+                            brightness: device.lighting?.mouseLightBrightness ?? mouseEffectDefaults.brightness,
                             extraColor: device.lighting?.mouseLightExtraColor ?? '#000000',
                           });
                         } else {
-                          const enabled = device.lighting?.mouseLightEnabled === false;
+                          const enabled = mouseLightOn === false;
                           void runMutation(mouseLightingMutation!, {
                             color: device.lighting?.mouseLightColor ?? '#b87ab0',
                             enabled,
@@ -1421,9 +1509,7 @@ function Dashboard({
                       }}
                     >
                       <span>{t('dashboard.status')}</span>
-                      <strong>{hasMouseEffectOptions
-                        ? (device.lighting?.mouseLightEffect === mouseOffEffect ? i18n.t('common.off') : i18n.t('common.on'))
-                        : (device.lighting?.mouseLightEnabled === false ? i18n.t('common.off') : i18n.t('common.on'))}</strong>
+                      <strong>{mouseLightOn === false ? i18n.t('common.off') : i18n.t('common.on')}</strong>
                     </button>
                     {hasMouseEffectOptions ? (
                       <>
@@ -1474,7 +1560,7 @@ function Dashboard({
                           onClick={() => setEditingMouseLightField('color')}
                         >
                           <span>{i18n.t('common.color')}</span>
-                          <strong>{device.lighting?.mouseLightColor ?? i18n.t('common.notReported')}</strong>
+                          <ColorValue value={device.lighting?.mouseLightColor} />
                         </button>
                         {mouseNeedsExtraColor && (
                           <button
@@ -1484,7 +1570,7 @@ function Dashboard({
                             onClick={() => setEditingMouseLightField('extraColor')}
                           >
                             <span>{i18n.t('lighting.extraColor')}</span>
-                            <strong>{device.lighting?.mouseLightExtraColor ?? '#000000'}</strong>
+                            <ColorValue value={device.lighting?.mouseLightExtraColor ?? '#000000'} />
                           </button>
                         )}
                       </>
@@ -1497,7 +1583,7 @@ function Dashboard({
                           onClick={() => setEditingMouseLightColor(true)}
                         >
                           <span>{i18n.t('common.color')}</span>
-                          <strong>{device.lighting?.mouseLightColor ?? i18n.t('common.notReported')}</strong>
+                          <ColorValue value={device.lighting?.mouseLightColor} />
                         </button>
                         {mouseHasEndColor && (
                           <button
@@ -1507,7 +1593,7 @@ function Dashboard({
                             onClick={() => setEditingMouseLightEndColor(true)}
                           >
                             <span>{t('dashboard.endColor')}</span>
-                            <strong>{device.lighting?.mouseLightEndColor}</strong>
+                            <ColorValue value={device.lighting?.mouseLightEndColor} />
                           </button>
                         )}
                       </>
@@ -1601,7 +1687,7 @@ function Dashboard({
                       onClick={() => setEditingReceiverLighting('color')}
                     >
                       <span>{i18n.t('common.color')}</span>
-                      <strong style={{ color: typeof receiverLighting?.color === 'string' ? receiverLighting.color : undefined }}>{typeof receiverLighting?.color === 'string' ? receiverLighting.color : i18n.t('common.notReported')}</strong>
+                      <ColorValue value={receiverLighting?.color} />
                     </button>
                   </div>
                   {editingReceiverLighting !== null && receiverLighting && (
@@ -1643,6 +1729,7 @@ function Dashboard({
           <SleepEditModal
             label={sleepSetting.label}
             currentSeconds={sleepSetting.seconds}
+            range={sleepSetting.range}
             writeBusy={writeBusy}
             onClose={() => setEditingSleep(false)}
             onApply={(seconds) => {
@@ -1665,10 +1752,10 @@ function Dashboard({
                 mutation,
                 {
                   color,
-                  enabled: device.lighting?.mouseLightEnabled !== false,
-                  effect: device.lighting?.mouseLightEffect ?? 1,
-                  speed: device.lighting?.mouseLightSpeed ?? 0,
-                  brightness: device.lighting?.mouseLightBrightness ?? 100,
+                  enabled: mouseLightingOnState(device, statusLighting) !== false,
+                  effect: device.lighting?.mouseLightEffect ?? mouseEffectDefaults.effect,
+                  speed: device.lighting?.mouseLightSpeed ?? mouseEffectDefaults.speed,
+                  brightness: device.lighting?.mouseLightBrightness ?? mouseEffectDefaults.brightness,
                   extraColor: device.lighting?.mouseLightExtraColor ?? '#000000',
                 },
               );

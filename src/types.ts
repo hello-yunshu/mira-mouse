@@ -67,10 +67,14 @@ export interface ReceiverLightingOptions {
 }
 
 /** 灯光 mutation 角色映射（lightingRole 强类型字段）。 */
+/// mouse/receiver 可声明为单个 mutation 或按优先级排序的候选数组
+/// （如 ['set-mouse-lighting-onboard', 'set-mouse-lighting']），
+/// Host 按数组顺序选取第一个被设备 writableMutations 支持的 mutation。
 export interface LightingRole {
-  mouse?: string;
-  receiver?: string;
+  mouse?: string | string[];
+  receiver?: string | string[];
 }
+export type PluginValueFormat = 'sleep' | 'color';
 export type DeviceCapabilities = Record<string, Record<string, unknown>>;
 export type PluginControl = 'Toggle' | 'Segmented' | 'Select' | 'Slider' | 'Number' | 'Color' | 'GradientStops' | 'DpiStages' | 'LightingZone' | 'ReadOnlyValue' | 'Action' | 'Info';
 export interface PluginCapability {

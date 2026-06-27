@@ -5,9 +5,9 @@ use hidapi::HidApi;
 use mira_core::{DeviceSnapshot, LowBatteryCrossing, PluginCapability, PluginCapabilityPlacement};
 use mira_plugin_runtime::{
     extract_package, hid, inspect_package, mutate_device_with_package, read_device_with_package,
-    writable_mutations_with_package, ConnectionKind, DeviceReading, ExportableField,
-    FeatureIndexCache, OnboardMemoryCache, PackageInspection, ProtocolContext, ProtocolPackage,
-    TrustStore,
+    writable_mutations_with_package, Capability, ConnectionKind, Control, DeviceReading,
+    ExportableField, FeatureIndexCache, OnboardMemoryCache, PackageInspection, ProtocolContext,
+    ProtocolPackage, TrustStore,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -393,14 +393,13 @@ fn apply_night_mode_transition(app: &AppHandle, target_phase: NightPhase) {
             };
 
             // 从插件 capability 的 lightingRole 强类型字段动态查询 mutation 名。
-            // 旧插件未声明 lightingRole 时回退到 metadata.mutations，仍无则使用 Host 默认。
             let (mouse_mutation, receiver_mutation) = resolve_lighting_mutations(&snapshot);
-            let mouse_mutation = mouse_mutation.as_deref().unwrap_or("set-mouse-lighting");
-            let receiver_mutation = receiver_mutation
+            let can_mouse = mouse_mutation
                 .as_deref()
-                .unwrap_or("set-receiver-lighting");
-            let can_mouse = snapshot_supports_mutation(&snapshot, mouse_mutation);
-            let can_receiver = snapshot_supports_mutation(&snapshot, receiver_mutation);
+                .is_some_and(|mutation| snapshot_supports_mutation(&snapshot, mutation));
+            let can_receiver = receiver_mutation
+                .as_deref()
+                .is_some_and(|mutation| snapshot_supports_mutation(&snapshot, mutation));
 
             // 如果设备不支持任何勾选的灯光对象：静默跳过，仅更新阶段。
             let mouse_wanted = settings.night_mode_target_mouse && can_mouse;
@@ -418,6 +417,9 @@ fn apply_night_mode_transition(app: &AppHandle, target_phase: NightPhase) {
 
             // 鼠标灯光（仅在尚未保存时才尝试关闭）
             if mouse_wanted && new_saved_mouse.is_none() {
+                let Some(mouse_mutation) = mouse_mutation.as_deref() else {
+                    return;
+                };
                 if let Some((is_on, saved)) = read_mouse_light_state(&snapshot) {
                     if is_on {
                         // 关闭灯光：off effect 由插件声明，同时传递 speed/brightness 以满足
@@ -470,6 +472,9 @@ fn apply_night_mode_transition(app: &AppHandle, target_phase: NightPhase) {
 
             // 接收器灯光（effect=0 表示关闭，仅在尚未保存时才尝试关闭）
             if receiver_wanted && new_saved_receiver.is_none() {
+                let Some(receiver_mutation) = receiver_mutation.as_deref() else {
+                    return;
+                };
                 if let Some(saved) = read_receiver_light_state(&snapshot) {
                     if saved.effect != 0 {
                         let params = serde_json::Map::from_iter([
@@ -545,15 +550,13 @@ fn apply_night_mode_transition(app: &AppHandle, target_phase: NightPhase) {
 
             let mut any_failed = false;
 
-            // 恢复阶段同样动态查询 mutation 名（与关闭阶段保持一致）
+            // 恢复阶段同样动态查询插件声明的 mutation 名（与关闭阶段保持一致）
             let (mouse_mutation, receiver_mutation) = resolve_lighting_mutations(&snapshot);
-            let mouse_mutation = mouse_mutation.as_deref().unwrap_or("set-mouse-lighting");
-            let receiver_mutation = receiver_mutation
-                .as_deref()
-                .unwrap_or("set-receiver-lighting");
 
             // 恢复鼠标灯光
-            if let Some(ref saved) = saved_mouse {
+            if let (Some(saved), Some(mouse_mutation)) =
+                (saved_mouse.as_ref(), mouse_mutation.as_deref())
+            {
                 if snapshot_supports_mutation(&snapshot, mouse_mutation) {
                     let mut params = serde_json::Map::from_iter([
                         (
@@ -591,7 +594,9 @@ fn apply_night_mode_transition(app: &AppHandle, target_phase: NightPhase) {
             }
 
             // 恢复接收器灯光
-            if let Some(ref saved) = saved_receiver {
+            if let (Some(saved), Some(receiver_mutation)) =
+                (saved_receiver.as_ref(), receiver_mutation.as_deref())
+            {
                 if snapshot_supports_mutation(&snapshot, receiver_mutation) {
                     let params = serde_json::Map::from_iter([
                         (
@@ -1324,14 +1329,104 @@ mod settings_tests {
             ..DeviceReading::default()
         };
         assert_eq!(control_mode(&reading), Some(2));
+        // 契约化：capability 声明 mutation 名（mutationDecl 支持 string 或 string[]），
+        // Host 不再硬编码 "set-dpi-value" / "set-polling-rate"。
+        let capabilities = vec![
+            Capability {
+                id: "dpi".into(),
+                control: Control::DpiStages,
+                label_key: "capability.dpi".into(),
+                read_only: false,
+                placements: vec![],
+                metadata: BTreeMap::from([(
+                    "mutations".into(),
+                    serde_json::json!({
+                        "select": "set-dpi-stage",
+                        "value": ["set-dpi-value", "set-dpi-value-extended"],
+                    }),
+                )]),
+                probe: None,
+                connections: None,
+                min_firmware: None,
+            },
+            Capability {
+                id: "polling-rate".into(),
+                control: Control::Select,
+                label_key: "capability.polling-rate".into(),
+                read_only: false,
+                placements: vec![],
+                metadata: BTreeMap::from([(
+                    "mutation".into(),
+                    serde_json::json!("set-polling-rate"),
+                )]),
+                probe: None,
+                connections: None,
+                min_firmware: None,
+            },
+        ];
         let mut profile = SoftwareProfile::default();
         seed_standard_software_mutations(
             &mut profile,
             &reading,
             &["set-dpi-value".into(), "set-polling-rate".into()],
+            &capabilities,
         );
         assert_eq!(profile.mutations["set-dpi-value"]["dpi"], 1850);
         assert_eq!(profile.mutations["set-polling-rate"]["rate"], 1000);
+    }
+
+    #[test]
+    fn seed_standard_mutations_skips_when_capability_missing() {
+        // 契约化验证：插件未声明 DpiStages/polling-rate capability 时，Host 不应
+        // 凭空 seed 任何 mutation（避免硬编码字符串回退）。
+        let reading = DeviceReading {
+            dpi: Some(1850),
+            polling_rate_hz: Some(1000),
+            capabilities: BTreeMap::from([("controlMode".into(), serde_json::json!({"mode": 2}))]),
+            ..DeviceReading::default()
+        };
+        let mut profile = SoftwareProfile::default();
+        seed_standard_software_mutations(
+            &mut profile,
+            &reading,
+            &["set-dpi-value".into(), "set-polling-rate".into()],
+            &[],
+        );
+        assert!(profile.mutations.is_empty());
+    }
+
+    #[test]
+    fn seed_standard_mutations_picks_first_supported_candidate() {
+        // mutationDecl 候选数组：设备只支持第二个候选时，应选取第二个。
+        let reading = DeviceReading {
+            dpi: Some(3200),
+            ..DeviceReading::default()
+        };
+        let capabilities = vec![Capability {
+            id: "dpi".into(),
+            control: Control::DpiStages,
+            label_key: "capability.dpi".into(),
+            read_only: false,
+            placements: vec![],
+            metadata: BTreeMap::from([(
+                "mutations".into(),
+                serde_json::json!({
+                    "value": ["set-dpi-value-legacy", "set-dpi-value-v2"],
+                }),
+            )]),
+            probe: None,
+            connections: None,
+            min_firmware: None,
+        }];
+        let mut profile = SoftwareProfile::default();
+        seed_standard_software_mutations(
+            &mut profile,
+            &reading,
+            &["set-dpi-value-v2".into()],
+            &capabilities,
+        );
+        assert_eq!(profile.mutations["set-dpi-value-v2"]["dpi"], 3200);
+        assert!(profile.mutations.get("set-dpi-value-legacy").is_none());
     }
 
     #[test]
@@ -2401,7 +2496,7 @@ mod night_mode_tests {
     }
 
     #[test]
-    fn resolve_lighting_mutations_prefers_lighting_role_over_legacy_candidates() {
+    fn resolve_lighting_mutations_uses_lighting_role_only() {
         let snapshot = DeviceSnapshot {
             display_name: "Test".into(),
             connection: mira_core::Connection::Usb,
@@ -3730,8 +3825,20 @@ fn seed_standard_software_mutations(
     profile: &mut SoftwareProfile,
     reading: &DeviceReading,
     allowed: &[String],
+    capabilities: &[Capability],
 ) {
-    if allowed.iter().any(|mutation| mutation == "set-dpi-value") {
+    // 契约化：mutation 名由插件 manifest 声明，Host 不再硬编码 "set-dpi-value" /
+    // "set-polling-rate"。DpiStages capability 通过 metadata.mutations.value 声明
+    // 写入 mutation（支持 mutationDecl: string 或 string[] 候选数组）；
+    // polling-rate capability（labelKey='capability.polling-rate'）通过
+    // metadata.mutation 声明。这与前端 pluginAdapter.ts 的 pluginMutations 契约一致。
+    if let Some(mutation_name) = capabilities
+        .iter()
+        .find(|capability| capability.control == Control::DpiStages && !capability.read_only)
+        .and_then(|capability| capability.metadata.get("mutations"))
+        .and_then(|mutations| mutations.get("value"))
+        .and_then(|value| pick_mutation_decl(value, allowed))
+    {
         if let Some(dpi) = reading.dpi {
             let stage = reading
                 .dpi_stages
@@ -3740,7 +3847,7 @@ fn seed_standard_software_mutations(
                 .map(|index| index + 1)
                 .unwrap_or(1);
             profile.mutations.insert(
-                "set-dpi-value".into(),
+                mutation_name,
                 BTreeMap::from([
                     ("dpi".into(), serde_json::json!(dpi)),
                     ("stage".into(), serde_json::json!(stage)),
@@ -3748,17 +3855,43 @@ fn seed_standard_software_mutations(
             );
         }
     }
-    if allowed
+    if let Some(mutation_name) = capabilities
         .iter()
-        .any(|mutation| mutation == "set-polling-rate")
+        .find(|capability| {
+            capability.label_key == "capability.polling-rate" && !capability.read_only
+        })
+        .and_then(|capability| capability.metadata.get("mutation"))
+        .and_then(|value| pick_mutation_decl(value, allowed))
     {
         if let Some(rate) = reading.polling_rate_hz {
             profile.mutations.insert(
-                "set-polling-rate".into(),
+                mutation_name,
                 BTreeMap::from([("rate".into(), serde_json::json!(rate))]),
             );
         }
     }
+}
+
+/// 从 mutationDecl（string 或 string[]）中选取第一个被设备支持的 mutation。
+/// 与前端 pluginAdapter.ts 的 pickMutation 行为一致：
+/// - string → 直接返回
+/// - string[] → 优先返回第一个在 `allowed` 中的候选，否则返回首个候选
+fn pick_mutation_decl(value: &serde_json::Value, allowed: &[String]) -> Option<String> {
+    if let Some(s) = value.as_str() {
+        return Some(s.to_string());
+    }
+    if let Some(arr) = value.as_array() {
+        let candidates: Vec<String> = arr
+            .iter()
+            .filter_map(|item| item.as_str().map(String::from))
+            .collect();
+        return candidates
+            .iter()
+            .find(|candidate| allowed.iter().any(|allowed_mutation| allowed_mutation == *candidate))
+            .or_else(|| candidates.first())
+            .cloned();
+    }
+    None
 }
 
 fn parse_connection(value: &str) -> mira_core::Connection {
@@ -3819,8 +3952,7 @@ fn snapshot_supports_mutation(snapshot: &DeviceSnapshot, mutation: &str) -> bool
 }
 
 /// 从设备快照的 plugin_capabilities 中查询灯光 mutation 名。
-/// 优先读取 LightingZone capability 的 metadata.lightingRole（强类型字段）；
-/// 回退到 metadata.mutations（兼容旧插件 manifest）。
+/// 只读取 LightingZone capability 的 metadata.lightingRole（强类型字段）。
 /// 返回 (mouse_mutation, receiver_mutation)，未声明则为 None。
 fn pick_supported_lighting_mutation(
     value: Option<&serde_json::Value>,
@@ -3854,28 +3986,14 @@ fn resolve_lighting_mutations(snapshot: &DeviceSnapshot) -> (Option<String>, Opt
             .metadata
             .get("lightingRole")
             .and_then(|value| value.as_object());
-        let mutations = cap
-            .metadata
-            .get("mutations")
-            .and_then(|value| value.as_object());
         let role_mouse =
             pick_supported_lighting_mutation(role.and_then(|value| value.get("mouse")), snapshot);
         let role_receiver = pick_supported_lighting_mutation(
             role.and_then(|value| value.get("receiver")),
             snapshot,
         );
-        let legacy_mouse = pick_supported_lighting_mutation(
-            mutations.and_then(|value| value.get("mouse")),
-            snapshot,
-        );
-        let legacy_receiver = pick_supported_lighting_mutation(
-            mutations.and_then(|value| value.get("receiver")),
-            snapshot,
-        );
-        let mouse = role_mouse.or(legacy_mouse);
-        let receiver = role_receiver.or(legacy_receiver);
-        if mouse.is_some() || receiver.is_some() {
-            return (mouse, receiver);
+        if role_mouse.is_some() || role_receiver.is_some() {
+            return (role_mouse, role_receiver);
         }
     }
     (None, None)
@@ -4491,12 +4609,14 @@ fn begin_device_write(state: &SessionState) -> Result<WriteFlagGuard<'_>, String
     Ok(WriteFlagGuard(&state.write_in_progress, &state.write_cond))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn remember_software_profile(
     app: &AppHandle,
     state: &SessionState,
     device: &hid::MatchedDevice,
     reading: &DeviceReading,
     allowed: &[String],
+    capabilities: &[Capability],
     mutation: &str,
     params: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<(), String> {
@@ -4517,7 +4637,7 @@ fn remember_software_profile(
     }
     let profile = profiles.devices.entry(key.clone()).or_default();
     if mutation == "set-control-mode" {
-        seed_standard_software_mutations(profile, reading, allowed);
+        seed_standard_software_mutations(profile, reading, allowed, capabilities);
     } else {
         profile
             .mutations
@@ -4650,7 +4770,12 @@ fn device_mutate_blocking(
         // 原代码在锁作用域内调用，违反 L2720-2722 注释承诺，会阻塞并发
         // discover_devices / read。改为仅在锁内 clone 所需数据，锁外再执行磁盘写入。
         let profile_remember = if control_mode(&reading).is_some() {
-            Some((device.clone(), reading.clone(), allowed.clone()))
+            Some((
+                device.clone(),
+                reading.clone(),
+                allowed.clone(),
+                inspection.capabilities.clone(),
+            ))
         } else {
             None
         };
@@ -4669,13 +4794,15 @@ fn device_mutate_blocking(
     // Post-lock: disk I/O, tray updates and event emission run without holding
     // device_io or plugins locks so concurrent reads are not blocked.
     // 修复 P-2：remember_software_profile 在锁外执行磁盘写入，保持与注释承诺一致。
-    if let Some((device_clone, reading_clone, allowed_clone)) = profile_remember {
+    if let Some((device_clone, reading_clone, allowed_clone, capabilities_clone)) = profile_remember
+    {
         remember_software_profile(
             app,
             &state,
             &device_clone,
             &reading_clone,
             &allowed_clone,
+            &capabilities_clone,
             mutation,
             params,
         )?;

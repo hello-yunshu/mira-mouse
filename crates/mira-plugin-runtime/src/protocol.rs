@@ -67,8 +67,10 @@ pub fn read_device_with_package(
     ctx: &ProtocolContext,
 ) -> Result<DeviceReading, String> {
     let workflow_id = format!("{}-read", ctx.family);
-    let outputs =
+    let mut outputs =
         package.execute_with_cache(ctx.api, ctx.path, &workflow_id, ctx.feature_index_cache)?;
+    let capabilities = package.capabilities().cloned();
+    maybe_merge_onboard_lighting(package, ctx, capabilities.as_ref(), &mut outputs)?;
     #[cfg(debug_assertions)]
     eprintln!(
         "[mira] plugin workflow {workflow_id}: {} outputs: [{}]",
@@ -79,8 +81,54 @@ pub fn read_device_with_package(
             .collect::<Vec<_>>()
             .join(", ")
     );
-    let capabilities = package.capabilities().cloned();
     Ok(standard_reading(outputs, capabilities))
+}
+
+fn maybe_merge_onboard_lighting(
+    package: &ProtocolPackage,
+    ctx: &ProtocolContext,
+    capabilities: Option<&Value>,
+    outputs: &mut BTreeMap<String, Value>,
+) -> Result<(), String> {
+    if normalized_mouse_lighting(outputs, capabilities).is_some() {
+        return Ok(());
+    }
+    let Some(feature_index) = object(outputs, "featureIndexOnboardProfiles")
+        .and_then(|feature| feature.get("featureIndex"))
+        .and_then(Value::as_u64)
+    else {
+        return Ok(());
+    };
+    if feature_index == 0 {
+        return Ok(());
+    }
+
+    let Some(onboard_workflow_id) = onboard_mouse_lighting_workflow_id(capabilities) else {
+        return Ok(());
+    };
+    if !package.has_workflow(&onboard_workflow_id) {
+        return Ok(());
+    }
+
+    let cached = ctx.onboard_memory_cache.and_then(|cache| {
+        cache
+            .lock()
+            .ok()
+            .and_then(|guard| guard.get(ctx.path).map(|(outputs, _)| outputs.clone()))
+    });
+    let onboard_outputs = match cached {
+        Some(outputs) => outputs,
+        None => package.execute_with_cache(
+            ctx.api,
+            ctx.path,
+            &onboard_workflow_id,
+            ctx.feature_index_cache,
+        )?,
+    };
+    for (key, value) in onboard_outputs {
+        outputs.entry(key).or_insert(value);
+    }
+    Ok(())
 }
 
 pub fn execute_plugin_workflow(
@@ -335,7 +383,7 @@ fn standard_reading(
             number(settings, "pollingRate").and_then(|value| u16::try_from(value).ok());
     }
 
-    normalize_lighting_capabilities(&outputs, &mut reading.capabilities);
+    normalize_lighting_capabilities(&outputs, capabilities.as_ref(), &mut reading.capabilities);
 
     reading.light_color = object(&reading.capabilities, "mouseLighting")
         .and_then(|lighting| lighting.get("color"))
@@ -347,9 +395,10 @@ fn standard_reading(
 
 fn normalize_lighting_capabilities(
     outputs: &BTreeMap<String, Value>,
+    plugin_capabilities: Option<&Value>,
     capabilities: &mut BTreeMap<String, Value>,
 ) {
-    if let Some(mouse_lighting) = normalized_mouse_lighting(outputs) {
+    if let Some(mouse_lighting) = normalized_mouse_lighting(outputs, plugin_capabilities) {
         capabilities.insert("mouseLighting".into(), Value::Object(mouse_lighting));
     }
     if let Some(receiver_lighting) = normalized_receiver_lighting(outputs) {
@@ -359,7 +408,11 @@ fn normalize_lighting_capabilities(
 
 fn normalized_mouse_lighting(
     outputs: &BTreeMap<String, Value>,
+    plugin_capabilities: Option<&Value>,
 ) -> Option<serde_json::Map<String, Value>> {
+    if let Some(onboard) = onboard_mouse_lighting(outputs, plugin_capabilities) {
+        return Some(onboard);
+    }
     let settings = object(outputs, "settings");
     let mode = object(outputs, "mouseLightMode").or_else(|| object(outputs, "mouseEffect"));
     let color = settings
@@ -401,6 +454,173 @@ fn normalized_mouse_lighting(
         copy_field(mode, &mut lighting, "brightnessLabel");
     }
     Some(lighting)
+}
+
+fn onboard_mouse_lighting(
+    outputs: &BTreeMap<String, Value>,
+    capabilities: Option<&Value>,
+) -> Option<serde_json::Map<String, Value>> {
+    let profile = onboard_mouse_lighting_normalizer(capabilities)?;
+    if !onboard_profile_lighting_active(outputs) {
+        return None;
+    }
+    let description_output = profile
+        .get("sectorSize")
+        .and_then(|reference| reference.get("output"))
+        .and_then(Value::as_str)
+        .unwrap_or("onboardDescription");
+    let chunk_prefix = profile
+        .get("chunkPrefix")
+        .and_then(Value::as_str)
+        .unwrap_or("onboardProfileChunk");
+    let chunk_field = profile
+        .get("chunkField")
+        .and_then(Value::as_str)
+        .unwrap_or("bytes");
+    let description = object(outputs, description_output)?;
+    let sector_size = profile
+        .get("sectorSize")
+        .and_then(|reference| reference.get("field"))
+        .and_then(Value::as_str)
+        .and_then(|field| number(description, field))
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(256);
+    let bytes = onboard_profile_bytes(outputs, sector_size, chunk_prefix, chunk_field)?;
+    let layout = profile
+        .get("layouts")?
+        .as_array()?
+        .iter()
+        .find(|layout| onboard_layout_matches(layout, description))?
+        .as_object()?;
+    let effect_offset = normalizer_offset(layout, "effectOffset")?;
+    let color_offset = normalizer_offset(layout, "colorOffset")?;
+    let speed_offset = normalizer_offset(layout, "speedOffset")?;
+    let brightness_offset = normalizer_offset(layout, "brightnessOffset")?;
+    let extra_color_offset = normalizer_offset(layout, "extraColorOffset")?;
+    if bytes.len() <= extra_color_offset + 2
+        || bytes.len() <= brightness_offset
+        || bytes.len() <= effect_offset
+        || bytes.len() <= color_offset + 2
+        || bytes.len() <= speed_offset + 1
+    {
+        return None;
+    }
+
+    let effect = bytes[effect_offset];
+    let enabled = profile
+        .get("enabledOverride")
+        .and_then(|reference| {
+            let output = reference.get("output")?.as_str()?;
+            let field = reference.get("field")?.as_str()?;
+            object(outputs, output).and_then(|value| boolean_like(value, field))
+        })
+        .unwrap_or(effect != 0);
+    let mut lighting = serde_json::Map::new();
+    lighting.insert("enabled".into(), json!(enabled));
+    lighting.insert("effect".into(), json!(effect));
+    lighting.insert(
+        "color".into(),
+        json!(format!(
+            "#{:02x}{:02x}{:02x}",
+            bytes[color_offset],
+            bytes[color_offset + 1],
+            bytes[color_offset + 2]
+        )),
+    );
+    lighting.insert(
+        "speed".into(),
+        json!(u16::from_be_bytes([
+            bytes[speed_offset],
+            bytes[speed_offset + 1]
+        ])),
+    );
+    lighting.insert("brightness".into(), json!(bytes[brightness_offset]));
+    lighting.insert(
+        "extraColor".into(),
+        json!(format!(
+            "#{:02x}{:02x}{:02x}",
+            bytes[extra_color_offset],
+            bytes[extra_color_offset + 1],
+            bytes[extra_color_offset + 2]
+        )),
+    );
+    Some(lighting)
+}
+
+fn onboard_profile_lighting_active(outputs: &BTreeMap<String, Value>) -> bool {
+    let mode = object(outputs, "onboardMode").or_else(|| object(outputs, "controlMode"));
+    mode.and_then(|mode| number(mode, "mode"))
+        .is_none_or(|mode| mode == 1)
+}
+
+fn onboard_mouse_lighting_normalizer(
+    capabilities: Option<&Value>,
+) -> Option<&serde_json::Map<String, Value>> {
+    capabilities?
+        .get("normalizers")?
+        .get("mouseLighting")?
+        .get("onboardProfile")?
+        .as_object()
+}
+
+fn onboard_mouse_lighting_workflow_id(capabilities: Option<&Value>) -> Option<String> {
+    onboard_mouse_lighting_normalizer(capabilities)?
+        .get("sourceWorkflow")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+fn onboard_layout_matches(layout: &Value, description: &serde_json::Map<String, Value>) -> bool {
+    let Some(layout) = layout.as_object() else {
+        return false;
+    };
+    if layout
+        .get("default")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    let Some(condition) = layout.get("when").and_then(Value::as_object) else {
+        return false;
+    };
+    let Some(field) = condition.get("field").and_then(Value::as_str) else {
+        return false;
+    };
+    let Some(expected) = condition.get("eq") else {
+        return false;
+    };
+    description.get(field) == Some(expected)
+}
+
+fn normalizer_offset(layout: &serde_json::Map<String, Value>, key: &str) -> Option<usize> {
+    layout
+        .get(key)
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+}
+
+fn onboard_profile_bytes(
+    outputs: &BTreeMap<String, Value>,
+    sector_size: usize,
+    chunk_prefix: &str,
+    chunk_field: &str,
+) -> Option<Vec<u8>> {
+    let mut bytes = Vec::new();
+    for index in 0.. {
+        let key = format!("{chunk_prefix}{index:02}");
+        let Some(chunk) = object(outputs, &key) else {
+            break;
+        };
+        let chunk_bytes = chunk.get(chunk_field)?.as_array()?;
+        for byte in chunk_bytes {
+            bytes.push(u8::try_from(byte.as_u64()?).ok()?);
+            if bytes.len() >= sector_size {
+                return Some(bytes);
+            }
+        }
+    }
+    (bytes.len() >= sector_size).then_some(bytes)
 }
 
 fn normalized_receiver_lighting(
@@ -725,5 +945,117 @@ mod tests {
             reading.supported_polling_rates_hz,
             Some(vec![125, 250, 500, 1000])
         );
+    }
+
+    #[test]
+    fn normalizes_hidpp_onboard_profile_lighting_from_plugin_metadata() {
+        let mut outputs = BTreeMap::from([(
+            "onboardDescription".into(),
+            json!({"profileFormatId": 5, "sectorSize": 255}),
+        )]);
+        outputs.insert("rgbControl".into(), json!({"enabled": false}));
+        for index in 0..16 {
+            let mut chunk = vec![0; 16];
+            if index == 13 {
+                chunk[11] = 3;
+                chunk[12] = 0xb8;
+                chunk[13] = 0x7a;
+                chunk[14] = 0xb0;
+            }
+            if index == 14 {
+                chunk[0] = 100;
+                chunk[1] = 100;
+                chunk[2] = 0x12;
+                chunk[3] = 0x34;
+                chunk[4] = 0x56;
+            }
+            outputs.insert(
+                format!("onboardProfileChunk{index:02}"),
+                json!({"bytes": chunk}),
+            );
+        }
+
+        assert!(standard_reading(outputs.clone(), None)
+            .capabilities
+            .get("mouseLighting")
+            .is_none());
+
+        let capabilities = Some(json!({
+            "normalizers": {
+                "mouseLighting": {
+                    "onboardProfile": {
+                        "sectorSize": { "output": "onboardDescription", "field": "sectorSize" },
+                        "enabledOverride": { "output": "rgbControl", "field": "enabled" },
+                        "chunkPrefix": "onboardProfileChunk",
+                        "chunkField": "bytes",
+                        "layouts": [{
+                            "when": { "field": "profileFormatId", "eq": 5 },
+                            "effectOffset": 219,
+                            "colorOffset": 220,
+                            "speedOffset": 223,
+                            "brightnessOffset": 225,
+                            "extraColorOffset": 226
+                        }]
+                    }
+                }
+            }
+        }));
+        let reading = standard_reading(outputs, capabilities);
+        let mouse = reading
+            .capabilities
+            .get("mouseLighting")
+            .and_then(Value::as_object)
+            .unwrap();
+        assert_eq!(reading.light_color.as_deref(), Some("#b87ab0"));
+        assert_eq!(mouse.get("enabled").and_then(Value::as_bool), Some(false));
+        assert_eq!(mouse.get("effect").and_then(Value::as_u64), Some(3));
+        assert_eq!(mouse.get("speed").and_then(Value::as_u64), Some(100));
+        assert_eq!(mouse.get("brightness").and_then(Value::as_u64), Some(100));
+        assert_eq!(
+            mouse.get("extraColor").and_then(Value::as_str),
+            Some("#123456")
+        );
+    }
+
+    #[test]
+    fn skips_onboard_profile_lighting_when_host_mode_is_active() {
+        let mut outputs = BTreeMap::from([
+            (
+                "onboardDescription".into(),
+                json!({"profileFormatId": 5, "sectorSize": 255}),
+            ),
+            ("onboardMode".into(), json!({"mode": 2, "modeName": "host"})),
+        ]);
+        outputs.insert("rgbControl".into(), json!({"enabled": false}));
+        for index in 0..16 {
+            outputs.insert(
+                format!("onboardProfileChunk{index:02}"),
+                json!({"bytes": vec![255; 16]}),
+            );
+        }
+        let capabilities = Some(json!({
+            "normalizers": {
+                "mouseLighting": {
+                    "onboardProfile": {
+                        "sectorSize": { "output": "onboardDescription", "field": "sectorSize" },
+                        "enabledOverride": { "output": "rgbControl", "field": "enabled" },
+                        "chunkPrefix": "onboardProfileChunk",
+                        "chunkField": "bytes",
+                        "layouts": [{
+                            "when": { "field": "profileFormatId", "eq": 5 },
+                            "effectOffset": 219,
+                            "colorOffset": 220,
+                            "speedOffset": 223,
+                            "brightnessOffset": 225,
+                            "extraColorOffset": 226
+                        }]
+                    }
+                }
+            }
+        }));
+
+        let reading = standard_reading(outputs, capabilities);
+        assert!(reading.capabilities.get("mouseLighting").is_none());
+        assert_eq!(reading.light_color, None);
     }
 }

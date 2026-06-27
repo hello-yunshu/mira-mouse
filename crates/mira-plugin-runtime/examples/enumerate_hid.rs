@@ -337,13 +337,63 @@ fn main() {
                 .iter()
                 .any(|mutation| mutation == "set-mouse-lighting")
             {
+                let current = reading
+                    .capabilities
+                    .get("mouseLighting")
+                    .and_then(Value::as_object);
                 let enabled = std::env::var("MIRA_WRITE_LIGHT_ENABLED")
                     .map(|value| value != "0")
                     .unwrap_or(true);
+                let current_effect = current
+                    .and_then(|lighting| lighting.get("effect"))
+                    .and_then(Value::as_u64)
+                    .and_then(|value| u8::try_from(value).ok())
+                    .unwrap_or(1);
+                let effect = std::env::var("MIRA_WRITE_LIGHT_EFFECT")
+                    .ok()
+                    .and_then(|value| value.parse::<u8>().ok())
+                    .unwrap_or_else(|| {
+                        if enabled {
+                            if current_effect == 0 {
+                                1
+                            } else {
+                                current_effect
+                            }
+                        } else {
+                            0
+                        }
+                    });
+                let speed = std::env::var("MIRA_WRITE_LIGHT_SPEED")
+                    .ok()
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .or_else(|| {
+                        current
+                            .and_then(|lighting| lighting.get("speed"))
+                            .and_then(Value::as_u64)
+                    })
+                    .unwrap_or(0);
+                let brightness = std::env::var("MIRA_WRITE_LIGHT_BRIGHTNESS")
+                    .ok()
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .or_else(|| {
+                        current
+                            .and_then(|lighting| lighting.get("brightness"))
+                            .and_then(Value::as_u64)
+                    })
+                    .unwrap_or(100);
+                let extra_color = current
+                    .and_then(|lighting| lighting.get("extraColor"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("#000000")
+                    .to_string();
                 println!("smoke: set-mouse-lighting enabled={enabled} color={color}");
                 let params = Map::from_iter([
                     ("enabled".into(), Value::Bool(enabled)),
                     ("color".into(), Value::String(color)),
+                    ("effect".into(), Value::Number(effect.into())),
+                    ("speed".into(), Value::Number(speed.into())),
+                    ("brightness".into(), Value::Number(brightness.into())),
+                    ("extraColor".into(), Value::String(extra_color)),
                 ]);
                 match mutate_device(&mutate_context, "set-mouse-lighting", &params) {
                     Ok(value) => println!("  ok: {}", serde_json::to_string(&value).unwrap()),
