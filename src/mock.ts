@@ -39,13 +39,13 @@ export const MOCK_DEVICE: DeviceState = {
   },
   pluginCapabilities: [
     { id: 'battery', control: 'ReadOnlyValue', labelKey: 'capability.battery', readOnly: true, placements: [{ region: 'hero', order: 10, span: 1, icon: 'battery' }], metadata: {} },
-    { id: 'dpi', control: 'DpiStages', labelKey: 'capability.dpi', readOnly: false, placements: [{ region: 'control', group: 'performance', order: 10, span: 1, icon: 'gauge' }], metadata: { label: 'DPI', section: 'control', source: 'dpiStages', mutations: { select: 'set-dpi-stage', value: 'set-dpi-value' } } },
+    { id: 'dpi', control: 'DpiStages', labelKey: 'capability.dpi', readOnly: false, placements: [{ region: 'control', group: 'performance', order: 10, span: 1, icon: 'gauge' }], metadata: { label: 'DPI', section: 'control', source: 'dpiStages', mutations: { select: 'set-dpi-stage', value: 'set-dpi-value' }, range: { min: 50, max: 30000, step: 50 } } },
     { id: 'polling-rate', control: 'Select', labelKey: 'capability.polling-rate', readOnly: false, placements: [{ region: 'control', group: 'polling', order: 20, span: 1, icon: 'wave' }], metadata: { section: 'control', source: 'pollingRate', mutation: 'set-polling-rate', param: 'rate', unit: 'Hz', options: [125, 250, 500, 1000, 2000, 4000, 8000].map((value) => ({ value, label: `${value} Hz` })), summary: [{ label: 'mock.motionSync', source: 'capabilities.settings.motionSync' }, { label: 'mock.angleSnap', source: 'capabilities.settings.angleSnap' }, { label: 'mock.liftCutOff', source: 'capabilities.settings.liftCutOff' }] } },
     {
       id: 'sleep-time', control: 'Number', labelKey: 'capability.sleep-time', readOnly: false,
       placements: [{ region: 'status', order: 10, span: 1, icon: 'timer' }],
       metadata: {
-        section: 'status', status: true, format: 'sleep',
+        section: 'status', status: true, format: 'sleep', range: { min: 10, max: 65535, step: 10 },
         bindings: [
           { when: { path: 'connection', eq: 'bluetooth' }, label: 'mock.bluetoothSleep', source: 'capabilities.settings.bluetoothSleepValue', mutation: 'set-bluetooth-sleep-time', param: 'seconds' },
           { when: { path: 'connection', eq: 'wireless' }, label: 'mock.wirelessSleep', source: 'capabilities.settings.wirelessSleepValue', mutation: 'set-wireless-sleep-time', param: 'seconds' },
@@ -54,7 +54,7 @@ export const MOCK_DEVICE: DeviceState = {
       },
     },
     { id: 'profile', control: 'ReadOnlyValue', labelKey: 'capability.profile', readOnly: true, placements: [{ region: 'status', order: 20, span: 1, icon: 'profile' }], metadata: { section: 'status', status: true, source: 'profile' } },
-    { id: 'lighting', control: 'LightingZone', labelKey: 'capability.lighting', readOnly: false, placements: [{ region: 'control', group: 'lighting', order: 30, span: 1, icon: 'lightbulb' }, { region: 'status', order: 30, span: 1, icon: 'lightbulb' }], metadata: { section: 'control', status: true, source: 'capabilities.mouseLighting.color', mutations: { mouse: 'set-mouse-lighting', receiver: 'set-receiver-lighting' } } },
+    { id: 'lighting', control: 'LightingZone', labelKey: 'capability.lighting', readOnly: false, placements: [{ region: 'control', group: 'lighting', order: 30, span: 1, icon: 'lightbulb' }, { region: 'status', order: 30, span: 1, icon: 'lightbulb' }], metadata: { section: 'control', status: true, source: 'capabilities.mouseLighting.color', lightingRole: { mouse: 'set-mouse-lighting', receiver: 'set-receiver-lighting' } } },
     { id: 'firmware', control: 'ReadOnlyValue', labelKey: 'capability.firmware', readOnly: true, placements: [{ region: 'details', order: 10, span: 1, icon: 'info' }], metadata: {} },
   ],
   writableMutations: ['set-dpi-stage', 'set-dpi-value', 'set-polling-rate', 'set-mouse-lighting', 'set-receiver-lighting', 'set-wireless-sleep-time', 'set-bluetooth-sleep-time'],
