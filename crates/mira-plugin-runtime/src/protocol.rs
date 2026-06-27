@@ -975,10 +975,9 @@ mod tests {
             );
         }
 
-        assert!(standard_reading(outputs.clone(), None)
+        assert!(!standard_reading(outputs.clone(), None)
             .capabilities
-            .get("mouseLighting")
-            .is_none());
+            .contains_key("mouseLighting"));
 
         let capabilities = Some(json!({
             "normalizers": {
@@ -1055,7 +1054,7 @@ mod tests {
         }));
 
         let reading = standard_reading(outputs, capabilities);
-        assert!(reading.capabilities.get("mouseLighting").is_none());
+        assert!(!reading.capabilities.contains_key("mouseLighting"));
         assert_eq!(reading.light_color, None);
     }
 }
