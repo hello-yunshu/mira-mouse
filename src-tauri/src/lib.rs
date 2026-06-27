@@ -6446,9 +6446,18 @@ pub fn run() {
         .run(|app_handle, event| {
             // macOS: 用户点击 Dock 图标时恢复窗口（窗口被隐藏到托盘后，
             // Dock 图标在 Accessory 策略下不可见，但 Regular 状态下仍可点击）。
-            if let tauri::RunEvent::Reopen { .. } = event {
-                focus_main(app_handle.get_webview_window("main"));
-                request_refresh(&app_handle.state::<SessionState>());
+            // RunEvent::Reopen 是 macOS 专有变体，必须用 cfg 门控，
+            // 否则 Linux/Windows CI 会因找不到该变体而编译失败。
+            #[cfg(target_os = "macos")]
+            {
+                if let tauri::RunEvent::Reopen { .. } = event {
+                    focus_main(app_handle.get_webview_window("main"));
+                    request_refresh(&app_handle.state::<SessionState>());
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _ = (app_handle, event);
             }
         });
 }
