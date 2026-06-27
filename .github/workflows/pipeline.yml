@@ -141,8 +141,8 @@ jobs:
             case "$RUNNER_OS" in
               macOS)
                 rustup target add aarch64-apple-darwin x86_64-apple-darwin
-                npm exec tauri build -- --target universal-apple-darwin --bundles app,dmg --config '{"bundle":{"createUpdaterArtifacts":true}}'
-                find target -path '*/bundle/dmg/*' ! -name '*_universal.dmg' -delete 2>/dev/null || true
+                npm exec tauri build -- --target universal-apple-darwin --bundles app --config '{"bundle":{"createUpdaterArtifacts":true}}'
+                bash scripts/create-dmg.sh target/universal-apple-darwin/release/bundle/macos/Mira.app
                 ;;
               Windows)
                 npm exec tauri build -- --bundles nsis --config '{"bundle":{"createUpdaterArtifacts":true}}'

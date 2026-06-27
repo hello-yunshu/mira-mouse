@@ -19,9 +19,13 @@ fi
 
 APP_NAME=$(basename "$APP_PATH" .app)
 VERSION=$(defaults read "$APP_PATH/Contents/Info.plist" CFBundleShortVersionString 2>/dev/null || echo "0.0.0")
-case "$(uname -m)" in
-  arm64) ARCH="aarch64" ;;
-  *) ARCH="$(uname -m)" ;;
+# 检测 universal 构建（路径包含 universal-apple-darwin），否则按当前 CPU 架构命名
+case "$APP_PATH" in
+  *universal-apple-darwin*) ARCH="universal" ;;
+  *) case "$(uname -m)" in
+       arm64) ARCH="aarch64" ;;
+       *) ARCH="$(uname -m)" ;;
+     esac ;;
 esac
 DMG_DIR="$ROOT_DIR/target/release/bundle/dmg"
 DMG_NAME="${APP_NAME}_${VERSION}_${ARCH}.dmg"
@@ -91,7 +95,7 @@ hdiutil detach "$MOUNT_POINT" -force >/dev/null
 trap - EXIT
 
 echo "==> 转换为压缩只读 DMG"
-mkdir -p "$DMG_DIR"
+mkdir -p "$(dirname "$DMG_PATH")"
 rm -f "$DMG_PATH"
 hdiutil convert -ov -format UDZO "$TMP_DMG" -o "$DMG_PATH" >/dev/null
 rm -f "$TMP_DMG"

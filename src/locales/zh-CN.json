@@ -37,7 +37,7 @@
     "noDevice": "没有找到支持的鼠标",
     "plugInHint": "插上鼠标后，可用的设置会出现在这里。",
     "deviceAndDiagnostics": "设备与诊断",
-    "openFixture": "打开 Fixture 演示",
+    "openFixture": "查看演示",
     "connectedDevice": "已连接设备",
     "deviceCount": "{{count}} 台设备",
     "deviceBattery": "设备电量",
