@@ -151,6 +151,9 @@ impl PluginManifest {
             {
                 return Err(ApiError::CapabilityOptions(capability.id.clone()));
             }
+            if !valid_presentation_contract(capability) {
+                return Err(ApiError::CapabilityPresentation(capability.id.clone()));
+            }
             if let Some(summary) = capability.metadata.get("summary") {
                 let valid = summary.as_array().is_some_and(|items| {
                     items.len() <= MAX_SUMMARY_ITEMS
@@ -166,6 +169,7 @@ impl PluginManifest {
                                     && item
                                         .get("options")
                                         .is_none_or(|options| valid_options(options, 32))
+                                    && item.get("format").is_none_or(valid_value_format)
                             })
                         })
                 });
@@ -195,6 +199,121 @@ fn valid_options(value: &serde_json::Value, max_items: usize) -> bool {
                 })
             })
     })
+}
+
+fn valid_presentation_contract(capability: &Capability) -> bool {
+    let metadata = &capability.metadata;
+    if metadata
+        .get("format")
+        .is_some_and(|format| !valid_value_format(format))
+    {
+        return false;
+    }
+    if !valid_numeric_range(metadata) {
+        return false;
+    }
+    match capability.control {
+        Control::DpiStages if !capability.read_only => {
+            let Some(mutations) = metadata
+                .get("mutations")
+                .and_then(serde_json::Value::as_object)
+            else {
+                return false;
+            };
+            valid_mutation_ref(mutations.get("select"))
+                && valid_mutation_ref(mutations.get("value"))
+        }
+        Control::LightingZone if !capability.read_only => metadata
+            .get("lightingRole")
+            .and_then(serde_json::Value::as_object)
+            .is_some_and(|role| {
+                valid_mutation_ref(role.get("mouse")) || valid_mutation_ref(role.get("receiver"))
+            }),
+        Control::Select | Control::Segmented if !capability.read_only => {
+            metadata
+                .get("options")
+                .is_some_and(|options| valid_options(options, MAX_CONTROL_OPTIONS))
+                && valid_mutation_contract(metadata)
+        }
+        Control::Toggle | Control::Number | Control::Slider | Control::Color | Control::Action
+            if !capability.read_only =>
+        {
+            valid_mutation_contract(metadata)
+        }
+        _ => true,
+    }
+}
+
+fn valid_mutation_contract(metadata: &BTreeMap<String, serde_json::Value>) -> bool {
+    if valid_mutation_ref(metadata.get("mutation")) {
+        return true;
+    }
+    if metadata
+        .get("mutations")
+        .and_then(serde_json::Value::as_object)
+        .is_some_and(|mutations| valid_mutation_ref(mutations.get("default")))
+    {
+        return true;
+    }
+    metadata.get("bindings").is_some_and(|bindings| {
+        valid_binding_sources(bindings) && valid_binding_mutations(bindings)
+    })
+}
+
+fn valid_mutation_ref(value: Option<&serde_json::Value>) -> bool {
+    match value {
+        Some(serde_json::Value::String(value)) => !value.is_empty(),
+        Some(serde_json::Value::Array(values)) => {
+            !values.is_empty()
+                && values
+                    .iter()
+                    .all(|value| value.as_str().is_some_and(|value| !value.is_empty()))
+        }
+        _ => false,
+    }
+}
+
+fn valid_binding_sources(value: &serde_json::Value) -> bool {
+    value.as_array().is_some_and(|items| {
+        !items.is_empty()
+            && items.iter().all(|item| {
+                item.as_object().is_some_and(|item| {
+                    item.get("source")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|source| !source.is_empty())
+                })
+            })
+    })
+}
+
+fn valid_binding_mutations(value: &serde_json::Value) -> bool {
+    value.as_array().is_some_and(|items| {
+        !items.is_empty()
+            && items.iter().all(|item| {
+                item.as_object()
+                    .is_some_and(|item| valid_mutation_ref(item.get("mutation")))
+            })
+    })
+}
+
+fn valid_numeric_range(metadata: &BTreeMap<String, serde_json::Value>) -> bool {
+    let min = metadata.get("min").map(serde_json::Value::as_f64);
+    let max = metadata.get("max").map(serde_json::Value::as_f64);
+    let step = metadata.get("step").map(serde_json::Value::as_f64);
+    if min.is_some_and(|value| value.is_none())
+        || max.is_some_and(|value| value.is_none())
+        || step.is_some_and(|value| value.is_none_or(|value| value <= 0.0))
+    {
+        return false;
+    }
+    match (min.flatten(), max.flatten()) {
+        (Some(min), Some(max)) => min <= max,
+        _ => true,
+    }
+}
+
+fn valid_value_format(value: &serde_json::Value) -> bool {
+    matches!(value.as_str(), Some("sleep" | "color"))
 }
 
 /// 校验连接类型是否为已知值。允许规范值（usb/receiver/bluetooth）
@@ -406,13 +525,43 @@ pub struct ReceiverLightingOptions {
 
 /// 灯光 mutation 角色映射（lightingRole 强类型字段）。
 /// 供后端夜间模式动态发现 mutation 名，替代硬编码 'set-mouse-lighting'。
+/// mouse/receiver 可声明单个 mutation 或按优先级排序的候选数组，
+/// Host 按数组顺序选取第一个被设备 writableMutations 支持的 mutation。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LightingRole {
     #[serde(default)]
-    pub mouse: Option<String>,
+    pub mouse: Option<MutationDecl>,
     #[serde(default)]
-    pub receiver: Option<String>,
+    pub receiver: Option<MutationDecl>,
+}
+
+/// mutation 声明：单个字符串或按优先级排序的候选数组。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum MutationDecl {
+    Single(String),
+    Many(Vec<String>),
+}
+
+impl MutationDecl {
+    /// 按声明顺序返回所有候选 mutation 名。
+    pub fn candidates(&self) -> Vec<&str> {
+        match self {
+            MutationDecl::Single(value) => vec![value.as_str()],
+            MutationDecl::Many(values) => values.iter().map(String::as_str).collect(),
+        }
+    }
+
+    /// 选取第一个被 writable 支持的 mutation；若均不支持则返回首个候选。
+    pub fn pick<'a>(&'a self, writable: &[String]) -> Option<&'a str> {
+        let candidates = self.candidates();
+        let first = candidates.first().copied()?;
+        candidates
+            .into_iter()
+            .find(|candidate| writable.iter().any(|w| w == candidate))
+            .or(Some(first))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -502,6 +651,8 @@ pub enum ApiError {
     CapabilitySummary(String),
     #[error("capability {0} has invalid control options")]
     CapabilityOptions(String),
+    #[error("capability {0} has an invalid UI presentation contract")]
+    CapabilityPresentation(String),
     #[error("plugin exceeds the host dashboard layout limits")]
     CapabilityLayout,
     #[error("capability {0} declares an invalid minFirmware semver")]
@@ -630,10 +781,10 @@ mod tests {
             metadata: BTreeMap::from([(
                 "bindings".into(),
                 serde_json::json!([
-                    {"when": { "path": "connection", "eq": "usb" }, "source": "usbSleep"},
-                    {"when": { "path": "connection", "eq": "wireless" }, "source": "wirelessSleep"},
-                    {"when": { "path": "connection", "eq": "bluetooth" }, "source": "bluetoothSleep"},
-                    {"when": { "path": "connection", "eq": "virtual" }, "source": "virtualSleep"}
+                    {"when": { "path": "connection", "eq": "usb" }, "source": "usbSleep", "mutation": "set-usb-sleep"},
+                    {"when": { "path": "connection", "eq": "wireless" }, "source": "wirelessSleep", "mutation": "set-wireless-sleep"},
+                    {"when": { "path": "connection", "eq": "bluetooth" }, "source": "bluetoothSleep", "mutation": "set-bluetooth-sleep"},
+                    {"when": { "path": "connection", "eq": "virtual" }, "source": "virtualSleep", "mutation": "set-virtual-sleep"}
                 ]),
             )]),
             probe: None,
@@ -655,6 +806,72 @@ mod tests {
             depends_on: vec![],
         };
         assert_eq!(manifest.validate(), Ok(()));
+    }
+
+    #[test]
+    fn rejects_unknown_value_formats() {
+        let capability = Capability {
+            id: "profile-color".into(),
+            control: Control::ReadOnlyValue,
+            label_key: "capability.profile-color".into(),
+            read_only: true,
+            placements: vec![],
+            metadata: BTreeMap::from([("format".into(), serde_json::json!("colour"))]),
+            probe: None,
+            connections: None,
+            min_firmware: None,
+        };
+        let manifest = PluginManifest {
+            schema_version: 1,
+            plugin_id: "mira.example".into(),
+            name: "Example".into(),
+            version: "1.0.0".into(),
+            plugin_api: ">=1.0.0, <2.0.0".parse().unwrap(),
+            publisher_key_id: None,
+            evidence: EvidenceLevel::FixtureVerified,
+            permissions: vec![],
+            capabilities: vec![capability],
+            writes_enabled: false,
+            exportable_fields: vec![],
+            depends_on: vec![],
+        };
+        assert_eq!(
+            manifest.validate(),
+            Err(ApiError::CapabilityPresentation("profile-color".into()))
+        );
+    }
+
+    #[test]
+    fn rejects_writable_lighting_without_role_contract() {
+        let capability = Capability {
+            id: "lighting".into(),
+            control: Control::LightingZone,
+            label_key: "capability.lighting".into(),
+            read_only: false,
+            placements: vec![],
+            metadata: BTreeMap::new(),
+            probe: None,
+            connections: None,
+            min_firmware: None,
+        };
+        let manifest = PluginManifest {
+            schema_version: 1,
+            plugin_id: "mira.example".into(),
+            name: "Example".into(),
+            version: "1.0.0".into(),
+            plugin_api: ">=1.0.0, <2.0.0".parse().unwrap(),
+            publisher_key_id: None,
+            evidence: EvidenceLevel::FixtureVerified,
+            permissions: vec![],
+            capabilities: vec![capability],
+            writes_enabled: false,
+            exportable_fields: vec![],
+            depends_on: vec![],
+        };
+        assert_eq!(
+            manifest.validate(),
+            Err(ApiError::CapabilityPresentation("lighting".into()))
+        );
     }
 
     #[test]

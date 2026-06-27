@@ -45,6 +45,45 @@
           "metadata": {
             "type": "object",
             "properties": {
+              "mutation": { "$ref": "#/$defs/mutationDecl" },
+              "mutations": {
+                "type": "object",
+                "additionalProperties": { "$ref": "#/$defs/mutationDecl" },
+                "propertyNames": { "pattern": "^[a-z][a-zA-Z0-9-]*$" }
+              },
+              "bindings": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["when", "source", "mutation"],
+                  "properties": {
+                    "when": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": ["path", "eq"],
+                      "properties": {
+                        "path": { "type": "string", "minLength": 1 },
+                        "eq": {}
+                      }
+                    },
+                    "source": { "type": "string", "minLength": 1 },
+                    "mutation": { "$ref": "#/$defs/mutationDecl" },
+                    "param": { "type": "string", "minLength": 1 },
+                    "label": { "type": "string", "minLength": 1 }
+                  }
+                }
+              },
+              "param": { "type": "string", "minLength": 1 },
+              "unit": { "type": "string", "maxLength": 16 },
+              "format": { "enum": ["sleep", "color"] },
+              "range": { "$ref": "#/$defs/rangeSpec" },
+              "source": { "type": "string", "minLength": 1 },
+              "actionLabel": { "type": "string", "minLength": 1 },
+              "params": { "type": "object" },
+              "section": { "enum": ["hero", "control", "status", "details"] },
+              "status": { "type": "boolean" },
+              "label": { "type": "string", "minLength": 1 },
               "options": {
                 "type": "array",
                 "maxItems": 8,
@@ -69,7 +108,7 @@
                     "label": { "type": "string", "minLength": 1, "maxLength": 48 },
                     "source": { "type": "string", "minLength": 1, "maxLength": 160 },
                     "unit": { "type": "string", "maxLength": 16 },
-                    "format": { "type": "string", "maxLength": 32 },
+                    "format": { "enum": ["sleep", "color"] },
                     "options": {
                       "type": "array",
                       "maxItems": 32,
@@ -106,26 +145,8 @@
                       }
                     }
                   },
-                  "speed": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "required": ["min", "max"],
-                    "properties": {
-                      "min": { "type": "number" },
-                      "max": { "type": "number" },
-                      "step": { "type": "number" }
-                    }
-                  },
-                  "brightness": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "required": ["min", "max"],
-                    "properties": {
-                      "min": { "type": "number" },
-                      "max": { "type": "number" },
-                      "step": { "type": "number" }
-                    }
-                  }
+                  "speed": { "$ref": "#/$defs/rangeSpec" },
+                  "brightness": { "$ref": "#/$defs/rangeSpec" }
                 }
               },
               "receiverLightingOptions": {
@@ -186,8 +207,8 @@
                 "type": "object",
                 "additionalProperties": false,
                 "properties": {
-                  "mouse": { "type": "string" },
-                  "receiver": { "type": "string" }
+                  "mouse": { "$ref": "#/$defs/mutationDecl" },
+                  "receiver": { "$ref": "#/$defs/mutationDecl" }
                 }
               }
             }
@@ -241,6 +262,30 @@
           "version": { "type": "string" },
           "reuseTransport": { "type": "boolean", "default": false }
         }
+      }
+    }
+  },
+  "$defs": {
+    "mutationDecl": {
+      "description": "Mutation declaration: a single mutation name or a priority-ordered candidate array. Host picks the first candidate supported by device.writableMutations.",
+      "oneOf": [
+        { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-z][a-z0-9-]*$" },
+        {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-z][a-z0-9-]*$" }
+        }
+      ]
+    },
+    "rangeSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["min", "max"],
+      "properties": {
+        "min": { "type": "number" },
+        "max": { "type": "number" },
+        "step": { "type": "number", "exclusiveMinimum": 0 }
       }
     }
   }

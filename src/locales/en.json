@@ -95,7 +95,7 @@
     "effectN": "Effect {{value}}",
     "modeN": "Mode {{value}}",
     "extraColor": "Secondary color",
-    "editMouseLightingTitle": "Mouse lighting — {{field}}"
+    "editMouseLightingTitle": "{{field}}"
   },
   "capability": {
     "group": {
