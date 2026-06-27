@@ -352,7 +352,7 @@ fn main() {
                 let effect = std::env::var("MIRA_WRITE_LIGHT_EFFECT")
                     .ok()
                     .and_then(|value| value.parse::<u8>().ok())
-                    .unwrap_or_else(|| {
+                    .unwrap_or({
                         if enabled {
                             if current_effect == 0 {
                                 1
