@@ -1426,7 +1426,7 @@ mod settings_tests {
             &capabilities,
         );
         assert_eq!(profile.mutations["set-dpi-value-v2"]["dpi"], 3200);
-        assert!(profile.mutations.get("set-dpi-value-legacy").is_none());
+        assert!(!profile.mutations.contains_key("set-dpi-value-legacy"));
     }
 
     #[test]
