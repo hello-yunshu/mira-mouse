@@ -32,7 +32,7 @@
       "releaseTag": "release/v2026-06-27",
       "version": "0.7.2",
       "asset": "mira-logitech-hidpp-0.7.2.mira-plugin",
-      "sha256": "adbccd7718c78a420ff4516efe117207c9656a70422a4a4ac8c602e84d3502f3",
+      "sha256": "32d9ac6276e645579d2f19b2153b7d331af8a7488c639590d1255a26d6e3c556",
       "publisherKeyId": "mira-plugins-2026-001",
       "pluginApi": ">=1.0.0, <2.0.0",
       "cachePath": "src-tauri/resources/plugins/mira-logitech-hidpp-0.7.2.mira-plugin",
