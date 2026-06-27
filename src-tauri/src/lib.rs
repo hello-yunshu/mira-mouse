@@ -4752,10 +4752,6 @@ fn device_mutate_blocking(
             feature_index_cache: Some(&state.feature_index_cache),
             onboard_memory_cache: Some(&state.onboard_memory_cache),
         };
-        let allowed = writable_mutations_with_package(&package, &context)?;
-        if !allowed.iter().any(|candidate| candidate == mutation) {
-            return Err(format!("unsupported device mutation {mutation}"));
-        }
         let before = read_device_with_package(&package, &context)?;
         let mutate_context = ProtocolContext {
             api,
@@ -4767,6 +4763,12 @@ fn device_mutate_blocking(
             feature_index_cache: Some(&state.feature_index_cache),
             onboard_memory_cache: Some(&state.onboard_memory_cache),
         };
+        // 用与 mutate 一致的真实 outputs 计算 allowed 列表，避免空 outputs
+        // 导致所有 mutation 都被视为可写，而实际 mutate 时被 skipIf 守门拒绝。
+        let allowed = writable_mutations_with_package(&package, &mutate_context)?;
+        if !allowed.iter().any(|candidate| candidate == mutation) {
+            return Err(format!("unsupported device mutation {mutation}"));
+        }
         let mutation_result =
             mutate_device_with_package(&package, &mutate_context, mutation, params)?;
         let reading = read_device_with_package(&package, &context)?;

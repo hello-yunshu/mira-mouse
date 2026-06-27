@@ -1046,14 +1046,16 @@ function mouseLightingFieldLabel(field: MouseLightingField): string {
 }
 
 function mouseLightingOnState(device: DeviceState, capability?: PluginCapability): boolean | undefined {
-  if (device.lighting?.mouseLightEnabled === false) {
-    return false;
-  }
+  // 优先基于 effect 字段判断灯效状态：effect === offValue 视为关闭，
+  // 否则视为开启。这避免了 mutation 只改 effect 字段而不改设备
+  // rgbControl.enabled 时，UI 仍基于 mouseLightEnabled=false 显示"关闭"
+  // 但灯实际已亮起的歧义。
   const effect = device.lighting?.mouseLightEffect;
   if (typeof effect === 'number') {
     const effectOptions = capability?.metadata?.effectOptions as { offValue?: number } | undefined;
     return effect !== (effectOptions?.offValue ?? 0);
   }
+  if (device.lighting?.mouseLightEnabled === false) return false;
   return typeof device.lighting?.mouseLightEnabled === 'boolean'
     ? device.lighting.mouseLightEnabled
     : undefined;
@@ -1201,6 +1203,12 @@ function Dashboard({
     } catch (error) {
       setPreviewMessage('');
       notifyError(i18n.t('notification.writeFailed'), i18n.t('notification.writeFailedBody', { error: String(error) }));
+      // 写入失败后设备的实际可用 mutation 集合可能与界面缓存的 writableMutations
+      // 不一致（例如 read_device_once 读取时设备处于板载模式，但调用写入时设备
+      // 已切换到 host 模式，set-mouse-lighting-onboard 被守门拒绝）。这里主动
+      // 触发一次设备刷新，让界面拿到最新的 writableMutations，避免下次还选到
+      // 不支持的 mutation。
+      invoke('device_refresh').catch(() => {});
     } finally {
       setWriteBusy(false);
     }
@@ -1249,7 +1257,24 @@ function Dashboard({
   const hasMouseEffectOptions = Boolean(mouseEffectOptions?.effect?.length);
   const mouseOffEffect = mouseEffectOptions?.offValue ?? 0;
   const mouseOnEffect = mouseEffectOptions?.effect?.find((effect) => effect.value !== mouseOffEffect)?.value ?? 1;
+  // 设备支持的灯效列表：优先从 device.capabilities.mouseLighting.supportedEffects 读取
+  // （由插件 protocol 解析提供），未提供时回退到 effectOptions.effect 全集。
+  const mouseSupportedEffects = activeLightingDescriptor
+    ? pluginSupportedEffectValues(activeLightingDescriptor, device.capabilities)
+    : [];
   const mouseLightOn = mouseLightingOnState(device, activeLightingDescriptor);
+  // 跟踪"上一次非 OFF 的灯效"，用于点击"状态"按钮开启时恢复之前的灯效，
+  // 而不是始终回退到默认 mouseOnEffect（通常是 FIXED/常亮）。
+  const lastNonOffEffectRef = useRef<number>(mouseOnEffect);
+  useEffect(() => {
+    const effect = device.lighting?.mouseLightEffect;
+    const supportedEffects = activeLightingDescriptor
+      ? pluginSupportedEffectValues(activeLightingDescriptor, device.capabilities)
+      : [];
+    if (typeof effect === 'number' && effect !== mouseOffEffect && supportedEffects.includes(effect)) {
+      lastNonOffEffectRef.current = effect;
+    }
+  }, [activeLightingDescriptor, device.capabilities, device.lighting?.mouseLightEffect, mouseOffEffect]);
   // 灯效写入默认值：从插件 effectOptions 提取（effect/speed/brightness），
   // 替代 UI 硬编码 effect=1 / speed=0 / brightness=100。
   const mouseEffectDefaults = effectDefaults(activeLightingDescriptor);
@@ -1268,11 +1293,6 @@ function Dashboard({
       + (device.lighting?.supportsBrightness ? 1 : 0)
       + (mouseNeedsExtraColor ? 1 : 0)
     : 2 + (mouseHasEndColor ? 1 : 0);
-  // 设备支持的灯效列表：优先从 device.capabilities.mouseLighting.supportedEffects 读取
-  // （由插件 protocol 解析提供），未提供时回退到 effectOptions.effect 全集。
-  const mouseSupportedEffects = activeLightingDescriptor
-    ? pluginSupportedEffectValues(activeLightingDescriptor, device.capabilities)
-    : [];
   const statusPlacements = useMemo(() => pluginDescriptors
     .flatMap((capability) => placementsFor(capability, 'status').map((placement) => ({ capability, placement })))
     .filter(({ capability }) => capabilityVisible(capability, device))
@@ -1489,8 +1509,17 @@ function Dashboard({
                       disabled={writeBusy || !mouseLightingMutation || !writable(mouseLightingMutation)}
                       onClick={() => {
                         if (hasMouseEffectOptions) {
-                          const currentEffect = device.lighting?.mouseLightEffect ?? mouseOnEffect;
-                          const newEffect = currentEffect === mouseOffEffect ? mouseOnEffect : mouseOffEffect;
+                          const currentEffect = device.lighting?.mouseLightEffect ?? mouseOffEffect;
+                          const isOff = currentEffect === mouseOffEffect;
+                          // 开启时恢复上一次非 OFF 的灯效（如 BREATHING），
+                          // 而不是始终回退到 FIXED/常亮；关闭时设为 OFF。
+                          const mouseSupportedEffects = activeLightingDescriptor
+                            ? pluginSupportedEffectValues(activeLightingDescriptor, device.capabilities)
+                            : [];
+                          const mouseRestoreEffect = mouseSupportedEffects.includes(lastNonOffEffectRef.current)
+                            ? lastNonOffEffectRef.current
+                            : mouseSupportedEffects.find((effect) => effect !== mouseOffEffect) ?? mouseOnEffect;
+                          const newEffect = isOff ? mouseRestoreEffect : mouseOffEffect;
                           void runMutation(mouseLightingMutation!, {
                             color: device.lighting?.mouseLightColor ?? '#b87ab0',
                             enabled: newEffect !== mouseOffEffect,
