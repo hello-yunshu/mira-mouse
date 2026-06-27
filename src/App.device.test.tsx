@@ -317,7 +317,9 @@ describe('real device snapshot mapping', () => {
     expect(screen.queryByRole('spinbutton', { name: '指针速度' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '应用' })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '指针速度：256，点击编辑' }));
-    expect(screen.getByRole('spinbutton', { name: '指针速度' })).toBeInTheDocument();
+    expect(screen.getByRole('spinbutton', { name: '指针速度' })).toHaveAttribute('min', '46');
+    expect(screen.getByRole('spinbutton', { name: '指针速度' })).toHaveAttribute('max', '511');
+    expect(screen.getByRole('spinbutton', { name: '指针速度' })).toHaveAttribute('step', '1');
     fireEvent.click(screen.getByRole('button', { name: '取消' }));
 
     fireEvent.click(screen.getByRole('tab', { name: '回报率' }));
@@ -495,7 +497,7 @@ describe('real device snapshot mapping', () => {
         {
           id: 'dpi', control: 'DpiStages', labelKey: 'capability.dpi', readOnly: false,
           placements: [{ region: 'control', group: 'performance', order: 10, span: 1, icon: 'gauge' }],
-          metadata: { label: 'DPI', source: 'dpiStages', mutations: { value: ['set-dpi-value', 'set-dpi-value-extended'] } },
+          metadata: { label: 'DPI', source: 'dpiStages', min: 50, max: 30000, step: 50, mutations: { value: ['set-dpi-value', 'set-dpi-value-extended'] } },
         },
         {
           id: 'polling-rate', control: 'Select', labelKey: 'capability.polling-rate', readOnly: false,
@@ -524,6 +526,9 @@ describe('real device snapshot mapping', () => {
     render(<App />);
     expect(await screen.findByText('Extended HID++ Mouse')).toBeInTheDocument();
     fireEvent.click(screen.getByLabelText('当前 DPI：2400，点击编辑'));
+    expect(screen.getByLabelText('DPI 数值')).toHaveAttribute('step', '50');
+    fireEvent.change(screen.getByLabelText('DPI 数值'), { target: { value: '3201' } });
+    expect(screen.getByRole('button', { name: '应用' })).toBeDisabled();
     fireEvent.change(screen.getByLabelText('DPI 数值'), { target: { value: '3200' } });
     fireEvent.click(screen.getByRole('button', { name: '应用' }));
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('device_mutate', {

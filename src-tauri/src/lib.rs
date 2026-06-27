@@ -95,6 +95,9 @@ fn plugin_capabilities(
     inspection: &PackageInspection,
     outputs: &BTreeMap<String, serde_json::Value>,
     connection: &str,
+    package_files: Option<&BTreeMap<String, Vec<u8>>>,
+    family: Option<&str>,
+    writable_mutations: &[String],
 ) -> Vec<PluginCapability> {
     let normalized_connection = normalize_connection(connection);
     inspection
@@ -134,6 +137,14 @@ fn plugin_capabilities(
             });
             let firmware_available =
                 firmware_available(outputs, capability.min_firmware.as_deref());
+            let mut metadata = capability.metadata.clone();
+            enrich_range_from_mutation_inputs(&mut metadata, package_files, family);
+            enrich_options_from_mutation_inputs(
+                &mut metadata,
+                package_files,
+                family,
+                writable_mutations,
+            );
             PluginCapability {
                 id: capability.id.clone(),
                 control: capability.control.as_str().into(),
@@ -150,13 +161,233 @@ fn plugin_capabilities(
                         icon: placement.icon.clone(),
                     })
                     .collect(),
-                metadata: capability.metadata.clone(),
+                metadata,
                 available: probe_available && connection_available && firmware_available,
                 connections: capability.connections.clone(),
                 min_firmware: capability.min_firmware.clone(),
             }
         })
         .collect()
+}
+
+fn collect_mutation_refs(value: Option<&serde_json::Value>, refs: &mut Vec<String>) {
+    match value {
+        Some(serde_json::Value::String(value)) => refs.push(value.clone()),
+        Some(serde_json::Value::Array(values)) => {
+            refs.extend(
+                values
+                    .iter()
+                    .filter_map(|value| value.as_str().map(str::to_string)),
+            );
+        }
+        _ => {}
+    }
+}
+
+fn range_mutation_refs(metadata: &BTreeMap<String, serde_json::Value>) -> Vec<String> {
+    let mut refs = Vec::new();
+    if let Some(mutations) = metadata
+        .get("mutations")
+        .and_then(serde_json::Value::as_object)
+    {
+        collect_mutation_refs(mutations.get("value"), &mut refs);
+        collect_mutation_refs(mutations.get("default"), &mut refs);
+        if refs.is_empty() {
+            for value in mutations.values() {
+                collect_mutation_refs(Some(value), &mut refs);
+            }
+        }
+    }
+    if refs.is_empty() {
+        collect_mutation_refs(metadata.get("mutation"), &mut refs);
+    }
+    refs
+}
+
+fn range_param_names(metadata: &BTreeMap<String, serde_json::Value>) -> Vec<&str> {
+    if metadata
+        .get("mutations")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|mutations| mutations.get("value"))
+        .is_some()
+    {
+        return vec!["dpi", "value"];
+    }
+    metadata
+        .get("param")
+        .and_then(serde_json::Value::as_str)
+        .map(|param| vec![param])
+        .unwrap_or_else(|| vec!["value"])
+}
+
+fn mutation_input_range(
+    workflows: &serde_json::Value,
+    family: Option<&str>,
+    mutation_ref: &str,
+    params: &[&str],
+) -> Option<(u64, u64, Option<u64>)> {
+    let mutations = workflows.get("mutations")?.as_object()?;
+    let mut ids = Vec::new();
+    if let Some(family) = family {
+        ids.push(format!("{family}-{mutation_ref}"));
+    }
+    ids.push(mutation_ref.to_string());
+    for id in ids {
+        let Some(inputs) = mutations
+            .get(&id)
+            .and_then(|mutation| mutation.get("inputs"))
+            .and_then(serde_json::Value::as_object)
+        else {
+            continue;
+        };
+        for param in params {
+            let Some(input) = inputs.get(*param).and_then(serde_json::Value::as_object) else {
+                continue;
+            };
+            let Some(min) = input.get("min").and_then(serde_json::Value::as_u64) else {
+                continue;
+            };
+            let Some(max) = input.get("max").and_then(serde_json::Value::as_u64) else {
+                continue;
+            };
+            let step = input.get("step").and_then(serde_json::Value::as_u64);
+            return Some((min, max, step));
+        }
+    }
+    None
+}
+
+fn mutation_input_allowed(
+    workflows: &serde_json::Value,
+    family: Option<&str>,
+    mutation_ref: &str,
+    param: &str,
+) -> Option<Vec<u64>> {
+    let mutations = workflows.get("mutations")?.as_object()?;
+    let mut ids = Vec::new();
+    if let Some(family) = family {
+        ids.push(format!("{family}-{mutation_ref}"));
+    }
+    ids.push(mutation_ref.to_string());
+    for id in ids {
+        let Some(allowed) = mutations
+            .get(&id)
+            .and_then(|mutation| mutation.get("inputs"))
+            .and_then(|inputs| inputs.get(param))
+            .and_then(|input| input.get("allowed"))
+            .and_then(serde_json::Value::as_array)
+        else {
+            continue;
+        };
+        let values: Vec<_> = allowed
+            .iter()
+            .filter_map(serde_json::Value::as_u64)
+            .collect();
+        if !values.is_empty() {
+            return Some(values);
+        }
+    }
+    None
+}
+
+fn enrich_range_from_mutation_inputs(
+    metadata: &mut BTreeMap<String, serde_json::Value>,
+    package_files: Option<&BTreeMap<String, Vec<u8>>>,
+    family: Option<&str>,
+) {
+    if metadata.contains_key("min") && metadata.contains_key("max") {
+        return;
+    }
+    let Some(bytes) = package_files.and_then(|files| files.get("protocol/workflows.json")) else {
+        return;
+    };
+    let Ok(workflows) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+        return;
+    };
+    let params = range_param_names(metadata);
+    for mutation_ref in range_mutation_refs(metadata) {
+        let Some((min, max, step)) =
+            mutation_input_range(&workflows, family, &mutation_ref, &params)
+        else {
+            continue;
+        };
+        metadata
+            .entry("min".into())
+            .or_insert_with(|| serde_json::Value::Number(min.into()));
+        metadata
+            .entry("max".into())
+            .or_insert_with(|| serde_json::Value::Number(max.into()));
+        if let Some(step) = step {
+            metadata
+                .entry("step".into())
+                .or_insert_with(|| serde_json::Value::Number(step.into()));
+        }
+        return;
+    }
+}
+
+fn enrich_options_from_mutation_inputs(
+    metadata: &mut BTreeMap<String, serde_json::Value>,
+    package_files: Option<&BTreeMap<String, Vec<u8>>>,
+    family: Option<&str>,
+    writable_mutations: &[String],
+) {
+    if !metadata.contains_key("options") {
+        return;
+    }
+    let Some(param) = metadata
+        .get("param")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+    else {
+        return;
+    };
+    let Some(bytes) = package_files.and_then(|files| files.get("protocol/workflows.json")) else {
+        return;
+    };
+    let Ok(workflows) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+        return;
+    };
+    let mut refs = range_mutation_refs(metadata);
+    if let Some(writable) = refs.iter().position(|mutation| {
+        writable_mutations
+            .iter()
+            .any(|candidate| candidate == mutation)
+    }) {
+        refs.swap(0, writable);
+    }
+    for mutation_ref in refs {
+        let Some(allowed) = mutation_input_allowed(&workflows, family, &mutation_ref, &param)
+        else {
+            continue;
+        };
+        let labels = metadata
+            .get("options")
+            .and_then(serde_json::Value::as_array)
+            .map(|options| {
+                options
+                    .iter()
+                    .filter_map(|option| {
+                        Some((
+                            option.get("value")?.as_u64()?,
+                            option.get("label")?.as_str()?.to_string(),
+                        ))
+                    })
+                    .collect::<BTreeMap<_, _>>()
+            })
+            .unwrap_or_default();
+        let options: Vec<_> = allowed
+            .into_iter()
+            .map(|value| {
+                serde_json::json!({
+                    "value": value,
+                    "label": labels.get(&value).cloned().unwrap_or_else(|| value.to_string())
+                })
+            })
+            .collect();
+        metadata.insert("options".into(), serde_json::Value::Array(options));
+        return;
+    }
 }
 
 /// 托盘菜单签名：捕获影响菜单结构的所有字段。
@@ -2642,7 +2873,7 @@ mod capability_tests {
         let inspection = make_inspection(vec![cap]);
         let outputs =
             BTreeMap::from([("firmware".into(), serde_json::json!({"version": "1.9.9"}))]);
-        let result = plugin_capabilities(&inspection, &outputs, "usb");
+        let result = plugin_capabilities(&inspection, &outputs, "usb", None, None, &[]);
         assert!(!result[0].available);
     }
 
@@ -2653,8 +2884,110 @@ mod capability_tests {
         let inspection = make_inspection(vec![cap]);
         let outputs =
             BTreeMap::from([("firmware".into(), serde_json::json!({"version": "2.1.0"}))]);
-        let result = plugin_capabilities(&inspection, &outputs, "usb");
+        let result = plugin_capabilities(&inspection, &outputs, "usb", None, None, &[]);
         assert!(result[0].available);
+    }
+
+    #[test]
+    fn dpi_range_is_enriched_from_workflow_mutation_inputs() {
+        let mut cap = make_capability("dpi", None, None);
+        cap.control = Control::DpiStages;
+        cap.metadata = BTreeMap::from([(
+            "mutations".into(),
+            serde_json::json!({ "select": "set-dpi-stage", "value": "set-dpi-value" }),
+        )]);
+        let inspection = make_inspection(vec![cap]);
+        let outputs = BTreeMap::new();
+        let files = BTreeMap::from([(
+            "protocol/workflows.json".into(),
+            serde_json::to_vec(&serde_json::json!({
+                "mutations": {
+                    "test-family-set-dpi-stage": {
+                        "inputs": { "stage": { "kind": "integer", "min": 1, "max": 8, "step": 1 } }
+                    },
+                    "test-family-set-dpi-value": {
+                        "inputs": { "dpi": { "kind": "integer", "min": 50, "max": 30000, "step": 50 } }
+                    }
+                }
+            }))
+            .unwrap(),
+        )]);
+
+        let result = plugin_capabilities(
+            &inspection,
+            &outputs,
+            "usb",
+            Some(&files),
+            Some("test-family"),
+            &[],
+        );
+
+        assert_eq!(result[0].metadata.get("min"), Some(&serde_json::json!(50)));
+        assert_eq!(
+            result[0].metadata.get("max"),
+            Some(&serde_json::json!(30000))
+        );
+        assert_eq!(result[0].metadata.get("step"), Some(&serde_json::json!(50)));
+    }
+
+    #[test]
+    fn select_options_follow_the_current_writable_mutation_allowed_values() {
+        let mut cap = make_capability("polling-rate", None, None);
+        cap.control = Control::Select;
+        cap.metadata = BTreeMap::from([
+            (
+                "mutation".into(),
+                serde_json::json!(["set-polling-rate", "set-polling-rate-extended"]),
+            ),
+            ("param".into(), serde_json::json!("rate")),
+            (
+                "options".into(),
+                serde_json::json!([
+                    { "value": 125, "label": "125 Hz" },
+                    { "value": 250, "label": "250 Hz" },
+                    { "value": 500, "label": "500 Hz" },
+                    { "value": 1000, "label": "1000 Hz" },
+                    { "value": 2000, "label": "2000 Hz" },
+                    { "value": 4000, "label": "4000 Hz" },
+                    { "value": 8000, "label": "8000 Hz" }
+                ]),
+            ),
+        ]);
+        let inspection = make_inspection(vec![cap]);
+        let outputs = BTreeMap::new();
+        let files = BTreeMap::from([(
+            "protocol/workflows.json".into(),
+            serde_json::to_vec(&serde_json::json!({
+                "mutations": {
+                    "test-family-set-polling-rate": {
+                        "inputs": { "rate": { "kind": "integer", "allowed": [125, 250, 500, 1000] } }
+                    },
+                    "test-family-set-polling-rate-extended": {
+                        "inputs": { "rate": { "kind": "integer", "allowed": [125, 250, 500, 1000, 2000, 4000, 8000] } }
+                    }
+                }
+            }))
+            .unwrap(),
+        )]);
+
+        let result = plugin_capabilities(
+            &inspection,
+            &outputs,
+            "usb",
+            Some(&files),
+            Some("test-family"),
+            &["set-polling-rate".into()],
+        );
+
+        assert_eq!(
+            result[0].metadata.get("options"),
+            Some(&serde_json::json!([
+                { "value": 125, "label": "125 Hz" },
+                { "value": 250, "label": "250 Hz" },
+                { "value": 500, "label": "500 Hz" },
+                { "value": 1000, "label": "1000 Hz" }
+            ]))
+        );
     }
 
     #[test]
@@ -2688,9 +3021,12 @@ mod capability_tests {
             &inspection,
             &devices,
             &device,
-            mira_core::Connection::Wireless,
-            Vec::new(),
-            None,
+            SnapshotRuntimeContext {
+                package_files: None,
+                fallback_connection: mira_core::Connection::Wireless,
+                writable_mutations: Vec::new(),
+                mutation_result: None,
+            },
         );
 
         assert_eq!(snapshot.connection, mira_core::Connection::Usb);
@@ -2709,7 +3045,7 @@ mod capability_tests {
         );
         let inspection = make_inspection(vec![cap]);
         let outputs = BTreeMap::from([("dpi".into(), serde_json::json!({"value": 0}))]);
-        let result = plugin_capabilities(&inspection, &outputs, "usb");
+        let result = plugin_capabilities(&inspection, &outputs, "usb", None, None, &[]);
         assert!(!result[0].available);
     }
 
@@ -2726,7 +3062,7 @@ mod capability_tests {
         );
         let inspection = make_inspection(vec![cap]);
         let outputs = BTreeMap::from([("dpi".into(), serde_json::json!({"value": 0.0}))]);
-        let result = plugin_capabilities(&inspection, &outputs, "usb");
+        let result = plugin_capabilities(&inspection, &outputs, "usb", None, None, &[]);
         assert!(!result[0].available);
     }
 
@@ -2742,7 +3078,7 @@ mod capability_tests {
         );
         let inspection = make_inspection(vec![cap]);
         let outputs = BTreeMap::from([("dpi".into(), serde_json::json!({"value": 1600}))]);
-        let result = plugin_capabilities(&inspection, &outputs, "usb");
+        let result = plugin_capabilities(&inspection, &outputs, "usb", None, None, &[]);
         assert!(result[0].available);
     }
 
@@ -2760,7 +3096,7 @@ mod capability_tests {
         );
         let inspection = make_inspection(vec![cap]);
         let outputs = BTreeMap::new();
-        let result = plugin_capabilities(&inspection, &outputs, "usb");
+        let result = plugin_capabilities(&inspection, &outputs, "usb", None, None, &[]);
         assert!(!result[0].available);
     }
 
@@ -2777,7 +3113,7 @@ mod capability_tests {
         );
         let inspection = make_inspection(vec![cap]);
         let outputs = BTreeMap::from([("dpi".into(), serde_json::json!({}))]);
-        let result = plugin_capabilities(&inspection, &outputs, "usb");
+        let result = plugin_capabilities(&inspection, &outputs, "usb", None, None, &[]);
         assert!(result[0].available);
     }
 
@@ -2786,7 +3122,7 @@ mod capability_tests {
         let cap = make_capability("dpi", None, None);
         let inspection = make_inspection(vec![cap]);
         let outputs = BTreeMap::new();
-        let result = plugin_capabilities(&inspection, &outputs, "usb");
+        let result = plugin_capabilities(&inspection, &outputs, "usb", None, None, &[]);
         assert!(result[0].available);
     }
 
@@ -2796,7 +3132,7 @@ mod capability_tests {
         let cap = make_capability("lighting", None, Some(vec!["receiver".into()]));
         let inspection = make_inspection(vec![cap]);
         let outputs = BTreeMap::new();
-        let result = plugin_capabilities(&inspection, &outputs, "wireless");
+        let result = plugin_capabilities(&inspection, &outputs, "wireless", None, None, &[]);
         assert!(result[0].available);
     }
 
@@ -2805,7 +3141,8 @@ mod capability_tests {
         let cap = make_capability("lighting", None, Some(vec!["receiver".into()]));
         let inspection = make_inspection(vec![cap]);
         let outputs = BTreeMap::new();
-        let result = plugin_capabilities(&inspection, &outputs, "wireless-receiver");
+        let result =
+            plugin_capabilities(&inspection, &outputs, "wireless-receiver", None, None, &[]);
         assert!(result[0].available);
     }
 
@@ -2814,7 +3151,7 @@ mod capability_tests {
         let cap = make_capability("lighting", None, Some(vec!["usb".into()]));
         let inspection = make_inspection(vec![cap]);
         let outputs = BTreeMap::new();
-        let result = plugin_capabilities(&inspection, &outputs, "wireless");
+        let result = plugin_capabilities(&inspection, &outputs, "wireless", None, None, &[]);
         assert!(!result[0].available);
     }
 
@@ -2827,7 +3164,7 @@ mod capability_tests {
         );
         let inspection = make_inspection(vec![cap]);
         let outputs = BTreeMap::new();
-        let result = plugin_capabilities(&inspection, &outputs, "usb");
+        let result = plugin_capabilities(&inspection, &outputs, "usb", None, None, &[]);
         assert!(result[0].available);
     }
 
@@ -2836,7 +3173,7 @@ mod capability_tests {
         let cap = make_capability("lighting", None, None);
         let inspection = make_inspection(vec![cap]);
         let outputs = BTreeMap::new();
-        let result = plugin_capabilities(&inspection, &outputs, "wireless");
+        let result = plugin_capabilities(&inspection, &outputs, "wireless", None, None, &[]);
         assert!(result[0].available);
     }
 }
@@ -4025,14 +4362,19 @@ fn display_name(
 /// context. When `mutation_result` is provided, its `color` field is used as a
 /// fallback for `confirmed_light_color` (write path); otherwise the reading's
 /// `light_color` is used directly (read path).
+struct SnapshotRuntimeContext<'a> {
+    package_files: Option<&'a BTreeMap<String, Vec<u8>>>,
+    fallback_connection: mira_core::Connection,
+    writable_mutations: Vec<String>,
+    mutation_result: Option<&'a serde_json::Value>,
+}
+
 fn build_device_snapshot(
     reading: DeviceReading,
     inspection: &PackageInspection,
     devices: &hid::DevicesFile,
     device: &hid::MatchedDevice,
-    fallback_connection: mira_core::Connection,
-    writable_mutations: Vec<String>,
-    mutation_result: Option<&serde_json::Value>,
+    context: SnapshotRuntimeContext<'_>,
 ) -> DeviceSnapshot {
     let resolved_name = reading.display_name.unwrap_or_else(|| {
         display_name(
@@ -4045,9 +4387,10 @@ fn build_device_snapshot(
     let resolved_connection = reading
         .connection
         .map(runtime_connection)
-        .unwrap_or(fallback_connection);
+        .unwrap_or(context.fallback_connection);
     let confirmed_light_color = reading.light_color.or_else(|| {
-        mutation_result
+        context
+            .mutation_result
             .and_then(|result| result.get("color"))
             .and_then(serde_json::Value::as_str)
             .map(str::to_string)
@@ -4061,6 +4404,9 @@ fn build_device_snapshot(
         inspection,
         &reading.capabilities,
         capability_connection_label(resolved_connection),
+        context.package_files,
+        Some(&device.family),
+        &context.writable_mutations,
     );
     DeviceSnapshot {
         display_name: resolved_name,
@@ -4076,7 +4422,7 @@ fn build_device_snapshot(
         confirmed_light_color,
         capabilities: reading.capabilities,
         plugin_capabilities,
-        writable_mutations,
+        writable_mutations: context.writable_mutations,
         evidence: device.evidence.clone(),
         readonly,
         plugin_id: Some(inspection.plugin_id.clone()),
@@ -4363,9 +4709,12 @@ fn read_device_once(app: &AppHandle) {
                         inspection,
                         devices,
                         device,
-                        connection,
-                        writable_mutations,
-                        None,
+                        SnapshotRuntimeContext {
+                            package_files: Some(plugin_files),
+                            fallback_connection: connection,
+                            writable_mutations,
+                            mutation_result: None,
+                        },
                     );
                     entries.push((device.path.clone(), snapshot));
                     // #9 记录读取时间戳，供下一轮 TTL 防抖判断。
@@ -4790,9 +5139,12 @@ fn device_mutate_blocking(
             inspection,
             devices,
             device,
-            connection,
-            allowed,
-            Some(&mutation_result),
+            SnapshotRuntimeContext {
+                package_files: Some(files),
+                fallback_connection: connection,
+                writable_mutations: allowed,
+                mutation_result: Some(&mutation_result),
+            },
         );
         (device.path.clone(), snapshot, profile_remember)
     };
@@ -5281,10 +5633,12 @@ fn focus_main(window: Option<WebviewWindow>) {
 fn apply_windows_backdrop(window: &WebviewWindow) {
     use window_vibrancy::{apply_acrylic, apply_mica};
 
-    if let Err(mica_error) = apply_mica(window, None) {
-        if let Err(acrylic_error) = apply_acrylic(window, Some((216, 176, 183, 110))) {
+    // 优先使用 Acrylic（半透明毛玻璃），匹配用户对「毛玻璃半透明」的预期；
+    // Mica 为不透明壁纸着色材质，仅作为 Acrylic 不可用时的兜底。
+    if let Err(acrylic_error) = apply_acrylic(window, Some((24, 24, 28, 120))) {
+        if let Err(mica_error) = apply_mica(window, None) {
             eprintln!(
-                "[mira] Windows backdrop unavailable: Mica: {mica_error}; Acrylic: {acrylic_error}"
+                "[mira] Windows backdrop unavailable: Acrylic: {acrylic_error}; Mica: {mica_error}"
             );
         }
     }
@@ -5908,8 +6262,10 @@ pub fn run() {
             }
 
             // Windows 11 uses Mica; Windows 10 v1809+ falls back to Acrylic.
+            // 移除系统标题栏（最小化/最大化/关闭按钮），改用前端 data-tauri-drag-region 拖拽。
             #[cfg(target_os = "windows")]
             if let Some(window) = app.get_webview_window("main") {
+                let _ = window.set_decorations(false);
                 apply_windows_backdrop(&window);
             }
 

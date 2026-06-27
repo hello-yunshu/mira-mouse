@@ -25,14 +25,14 @@ export function pluginValueFormat(value: unknown): PluginValueFormat | undefined
     : undefined;
 }
 
-/// 从 capability.metadata.range 强类型字段读取数值范围。
-/// 用于 DpiStages / Number / Slider 等需要范围约束的控件，
-/// 与 effectOptions.speed/brightness 的 RangeSpec 类型一致。
-/// 插件必须通过 metadata.range 声明范围，Host 不再硬编码 50/30000/10/65535 等回退值。
+/// 从 capability.metadata.range 或旧版顶层 min/max/step 读取数值范围。
+/// 用于 DpiStages / Number / Slider 等需要范围约束的控件；
+/// Host 只读取插件声明的范围，不硬编码设备参数。
 export function pluginRange(capability: PluginCapability): RangeSpec | undefined {
   const raw = capability.metadata.range;
-  if (!raw || typeof raw !== 'object') return undefined;
-  const range = raw as Record<string, unknown>;
+  const range = raw && typeof raw === 'object'
+    ? raw as Record<string, unknown>
+    : capability.metadata;
   if (typeof range.min !== 'number' || typeof range.max !== 'number') return undefined;
   return {
     min: range.min,
@@ -118,12 +118,15 @@ export function pluginMutations(capability: PluginCapability, writableMutations:
 /// 对于 polling-rate 能力，如果设备运行时报告了 supportedPollingRates，
 /// 优先使用设备报告的速率列表（设备能力覆盖插件静态声明）。
 export function pluginOptions(capability: PluginCapability, device?: DeviceState): PluginOption[] {
+  const declared = parsePluginOptions(capability.metadata.options).slice(0, MAX_CONTROL_OPTIONS);
   if (capability.labelKey === 'capability.polling-rate' && device?.supportedPollingRates?.length) {
-    return device.supportedPollingRates
+    const allowed = new Set(declared.map((option) => Number(option.value)));
+    const supported = device.supportedPollingRates.filter((value) => allowed.size === 0 || allowed.has(value));
+    return (supported.length ? supported : device.supportedPollingRates)
       .slice(0, MAX_CONTROL_OPTIONS)
-      .map((value) => ({ value, label: `${value} Hz` }));
+      .map((value) => declared.find((option) => option.value === value) ?? { value, label: `${value} Hz` });
   }
-  return parsePluginOptions(capability.metadata.options).slice(0, MAX_CONTROL_OPTIONS);
+  return declared;
 }
 
 /// 从 capability metadata 的强类型 effectOptions 字段读取灯效选项。

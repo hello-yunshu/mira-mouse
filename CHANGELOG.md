@@ -1,8 +1,50 @@
 <!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
 # Changelog
 
-## 0.1.0 - Unreleased
+## 0.3.0 - 2026-06-28
 
-- Added the initial brand-neutral plugin contracts, bounded workflow runtime, deterministic tooling, and capability-driven application shell.
+- Removed the Windows system title bar (minimize/maximize/close) and shipped a
+  custom `WindowsWindowControls` component (minimize + close) rendered by the
+  frontend, with matching `.windows-window-controls` styles.
+- Hid the tray battery percentage and receiver battery toggles on Windows
+  because the Windows system tray cannot render text beside the icon.
+- Added a DPI step-mismatch guard in `DpiEditModal` so the Apply button stays
+  disabled when the entered value is not on the declared step grid.
+- Surfaced a friendly "operation unavailable" notification when a mutation
+  fails with "is not available on this device", pointing users to close
+  official software (Logi Options+, G HUB, AMaster) that may hold the device.
+- Extended `plugin_capabilities` to enrich capability metadata (DPI min/max/step
+  and polling-rate `allowed` values) from `protocol/workflows.json` mutation
+  inputs, so plugins no longer need to hardcode numeric ranges in `plugin.json`.
+  New Rust unit tests cover both DPI range enrichment and Select option
+  enrichment following the current writable mutation.
+- Made `pluginRange` accept legacy top-level `min/max/step` metadata in
+  addition to the typed `metadata.range`, and made `pluginOptions` filter
+  device-reported polling rates through the plugin-declared option list while
+  preserving plugin labels.
+- Switched the Windows backdrop to Acrylic-first (translucent frosted glass)
+  with Mica as the fallback, and applied `set_decorations(false)` on Windows
+  startup to drop the system chrome.
+- Unified floating-glass styling through `--floating-glass-bg`,
+  `--floating-glass-blur`, and `--floating-glass-shadow` CSS variables across
+  tooltips, notifications, edit modals, and device detail panels; raised
+  `--glass-popup` opacity for stronger legibility.
+- Repositioned `nav-links` as an absolutely-positioned sibling of `top-nav`
+  with platform-specific right alignment (Windows: aligned to dashboard right
+  edge via `right: max(16px, calc(50% - 234px))`; macOS: fixed `right: 16px`),
+  and added `<option>` background colors for light/dark themes.
+- Hardened `prefers-reduced-transparency: reduce` to disable all backdrop
+  filters and replace glass popups with solid backgrounds.
+- Added a `Clean stale bundle outputs` step in the CI pipeline to remove
+  cached bundle artifacts before each Tauri build, preventing stale files
+  from leaking into new releases.
+- Added `#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]`
+  to suppress the command-line window on Windows release builds.
+
+## 0.2.0 - 2026-06-27
+
+- Initial public release of the brand-neutral Mira application shell with
+  declarative plugin contracts, HID++ and AMaster plugin manifests, and the
+  bounded workflow runtime.
 - No hardware compatibility or signed release is claimed.
 
