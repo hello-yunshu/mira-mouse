@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import App from './App';
 import { themeAccent } from './theme';
@@ -733,8 +733,8 @@ describe('real device snapshot mapping', () => {
           ],
           metadata: {
             label: '灯光', section: 'control', status: true,
-            mutations: { mouse: ['set-mouse-lighting-onboard', 'set-mouse-lighting'], receiver: 'set-receiver-lighting' },
-            lightingRole: { mouse: ['set-mouse-lighting-onboard', 'set-mouse-lighting'], receiver: 'set-receiver-lighting' },
+            mutations: { mouse: 'set-mouse-lighting', receiver: 'set-receiver-lighting' },
+            lightingRole: { mouse: 'set-mouse-lighting', receiver: 'set-receiver-lighting' },
             effectOptions: {
               offValue: 0,
               effect: [
@@ -759,7 +759,7 @@ describe('real device snapshot mapping', () => {
     invokeMock.mockImplementation((command: string, args?: { mutation?: string; params?: Record<string, unknown> }) => {
       if (command === 'settings_get') return Promise.resolve(settings);
       if (command === 'device_snapshot') return Promise.resolve(hidppSnapshot);
-      if (command === 'device_mutate' && args?.mutation === 'set-mouse-lighting-onboard') {
+      if (command === 'device_mutate' && args?.mutation === 'set-mouse-lighting') {
         const caps = hidppSnapshot.capabilities ?? {};
         return Promise.resolve({
           ...hidppSnapshot,
@@ -813,10 +813,10 @@ describe('real device snapshot mapping', () => {
 
     // Verify full params (effect/speed/brightness/color/extraColor) are submitted
     // extraColor defaults to #000000 when device hasn't reported it (non-starlight effect)
-    // lightingRole.mouse is declared as ['set-mouse-lighting-onboard', 'set-mouse-lighting'];
-    // UI must pick the first candidate ('set-mouse-lighting-onboard') since it is writable.
+    // lightingRole.mouse uses the unified direct/memory mutation. Even if an older
+    // snapshot still lists the narrow onboard mutation, the UI should not pick it.
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('device_mutate', {
-      mutation: 'set-mouse-lighting-onboard',
+      mutation: 'set-mouse-lighting',
       params: { color: '#b87ab0', enabled: true, effect: 4, speed: 128, brightness: 50, extraColor: '#000000' },
     }));
   });
@@ -862,14 +862,80 @@ describe('real device snapshot mapping', () => {
     expect(screen.getByRole('button', { name: /状态/ }).parentElement).toHaveStyle({ gridTemplateColumns: 'repeat(3, minmax(0, 1fr))' });
   });
 
+  it('restores mouse lighting with a currently supported non-off effect', async () => {
+    const supportedOnlySnapshot: DeviceSnapshot = {
+      displayName: 'Supported Effect Mouse',
+      connection: 'wireless',
+      charging: false,
+      batteries: [],
+      capabilities: {
+        mouseLighting: { effect: 0, color: '#336699', enabled: false, supportedEffects: [0, 3] },
+      },
+      pluginCapabilities: [
+        {
+          id: 'mouse-lighting', control: 'LightingZone', labelKey: 'capability.mouse-lighting', readOnly: false,
+          placements: [{ region: 'control', group: 'lighting', order: 30, span: 1, icon: 'lightbulb' }],
+          metadata: {
+            label: '灯光', section: 'control',
+            lightingRole: { mouse: 'set-mouse-lighting' },
+            effectOptions: {
+              offValue: 0,
+              effect: [
+                { value: 0, labelKey: 'lighting.off' },
+                { value: 1, labelKey: 'lighting.fixed' },
+                { value: 3, labelKey: 'lighting.cycle' },
+              ],
+            },
+          },
+        },
+      ],
+      writableMutations: ['set-mouse-lighting'],
+      evidence: 'hardware-verified',
+    };
+    invokeMock.mockImplementation((command: string, args?: { mutation?: string; params?: Record<string, unknown> }) => {
+      if (command === 'settings_get') return Promise.resolve(settings);
+      if (command === 'device_snapshot') return Promise.resolve(supportedOnlySnapshot);
+      if (command === 'device_mutate' && args?.mutation === 'set-mouse-lighting') {
+        return Promise.resolve({
+          ...supportedOnlySnapshot,
+          capabilities: {
+            ...(supportedOnlySnapshot.capabilities ?? {}),
+            mouseLighting: {
+              ...(supportedOnlySnapshot.capabilities?.mouseLighting ?? {}),
+              effect: args.params?.effect as number,
+              enabled: args.params?.enabled as boolean,
+            },
+          },
+        });
+      }
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+
+    const view = render(<App />);
+    const current = within(view.container);
+    expect(await current.findByText('Supported Effect Mouse')).toBeInTheDocument();
+    fireEvent.click(current.getByRole('tab', { name: '灯光' }));
+    invokeMock.mockClear();
+    const statusButtons = current.getAllByRole('button', { name: /状态/ });
+    fireEvent.click(statusButtons[statusButtons.length - 1]);
+
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('device_mutate', {
+      mutation: 'set-mouse-lighting',
+      params: { color: '#336699', enabled: true, effect: 3, speed: 0, brightness: 100, extraColor: '#000000' },
+    }));
+  });
+
   it('shows HID++ mouse lighting as off when RGB control is explicitly disabled', async () => {
+    // 当 RGB 控制显式关闭时，effect 字段也应为 offValue(0)，二者一致表示关闭。
+    // 若 enabled=false 但 effect!=offValue（板载模式 host 控制关闭但 profile 灯效仍存在），
+    // mouseLightingOnState 会优先基于 effect 判定为开启，以匹配设备真实灯效。
     const disabledLightingSnapshot: DeviceSnapshot = {
       displayName: 'Disabled HID++ Light Mouse',
       connection: 'wireless',
       charging: false,
       batteries: [],
       capabilities: {
-        mouseLighting: { effect: 1, color: '#004d65', enabled: false, effectName: '常亮' },
+        mouseLighting: { effect: 0, color: '#004d65', enabled: false },
       },
       pluginCapabilities: [
         {

@@ -2,7 +2,7 @@
 use crate::engine::ProtocolPackage;
 use hidapi::HidApi;
 use serde_json::{json, Map, Value};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Mutex;
 
 /// Feature index 缓存：按设备路径索引，存储 featureId → 完整 parsed output 映射。
@@ -410,7 +410,8 @@ fn normalized_mouse_lighting(
     outputs: &BTreeMap<String, Value>,
     plugin_capabilities: Option<&Value>,
 ) -> Option<serde_json::Map<String, Value>> {
-    if let Some(onboard) = onboard_mouse_lighting(outputs, plugin_capabilities) {
+    if let Some(mut onboard) = onboard_mouse_lighting(outputs, plugin_capabilities) {
+        append_supported_lighting_effects(outputs, &mut onboard);
         return Some(onboard);
     }
     let settings = object(outputs, "settings");
@@ -453,7 +454,40 @@ fn normalized_mouse_lighting(
         copy_field(mode, &mut lighting, "brightness");
         copy_field(mode, &mut lighting, "brightnessLabel");
     }
+    append_supported_lighting_effects(outputs, &mut lighting);
     Some(lighting)
+}
+
+fn append_supported_lighting_effects(
+    outputs: &BTreeMap<String, Value>,
+    lighting: &mut serde_json::Map<String, Value>,
+) {
+    let mut effects = BTreeSet::from([0_u64]);
+    let mut saw_supports = false;
+    for info in ["colorLedInfo", "rgbEffectsInfo"]
+        .iter()
+        .filter_map(|key| object(outputs, key))
+    {
+        for (field, value) in [
+            ("supportsFixed", 1_u64),
+            ("supportsCycle", 3),
+            ("supportsWave", 4),
+            ("supportsStarlight", 5),
+            ("supportsBreathing", 10),
+            ("supportsRipple", 11),
+            ("supportsCustom", 12),
+        ] {
+            if let Some(supported) = boolean_like(info, field) {
+                saw_supports = true;
+                if supported {
+                    effects.insert(value);
+                }
+            }
+        }
+    }
+    if saw_supports {
+        lighting.insert("supportedEffects".into(), json!(effects));
+    }
 }
 
 fn onboard_mouse_lighting(
@@ -954,6 +988,10 @@ mod tests {
             json!({"profileFormatId": 5, "sectorSize": 255}),
         )]);
         outputs.insert("rgbControl".into(), json!({"enabled": false}));
+        outputs.insert(
+            "rgbEffectsInfo".into(),
+            json!({"supportsFixed": false, "supportsCycle": false, "supportsWave": true}),
+        );
         for index in 0..16 {
             let mut chunk = vec![0; 16];
             if index == 13 {
@@ -1014,6 +1052,36 @@ mod tests {
             mouse.get("extraColor").and_then(Value::as_str),
             Some("#123456")
         );
+        assert_eq!(mouse.get("supportedEffects"), Some(&json!([0, 4])));
+    }
+
+    #[test]
+    fn normalizes_supported_lighting_effects_from_feature_info() {
+        let outputs = BTreeMap::from([
+            (
+                "mouseEffect".into(),
+                json!({"effect": 10, "color": "#123456", "enabled": true}),
+            ),
+            (
+                "colorLedInfo".into(),
+                json!({
+                    "supportsFixed": true,
+                    "supportsCycle": false,
+                    "supportsWave": true,
+                    "supportsStarlight": false,
+                    "supportsBreathing": true,
+                    "supportsRipple": false,
+                    "supportsCustom": false
+                }),
+            ),
+        ]);
+        let reading = standard_reading(outputs, None);
+        let mouse = reading
+            .capabilities
+            .get("mouseLighting")
+            .and_then(Value::as_object)
+            .unwrap();
+        assert_eq!(mouse.get("supportedEffects"), Some(&json!([0, 1, 4, 10])));
     }
 
     #[test]
