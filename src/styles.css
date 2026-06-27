@@ -8,11 +8,14 @@
   --panel: rgb(255 255 255 / 12%);
   --panel-border: rgb(255 255 255 / 32%);
   --panel-highlight: rgb(255 255 255 / 38%);
-  --glass-popup: rgb(247 244 250 / 24%);
+  --glass-popup: rgb(247 244 250 / 34%);
   --glass-blur: blur(28px) saturate(175%);
   --window-tint: rgb(255 255 255 / 4%);
   --muted: #6d6878;
   --glass-shadow: 0 8px 32px rgb(47 39 60 / 10%), inset 0 1px 0 rgb(255 255 255 / 30%);
+  --floating-glass-bg: var(--glass-popup);
+  --floating-glass-blur: var(--glass-blur);
+  --floating-glass-shadow: var(--glass-shadow), 0 18px 48px rgb(42 35 52 / 16%);
   --bg-blob-1: oklch(78% .06 290);
   --bg-blob-2: oklch(80% .05 200);
   --bg-blob-3: oklch(75% .04 350);
@@ -23,10 +26,11 @@
   --panel: rgb(40 37 48 / 16%);
   --panel-border: rgb(255 255 255 / 10%);
   --panel-highlight: rgb(255 255 255 / 12%);
-  --glass-popup: rgb(35 32 43 / 30%);
+  --glass-popup: rgb(35 32 43 / 42%);
   --window-tint: rgb(16 14 22 / 18%);
   --muted: #b9b1c2;
   --glass-shadow: 0 8px 32px rgb(0 0 0 / 22%), inset 0 1px 0 rgb(255 255 255 / 6%);
+  --floating-glass-shadow: var(--glass-shadow), 0 18px 48px rgb(0 0 0 / 20%);
   --bg-blob-1: oklch(40% .05 290);
   --bg-blob-2: oklch(42% .04 200);
   --bg-blob-3: oklch(38% .04 350);
@@ -38,10 +42,11 @@
     --panel: rgb(40 37 48 / 16%);
     --panel-border: rgb(255 255 255 / 10%);
     --panel-highlight: rgb(255 255 255 / 12%);
-    --glass-popup: rgb(35 32 43 / 30%);
+    --glass-popup: rgb(35 32 43 / 42%);
     --window-tint: rgb(16 14 22 / 18%);
     --muted: #b9b1c2;
     --glass-shadow: 0 8px 32px rgb(0 0 0 / 22%), inset 0 1px 0 rgb(255 255 255 / 6%);
+    --floating-glass-shadow: var(--glass-shadow), 0 18px 48px rgb(0 0 0 / 20%);
     --bg-blob-1: oklch(40% .05 290);
     --bg-blob-2: oklch(42% .04 200);
     --bg-blob-3: oklch(38% .04 350);
@@ -66,7 +71,7 @@ body {
   transition: background-color 380ms ease;
 }
 
-button, select { font: inherit; }
+button, select, option { font: inherit; }
 button {
   border: 0;
   border-radius: 999px;
@@ -87,24 +92,27 @@ button:focus-visible, select:focus-visible, .tooltip:focus-visible {
 
 /* Layout shell — 紧凑竖向 */
 .app-shell {
+  position: relative; /* 为 nav-links 绝对定位提供基准 */
   height: 100%;
   overflow: hidden;
   padding: 12px 16px;
   display: flex;
   flex-direction: column;
   background: var(--window-tint);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
   transition: background-color 220ms ease, color 220ms ease;
 }
+.app-shell.platform-macos:not(.web-preview),
+.app-shell.platform-windows:not(.web-preview) {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
 .top-nav {
-  width: 100%;
-  max-width: 480px;
+  /* 仅作为窗口拖拽区域，不再容纳 nav-links（已外置为绝对定位） */
   flex: 0 0 38px;
   min-height: 38px;
-  margin: 0 auto 4px;
-  padding-left: 78px; /* 为 macOS 交通灯留出空间 */
-  display: flex;
-  justify-content: flex-end;
-  align-items: center;
+  margin: 0 0 4px;
   -webkit-user-select: none;
   user-select: none;
 }
@@ -124,9 +132,23 @@ select {
   color: inherit;
   font-size: 12px;
 }
+option {
+  background: rgb(247 244 250);
+  color: #282631;
+}
+:root[data-theme="dark"] option {
+  background: rgb(35 32 43);
+  color: #f2eff6;
+}
+@media (prefers-color-scheme: dark) {
+  :root[data-theme="system"] option {
+    background: rgb(35 32 43);
+    color: #f2eff6;
+  }
+}
 
 /* Empty state */
-.empty, .dashboard { max-width: 468px; margin: 0 auto; }
+.empty, .dashboard { width: 100%; max-width: 468px; margin: 0 auto; }
 .empty { text-align: center; max-width: 420px; display: flex; flex-direction: column; justify-content: center; flex: 1; gap: 4px; padding-bottom: 60px; }
 .empty h1, header h1 {
   font-size: clamp(22px, 4vw, 30px);
@@ -172,55 +194,38 @@ select {
 }
 
 /* ===== Windows 平台布局适配 ===== */
-/* 窗口控件在右上角；top-nav 绝对定位使 nav-links 下移至 app-title 中心水平线 */
-.app-shell.platform-windows {
-  padding-top: 90px; /* 40px 窗口控件 + top-nav 区域 */
-  position: relative;
-}
-.platform-windows .top-nav {
-  position: absolute;
-  top: 30px;
-  left: 16px;
-  right: 16px;
-  max-width: 480px;
-  margin: 0 auto;
-  flex: none;
-  min-height: 0;
-  height: 49px;
-  align-items: flex-start; /* nav-links 顶部对齐 app-title 顶部 */
-  justify-content: flex-end; /* nav-links 右对齐 */
-  padding-left: 0;
-  padding-top: 18px; /* nav-links top = 40 + 18 = 58，与 app-title top 对齐 */
-  z-index: 5;
-}
-/* dashboard 上移填补 top-nav 绝对定位留下的空隙 */
-.platform-windows .dashboard {
-  margin-top: -45px;
-  padding-top: 18px; /* device-hero 起始位置与 macOS 一致 */
-}
-/* device-hero 高度使 app-title 与 device-copy 间距匹配 macOS（约 19px） */
+/* 实际 Windows 应用和 web 预览共用同一布局（已移除系统标题栏） */
+/* 共享的 Windows 设计选择（不依赖标题栏） */
 .platform-windows .device-hero {
   min-height: 206px;
 }
-/* app-title 左对齐，与 device-copy 文本开头对齐（left:32px 匹配 device-copy 的 padding-left） */
+/* Windows 下 app-title 定位 */
 .platform-windows .device-column .app-title {
-  top: -7px;
-  left: 40px;
+  top: 0px;
+  left: 15px;
   text-align: left;
 }
+/* Windows 下 nav-links 右边缘对齐 dashboard 右边缘（dashboard max-width 468px 居中）：
+ * right = max(16px, 50% - 234px)，其中 50% 为 app-shell padding box 宽度，234 = 468/2
+ * nav-links 抬高 10px（从 top:44px → 34px），使下方多出 10px 真实空白区 */
+.platform-windows .nav-links {
+  right: max(16px, calc(50% - 234px));
+  top: 34px;
+  height: auto; /* 使用自然高度，让 bottom 与 app-title 底部对齐 */
+}
 
-/* Windows 窗口预览控件（仅 web 预览用，模拟原生最小化/最大化/关闭） */
+/* Windows 窗口预览控件（仅 web 预览用，模拟原生最小化/关闭） */
 .windows-preview-controls {
   position: absolute;
   top: 0;
   right: 0;
   display: flex;
-  height: 40px;
+  height: 33px; /* 38px - 5px，下方多出 5px 空隙 */
   z-index: 10;
 }
 .windows-preview-controls button {
-  width: 46px;
-  height: 40px;
+  width: 36px;
+  height: 33px; /* 与容器同高，下方多出 5px 空隙 */
   padding: 0;
   display: grid;
   place-items: center;
@@ -248,6 +253,49 @@ select {
   color: #fff;
 }
 .windows-preview-controls svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* Windows 实际窗口控制按钮（最小化 + 关闭） */
+.windows-window-controls {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: flex;
+  height: 33px; /* 38px - 5px，下方多出 5px 空隙 */
+  z-index: 10;
+}
+.windows-window-controls button {
+  width: 36px;
+  height: 33px; /* 与容器同高，下方多出 5px 空隙 */
+  padding: 0;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background .12s ease, color .12s ease;
+}
+.windows-window-controls button:hover {
+  background: rgb(127 120 140 / 12%);
+  color: inherit;
+}
+.windows-window-controls button:active {
+  background: rgb(127 120 140 / 20%);
+}
+.windows-window-controls .windows-close:hover {
+  background: #e81123;
+  color: #fff;
+}
+.windows-window-controls .windows-close:active {
+  background: #f1707a;
+  color: #fff;
+}
+.windows-window-controls svg {
   width: 14px;
   height: 14px;
 }
@@ -314,10 +362,10 @@ select {
   padding: 9px 11px;
   border: 1px solid var(--panel-border);
   border-radius: 13px;
-  background: var(--glass-popup);
-  -webkit-backdrop-filter: var(--glass-blur);
-  backdrop-filter: var(--glass-blur);
-  box-shadow: 0 16px 42px rgb(42 35 52 / 20%);
+  background: var(--floating-glass-bg);
+  -webkit-backdrop-filter: var(--floating-glass-blur);
+  backdrop-filter: var(--floating-glass-blur);
+  box-shadow: var(--floating-glass-shadow);
   opacity: 0;
   visibility: hidden;
   transform: translateY(-3px);
@@ -351,42 +399,36 @@ select {
   gap: 12px;
   border: 1px solid var(--panel-border);
   border-radius: 14px;
-  background: var(--glass-popup);
-  -webkit-backdrop-filter: var(--glass-blur);
-  backdrop-filter: var(--glass-blur);
-  box-shadow: 0 18px 44px rgb(42 35 52 / 20%);
+  background: var(--floating-glass-bg);
+  -webkit-backdrop-filter: var(--floating-glass-blur);
+  backdrop-filter: var(--floating-glass-blur);
+  box-shadow: var(--floating-glass-shadow);
 }
 .app-notification.error {
   border-color: rgb(190 76 90 / 24%);
-  background: linear-gradient(135deg, rgb(255 235 239 / 72%), rgb(255 255 255 / 56%));
-  box-shadow: 0 18px 44px rgb(150 55 72 / 20%), 0 5px 18px rgb(190 76 90 / 10%);
+  box-shadow: var(--floating-glass-shadow), 0 5px 18px rgb(190 76 90 / 10%);
 }
 .app-notification.success {
   border-color: rgb(78 148 104 / 24%);
-  background: linear-gradient(135deg, rgb(231 250 239 / 72%), rgb(255 255 255 / 56%));
-  box-shadow: 0 18px 44px rgb(54 128 84 / 18%), 0 5px 18px rgb(78 148 104 / 10%);
+  box-shadow: var(--floating-glass-shadow), 0 5px 18px rgb(78 148 104 / 10%);
 }
-.app-notification.info { box-shadow: 0 18px 44px color-mix(in oklch, var(--accent), transparent 82%); }
+.app-notification.info { box-shadow: var(--floating-glass-shadow), 0 5px 18px color-mix(in oklch, var(--accent), transparent 82%); }
 :root[data-theme="dark"] .app-notification.error {
   border-color: rgb(190 76 90 / 24%);
-  background: linear-gradient(135deg, rgb(96 38 50 / 62%), rgb(32 28 37 / 64%));
-  box-shadow: 0 18px 44px rgb(80 18 34 / 32%), 0 5px 18px rgb(190 76 90 / 14%);
+  box-shadow: var(--floating-glass-shadow), 0 5px 18px rgb(190 76 90 / 14%);
 }
 :root[data-theme="dark"] .app-notification.success {
   border-color: rgb(78 148 104 / 24%);
-  background: linear-gradient(135deg, rgb(34 82 54 / 62%), rgb(32 28 37 / 64%));
-  box-shadow: 0 18px 44px rgb(20 74 44 / 30%), 0 5px 18px rgb(78 148 104 / 14%);
+  box-shadow: var(--floating-glass-shadow), 0 5px 18px rgb(78 148 104 / 14%);
 }
 @media (prefers-color-scheme: dark) {
   :root[data-theme="system"] .app-notification.error {
     border-color: rgb(190 76 90 / 24%);
-    background: linear-gradient(135deg, rgb(96 38 50 / 62%), rgb(32 28 37 / 64%));
-    box-shadow: 0 18px 44px rgb(80 18 34 / 32%), 0 5px 18px rgb(190 76 90 / 14%);
+    box-shadow: var(--floating-glass-shadow), 0 5px 18px rgb(190 76 90 / 14%);
   }
   :root[data-theme="system"] .app-notification.success {
     border-color: rgb(78 148 104 / 24%);
-    background: linear-gradient(135deg, rgb(34 82 54 / 62%), rgb(32 28 37 / 64%));
-    box-shadow: 0 18px 44px rgb(20 74 44 / 30%), 0 5px 18px rgb(78 148 104 / 14%);
+    box-shadow: var(--floating-glass-shadow), 0 5px 18px rgb(78 148 104 / 14%);
   }
 }
 .app-notification > div { min-width: 0; }
@@ -923,10 +965,10 @@ select {
   border: 1px solid var(--panel-border);
   border-radius: 16px;
   padding: 12px;
-  background: var(--glass-popup);
-  -webkit-backdrop-filter: blur(28px) saturate(175%);
-  backdrop-filter: blur(28px) saturate(175%);
-  box-shadow: var(--glass-shadow), 0 18px 48px rgb(42 35 52 / 16%);
+  background: var(--floating-glass-bg);
+  -webkit-backdrop-filter: var(--floating-glass-blur);
+  backdrop-filter: var(--floating-glass-blur);
+  box-shadow: var(--floating-glass-shadow);
 }
 .edit-modal > header { margin-bottom: 9px; padding: 0 2px; }
 .edit-modal > header h3 { margin: 0; font-size: 13px; font-weight: 680; letter-spacing: -.01em; }
@@ -1114,10 +1156,10 @@ select {
   border: 1px solid var(--panel-border);
   border-radius: 22px;
   padding: 15px;
-  background: var(--glass-popup);
-  -webkit-backdrop-filter: var(--glass-blur);
-  backdrop-filter: var(--glass-blur);
-  box-shadow: 0 16px 42px rgb(42 35 52 / 20%);
+  background: var(--floating-glass-bg);
+  -webkit-backdrop-filter: var(--floating-glass-blur);
+  backdrop-filter: var(--floating-glass-blur);
+  box-shadow: var(--floating-glass-shadow);
 }
 .device-details > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .device-details > header h2 { margin-top: 2px; font-size: 18px; }
@@ -1169,7 +1211,7 @@ h2 { margin: 2px 0 0; letter-spacing: -.02em; font-size: 16px; }
   line-height: 1.45;
   -webkit-backdrop-filter: blur(28px) saturate(175%);
   backdrop-filter: blur(28px) saturate(175%);
-  box-shadow: var(--glass-shadow), 0 18px 48px rgb(42 35 52 / 16%);
+  box-shadow: var(--floating-glass-shadow);
   opacity: 0;
   transform: translateY(4px);
   transition: opacity .12s ease, transform .12s ease;
@@ -1189,7 +1231,16 @@ h2 { margin: 2px 0 0; letter-spacing: -.02em; font-size: 16px; }
 }
 
 /* Navigation */
-.nav-links { display: flex; align-items: center; gap: 4px; }
+.nav-links {
+  position: absolute;
+  top: 12px; /* 与 app-shell padding-top 对齐，垂直居中于 top-nav(38px) 区域 */
+  right: 16px; /* macOS：右边缘固定在窗口右边 16px（app-shell padding-right） */
+  height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  z-index: 5;
+}
 .nav-link { color: var(--muted); background: transparent; padding: 5px 12px; font-size: 13px; border-radius: 999px; }
 .nav-link:hover:not(.active) { color: inherit; background: rgb(127 120 140 / 8%); }
 .nav-link.active { color: inherit; background: var(--panel); border: 1px solid var(--panel-border); }
@@ -1369,6 +1420,8 @@ input[type="time"] { border: 1px solid var(--panel-border); border-radius: 8px; 
 /* Responsive — 竖向窄屏适配 */
 @media (max-width: 440px) {
   .app-shell { padding: 10px 12px; }
+  /* 窄屏下 app-shell 水平 padding 为 12px，Windows nav-links 右边缘需相应调整以对齐 dashboard 右边缘 */
+  .platform-windows .nav-links { right: max(12px, calc(50% - 234px)); top: 32px; }
   .device-hero { grid-template-columns: minmax(0, 1fr) 175px; min-height: 170px; }
   .device-copy { padding-left: 6px; }
   .device-column .app-title { left: 6px; width: min(180px, calc(100% - 6px)); }
@@ -1401,8 +1454,34 @@ input[type="time"] { border: 1px solid var(--panel-border); border-radius: 8px; 
   .aura-star { animation: none !important; opacity: .4 !important; }
 }
 @media (prefers-reduced-transparency: reduce) {
-  :root { --panel: #f7f5f8; }
-  :root[data-theme="dark"] { --panel: #302d35; }
-  :root[data-theme="system"] { --panel: #f7f5f8; }
-  @media (prefers-color-scheme: dark) { :root[data-theme="system"] { --panel: #302d35; } }
+  :root {
+    --panel: #f7f5f8;
+    --glass-popup: rgb(247 245 248 / 96%);
+    --glass-blur: none;
+    --window-tint: #f7f5f8;
+  }
+  :root[data-theme="dark"] {
+    --panel: #302d35;
+    --glass-popup: rgb(48 45 53 / 96%);
+    --window-tint: #1d1a22;
+  }
+  :root[data-theme="system"] {
+    --panel: #f7f5f8;
+    --glass-popup: rgb(247 245 248 / 96%);
+    --window-tint: #f7f5f8;
+  }
+  *, *::before, *::after {
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+  }
+  .tooltip-content {
+    background: var(--glass-popup);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root[data-theme="system"] {
+      --panel: #302d35;
+      --glass-popup: rgb(48 45 53 / 96%);
+      --window-tint: #1d1a22;
+    }
+  }
 }

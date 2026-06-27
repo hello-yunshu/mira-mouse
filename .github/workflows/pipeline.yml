@@ -112,6 +112,10 @@ jobs:
             cargo-bundle-${{ runner.os }}-${{ matrix.target }}-
             cargo-bundle-${{ runner.os }}-
       - run: cargo run --package xtask -- plugins sync --locked
+      - name: Clean stale bundle outputs
+        # 清掉 cargo cache 里残留的旧版本 bundle 产物，避免旧版本文件被 upload-artifact 的 glob 命中后混入新 release
+        shell: bash
+        run: find target -type d -name bundle -exec rm -rf {} + 2>/dev/null || true
       - name: Build Tauri bundle
         shell: bash
         env:
