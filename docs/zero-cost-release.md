@@ -89,7 +89,7 @@ The `Plugin Release` workflow will:
 
 ## 5. Release the application
 
-1. Ensure `plugins.lock.json` is `releaseReady: true` for every plugin marked `bundleByDefault: true`. Until `mira.amaster` has real release metadata, the gate will block.
+1. Ensure `plugins.lock.json` is `releaseReady: true` for every plugin marked `bundleByDefault: true`. Plugin SHA-256 entries are generated from the plugin release assets; do not edit them manually. Use `cargo run --package xtask -- plugins check-lock` to verify the lock, or `cargo run --package xtask -- plugins update-lock --release-tag <release-tag>` to refresh it from a plugin release.
 2. Push a tag in the main repository:
 
    ```bash
