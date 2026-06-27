@@ -5615,9 +5615,8 @@ fn export_diagnostics(app: tauri::AppHandle) -> Result<serde_json::Value, String
 
 fn focus_main(window: Option<WebviewWindow>) {
     if let Some(window) = window {
-        let _ = window.show();
-        let _ = window.set_focus();
-        // macOS: 从托盘恢复窗口时，重新显示 Dock 图标。
+        // macOS: 先恢复 Regular 激活策略，再 show/set_focus。
+        // 顺序很重要：Accessory 状态下 show 的窗口无法获取焦点。
         #[cfg(target_os = "macos")]
         {
             use tauri::ActivationPolicy;
@@ -5625,6 +5624,9 @@ fn focus_main(window: Option<WebviewWindow>) {
                 .app_handle()
                 .set_activation_policy(ActivationPolicy::Regular);
         }
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
     }
 }
 
@@ -6205,15 +6207,22 @@ fn build_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             }
         })
         .on_tray_icon_event(|tray, event| {
-            if let tauri::tray::TrayIconEvent::Click {
-                button: tauri::tray::MouseButton::Left,
-                button_state: tauri::tray::MouseButtonState::Up,
-                ..
-            } = event
-            {
-                let app = tray.app_handle();
-                focus_main(app.get_webview_window("main"));
-                request_refresh(&app.state::<SessionState>());
+            match event {
+                // Windows 习惯双击托盘图标打开程序
+                tauri::tray::TrayIconEvent::DoubleClick {
+                    button: tauri::tray::MouseButton::Left,
+                    ..
+                }
+                | tauri::tray::TrayIconEvent::Click {
+                    button: tauri::tray::MouseButton::Left,
+                    button_state: tauri::tray::MouseButtonState::Up,
+                    ..
+                } => {
+                    let app = tray.app_handle();
+                    focus_main(app.get_webview_window("main"));
+                    request_refresh(&app.state::<SessionState>());
+                }
+                _ => {}
             }
         })
         .tooltip("Mira · 未连接受支持的鼠标")
@@ -6432,6 +6441,14 @@ pub fn run() {
             export_diagnostics,
             plugin_locales
         ])
-        .run(tauri::generate_context!())
-        .expect("Mira application runtime failed");
+        .build(tauri::generate_context!())
+        .expect("Mira application runtime failed")
+        .run(|app_handle, event| {
+            // macOS: 用户点击 Dock 图标时恢复窗口（窗口被隐藏到托盘后，
+            // Dock 图标在 Accessory 策略下不可见，但 Regular 状态下仍可点击）。
+            if let tauri::RunEvent::Reopen { .. } = event {
+                focus_main(app_handle.get_webview_window("main"));
+                request_refresh(&app_handle.state::<SessionState>());
+            }
+        });
 }
