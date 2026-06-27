@@ -21,7 +21,7 @@ describe('Mira shell', () => {
     window.history.pushState({}, '', '?platform=windows');
     render(<App />);
     expect(screen.getByRole('button', { name: '最小化窗口' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '最大化窗口' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '最大化窗口' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: '关闭窗口' })).toBeInTheDocument();
     window.history.pushState({}, '', '/');
   });

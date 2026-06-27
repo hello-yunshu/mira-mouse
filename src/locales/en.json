@@ -253,7 +253,8 @@
     },
     "trayBattery": {
       "label": "Show battery percentage",
-      "hint": "The mouse icon still fills by battery level; this only controls the number beside it"
+      "hint": "The mouse icon still fills by battery level; this only controls the number beside it",
+      "disabledHint": "Windows system tray doesn't support showing text beside the icon"
     },
     "trayIconColor": {
       "label": "Tray icon color",
@@ -436,6 +437,8 @@
     "saveFailed": "Save failed",
     "writeFailed": "Write failed",
     "writeFailedBody": "The UI retained the device's real state: {{error}}",
+    "mutationUnavailable": "Operation unavailable",
+    "mutationUnavailableBody": "Official software (Logi Options+, G HUB, AMaster) may be holding the device. Close it and retry.",
     "exportFailed": "Export failed",
     "exportSuccess": "Export succeeded",
     "exportSuccessBody": "Config saved to {{path}}",

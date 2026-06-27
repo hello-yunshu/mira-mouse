@@ -12,7 +12,6 @@ import {
   Minus,
   ReadCvLogo,
   SignOut,
-  Square,
   Timer,
   UserCircle,
   WaveSine,
@@ -78,8 +77,17 @@ function WindowsPreviewControls() {
   return (
     <div className="windows-preview-controls" aria-label={t('dashboard.windowsControls')}>
       <button type="button" aria-label={t('dashboard.minimizeWindow')}><Minus weight="regular" /></button>
-      <button type="button" aria-label={t('dashboard.maximizeWindow')}><Square weight="regular" /></button>
       <button type="button" className="windows-close" aria-label={t('dashboard.closeWindow')}><X weight="regular" /></button>
+    </div>
+  );
+}
+
+function WindowsWindowControls() {
+  const { t } = useTranslation();
+  return (
+    <div className="windows-window-controls" aria-label={t('dashboard.windowsControls')}>
+      <button type="button" aria-label={t('dashboard.minimizeWindow')} onClick={() => getCurrentWindow().minimize()}><Minus weight="regular" /></button>
+      <button type="button" className="windows-close" aria-label={t('dashboard.closeWindow')} onClick={() => getCurrentWindow().hide()}><X weight="regular" /></button>
     </div>
   );
 }
@@ -786,10 +794,13 @@ interface DpiEditModalProps {
 function DpiEditModal({ stage, currentValue, range, writeBusy, onClose, onApply }: DpiEditModalProps) {
   const [draft, setDraft] = useState(currentValue);
   const outOfRange = range ? draft < range.min || draft > range.max : false;
+  const stepMismatch = range?.step
+    ? Math.abs((draft - range.min) / range.step - Math.round((draft - range.min) / range.step)) > Number.EPSILON
+    : false;
   return (
     <EditModal
       title={i18n.t('dashboard.editStageDpi', { stage })}
-      submitDisabled={writeBusy || outOfRange || draft === currentValue}
+      submitDisabled={writeBusy || outOfRange || stepMismatch || draft === currentValue}
       onClose={onClose}
       onSubmit={() => onApply(draft)}
     >
@@ -1202,7 +1213,17 @@ function Dashboard({
       notifySuccess(i18n.t('dashboard.writeConfirmed'));
     } catch (error) {
       setPreviewMessage('');
-      notifyError(i18n.t('notification.writeFailed'), i18n.t('notification.writeFailedBody', { error: String(error) }));
+      const errorString = String(error);
+      // 设备层面拒绝（featureIndex=0 等）：通常是官方配置工具独占 HID 设备，
+      // 导致 Mira 查询 feature 时收到 0 响应。跨平台提示用户关闭官方软件。
+      if (errorString.includes('is not available on this device')) {
+        notifyError(
+          i18n.t('notification.mutationUnavailable'),
+          i18n.t('notification.mutationUnavailableBody'),
+        );
+      } else {
+        notifyError(i18n.t('notification.writeFailed'), i18n.t('notification.writeFailedBody', { error: errorString }));
+      }
       // 写入失败后设备的实际可用 mutation 集合可能与界面缓存的 writableMutations
       // 不一致（例如 read_device_once 读取时设备处于板载模式，但调用写入时设备
       // 已切换到 host 模式，set-mouse-lighting-onboard 被守门拒绝）。这里主动
@@ -1932,14 +1953,14 @@ export default function App() {
 
   return <div className={`app-shell ${pureWeb ? 'web-preview' : ''} ${windowsPlatform ? 'platform-windows' : ''} ${macPlatform ? 'platform-macos' : ''} ${windowsWebPreview ? 'windows-web-preview' : ''}`}>
     {windowsWebPreview && <WindowsPreviewControls />}
-    <nav className="top-nav" data-tauri-drag-region>
-      <div className="nav-links">
-        <button className={`nav-link ${view === 'dashboard' ? 'active' : ''}`} onClick={() => setView('dashboard')}>{t('nav.dashboard')}</button>
-        <button className={`nav-link ${view === 'settings' ? 'active' : ''}`} onClick={() => setView('settings')}>{t('nav.settings')}</button>
-        <button className={`nav-link nav-about ${view === 'about' ? 'active' : ''}`} onClick={() => setView('about')} aria-label={t('nav.about')}><Info weight="regular" /></button>
-        {demoMode && <button className="nav-link nav-exit" onClick={() => { setDemoMode(false); setDevice(undefined); setRefreshNonce((value) => value + 1); invoke('device_refresh').catch(() => {}); }} aria-label={t('nav.exitDemo')} title={t('nav.exitDemo')}><SignOut weight="regular" /></button>}
-      </div>
-    </nav>
+    {windowsPlatform && !windowsWebPreview && !pureWeb && <WindowsWindowControls />}
+    <nav className="top-nav" data-tauri-drag-region />
+    <div className="nav-links">
+      <button className={`nav-link ${view === 'dashboard' ? 'active' : ''}`} onClick={() => setView('dashboard')}>{t('nav.dashboard')}</button>
+      <button className={`nav-link ${view === 'settings' ? 'active' : ''}`} onClick={() => setView('settings')}>{t('nav.settings')}</button>
+      <button className={`nav-link nav-about ${view === 'about' ? 'active' : ''}`} onClick={() => setView('about')} aria-label={t('nav.about')}><Info weight="regular" /></button>
+      {demoMode && <button className="nav-link nav-exit" onClick={() => { setDemoMode(false); setDevice(undefined); setRefreshNonce((value) => value + 1); invoke('device_refresh').catch(() => {}); }} aria-label={t('nav.exitDemo')} title={t('nav.exitDemo')}><SignOut weight="regular" /></button>}
+    </div>
     {view === 'dashboard' && (device ? <Dashboard device={device} onDeviceChange={setDevice} /> : <EmptyState onRefresh={() => { setDemoMode(false); setDevice(undefined); setRefreshNonce((value) => value + 1); invoke('device_refresh').catch(() => {}); }} onDemo={() => { setDemoMode(true); setDevice(MOCK_DEVICE); }} onOpenSettings={() => setView('settings')} />)}
     {view === 'settings' && <SettingsPage previewMode={pureWeb} onNavigateAbout={() => setView('about')} onThemeChange={setTheme} supportsAnyLighting={device ? pluginSupportsAnyLighting(compatibilityCapabilities(device), device.writableMutations) : false} supportsReceiverLighting={device ? pluginSupportsLightingMutation(compatibilityCapabilities(device), device.writableMutations, 'receiver') : false} />}
     {view === 'about' && <AboutPage previewMode={pureWeb} onBack={() => setView('settings')} />}
