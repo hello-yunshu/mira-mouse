@@ -73,9 +73,19 @@ jobs:
         shell: bash
         run: echo 'Configuration parsed; platform package and hardware status are not implied.' >> "$GITHUB_STEP_SUMMARY"
 
+  plugin-lock:
+    if: github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - run: rustup toolchain install stable --profile minimal
+      - name: Verify plugin lock against published release assets
+        run: cargo run --package xtask -- plugins check-lock
+
   tauri-bundle:
-    needs: [frontend, rust, configuration]
-    if: ${{ !cancelled() && needs.frontend.result != 'failure' && needs.rust.result != 'failure' && needs.configuration.result != 'failure' }}
+    needs: [frontend, rust, configuration, plugin-lock]
+    if: ${{ !cancelled() && needs.frontend.result != 'failure' && needs.rust.result != 'failure' && needs.configuration.result != 'failure' && needs.plugin-lock.result != 'failure' }}
     strategy:
       fail-fast: false
       matrix:
