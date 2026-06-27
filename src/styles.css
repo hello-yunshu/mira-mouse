@@ -749,6 +749,11 @@ select {
   line-height: 1;
   font-weight: 720;
 }
+.color-value {
+  --value-color: currentColor;
+  color: var(--value-color) !important;
+  text-shadow: 0 1px 10px color-mix(in oklch, var(--value-color), transparent 72%);
+}
 .plugin-value-button i {
   width: 18px;
   height: 18px;
@@ -972,6 +977,30 @@ select {
   padding: 3px;
   cursor: pointer;
 }
+.edit-field.range-field {
+  display: grid;
+  grid-template-columns: minmax(42px, auto) minmax(0, 1fr) 42px;
+  gap: 10px;
+}
+.edit-field.range-field > span:first-child {
+  white-space: nowrap;
+}
+.edit-field.range-field input[type="range"] {
+  flex: none;
+  width: 100%;
+  max-width: none;
+  min-width: 0;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.edit-field.range-field .range-value {
+  width: 42px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
 .edit-options {
   padding: 6px 0;
   display: grid;
@@ -1102,6 +1131,7 @@ select {
 .capability-group dl > div { display: flex; justify-content: space-between; gap: 8px; padding: 4px 0; border-top: 1px solid rgb(127 120 140 / 9%); font-size: 10px; }
 .capability-group dt { color: var(--muted); }
 .capability-group dd { min-width: 0; margin: 0; text-align: right; overflow-wrap: anywhere; }
+.capability-group dd strong { font: inherit; font-weight: inherit; }
 
 /* Cards — 紧凑 */
 .card {

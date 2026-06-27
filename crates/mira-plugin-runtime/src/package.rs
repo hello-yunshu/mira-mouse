@@ -255,6 +255,7 @@ mod tests {
                 "id": "mode",
                 "control": "Segmented",
                 "labelKey": "capability.mode",
+                "readOnly": true,
                 "metadata": {"section": "control"}
             }],
             "writesEnabled": false

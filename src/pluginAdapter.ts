@@ -2,14 +2,14 @@
 // 插件适配层：集中管理 UI ↔ 插件 metadata 契约。
 // 此模块不含任何插件特定的字符串常量（mutation 名、灯效名等），
 // 所有插件知识均从 capability metadata 强类型字段读取。
-import type { DeviceCapabilities, DeviceState, EffectOptions, LightingRole, PluginCapability } from './types';
+import type { DeviceCapabilities, DeviceState, EffectOptions, LightingRole, PluginCapability, PluginValueFormat, RangeSpec } from './types';
 
 export interface PluginOption { value: string | number | boolean; label: string }
 export interface PluginSummaryItem {
   label: string;
   source: string;
   unit?: string;
-  format?: string;
+  format?: PluginValueFormat;
   options: PluginOption[];
 }
 
@@ -17,6 +17,47 @@ export const MAX_CONTROL_GROUPS = 6;
 export const MAX_STATUS_ITEMS = 6;
 export const MAX_CONTROL_OPTIONS = 8;
 export const MAX_SUMMARY_ITEMS = 4;
+export const PLUGIN_VALUE_FORMATS: readonly PluginValueFormat[] = ['sleep', 'color'];
+
+export function pluginValueFormat(value: unknown): PluginValueFormat | undefined {
+  return typeof value === 'string' && PLUGIN_VALUE_FORMATS.includes(value as PluginValueFormat)
+    ? value as PluginValueFormat
+    : undefined;
+}
+
+/// 从 capability.metadata.range 强类型字段读取数值范围。
+/// 用于 DpiStages / Number / Slider 等需要范围约束的控件，
+/// 与 effectOptions.speed/brightness 的 RangeSpec 类型一致。
+/// 插件必须通过 metadata.range 声明范围，Host 不再硬编码 50/30000/10/65535 等回退值。
+export function pluginRange(capability: PluginCapability): RangeSpec | undefined {
+  const raw = capability.metadata.range;
+  if (!raw || typeof raw !== 'object') return undefined;
+  const range = raw as Record<string, unknown>;
+  if (typeof range.min !== 'number' || typeof range.max !== 'number') return undefined;
+  return {
+    min: range.min,
+    max: range.max,
+    step: typeof range.step === 'number' ? range.step : undefined,
+  };
+}
+
+/// 从 effectOptions 提取灯效写入参数的默认值（当设备未报送当前值时使用）。
+/// - effect: 首个非 offValue 的灯效值
+/// - speed: speedRange.min
+/// - brightness: brightnessRange.min
+/// 替代 UI 硬编码 effect=1 / speed=0 / brightness=100。
+export function effectDefaults(capability: PluginCapability | undefined): {
+  effect: number;
+  speed: number;
+  brightness: number;
+} {
+  const opts = capability ? effectOptions(capability) : undefined;
+  const off = opts?.offValue ?? 0;
+  const effect = opts?.effect?.find((e) => e.value !== off)?.value ?? 1;
+  const speed = opts?.speed?.min ?? 0;
+  const brightness = opts?.brightness?.min ?? 100;
+  return { effect, speed, brightness };
+}
 
 /// 从 mutation 字段（string 或 string[]）中选取第一个可写的 mutation。
 /// 插件可声明多个候选 mutation（如 ['set-polling-rate', 'set-polling-rate-extended']），
@@ -43,11 +84,10 @@ export function parsePluginOptions(value: unknown): PluginOption[] {
 }
 
 /// 从 capability metadata 提取 mutation 映射。
-/// LightingZone 优先使用强类型 lightingRole；legacy metadata.mutations 只作回退。
-/// 其他能力读取优先级：1) metadata.mutation (string) 2) metadata.mutations (object)
-/// 3) Host 默认回退。
-/// 默认回退：DpiStages → set-dpi-stage/set-dpi-value, LightingZone → set-mouse-lighting/set-receiver-lighting,
-/// 其他可写能力 → set-{id}。这些是 Host 标准默认值，不是插件特定内容。
+/// LightingZone 只使用强类型 lightingRole，由插件声明鼠标/接收器角色。
+/// lightingRole.mouse/receiver 可为 string 或 string[]：数组时按优先级
+/// 选取第一个被 writableMutations 支持的 mutation。
+/// 其他能力读取优先级：1) metadata.mutation (string 或 string[]) 2) metadata.mutations (object)
 export function pluginMutations(capability: PluginCapability, writableMutations: string[] = []): Record<string, string> {
   const mutations: Record<string, string> = {};
   const lightingRole = capability.control === 'LightingZone'
@@ -55,31 +95,20 @@ export function pluginMutations(capability: PluginCapability, writableMutations:
     : undefined;
   if (lightingRole) {
     const applyRole = (role: 'mouse' | 'receiver') => {
-      const mutation = lightingRole[role];
-      if (typeof mutation === 'string' && (writableMutations.length === 0 || writableMutations.includes(mutation))) {
-        mutations[role] = mutation;
-      }
+      const picked = pickMutation(lightingRole[role], writableMutations);
+      if (picked) mutations[role] = picked;
     };
     applyRole('mouse');
     applyRole('receiver');
+    return mutations;
   }
-  if (typeof capability.metadata.mutation === 'string') mutations.default = capability.metadata.mutation;
+  const defaultMutation = pickMutation(capability.metadata.mutation, writableMutations);
+  if (defaultMutation) mutations.default = defaultMutation;
   if (capability.metadata.mutations && typeof capability.metadata.mutations === 'object') {
     for (const [key, value] of Object.entries(capability.metadata.mutations as Record<string, unknown>)) {
       if (mutations[key]) continue;
       const picked = pickMutation(value, writableMutations);
       if (picked) mutations[key] = picked;
-    }
-  }
-  if (Object.keys(mutations).length === 0 && !capability.readOnly) {
-    if (capability.control === 'DpiStages') {
-      mutations.select = 'set-dpi-stage';
-      mutations.value = 'set-dpi-value';
-    } else if (capability.control === 'LightingZone') {
-      mutations.mouse = 'set-mouse-lighting';
-      mutations.receiver = 'set-receiver-lighting';
-    } else {
-      mutations.default = `set-${capability.id}`;
     }
   }
   return mutations;
@@ -118,8 +147,9 @@ export function requiresExtraColor(capability: PluginCapability, effectValue: nu
 }
 
 /// 检查设备是否支持灯光类 mutation（供 Settings 夜间模式使用）。
-/// 优先从 LightingZone capability 的 metadata.lightingRole 提取 mutation 名，
-/// 回退到 metadata.mutations（兼容旧插件/compat 合成能力），再检查 writableMutations。
+/// 只从 LightingZone capability 的 metadata.lightingRole 提取 mutation 名。
+/// lightingRole 字段可为 string 或 string[]（按优先级排序的候选）；
+/// 要求至少有一个候选被 writableMutations 显式支持。
 export function supportsLightingMutation(
   pluginCapabilities: PluginCapability[],
   writableMutations: string[],
@@ -127,19 +157,11 @@ export function supportsLightingMutation(
 ): boolean {
   for (const cap of pluginCapabilities) {
     if (cap.control !== 'LightingZone') continue;
-    // 优先读强类型 lightingRole
     const lightingRole = cap.metadata.lightingRole as LightingRole | undefined;
-    if (lightingRole) {
-      const mutation = lightingRole[role];
-      if (mutation && writableMutations.includes(mutation)) return true;
-    }
-    // 回退读 legacy mutations（兼容旧插件/compat 合成能力）
-    const mutations = cap.metadata.mutations as Record<string, unknown> | undefined;
-    if (mutations) {
-      const raw = mutations[role];
-      const picked = pickMutation(raw, writableMutations);
-      if (picked && writableMutations.includes(picked)) return true;
-    }
+    if (!lightingRole) continue;
+    const declared = lightingRole[role];
+    const candidates = typeof declared === 'string' ? [declared] : Array.isArray(declared) ? declared : [];
+    if (candidates.some((mutation) => writableMutations.includes(mutation))) return true;
   }
   return false;
 }
@@ -181,49 +203,15 @@ export function pluginSummaryItems(capability: PluginCapability): PluginSummaryI
       label: record.label,
       source: record.source,
       unit: typeof record.unit === 'string' ? record.unit : undefined,
-      format: typeof record.format === 'string' ? record.format : undefined,
+      format: pluginValueFormat(record.format),
       options: parsePluginOptions(record.options),
     }];
   });
 }
 
-/// 为未声明 pluginCapabilities 的设备合成兼容能力。
-/// 当设备有 dpiStages 或 writableMutations 包含 set-dpi-* 时，合成 DpiStages 能力；
-/// 当有 supportedPollingRates 时，合成 polling-rate 能力；
-/// 当有 lighting 数据时，合成 LightingZone 能力。
-/// 这是 Host 的向后兼容回退，确保旧设备（无插件声明）仍可渲染控件。
+/// 返回插件声明的能力。Host 不根据设备数据合成可写控件。
 export function compatibilityCapabilities(device: DeviceState): PluginCapability[] {
-  if (device.pluginCapabilities.length > 0) return device.pluginCapabilities;
-  const capabilities: PluginCapability[] = [];
-  if (device.dpiStages.length > 0 || device.writableMutations.some((mutation) => mutation.startsWith('set-dpi-'))) {
-    capabilities.push({
-      id: 'compat-dpi', control: 'DpiStages', labelKey: 'capability.dpi', readOnly: false,
-      placements: [{ region: 'control', group: 'compat-performance', order: 10, span: 1, icon: 'gauge' }],
-      metadata: { source: 'dpiStages', mutations: { select: 'set-dpi-stage', value: 'set-dpi-value' } },
-    });
-  }
-  if (device.supportedPollingRates && device.supportedPollingRates.length > 0) {
-    capabilities.push({
-      id: 'compat-polling-rate', control: 'Select', labelKey: 'capability.polling-rate', readOnly: false,
-      placements: [{ region: 'control', group: 'compat-polling', order: 20, span: 1, icon: 'wave' }],
-      metadata: {
-        source: 'pollingRate', mutation: 'set-polling-rate', param: 'rate', unit: 'Hz',
-        options: device.supportedPollingRates.map((value) => ({ value, label: `${value} Hz` })),
-        summary: [],
-      },
-    });
-  }
-  if (device.lighting) {
-    capabilities.push({
-      id: 'compat-lighting', control: 'LightingZone', labelKey: 'capability.lighting', readOnly: false,
-      placements: [
-        { region: 'control', group: 'compat-lighting', order: 30, span: 1, icon: 'lightbulb' },
-        { region: 'status', order: 30, span: 1, icon: 'lightbulb' },
-      ],
-      metadata: { source: 'lighting.color', mutations: { mouse: 'set-mouse-lighting', receiver: 'set-receiver-lighting' }, lightingRole: { mouse: 'set-mouse-lighting', receiver: 'set-receiver-lighting' } },
-    });
-  }
-  return capabilities;
+  return device.pluginCapabilities;
 }
 
 export type { DeviceState };

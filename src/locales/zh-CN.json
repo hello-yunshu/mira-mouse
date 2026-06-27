@@ -95,7 +95,7 @@
     "effectN": "灯效 {{value}}",
     "modeN": "模式 {{value}}",
     "extraColor": "第二色",
-    "editMouseLightingTitle": "鼠标灯光 — {{field}}"
+    "editMouseLightingTitle": "{{field}}"
   },
   "capability": {
     "group": {
