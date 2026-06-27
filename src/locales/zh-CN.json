@@ -253,7 +253,8 @@
     },
     "trayBattery": {
       "label": "显示电量百分比",
-      "hint": "鼠标图标仍会按电量填充，这里只控制旁边的数字"
+      "hint": "鼠标图标仍会按电量填充，这里只控制旁边的数字",
+      "disabledHint": "Windows 系统托盘不支持在图标旁显示文字"
     },
     "trayIconColor": {
       "label": "托盘图标颜色",
@@ -436,6 +437,8 @@
     "saveFailed": "保存失败",
     "writeFailed": "写入失败",
     "writeFailedBody": "界面已保留设备真实状态：{{error}}",
+    "mutationUnavailable": "操作不可用",
+    "mutationUnavailableBody": "官方配置工具（Logi Options+、G HUB、AMaster）可能独占了设备，请关闭后重试。",
     "exportFailed": "导出失败",
     "exportSuccess": "导出成功",
     "exportSuccessBody": "配置已保存至 {{path}}",

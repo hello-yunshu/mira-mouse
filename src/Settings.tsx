@@ -66,8 +66,15 @@ function Toggle({ checked, onChange, label, disabled = false }: { checked: boole
   );
 }
 
+// 与 App.tsx 中 isWindowsPlatform 一致：兼容 ?platform=windows 网页预览
+function isWindowsPlatform(): boolean {
+  const previewPlatform = new URLSearchParams(window.location.search).get('platform');
+  return previewPlatform === 'windows' || navigator.userAgent.includes('Windows');
+}
+
 export function SettingsPage({ onNavigateAbout, onThemeChange, previewMode = false, supportsAnyLighting = false, supportsReceiverLighting = false }: { onNavigateAbout: () => void; onThemeChange: (theme: ThemeMode) => void; previewMode?: boolean; supportsAnyLighting?: boolean; supportsReceiverLighting?: boolean }) {
   const { t } = useTranslation();
+  const windowsPlatform = isWindowsPlatform();
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [autostartEnabled, setAutostartEnabled] = useState(false);
   const [plugins, setPlugins] = useState<BundledPluginInfo[]>([]);
@@ -275,7 +282,13 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, previewMode = fal
               <Toggle checked={settings.startHidden} onChange={(v) => update({ startHidden: v })} label={t('settings.startHidden.label')} />
             </SettingRow>
             <SettingRow title={t('settings.trayBattery.label')} hint={t('settings.trayBattery.hint')}>
-              <Toggle checked={settings.trayShowBatteryTitle} onChange={(v) => update({ trayShowBatteryTitle: v })} label={t('settings.trayBattery.label')} />
+              {windowsPlatform ? (
+                <Tooltip label={t('settings.trayBattery.disabledHint')}>
+                  <Toggle checked={settings.trayShowBatteryTitle} onChange={(v) => update({ trayShowBatteryTitle: v })} label={t('settings.trayBattery.label')} disabled />
+                </Tooltip>
+              ) : (
+                <Toggle checked={settings.trayShowBatteryTitle} onChange={(v) => update({ trayShowBatteryTitle: v })} label={t('settings.trayBattery.label')} />
+              )}
             </SettingRow>
             <SettingRow title={t('settings.trayIconColor.label')} hint={t('settings.trayIconColor.hint')}>
               <select value={settings.trayIconColor} onChange={(e) => update({ trayIconColor: e.target.value })} aria-label={t('settings.trayIconColor.label')}>
@@ -285,7 +298,13 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, previewMode = fal
               </select>
             </SettingRow>
             <SettingRow title={t('settings.receiverBattery.label')} hint={t('settings.receiverBattery.hint')}>
-              <Toggle checked={settings.trayIncludeReceiverBattery} onChange={(v) => update({ trayIncludeReceiverBattery: v })} label={t('settings.receiverBattery.label')} disabled={!settings.trayShowBatteryTitle} />
+              {windowsPlatform ? (
+                <Tooltip label={t('settings.trayBattery.disabledHint')}>
+                  <Toggle checked={settings.trayIncludeReceiverBattery} onChange={(v) => update({ trayIncludeReceiverBattery: v })} label={t('settings.receiverBattery.label')} disabled />
+                </Tooltip>
+              ) : (
+                <Toggle checked={settings.trayIncludeReceiverBattery} onChange={(v) => update({ trayIncludeReceiverBattery: v })} label={t('settings.receiverBattery.label')} disabled={!settings.trayShowBatteryTitle} />
+              )}
             </SettingRow>
             <SettingRow title={t('settings.trayConnection.label')} hint={t('settings.trayConnection.hint')}>
               <Toggle checked={settings.trayShowConnection} onChange={(v) => update({ trayShowConnection: v })} label={t('settings.trayConnection.label')} />
