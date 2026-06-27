@@ -37,7 +37,7 @@
     "noDevice": "No supported mouse found",
     "plugInHint": "Plug in a mouse and available settings will appear here.",
     "deviceAndDiagnostics": "Device & Diagnostics",
-    "openFixture": "Open Fixture Demo",
+    "openFixture": "View Demo",
     "connectedDevice": "Connected device",
     "deviceCount": "{{count}} devices",
     "deviceBattery": "Device battery",
