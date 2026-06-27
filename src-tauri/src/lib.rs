@@ -3887,7 +3887,11 @@ fn pick_mutation_decl(value: &serde_json::Value, allowed: &[String]) -> Option<S
             .collect();
         return candidates
             .iter()
-            .find(|candidate| allowed.iter().any(|allowed_mutation| allowed_mutation == *candidate))
+            .find(|candidate| {
+                allowed
+                    .iter()
+                    .any(|allowed_mutation| allowed_mutation == *candidate)
+            })
             .or_else(|| candidates.first())
             .cloned();
     }
