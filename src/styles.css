@@ -4,7 +4,7 @@
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 14px;
   color: #282631;
-  --accent: oklch(72% .025 285);
+  --accent: #ffb3b3;
   --panel: rgb(255 255 255 / 12%);
   --panel-border: rgb(255 255 255 / 32%);
   --panel-highlight: rgb(255 255 255 / 38%);

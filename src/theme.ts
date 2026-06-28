@@ -2,6 +2,8 @@
 import type { ThemeMode } from './types';
 import { setTheme } from '@tauri-apps/api/app';
 
+export const DEFAULT_THEME_ACCENT = '#ffb3b3';
+
 function colorHueAndChroma(color: string): { hue: number; chroma: number; lightness: number } | undefined {
   if (!/^#[0-9a-f]{6}$/i.test(color)) return undefined;
   const r = Number.parseInt(color.slice(1, 3), 16) / 255;
@@ -16,10 +18,10 @@ function colorHueAndChroma(color: string): { hue: number; chroma: number; lightn
 }
 
 export function themeAccent(color?: string, isDark = false): string {
-  if (!color || !/^#[0-9a-f]{6}$/i.test(color)) return '#D8B0B7';
-  if (color.toUpperCase() === '#D8B0B7') return '#D8B0B7';
+  if (!color || !/^#[0-9a-f]{6}$/i.test(color)) return DEFAULT_THEME_ACCENT;
+  if (color.toLowerCase() === DEFAULT_THEME_ACCENT) return DEFAULT_THEME_ACCENT;
   const parsed = colorHueAndChroma(color);
-  if (!parsed) return '#D8B0B7';
+  if (!parsed) return DEFAULT_THEME_ACCENT;
   const { hue, chroma, lightness } = parsed;
   const capped = hue < 25 || hue > 315 ? Math.min(chroma * 0.08, 0.055) : Math.min(chroma * 0.11, 0.075);
   // 亮色模式：固定 72%，不把暗色灯光再压低；
@@ -31,9 +33,9 @@ export function themeAccent(color?: string, isDark = false): string {
   return `oklch(${L}% ${capped.toFixed(3)} ${hue})`;
 }
 
-export function pastelDisplayColor(color?: string, fallback = '#D8B0B7'): string {
+export function pastelDisplayColor(color?: string, fallback = DEFAULT_THEME_ACCENT): string {
   if (!color || !/^#[0-9a-f]{6}$/i.test(color)) return fallback;
-  if (color.toUpperCase() === '#D8B0B7') return '#D8B0B7';
+  if (color.toLowerCase() === DEFAULT_THEME_ACCENT) return DEFAULT_THEME_ACCENT;
   const parsed = colorHueAndChroma(color);
   if (!parsed) return fallback;
   const { hue, chroma } = parsed;

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Explicit test/development boundary. Production must obtain snapshots from Tauri commands.
 import type { DeviceState } from './types';
+import { DEFAULT_THEME_ACCENT } from './theme';
+
 export const MOCK_DEVICE: DeviceState = {
   name: 'Mira Example Wireless Mouse', connection: 'virtual', battery: 82, charging: false,
   batteries: [
@@ -19,15 +21,15 @@ export const MOCK_DEVICE: DeviceState = {
     { value: 12800, color: '#c77a9a', enabled: true, active: false },
   ],
   lighting: {
-    enabled: true, mode: 'mock.breathing', color: '#D8B0B7', supportsSpeed: true, supportsBrightness: true, receiverLinked: true,
-    mouseLightEnabled: true, mouseLightColor: '#D8B0B7', mouseLightEndColor: '#D8B0B7',
-    receiverLightEnabled: true, receiverLightMode: 'mock.neon', receiverLightColor: '#D8B0B7',
+    enabled: true, mode: 'mock.breathing', color: DEFAULT_THEME_ACCENT, supportsSpeed: true, supportsBrightness: true, receiverLinked: true,
+    mouseLightEnabled: true, mouseLightColor: DEFAULT_THEME_ACCENT, mouseLightEndColor: DEFAULT_THEME_ACCENT,
+    receiverLightEnabled: true, receiverLightMode: 'mock.neon', receiverLightColor: DEFAULT_THEME_ACCENT,
   },
   capabilities: {
     battery: { percentage: 82, charging: false, valid: true },
     dpi: { profile: 0, currentStage: 3, stageCount: 8, dpiX: [400, 800, 1000, 1600, 2400, 3200, 6400, 12800], dpiY: [400, 800, 1000, 1600, 2400, 3200, 6400, 12800], stageColors: ['#7ea7d8', '#9a8bd0', '#bf7fa8', '#d39378', '#7eb2a0', '#a8c46a', '#c9a86c', '#c77a9a'] },
-    settings: { profile: 0, pollingRaw: 1, pollingRate: 1000, usbDebounce: 4, wirelessDebounce: 4, bluetoothDebounce: 4, rippleCorrection: true, angleSnap: false, motionSync: true, liftCutOff: 1, buttonChangeTime: 12, wheelToButton: 0, buttonToWheel: 0, bluetoothSleepValue: 600, wirelessSleepValue: 300, mouseLightStartColor: '#D8B0B7', mouseLightEndColor: '#D8B0B7', mouseLightEnabled: true },
-    receiverLighting: { effect: 3, effectName: '霓虹', speed: 2, brightness: 70, option: 7, color: '#D8B0B7' },
+    settings: { profile: 0, pollingRaw: 1, pollingRate: 1000, usbDebounce: 4, wirelessDebounce: 4, bluetoothDebounce: 4, rippleCorrection: true, angleSnap: false, motionSync: true, liftCutOff: 1, buttonChangeTime: 12, wheelToButton: 0, buttonToWheel: 0, bluetoothSleepValue: 600, wirelessSleepValue: 300, mouseLightStartColor: DEFAULT_THEME_ACCENT, mouseLightEndColor: DEFAULT_THEME_ACCENT, mouseLightEnabled: true },
+    receiverLighting: { effect: 3, effectName: '霓虹', speed: 2, brightness: 70, option: 7, color: DEFAULT_THEME_ACCENT },
     fps: { enabled: true },
     dpiButton: { enabled: true },
     firmwareUsb: { versionRaw: 258 },
