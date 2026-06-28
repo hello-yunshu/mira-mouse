@@ -87,7 +87,7 @@ function WindowsWindowControls() {
   return (
     <div className="windows-window-controls" aria-label={t('dashboard.windowsControls')}>
       <button type="button" aria-label={t('dashboard.minimizeWindow')} onClick={() => getCurrentWindow().minimize()}><Minus weight="regular" /></button>
-      <button type="button" className="windows-close" aria-label={t('dashboard.closeWindow')} onClick={() => getCurrentWindow().hide()}><X weight="regular" /></button>
+      <button type="button" className="windows-close" aria-label={t('dashboard.closeWindow')} onClick={() => invoke('hide_to_tray')}><X weight="regular" /></button>
     </div>
   );
 }
@@ -1847,6 +1847,7 @@ export default function App() {
   // 避免 settling polls 期间（6 次 500ms）阻塞主线程。writeBusy 等用户交互状态保持同步。
   const [, startTransition] = useTransition();
   const [theme, setTheme] = useState<ThemeMode>('system');
+  const [themeLoaded, setThemeLoaded] = useState(pureWeb);
   const [view, setView] = useState<View>('dashboard');
   const [demoMode, setDemoMode] = useState(pureWeb);
   const [refreshNonce, setRefreshNonce] = useState(0);
@@ -1880,6 +1881,7 @@ export default function App() {
     invoke<AppSettings>('settings_get')
       .then((settings) => {
         setTheme(settings.theme as ThemeMode);
+        setThemeLoaded(true);
         applyLanguage(settings.language ?? 'auto');
         if (settings.automaticUpdateChecks) {
           void invoke<AboutInfo>('about_info')
@@ -1903,7 +1905,7 @@ export default function App() {
             .catch(() => { /* Automatic checks stay quiet when offline. */ });
         }
       })
-      .catch(() => {});
+      .catch(() => setThemeLoaded(true));
   }, [pureWeb]);
 
   // 周期性从后端读取真实设备状态
@@ -1949,11 +1951,15 @@ export default function App() {
   const activeDpiColor = device?.dpiStages.find((stage) => stage.enabled && stage.active)?.color
     ?? device?.dpiStages.find((stage) => stage.enabled)?.color;
   const themeColor = device?.lighting?.mouseLightColor ?? activeDpiColor;
-  useEffect(() => applyTheme(theme, themeColor), [theme, themeColor]);
+  useEffect(() => {
+    if (!themeLoaded) return;
+    applyTheme(theme, themeColor);
+  }, [themeLoaded, theme, themeColor]);
 
   return <div className={`app-shell ${pureWeb ? 'web-preview' : ''} ${windowsPlatform ? 'platform-windows' : ''} ${macPlatform ? 'platform-macos' : ''} ${windowsWebPreview ? 'windows-web-preview' : ''}`}>
     {windowsWebPreview && <WindowsPreviewControls />}
-    {windowsPlatform && !windowsWebPreview && !pureWeb && <WindowsWindowControls />}
+    {windowsPlatform && !pureWeb && <WindowsWindowControls />}
+    {windowsPlatform && !pureWeb && <div className="windows-drag-strip" data-tauri-drag-region />}
     <nav className="top-nav" data-tauri-drag-region />
     <div className="nav-links">
       <button className={`nav-link ${view === 'dashboard' ? 'active' : ''}`} onClick={() => setView('dashboard')}>{t('nav.dashboard')}</button>
