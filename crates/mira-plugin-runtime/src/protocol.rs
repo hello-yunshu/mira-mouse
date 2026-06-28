@@ -402,8 +402,7 @@ fn normalized_mouse_lighting(
     outputs: &BTreeMap<String, Value>,
     plugin_capabilities: Option<&Value>,
 ) -> Option<serde_json::Map<String, Value>> {
-    if let Some(mut onboard) = onboard_mouse_lighting(outputs, plugin_capabilities) {
-        append_supported_lighting_effects(outputs, &mut onboard);
+    if let Some(onboard) = onboard_mouse_lighting(outputs, plugin_capabilities) {
         return Some(onboard);
     }
     let settings = object(outputs, "settings");
@@ -1154,7 +1153,7 @@ mod tests {
             mouse.get("extraColor").and_then(Value::as_str),
             Some("#123456")
         );
-        assert_eq!(mouse.get("supportedEffects"), Some(&json!([0, 4])));
+        assert_eq!(mouse.get("supportedEffects"), None);
     }
 
     #[test]

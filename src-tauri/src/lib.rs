@@ -1694,6 +1694,22 @@ mod settings_tests {
     }
 
     #[test]
+    fn dark_app_icons_are_decodable_and_transparent() {
+        let tray_icon =
+            tauri::image::Image::from_bytes(tray_app_icon_bytes_for_theme(true)).unwrap();
+        assert_eq!((tray_icon.width(), tray_icon.height()), (64, 64));
+        let mut tray_alpha = tray_icon.rgba().iter().skip(3).step_by(4);
+        assert!(tray_alpha.clone().any(|value| *value == 0));
+        assert!(tray_alpha.any(|value| *value > 0));
+
+        let app_icon = tauri::image::Image::from_bytes(app_icon_bytes_for_theme(true)).unwrap();
+        assert_eq!((app_icon.width(), app_icon.height()), (512, 512));
+        let mut app_alpha = app_icon.rgba().iter().skip(3).step_by(4);
+        assert!(app_alpha.clone().any(|value| *value == 0));
+        assert!(app_alpha.any(|value| *value > 0));
+    }
+
+    #[test]
     fn device_writes_queue_and_release_after_completion() {
         let state = SessionState::default();
         std::thread::scope(|s| {
@@ -6196,8 +6212,52 @@ fn tray_icon_bytes(level: u8, dark: bool, charging: bool) -> &'static [u8] {
 }
 
 fn tray_app_icon_bytes() -> &'static [u8] {
-    include_bytes!("../icons/tray-app-icon.png")
+    tray_app_icon_bytes_for_theme(false)
 }
+
+fn tray_app_icon_bytes_for_theme(dark: bool) -> &'static [u8] {
+    if dark {
+        include_bytes!("../icons/tray-app-icon-dark.png")
+    } else {
+        include_bytes!("../icons/tray-app-icon.png")
+    }
+}
+
+fn app_icon_bytes_for_theme(dark: bool) -> &'static [u8] {
+    if dark {
+        include_bytes!("../icons/icon-dark.png")
+    } else {
+        include_bytes!("../icons/icon.png")
+    }
+}
+
+fn update_runtime_app_icon(app: &AppHandle, dark: bool) {
+    if let Ok(app_icon) = tauri::image::Image::from_bytes(app_icon_bytes_for_theme(dark)) {
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.set_icon(app_icon);
+        }
+    }
+    set_macos_application_icon(app_icon_bytes_for_theme(dark));
+}
+
+#[cfg(target_os = "macos")]
+fn set_macos_application_icon(bytes: &'static [u8]) {
+    use objc2::{AllocAnyThread, MainThreadMarker};
+    use objc2_app_kit::{NSApplication, NSImage};
+    use objc2_foundation::NSData;
+
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let app = NSApplication::sharedApplication(mtm);
+    let data = NSData::with_bytes(bytes);
+    if let Some(app_icon) = NSImage::initWithData(NSImage::alloc(), &data) {
+        unsafe { app.setApplicationIconImage(Some(&app_icon)) };
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn set_macos_application_icon(_bytes: &'static [u8]) {}
 
 /// 直接查询系统外观，不依赖窗口状态。
 /// macOS: `defaults read -g AppleInterfaceStyle`（Light 模式返回非零退出码，Dark 返回 "Dark"）
@@ -6292,9 +6352,9 @@ fn update_tray(
                     desired_charging,
                 ))?))?;
             } else {
-                tray.set_icon(Some(
-                    tauri::image::Image::from_bytes(tray_app_icon_bytes())?,
-                ))?;
+                tray.set_icon(Some(tauri::image::Image::from_bytes(
+                    tray_app_icon_bytes_for_theme(desired_dark),
+                )?))?;
             }
             tray.set_icon_as_template(false)?;
             *active = Some(desired_level);
@@ -6447,6 +6507,7 @@ fn build_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(initial_icon)
         .icon_as_template(false)
+        .show_menu_on_left_click(false)
         .menu(&menu)
         .on_menu_event(|app, event| match event.id().as_ref() {
             "quit" => app.exit(0),
@@ -6549,6 +6610,14 @@ pub fn run() {
                 apply_windows_backdrop(&window, &settings);
             }
 
+            {
+                let dark = detect_system_dark(app.handle());
+                if let Ok(mut cache) = app.state::<SessionState>().system_dark.lock() {
+                    *cache = Some(dark);
+                }
+                update_runtime_app_icon(app.handle(), dark);
+            }
+
             // Load bundled plugins once and cache them for the app lifetime.
             let plugins = load_bundled_plugin_devices(app.handle());
             #[cfg(debug_assertions)]
@@ -6603,6 +6672,7 @@ pub fn run() {
                             if let Ok(mut cache) = state.system_dark.lock() {
                                 *cache = Some(dark);
                             }
+                            update_runtime_app_icon(&app_handle, dark);
                             request_refresh(&app_handle.state::<SessionState>());
                         }
                         tauri::WindowEvent::ThemeChanged(_) => {
@@ -6613,6 +6683,7 @@ pub fn run() {
                             if let Ok(mut cache) = state.system_dark.lock() {
                                 *cache = Some(dark);
                             }
+                            update_runtime_app_icon(&app_handle, dark);
                             let snapshot = state
                                 .last_snapshot
                                 .lock()
