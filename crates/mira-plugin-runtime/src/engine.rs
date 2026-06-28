@@ -2245,6 +2245,12 @@ fn apply_byte_definition(
                     format!("command {command_id} parameter {param} is not a color")
                 })?)?
                 .to_vec(),
+                "hue-index-be-u16" => {
+                    let [r, g, b] = parse_rgb(value.as_str().ok_or_else(|| {
+                        format!("command {command_id} parameter {param} is not a color")
+                    })?)?;
+                    rgb_to_hue_index(r, g, b).to_be_bytes().to_vec()
+                }
                 "bytes" => value
                     .as_array()
                     .ok_or_else(|| {
@@ -2610,7 +2616,69 @@ fn parse_field(field: &FieldDefinition, response: &[u8]) -> Result<Value, String
                     .collect(),
             ))
         }
+        "hue-index-be-u16" => {
+            let bytes = response
+                .get(field.offset..field.offset + 2)
+                .ok_or_else(|| "parser hue-index offset out of range".to_string())?;
+            let idx = u16::from_be_bytes([bytes[0], bytes[1]]);
+            Ok(Value::String(hue_index_to_hex(idx)))
+        }
         other => Err(format!("unsupported parser field kind {other}")),
+    }
+}
+
+/// 将 0-1530 的彩虹色相索引转换为 "#RRGGBB" 字符串。
+///
+/// 该编码使用 6 段渐变（每段 255），覆盖 HSV 色相轮的一圈：
+///   0-255   红→黄   (r=255, g=0..255, b=0)
+///   256-510 黄→绿   (r=255..0, g=255, b=0)
+///   511-765 绿→青   (r=0, g=255, b=0..255)
+///   766-1020 青→蓝  (r=0, g=255..0, b=255)
+///   1021-1275 蓝→洋红 (r=0..255, g=0, b=255)
+///   1276-1530 洋红→红 (r=255, g=0, b=255..0)
+///
+/// 65535 或其他超出 0-1530 范围的值返回白色 "#FFFFFF"。
+fn hue_index_to_hex(idx: u16) -> String {
+    if idx == 65535 || idx > 1530 {
+        return "#FFFFFF".to_string();
+    }
+    let idx = idx as i32;
+    let (r, g, b) = if idx <= 255 {
+        (255, idx, 0)
+    } else if idx <= 510 {
+        (510 - idx, 255, 0)
+    } else if idx <= 765 {
+        (0, 255, idx - 510)
+    } else if idx <= 1020 {
+        (0, 1020 - idx, 255)
+    } else if idx <= 1275 {
+        (idx - 1020, 0, 255)
+    } else {
+        (255, 0, 1530 - idx)
+    };
+    format!("#{:02X}{:02X}{:02X}", r, g, b)
+}
+
+/// 将 RGB 颜色转换为 0-1530 的彩虹色相索引（`hue_index_to_hex` 的逆函数）。
+///
+/// 只接受恰好落在彩虹轮 6 段渐变上的"纯色"（如 r=255 且 b=0，或 g=255 且 b=0 等）。
+/// 不满足任何段的混合色返回 65535（设备端显示为白色）。
+fn rgb_to_hue_index(r: u8, g: u8, b: u8) -> u16 {
+    let (r, g, b) = (r as u16, g as u16, b as u16);
+    if r == 255 && b == 0 {
+        g
+    } else if g == 255 && b == 0 {
+        510 - r
+    } else if r == 0 && g == 255 {
+        510 + b
+    } else if r == 0 && b == 255 {
+        1020 - g
+    } else if g == 0 && b == 255 {
+        1020 + r
+    } else if r == 255 && g == 0 {
+        1530 - b
+    } else {
+        65535
     }
 }
 
@@ -2672,6 +2740,79 @@ mod tests {
             parse_field(&be_u16_array_field, &response).unwrap(),
             Value::Array(vec![Value::from(1600), Value::from(0), Value::from(1600)])
         );
+    }
+
+    #[test]
+    fn parses_hue_index_be_u16() {
+        // 2 字节大端序色相索引（0-1530 的 6 段彩虹映射）。
+        let response: [u8; 18] = [
+            0x00, 0x00, // idx=0     → 红
+            0x00, 0xFF, // idx=255   → 黄
+            0x01, 0xFE, // idx=510   → 绿
+            0x02, 0xFD, // idx=765   → 青
+            0x03, 0xFC, // idx=1020  → 蓝
+            0x04, 0xFB, // idx=1275  → 洋红
+            0x05, 0xFA, // idx=1530  → 红（回到起点）
+            0xFF, 0xFF, // idx=65535 → 白
+            0x07, 0xD0, // idx=2000  → 白（超出范围）
+        ];
+        let cases = [
+            (0usize, "#FF0000"),
+            (2, "#FFFF00"),
+            (4, "#00FF00"),
+            (6, "#00FFFF"),
+            (8, "#0000FF"),
+            (10, "#FF00FF"),
+            (12, "#FF0000"),
+            (14, "#FFFFFF"),
+            (16, "#FFFFFF"),
+        ];
+        for (offset, expected) in cases {
+            let field = FieldDefinition {
+                offset,
+                kind: "hue-index-be-u16".into(),
+                count: None,
+                mask: None,
+                invert: false,
+            };
+            assert_eq!(
+                parse_field(&field, &response).unwrap(),
+                Value::from(expected),
+                "offset {offset} should map to {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn rgb_to_hue_index_round_trips_pure_colors() {
+        // 彩虹轮 6 段端点颜色应与 hue_index_to_hex 互逆。
+        // 注意：#FF0000 同时是 idx=0（红→黄起点）和 idx=1530（洋红→红终点），
+        // rgb_to_hue_index 返回第一个匹配（0），所以 1530 只做正向验证。
+        let round_trip = [
+            (0u16, "#FF0000"),   // 红
+            (255, "#FFFF00"),    // 黄
+            (510, "#00FF00"),    // 绿
+            (765, "#00FFFF"),    // 青
+            (1020, "#0000FF"),   // 蓝
+            (1275, "#FF00FF"),   // 洋红
+        ];
+        for (idx, hex) in round_trip {
+            assert_eq!(hue_index_to_hex(idx), hex, "idx {idx} should map to {hex}");
+            let [r, g, b] = parse_rgb(hex).unwrap();
+            assert_eq!(rgb_to_hue_index(r, g, b), idx, "{hex} should map back to idx {idx}");
+        }
+        // 1530 正向映射到 #FF0000，但逆向回到 0（红色是彩虹轮的起点和终点）
+        assert_eq!(hue_index_to_hex(1530), "#FF0000");
+    }
+
+    #[test]
+    fn rgb_to_hue_index_returns_white_for_mixed_colors() {
+        // 不在彩虹轮上的混合色返回 65535。
+        let mixed = ["#AABBCC", "#808080", "#112233", "#7F7F7F"];
+        for hex in mixed {
+            let [r, g, b] = parse_rgb(hex).unwrap();
+            assert_eq!(rgb_to_hue_index(r, g, b), 65535, "{hex} should be 65535");
+        }
     }
 
     #[test]
