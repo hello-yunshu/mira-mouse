@@ -84,17 +84,17 @@ def draw_background(scale: int) -> Image.Image:
     h = HEIGHT * scale
     img = Image.new("RGBA", (w, h), (0, 0, 0, 255))
     px = img.load()
-    top = (22, 19, 30)
-    mid = (34, 29, 44)
-    bottom = (42, 35, 54)
+    top = (45, 39, 56)
+    mid = (64, 55, 78)
+    bottom = (76, 65, 95)
     for y in range(h):
         ty = y / max(1, h - 1)
         for x in range(w):
             tx = x / max(1, w - 1)
             base = mix(top, bottom, ty)
             color = mix(base, mid, 0.22 + 0.18 * math.sin((tx * 1.2 + ty * 0.8) * math.pi))
-            vignette = min(0.28, math.hypot(tx - 0.5, ty - 0.52) * 0.34)
-            px[x, y] = (*mix(color, (7, 7, 12), vignette), 255)
+            vignette = min(0.12, math.hypot(tx - 0.5, ty - 0.52) * 0.16)
+            px[x, y] = (*mix(color, (30, 26, 38), vignette), 255)
 
     add_radial(img, (88 * scale, 72 * scale), 188 * scale, (216, 176, 183), 0.20)
     add_radial(img, (522 * scale, 304 * scale), 220 * scale, (128, 104, 160), 0.24)
@@ -171,9 +171,9 @@ def svg() -> str:
 <svg viewBox="0 0 {WIDTH} {HEIGHT}" width="{WIDTH}" height="{HEIGHT}" xmlns="http://www.w3.org/2000/svg">
   <defs>
     <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#16131E"/>
-      <stop offset="48%" stop-color="#241F30"/>
-      <stop offset="100%" stop-color="#2A2336"/>
+      <stop offset="0%" stop-color="#2D2738"/>
+      <stop offset="48%" stop-color="#40374E"/>
+      <stop offset="100%" stop-color="#4C415F"/>
     </linearGradient>
     <radialGradient id="pink" cx="15%" cy="18%" r="42%">
       <stop offset="0%" stop-color="#D8B0B7" stop-opacity="0.20"/>

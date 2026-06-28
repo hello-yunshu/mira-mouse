@@ -1,12 +1,13 @@
 {
   "name": "@mira/app",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "license": "AGPL-3.0-or-later",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "assets:windows-installer": "python3 scripts/generate-windows-installer-assets.py",
     "build:dmg": "npm exec tauri build -- --bundles app && bash scripts/create-dmg.sh",
     "typecheck": "tsc -b --pretty false",
     "test": "vitest run",
