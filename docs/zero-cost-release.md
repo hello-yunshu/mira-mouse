@@ -89,8 +89,9 @@ The `Plugin Release` workflow will:
 
 ## 5. Release the application
 
-1. Ensure `plugins.lock.json` is `releaseReady: true` for every plugin marked `bundleByDefault: true`. Plugin SHA-256 entries are generated from the plugin release assets; do not edit them manually. Use `cargo run --package xtask -- plugins check-lock` to verify the lock, or `cargo run --package xtask -- plugins update-lock --release-tag <release-tag>` to refresh it from a plugin release.
-2. Push a tag in the main repository:
+1. Update the app version in `Cargo.toml` (`[workspace.package] version`).
+2. Ensure `plugins.lock.json` is `releaseReady: true` for every plugin marked `bundleByDefault: true`. Plugin SHA-256 entries are generated from the plugin release assets; do not edit them manually. Use `cargo run --package xtask -- plugins check-lock` to verify the lock, or `cargo run --package xtask -- plugins update-lock --release-tag <release-tag>` to refresh it from a plugin release.
+3. Push a tag in the main repository:
 
    ```bash
    cd mira-mouse
@@ -98,7 +99,7 @@ The `Plugin Release` workflow will:
    git push origin app/v0.1.0
    ```
 
-3. The `Release` workflow builds DMG, NSIS installer, AppImage, DEB, and RPM packages with ad-hoc macOS signing and attaches them to a draft release.
+4. The `Release` workflow builds DMG, NSIS installer, AppImage, DEB, and RPM packages with ad-hoc macOS signing and attaches them to a draft release.
 
 ## 6. First-launch warnings for users
 
