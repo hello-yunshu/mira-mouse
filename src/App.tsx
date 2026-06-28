@@ -63,8 +63,7 @@ function isMacPlatform(): boolean {
 }
 
 function isWindowsWebPreview(): boolean {
-  return new URLSearchParams(window.location.search).get('platform') === 'windows'
-    && !navigator.userAgent.includes('Windows');
+  return new URLSearchParams(window.location.search).get('platform') === 'windows';
 }
 
 function isPureWebPreview(): boolean {
@@ -1958,8 +1957,8 @@ export default function App() {
 
   return <div className={`app-shell ${pureWeb ? 'web-preview' : ''} ${windowsPlatform ? 'platform-windows' : ''} ${macPlatform ? 'platform-macos' : ''} ${windowsWebPreview ? 'windows-web-preview' : ''}`}>
     {windowsWebPreview && <WindowsPreviewControls />}
-    {windowsPlatform && !pureWeb && <WindowsWindowControls />}
-    {windowsPlatform && !pureWeb && <div className="windows-drag-strip" data-tauri-drag-region />}
+    {windowsPlatform && !windowsWebPreview && !pureWeb && <WindowsWindowControls />}
+    {windowsPlatform && !windowsWebPreview && !pureWeb && <div className="windows-drag-strip" data-tauri-drag-region />}
     <nav className="top-nav" data-tauri-drag-region />
     <div className="nav-links">
       <button className={`nav-link ${view === 'dashboard' ? 'active' : ''}`} onClick={() => setView('dashboard')}>{t('nav.dashboard')}</button>
