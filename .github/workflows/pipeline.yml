@@ -249,9 +249,15 @@ jobs:
           \) -exec cp {} publish-assets/ \;
           (
             cd publish-assets
+            # macOS: DMG 自带版本号（Mira_<v>_universal.dmg），仅替换前缀；
+            # .app.tar.gz / .sig 默认不带版本号，需手动注入 $VERSION 以保持命名一致性
             for f in *.dmg *.app.tar.gz *.app.tar.gz.sig; do
               [ -f "$f" ] || continue
-              mv "$f" "Mira_macOS${f#Mira}"
+              case "$f" in
+                *.app.tar.gz.sig) mv "$f" "Mira_macOS_${VERSION}.app.tar.gz.sig" ;;
+                *.app.tar.gz)     mv "$f" "Mira_macOS_${VERSION}.app.tar.gz" ;;
+                *)                mv "$f" "Mira_macOS${f#Mira}" ;;
+              esac
             done
             for f in *-setup.exe *-setup.exe.sig; do
               [ -f "$f" ] || continue

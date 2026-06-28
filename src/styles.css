@@ -299,6 +299,27 @@ option {
   width: 14px;
   height: 14px;
 }
+.windows-drag-strip {
+  position: absolute;
+  z-index: 9;
+  top: 0;
+  left: 0;
+  right: 72px;
+  height: 33px;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.platform-windows:not(.web-preview) {
+  --floating-glass-bg: rgb(247 245 248 / 68%);
+}
+:root[data-theme="dark"] .platform-windows:not(.web-preview) {
+  --floating-glass-bg: rgb(35 32 43 / 74%);
+}
+@media (prefers-color-scheme: dark) {
+  :root[data-theme="system"] .platform-windows:not(.web-preview) {
+    --floating-glass-bg: rgb(35 32 43 / 74%);
+  }
+}
 .device-copy { min-width: 0; padding-left: 32px; }
 .connection-state {
   display: flex;

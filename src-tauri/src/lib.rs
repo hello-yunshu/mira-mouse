@@ -24,7 +24,7 @@ use sys_locale::get_locale;
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
-    AppHandle, Emitter, Manager, WebviewWindow,
+    AppHandle, Emitter, Manager, Theme, WebviewWindow,
 };
 use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_notification::NotificationExt;
@@ -5556,6 +5556,7 @@ fn settings_get(app: tauri::AppHandle) -> Result<AppSettings, String> {
 fn settings_set(app: tauri::AppHandle, settings: AppSettings) -> Result<AppSettings, String> {
     let settings = settings.normalized();
     let previous_settings = cached_settings(&app);
+    let theme_changed = previous_settings.theme != settings.theme;
     let tray_icon_color_changed = previous_settings.tray_icon_color != settings.tray_icon_color;
     let low_battery_threshold_changed =
         previous_settings.low_battery_threshold != settings.low_battery_threshold;
@@ -5575,6 +5576,13 @@ fn settings_set(app: tauri::AppHandle, settings: AppSettings) -> Result<AppSetti
             && previous_settings.low_battery_threshold != settings.low_battery_threshold);
     save_settings(&app, &settings)?;
     update_cached_settings(&app, &settings);
+    if theme_changed {
+        apply_saved_app_theme(&app, &settings);
+        #[cfg(target_os = "windows")]
+        if let Some(window) = app.get_webview_window("main") {
+            apply_windows_backdrop(&window, &settings);
+        }
+    }
     if tray_icon_color_changed {
         // Force this settings change through to the native tray immediately,
         // even if the cached icon variant drifted from the currently shown icon.
@@ -5644,20 +5652,71 @@ fn focus_main(window: Option<WebviewWindow>) {
     }
 }
 
+fn hide_main_window_to_tray(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.hide();
+        #[cfg(target_os = "macos")]
+        {
+            use tauri::ActivationPolicy;
+            let _ = app.set_activation_policy(ActivationPolicy::Accessory);
+        }
+    }
+}
+
+fn app_theme_from_settings(settings: &AppSettings) -> Option<Theme> {
+    match settings.theme.as_str() {
+        "light" => Some(Theme::Light),
+        "dark" => Some(Theme::Dark),
+        _ => None,
+    }
+}
+
+fn apply_saved_app_theme(app: &AppHandle, settings: &AppSettings) {
+    app.set_theme(app_theme_from_settings(settings));
+}
+
 #[cfg(any(target_os = "windows", test))]
 #[cfg_attr(test, allow(dead_code))]
-fn apply_windows_backdrop(window: &WebviewWindow) {
+fn settings_prefer_dark(app: &AppHandle, settings: &AppSettings) -> bool {
+    match settings.theme.as_str() {
+        "dark" => true,
+        "light" => false,
+        _ => detect_system_dark(app),
+    }
+}
+
+#[cfg(any(target_os = "windows", test))]
+#[cfg_attr(test, allow(dead_code))]
+fn windows_acrylic_tint(app: &AppHandle, settings: &AppSettings) -> (u8, u8, u8, u8) {
+    if settings_prefer_dark(app, settings) {
+        (24, 24, 28, 120)
+    } else {
+        (247, 245, 248, 132)
+    }
+}
+
+#[cfg(any(target_os = "windows", test))]
+#[cfg_attr(test, allow(dead_code))]
+fn apply_windows_backdrop(window: &WebviewWindow, settings: &AppSettings) {
     use window_vibrancy::{apply_acrylic, apply_mica};
 
     // 优先使用 Acrylic（半透明毛玻璃），匹配用户对「毛玻璃半透明」的预期；
     // Mica 为不透明壁纸着色材质，仅作为 Acrylic 不可用时的兜底。
-    if let Err(acrylic_error) = apply_acrylic(window, Some((24, 24, 28, 120))) {
+    if let Err(acrylic_error) = apply_acrylic(
+        window,
+        Some(windows_acrylic_tint(window.app_handle(), settings)),
+    ) {
         if let Err(mica_error) = apply_mica(window, None) {
             eprintln!(
                 "[mira] Windows backdrop unavailable: Acrylic: {acrylic_error}; Mica: {mica_error}"
             );
         }
     }
+}
+
+#[tauri::command]
+fn hide_to_tray(app: tauri::AppHandle) {
+    hide_main_window_to_tray(&app);
 }
 
 const TRAY_ID: &str = "mira-status";
@@ -6285,8 +6344,11 @@ pub fn run() {
             // 移除系统标题栏（最小化/最大化/关闭按钮），改用前端 data-tauri-drag-region 拖拽。
             #[cfg(target_os = "windows")]
             if let Some(window) = app.get_webview_window("main") {
+                let settings = cached_settings(app.handle());
+                apply_saved_app_theme(app.handle(), &settings);
                 let _ = window.set_decorations(false);
-                apply_windows_backdrop(&window);
+                let _ = window.set_maximizable(false);
+                apply_windows_backdrop(&window, &settings);
             }
 
             // Load bundled plugins once and cache them for the app lifetime.
@@ -6332,15 +6394,7 @@ pub fn run() {
                             // 点击官方关闭按钮时不退出应用，改为隐藏到托盘。
                             // macOS 同时从 Dock 中隐藏，仅保留在状态栏。
                             api.prevent_close();
-                            if let Some(window) = app_handle.get_webview_window("main") {
-                                let _ = window.hide();
-                                #[cfg(target_os = "macos")]
-                                {
-                                    use tauri::ActivationPolicy;
-                                    let _ = app_handle
-                                        .set_activation_policy(ActivationPolicy::Accessory);
-                                }
-                            }
+                            hide_main_window_to_tray(&app_handle);
                         }
                         tauri::WindowEvent::Focused(true) => {
                             // Window gained focus — refresh device state on demand.
@@ -6368,6 +6422,10 @@ pub fn run() {
                                 .and_then(|guard| primary_snapshot(&guard).cloned());
                             let settings = cached_settings(&app_handle);
                             let _ = update_tray(&app_handle, snapshot.as_ref(), &settings);
+                            #[cfg(target_os = "windows")]
+                            if let Some(window) = app_handle.get_webview_window("main") {
+                                apply_windows_backdrop(&window, &settings);
+                            }
                             // 系统主题变化时唤醒安静灯光调度器（跟随系统主题场景）。
                             request_night_mode_eval(&state);
                         }
@@ -6449,6 +6507,7 @@ pub fn run() {
             about_info,
             settings_get,
             settings_set,
+            hide_to_tray,
             export_diagnostics,
             plugin_locales
         ])
