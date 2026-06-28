@@ -40,6 +40,17 @@ const PLUGIN_REGISTRY_URL: &str =
     "https://raw.githubusercontent.com/hello-yunshu/mira-mouse-plugins/main/registry/index.json";
 const MAX_REGISTRY_BYTES: u64 = 1024 * 1024;
 const MAX_PLUGIN_BYTES: u64 = 32 * 1024 * 1024;
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+#[cfg(target_os = "windows")]
+fn windows_hidden_command(program: &str) -> Command {
+    use std::os::windows::process::CommandExt;
+
+    let mut command = Command::new(program);
+    command.creation_flags(CREATE_NO_WINDOW);
+    command
+}
 
 /// 将连接类型字符串归一化为规范值（"usb"/"receiver"/"bluetooth"）。
 /// devices.json 中接收器连接值可能写作 "wireless" 或 "wireless-receiver"，
@@ -5228,9 +5239,12 @@ fn open_external_url(url: String) -> Result<(), String> {
     let status = Command::new("open").arg(&url).status();
 
     #[cfg(target_os = "windows")]
-    let status = Command::new("rundll32")
-        .args(["url.dll,FileProtocolHandler", url.as_str()])
-        .status();
+    let status = {
+        let mut command = windows_hidden_command("rundll32");
+        command
+            .args(["url.dll,FileProtocolHandler", url.as_str()])
+            .status()
+    };
 
     #[cfg(all(unix, not(target_os = "macos")))]
     let status = Command::new("xdg-open").arg(&url).status();
@@ -5956,7 +5970,7 @@ fn tray_app_icon_bytes() -> &'static [u8] {
 
 /// 直接查询系统外观，不依赖窗口状态。
 /// macOS: `defaults read -g AppleInterfaceStyle`（Light 模式返回非零退出码，Dark 返回 "Dark"）
-/// Windows: `reg query ...AppsUseLightTheme`（0x0=Dark, 0x1=Light）
+/// Windows: 直接读注册表 `AppsUseLightTheme`（0=Dark, 1=Light）
 /// Linux: 回退到 window.theme()
 fn detect_system_dark(app: &AppHandle) -> bool {
     #[cfg(target_os = "macos")]
@@ -5973,17 +5987,14 @@ fn detect_system_dark(app: &AppHandle) -> bool {
     }
     #[cfg(target_os = "windows")]
     {
-        if let Ok(output) = std::process::Command::new("reg")
-            .args([
-                "query",
-                "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
-                "/v",
-                "AppsUseLightTheme",
-            ])
-            .output()
+        use winreg::{enums::HKEY_CURRENT_USER, RegKey};
+
+        if let Ok(personalize) = RegKey::predef(HKEY_CURRENT_USER)
+            .open_subkey("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize")
         {
-            // 0x0 = Dark, 0x1 = Light
-            return String::from_utf8_lossy(&output.stdout).contains("0x0");
+            if let Ok(apps_use_light_theme) = personalize.get_value::<u32, _>("AppsUseLightTheme") {
+                return apps_use_light_theme == 0;
+            }
         }
     }
     // Linux 或命令不可用时，回退到 window.theme()
