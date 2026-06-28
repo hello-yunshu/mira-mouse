@@ -2789,17 +2789,21 @@ mod tests {
         // 注意：#FF0000 同时是 idx=0（红→黄起点）和 idx=1530（洋红→红终点），
         // rgb_to_hue_index 返回第一个匹配（0），所以 1530 只做正向验证。
         let round_trip = [
-            (0u16, "#FF0000"),   // 红
-            (255, "#FFFF00"),    // 黄
-            (510, "#00FF00"),    // 绿
-            (765, "#00FFFF"),    // 青
-            (1020, "#0000FF"),   // 蓝
-            (1275, "#FF00FF"),   // 洋红
+            (0u16, "#FF0000"), // 红
+            (255, "#FFFF00"),  // 黄
+            (510, "#00FF00"),  // 绿
+            (765, "#00FFFF"),  // 青
+            (1020, "#0000FF"), // 蓝
+            (1275, "#FF00FF"), // 洋红
         ];
         for (idx, hex) in round_trip {
             assert_eq!(hue_index_to_hex(idx), hex, "idx {idx} should map to {hex}");
             let [r, g, b] = parse_rgb(hex).unwrap();
-            assert_eq!(rgb_to_hue_index(r, g, b), idx, "{hex} should map back to idx {idx}");
+            assert_eq!(
+                rgb_to_hue_index(r, g, b),
+                idx,
+                "{hex} should map back to idx {idx}"
+            );
         }
         // 1530 正向映射到 #FF0000，但逆向回到 0（红色是彩虹轮的起点和终点）
         assert_eq!(hue_index_to_hex(1530), "#FF0000");
