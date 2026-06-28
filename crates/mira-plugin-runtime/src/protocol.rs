@@ -233,9 +233,8 @@ fn standard_reading(
         });
 
     if let Some(battery) = object(&outputs, "battery") {
-        reading.battery_percent =
-            number(battery, "percentage").and_then(|value| u8::try_from(value).ok());
-        reading.charging = boolean_like(battery, "charging").unwrap_or(false);
+        reading.battery_percent = reported_battery_percentage(battery, "percentage");
+        reading.charging = battery_charging(battery, "charging");
         if let Some(percentage) = reading.battery_percent {
             reading.batteries.push(mira_core::DeviceBattery {
                 id: "mouse".into(),
@@ -251,13 +250,10 @@ fn standard_reading(
     // same multi-device battery contract without knowing a brand protocol.
     if let Some(receiver) = object(&outputs, "receiver") {
         if reading.battery_percent.is_none() {
-            reading.battery_percent =
-                number(receiver, "mouseBattery").and_then(|value| u8::try_from(value).ok());
+            reading.battery_percent = receiver_mouse_battery_percentage(receiver);
         }
         if reading.batteries.is_empty() {
-            if let Some(percentage) =
-                number(receiver, "mouseBattery").and_then(|value| u8::try_from(value).ok())
-            {
+            if let Some(percentage) = receiver_mouse_battery_percentage(receiver) {
                 reading.batteries.push(mira_core::DeviceBattery {
                     id: "mouse".into(),
                     label: "mock.mouseLabel".into(),
@@ -266,28 +262,24 @@ fn standard_reading(
                 });
             }
         }
-        if let Some(percentage) =
-            number(receiver, "receiverBattery").and_then(|value| u8::try_from(value).ok())
-        {
+        if let Some(percentage) = receiver_status_battery_percentage(receiver) {
             reading.batteries.push(mira_core::DeviceBattery {
                 id: "receiver".into(),
                 label: "mock.receiverLabel".into(),
                 percentage,
-                charging: false,
+                charging: protocol_a_receiver_battery_charging(percentage),
             });
         }
     }
     if let Some(receiver_battery) = object(&outputs, "receiverBattery") {
-        if let Some(percentage) =
-            number(receiver_battery, "percentage").and_then(|value| u8::try_from(value).ok())
-        {
+        if let Some(percentage) = reported_battery_percentage(receiver_battery, "percentage") {
             upsert_battery(
                 &mut reading.batteries,
                 mira_core::DeviceBattery {
                     id: "receiver".into(),
                     label: "mock.receiverLabel".into(),
                     percentage,
-                    charging: boolean_like(receiver_battery, "charging").unwrap_or(false),
+                    charging: battery_charging(receiver_battery, "charging"),
                 },
             );
         }
@@ -704,6 +696,51 @@ fn number(object: &serde_json::Map<String, Value>, key: &str) -> Option<u64> {
     object.get(key)?.as_u64()
 }
 
+fn percentage_value(object: &serde_json::Map<String, Value>, key: &str) -> Option<u8> {
+    let value = number(object, key)?;
+    (value <= 100).then(|| u8::try_from(value).ok()).flatten()
+}
+
+fn reported_battery_percentage(object: &serde_json::Map<String, Value>, key: &str) -> Option<u8> {
+    if boolean_like(object, "valid") == Some(false)
+        || boolean_like(object, "present") == Some(false)
+    {
+        return None;
+    }
+    percentage_value(object, key)
+}
+
+fn receiver_mouse_battery_percentage(object: &serde_json::Map<String, Value>) -> Option<u8> {
+    if boolean_like(object, "mouseOnline") == Some(false) {
+        return None;
+    }
+    percentage_value(object, "mouseBattery")
+}
+
+fn receiver_status_battery_percentage(object: &serde_json::Map<String, Value>) -> Option<u8> {
+    let percentage = percentage_value(object, "receiverBattery")?;
+    (percentage > 0).then_some(percentage)
+}
+
+fn protocol_a_receiver_battery_charging(percentage: u8) -> bool {
+    (1..100).contains(&percentage)
+}
+
+/// 电池充电状态字段约定：原始字节值 1 表示充电中（与官方前端
+/// `1 === mouseBatStatus` / `1 === dongleChargingStatus` 一致）。
+/// 0 = 未充电，2 = 满电（或其他状态码）均不视为充电中。
+/// 兼容旧 parser 输出的 bool 值（true 视为 1）。
+fn battery_charging(object: &serde_json::Map<String, Value>, key: &str) -> bool {
+    object
+        .get(key)
+        .and_then(|value| {
+            value
+                .as_bool()
+                .or_else(|| value.as_u64().map(|status| status == 1))
+        })
+        .unwrap_or(false)
+}
+
 fn boolean_like(object: &serde_json::Map<String, Value>, key: &str) -> Option<bool> {
     object.get(key).and_then(|value| {
         value
@@ -788,6 +825,40 @@ mod tests {
     }
 
     #[test]
+    fn normalizes_protocol_a_receiver_battery_charging_status() {
+        let outputs = BTreeMap::from([(
+            "receiver".into(),
+            json!({"mouseBattery": 75, "mouseOnline": true, "receiverBattery": 50}),
+        )]);
+        let reading = standard_reading(outputs, None);
+        assert_eq!(reading.batteries.len(), 2);
+        assert_eq!(reading.batteries[1].id, "receiver");
+        assert_eq!(reading.batteries[1].percentage, 50);
+        assert!(reading.batteries[1].charging);
+    }
+
+    #[test]
+    fn drops_invalid_or_unavailable_battery_percentages() {
+        let outputs = BTreeMap::from([
+            (
+                "battery".into(),
+                json!({"percentage": 101, "charging": false, "valid": true}),
+            ),
+            (
+                "receiverBattery".into(),
+                json!({"percentage": 88, "charging": 1, "present": 0}),
+            ),
+            (
+                "receiver".into(),
+                json!({"mouseBattery": 80, "mouseOnline": false, "receiverBattery": 0}),
+            ),
+        ]);
+        let reading = standard_reading(outputs, None);
+        assert_eq!(reading.battery_percent, None);
+        assert!(reading.batteries.is_empty());
+    }
+
+    #[test]
     fn normalizes_am35_numeric_charging_and_receiver_battery_output() {
         let outputs = BTreeMap::from([
             (
@@ -812,6 +883,37 @@ mod tests {
         assert_eq!(reading.batteries[1].id, "receiver");
         assert_eq!(reading.batteries[1].percentage, 95);
         assert!(reading.batteries[1].charging);
+    }
+
+    /// 官方前端用 `1 === mouseBatStatus` / `1 === dongleChargingStatus` 判断充电中。
+    /// status=0（未充电）和 status=2（满电）都不应显示充电图标。
+    #[test]
+    fn treats_only_status_one_as_charging() {
+        for (status, expected_charging) in [(0u8, false), (1, true), (2, false)] {
+            let outputs = BTreeMap::from([(
+                "battery".into(),
+                json!({"percentage": 80, "charging": status, "valid": true}),
+            )]);
+            let reading = standard_reading(outputs, None);
+            assert_eq!(
+                reading.charging, expected_charging,
+                "status {status} should report charging={expected_charging}"
+            );
+        }
+
+        // AM35 接收器同理（receiverBattery output 携带 charging 字段）。
+        for (status, expected_charging) in [(0u8, false), (1, true), (2, false)] {
+            let outputs = BTreeMap::from([(
+                "receiverBattery".into(),
+                json!({"percentage": 90, "charging": status, "present": 1}),
+            )]);
+            let reading = standard_reading(outputs, None);
+            assert_eq!(reading.batteries.len(), 1);
+            assert_eq!(
+                reading.batteries[0].charging, expected_charging,
+                "receiver status {status} should report charging={expected_charging}"
+            );
+        }
     }
 
     #[test]

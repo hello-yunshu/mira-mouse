@@ -197,6 +197,53 @@ describe('real device snapshot mapping', () => {
     expect(receiverColor).toHaveStyle('--value-color: #00FF00');
   });
 
+  it('uses receiver lighting options to label the off effect', async () => {
+    const receiverOffSnapshot: DeviceSnapshot = {
+      ...snapshot,
+      capabilities: {
+        ...snapshot.capabilities,
+        receiverLighting: {
+          effect: 0,
+          effectName: null,
+          enabled: false,
+          speed: 3,
+          brightness: 1,
+          option: 7,
+          optionName: '自定义',
+          color: '#AABBCC',
+        },
+      },
+      pluginCapabilities: snapshot.pluginCapabilities.map((capability) => capability.id === 'lighting'
+        ? {
+            ...capability,
+            metadata: {
+              ...capability.metadata,
+              receiverLightingOptions: {
+                effect: [
+                  { value: 0, labelKey: 'receiverLighting.effect.off' },
+                  { value: 1, labelKey: 'receiverLighting.effect.fixed' },
+                ],
+              },
+            },
+          }
+        : capability),
+      writableMutations: [...(snapshot.writableMutations ?? []), 'set-receiver-lighting'],
+      pluginId: 'mira.amaster',
+    };
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'settings_get') return Promise.resolve(settings);
+      if (command === 'device_snapshot') return Promise.resolve(receiverOffSnapshot);
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+
+    render(<App />);
+    expect(await screen.findByText('AM INFINITY 8K MOUSE')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('tab', { name: '灯光' }));
+    fireEvent.click(screen.getByRole('tab', { name: '接收器灯光' }));
+    expect(screen.getByRole('button', { name: /灯效已关闭/ })).toBeInTheDocument();
+    expect(screen.queryByText('灯效 0')).not.toBeInTheDocument();
+  });
+
   it('renders Logitech HID++ pointer speed from plugin metadata', async () => {
     const logitechSnapshot: DeviceSnapshot = {
       displayName: 'HID++ Mouse', connection: 'wireless', batteryPercent: 82,

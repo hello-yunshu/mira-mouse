@@ -123,6 +123,7 @@ function getLightingEffectName(
   capabilities?: DeviceCapabilities,
   group: 'mouseLighting' | 'receiverLighting' = 'mouseLighting',
   pluginCapabilities: PluginCapability[] = [],
+  pluginId?: string,
 ): string {
   const lighting = lightingCapability(capabilities, group);
   if (!lighting) return i18n.t('lighting.hardwareSync');
@@ -130,8 +131,17 @@ function getLightingEffectName(
   if (typeof lighting.effectName === 'string' && lighting.effectName) return lighting.effectName;
   const effect = lighting.effect;
   if (typeof effect !== 'number') return i18n.t('lighting.hardwareSync');
-  // 从插件 LightingZone capability 的 effectOptions.offValue 读取"关闭"值（替代硬编码 effect === 0）
   const lightingCap = pluginCapabilities.find((c) => c.control === 'LightingZone');
+  if (group === 'receiverLighting') {
+    const receiverOptions = lightingCap?.metadata.receiverLightingOptions as ReceiverLightingOptions | undefined;
+    const option = receiverOptions?.effect?.find((candidate) => candidate.value === effect);
+    if (option) {
+      const label = resolveLabelKey(option.labelKey, pluginId);
+      if (label !== option.labelKey) return label;
+      if (effect === 0) return i18n.t('lighting.off');
+    }
+  }
+  // 从插件 LightingZone capability 的 effectOptions.offValue 读取"关闭"值（替代硬编码 effect === 0）
   const off = lightingCap ? pluginOffValue(lightingCap) : undefined;
   if (off !== undefined && effect === off) return i18n.t('lighting.off');
   return i18n.t('lighting.effectN', { value: effect });
@@ -215,7 +225,7 @@ function snapshotToState(snapshot: DeviceSnapshot): DeviceState {
     lighting: hasLightingData
       ? {
           enabled: mouseLightEnabled !== false,
-          mode: mouseLighting ? getLightingEffectName(caps, 'mouseLighting', snapshot.pluginCapabilities ?? []) : mouseLightEnabled === false ? i18n.t('lighting.off') : i18n.t('lighting.on'),
+          mode: mouseLighting ? getLightingEffectName(caps, 'mouseLighting', snapshot.pluginCapabilities ?? [], snapshot.pluginId) : mouseLightEnabled === false ? i18n.t('lighting.off') : i18n.t('lighting.on'),
           color: mouseLightColor,
           supportsSpeed: typeof mouseLighting?.speed === 'number',
           supportsBrightness: typeof mouseLighting?.brightness === 'number',
@@ -228,7 +238,7 @@ function snapshotToState(snapshot: DeviceSnapshot): DeviceState {
           mouseLightBrightness,
           mouseLightExtraColor,
           receiverLightEnabled: typeof receiverLighting?.enabled === 'boolean' ? receiverLighting.enabled : undefined,
-          receiverLightMode: receiverLighting ? getLightingEffectName(caps, 'receiverLighting', snapshot.pluginCapabilities ?? []) : undefined,
+          receiverLightMode: receiverLighting ? getLightingEffectName(caps, 'receiverLighting', snapshot.pluginCapabilities ?? [], snapshot.pluginId) : undefined,
           receiverLightColor: typeof receiverLighting?.color === 'string' ? receiverLighting.color : undefined,
         }
       : undefined,

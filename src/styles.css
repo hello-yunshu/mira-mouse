@@ -202,7 +202,7 @@ option {
 /* Windows 下 app-title 定位 */
 .platform-windows .device-column .app-title {
   top: 0px;
-  left: 15px;
+  left: 40px;
   text-align: left;
 }
 /* Windows 下 nav-links 右边缘对齐 dashboard 右边缘（dashboard max-width 468px 居中）：
@@ -1447,6 +1447,7 @@ input[type="time"] { border: 1px solid var(--panel-border); border-radius: 8px; 
   .device-copy { padding-left: 6px; }
   .device-column .app-title { left: 6px; width: min(180px, calc(100% - 6px)); }
   .platform-macos .device-column .app-title { left: 6px; }
+  .platform-windows .device-column .app-title { left: 10px; }
   .device-copy h1 { font-size: 22px; }
   .device-aura { width: 175px; height: 145px; }
   .control-tabs { width: 78%; }
