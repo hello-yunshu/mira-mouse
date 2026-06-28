@@ -213,7 +213,7 @@ describe('real device snapshot mapping', () => {
           color: '#AABBCC',
         },
       },
-      pluginCapabilities: snapshot.pluginCapabilities.map((capability) => capability.id === 'lighting'
+      pluginCapabilities: (snapshot.pluginCapabilities ?? []).map((capability) => capability.id === 'lighting'
         ? {
             ...capability,
             metadata: {
