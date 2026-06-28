@@ -18,7 +18,9 @@ if [ ! -f "$BACKGROUND" ]; then
 fi
 
 APP_NAME=$(basename "$APP_PATH" .app)
-VERSION=$(defaults read "$APP_PATH/Contents/Info.plist" CFBundleShortVersionString 2>/dev/null || echo "0.0.0")
+# 用 PlistBuddy 直接解析 plist 文件，不依赖 cfprefsd 守护进程
+# （defaults read 在 CI 非交互环境下会失败，导致版本号回退到 0.0.0）
+VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP_PATH/Contents/Info.plist" 2>/dev/null || echo "0.0.0")
 # 检测 universal 构建（路径包含 universal-apple-darwin），否则按当前 CPU 架构命名
 case "$APP_PATH" in
   *universal-apple-darwin*) ARCH="universal" ;;
