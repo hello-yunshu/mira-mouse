@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
 import { notifyError } from './notify';
@@ -33,11 +33,15 @@ describe('Mira shell', () => {
     expect(screen.queryByText(/0 DPI|--%/)).not.toBeInTheDocument();
   });
   it('shows native-style window controls in the Windows web preview', () => {
+    Object.defineProperty(navigator, 'userAgent', { configurable: true, value: 'Linux jsdom' });
     window.history.pushState({}, '', '?platform=windows');
     render(<App />);
-    expect(screen.getByRole('button', { name: '最小化窗口' })).toBeInTheDocument();
+    const controls = document.querySelector('.windows-preview-controls') as HTMLElement;
+    expect(controls).toBeInTheDocument();
+    expect(document.querySelector('.windows-window-controls')).not.toBeInTheDocument();
+    expect(within(controls).getByRole('button', { name: '最小化窗口' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '最大化窗口' })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '关闭窗口' })).toBeInTheDocument();
+    expect(within(controls).getByRole('button', { name: '关闭窗口' })).toBeInTheDocument();
   });
   it('hides to tray from the Windows close control and keeps maximize absent', () => {
     Object.defineProperty(navigator, 'userAgent', { configurable: true, value: 'Windows' });
