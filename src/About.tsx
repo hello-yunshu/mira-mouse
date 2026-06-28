@@ -118,7 +118,10 @@ export function AboutPage({ onBack, previewMode = false }: { onBack: () => void;
       </header>
 
       <section className="card about-section">
-        <img className="about-logo" src="/app-icon.png" alt="" aria-hidden="true" />
+        <span className="about-logo-frame" aria-hidden="true">
+          <img className="about-logo about-logo-light" src="/app-icon.png" alt="" />
+          <img className="about-logo about-logo-dark" src="/app-icon-dark.png" alt="" />
+        </span>
         <h2>{info.name}</h2>
         <p className="eyebrow">{t('about.unofficial')}</p>
         <p className="disclaimer">
