@@ -19,4 +19,4 @@ Access date: 2026-06-18. Browser retrieval returned HTTP 403; package registries
 - freedesktop autostart specification: <https://specifications.freedesktop.org/autostart-spec/latest/>
 - systemd software device permissions (`uaccess`): <https://www.freedesktop.org/software/systemd/man/latest/systemd.device.html>
 
-GitHub Action tags were resolved from their official repositories on this date and pinned to full commits in `.github/workflows/`. This records provenance without claiming that the workflows have run on GitHub-hosted runners.
+GitHub Action tags are referenced with explicit version refs in `.github/workflows/`. This register records provenance without claiming that the workflows have run on GitHub-hosted runners.
