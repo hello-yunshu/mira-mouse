@@ -1,6 +1,18 @@
 <!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
 # Changelog
 
+## 0.3.1 - 2026-06-28
+
+- Branded the Windows NSIS installer and uninstaller with Mira liquid-glass
+  header/sidebar assets, shared app icons, Simplified Chinese + English
+  language support, and a dedicated `Mira` Start Menu folder.
+- Added a reproducible Windows installer asset generator and npm script so
+  NSIS bitmap assets stay aligned with Mira's default glass theme.
+- Refined the macOS DMG background brightness to better match the current
+  installer visual direction.
+- Hid Windows helper command windows when opening external links and switched
+  Windows system theme detection to direct registry reads.
+
 ## 0.3.0 - 2026-06-28
 
 - Removed the Windows system title bar (minimize/maximize/close) and shipped a
@@ -47,4 +59,3 @@
   declarative plugin contracts, HID++ and AMaster plugin manifests, and the
   bounded workflow runtime.
 - No hardware compatibility or signed release is claimed.
-
