@@ -200,7 +200,7 @@ jobs:
         run: |
           set -euo pipefail
           node -e "const l=require('./plugins.lock.json');if(!l.releaseReady)throw Error('plugins.lock.json is not release-ready')"
-          current_version=$(node -p "require('./package.json').version")
+          current_version=$(node scripts/app-version.mjs)
           if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
             if [ "$OVERWRITE" = "true" ]; then
               tag=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null || echo "")
