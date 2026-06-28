@@ -54,7 +54,7 @@ describe('Mira shell', () => {
   it('renders capability data and labels the application-layer link', () => {
     render(<App />);
     fireEvent.click(screen.getByText('查看演示'));
-    expect(document.documentElement.style.getPropertyValue('--accent')).toBe('#D8B0B7');
+    expect(document.documentElement.style.getPropertyValue('--accent')).toBe('#ffb3b3');
     expect(screen.getAllByText('82%')).toHaveLength(2);
     expect(screen.getByLabelText('当前 DPI：1000，点击编辑')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('tab', { name: '灯光' }));
@@ -67,5 +67,14 @@ describe('Mira shell', () => {
     expect(screen.getByText('接收器灯光固件')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '关闭设备详情' }));
     expect(screen.queryByRole('dialog', { name: '全部读取信息' })).not.toBeInTheDocument();
+  });
+  it('returns to the dashboard when exiting demo mode from another page', () => {
+    render(<App />);
+    fireEvent.click(screen.getByText('查看演示'));
+    fireEvent.click(screen.getByRole('button', { name: '设置' }));
+    expect(screen.getByRole('heading', { name: '设置' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '退出演示' }));
+    expect(screen.getByText('没有找到支持的鼠标')).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: '设置' })).not.toBeInTheDocument();
   });
 });

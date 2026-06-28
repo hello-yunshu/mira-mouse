@@ -417,6 +417,16 @@ struct TrayMenuSignature {
     display_name: String,
 }
 
+const TRAY_CLICK_MAX_DRAG_DISTANCE: f64 = 6.0;
+const TRAY_CLICK_MAX_PRESS_DURATION: Duration = Duration::from_millis(800);
+
+#[derive(Debug, Clone, Copy)]
+struct TrayPressState {
+    started_at: Instant,
+    position: tauri::PhysicalPosition<f64>,
+    moved: bool,
+}
+
 /// 安静灯光（夜间模式）当前所处的阶段。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NightPhase {
@@ -516,6 +526,8 @@ struct SessionState {
     tray_icon_level: Mutex<Option<i16>>,
     tray_is_charging: Mutex<Option<bool>>,
     tray_uses_dark: Mutex<Option<bool>>,
+    /// 左键托盘点击保护：拖动或长按释放不应被当作打开主界面的点击。
+    tray_press: Mutex<Option<TrayPressState>>,
     /// 缓存托盘菜单签名，避免每轮轮询都重建菜单（仅图标做了 diff）。
     /// 签名相同时跳过菜单重建，仅更新 title/tooltip（轻量文本操作）。
     tray_menu_signature: Mutex<Option<TrayMenuSignature>>,
@@ -1744,6 +1756,80 @@ mod settings_tests {
         );
         settings.tray_show_battery_title = false;
         assert_eq!(battery_title(&snapshot, &settings), None);
+    }
+
+    #[test]
+    fn tray_battery_labels_translate_mock_keys() {
+        assert_eq!(
+            tr_battery_label("zh-CN", "mouse", "mock.mouseLabel"),
+            "鼠标"
+        );
+        assert_eq!(
+            tr_battery_label("zh-CN", "receiver", "mock.receiverLabel"),
+            "接收器"
+        );
+        assert_eq!(tr_battery_label("en", "mouse", "mock.mouseLabel"), "Mouse");
+        assert_eq!(
+            tr_battery_label("en", "receiver", "mock.receiverLabel"),
+            "Receiver"
+        );
+        assert_eq!(
+            tr_battery_item(
+                "zh-CN",
+                &tr_battery_label("zh-CN", "receiver", "mock.receiverLabel"),
+                100,
+                true,
+            ),
+            "接收器电量：100% · 充电中"
+        );
+    }
+
+    #[test]
+    fn tray_press_focuses_only_for_short_stationary_clicks() {
+        let started_at = Instant::now();
+        let press = TrayPressState {
+            started_at,
+            position: tauri::PhysicalPosition::new(100.0, 100.0),
+            moved: false,
+        };
+        assert!(tray_press_should_focus(
+            press,
+            tauri::PhysicalPosition::new(103.0, 102.0),
+            started_at + Duration::from_millis(120),
+        ));
+
+        let dragged = TrayPressState {
+            started_at,
+            position: tauri::PhysicalPosition::new(100.0, 100.0),
+            moved: false,
+        };
+        assert!(!tray_press_should_focus(
+            dragged,
+            tauri::PhysicalPosition::new(122.0, 100.0),
+            started_at + Duration::from_millis(120),
+        ));
+
+        let long_press = TrayPressState {
+            started_at,
+            position: tauri::PhysicalPosition::new(100.0, 100.0),
+            moved: false,
+        };
+        assert!(!tray_press_should_focus(
+            long_press,
+            tauri::PhysicalPosition::new(100.0, 100.0),
+            started_at + TRAY_CLICK_MAX_PRESS_DURATION + Duration::from_millis(1),
+        ));
+
+        let moved_during_press = TrayPressState {
+            started_at,
+            position: tauri::PhysicalPosition::new(100.0, 100.0),
+            moved: true,
+        };
+        assert!(!tray_press_should_focus(
+            moved_during_press,
+            tauri::PhysicalPosition::new(100.0, 100.0),
+            started_at + Duration::from_millis(120),
+        ));
     }
 
     fn primary_test_snapshot(
@@ -5719,6 +5805,71 @@ fn hide_to_tray(app: tauri::AppHandle) {
     hide_main_window_to_tray(&app);
 }
 
+fn tray_press_distance(
+    start: tauri::PhysicalPosition<f64>,
+    current: tauri::PhysicalPosition<f64>,
+) -> f64 {
+    let dx = current.x - start.x;
+    let dy = current.y - start.y;
+    (dx * dx + dy * dy).sqrt()
+}
+
+fn tray_press_moved(
+    start: tauri::PhysicalPosition<f64>,
+    current: tauri::PhysicalPosition<f64>,
+) -> bool {
+    tray_press_distance(start, current) > TRAY_CLICK_MAX_DRAG_DISTANCE
+}
+
+fn tray_press_should_focus(
+    press: TrayPressState,
+    release_position: tauri::PhysicalPosition<f64>,
+    released_at: Instant,
+) -> bool {
+    !press.moved
+        && !tray_press_moved(press.position, release_position)
+        && released_at.duration_since(press.started_at) <= TRAY_CLICK_MAX_PRESS_DURATION
+}
+
+fn record_tray_left_down(state: &SessionState, position: tauri::PhysicalPosition<f64>) {
+    if let Ok(mut press) = state.tray_press.lock() {
+        *press = Some(TrayPressState {
+            started_at: Instant::now(),
+            position,
+            moved: false,
+        });
+    }
+}
+
+fn mark_tray_press_moved(state: &SessionState, position: Option<tauri::PhysicalPosition<f64>>) {
+    if let Ok(mut press) = state.tray_press.lock() {
+        if let Some(active) = press.as_mut() {
+            active.moved = position
+                .map(|current| tray_press_moved(active.position, current))
+                .unwrap_or(true)
+                || active.moved;
+        }
+    }
+}
+
+fn consume_tray_left_up(
+    state: &SessionState,
+    release_position: tauri::PhysicalPosition<f64>,
+) -> bool {
+    state
+        .tray_press
+        .lock()
+        .ok()
+        .and_then(|mut press| press.take())
+        .map(|press| tray_press_should_focus(press, release_position, Instant::now()))
+        .unwrap_or(false)
+}
+
+fn focus_main_from_tray(app: &AppHandle) {
+    focus_main(app.get_webview_window("main"));
+    request_refresh(&app.state::<SessionState>());
+}
+
 const TRAY_ID: &str = "mira-status";
 
 /// Resolve a settings language value ("auto"|"zh-CN"|"en") to a concrete language code.
@@ -5803,6 +5954,27 @@ fn tr_battery_fallback_label(lang: &str) -> &'static str {
         "Mouse"
     } else {
         "鼠标"
+    }
+}
+
+fn tr_receiver_battery_label(lang: &str) -> &'static str {
+    if lang == "en" {
+        "Receiver"
+    } else {
+        "接收器"
+    }
+}
+
+fn tr_battery_label(lang: &str, id: &str, label: &str) -> String {
+    match label {
+        "mock.mouseLabel" => tr_battery_fallback_label(lang).to_string(),
+        "mock.receiverLabel" => tr_receiver_battery_label(lang).to_string(),
+        _ if label.starts_with("mock.") => match id {
+            "receiver" => tr_receiver_battery_label(lang).to_string(),
+            "mouse" => tr_battery_fallback_label(lang).to_string(),
+            _ => tr_battery_fallback_label(lang).to_string(),
+        },
+        _ => label.to_string(),
     }
 }
 
@@ -6149,7 +6321,13 @@ fn update_tray(
             connected: true,
             batteries: batteries
                 .iter()
-                .map(|b| (b.label.clone(), b.percentage, b.charging))
+                .map(|b| {
+                    (
+                        tr_battery_label(lang, &b.id, &b.label),
+                        b.percentage,
+                        b.charging,
+                    )
+                })
                 .collect(),
             show_connection: settings.tray_show_connection,
             connection_label: connection_label(snapshot.connection, lang).to_string(),
@@ -6186,10 +6364,11 @@ fn update_tray(
                 }
             }
             for (index, battery) in batteries.iter().enumerate() {
+                let label = tr_battery_label(lang, &battery.id, &battery.label);
                 let item = MenuItem::with_id(
                     app,
                     format!("battery-{index}"),
-                    tr_battery_item(lang, &battery.label, battery.percentage, battery.charging),
+                    tr_battery_item(lang, &label, battery.percentage, battery.charging),
                     true,
                     None::<&str>,
                 )?;
@@ -6272,28 +6451,47 @@ fn build_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .on_menu_event(|app, event| match event.id().as_ref() {
             "quit" => app.exit(0),
             _ => {
-                focus_main(app.get_webview_window("main"));
-                request_refresh(&app.state::<SessionState>());
+                focus_main_from_tray(app);
             }
         })
-        .on_tray_icon_event(|tray, event| {
-            match event {
-                // Windows 习惯双击托盘图标打开程序
-                tauri::tray::TrayIconEvent::DoubleClick {
-                    button: tauri::tray::MouseButton::Left,
-                    ..
-                }
-                | tauri::tray::TrayIconEvent::Click {
-                    button: tauri::tray::MouseButton::Left,
-                    button_state: tauri::tray::MouseButtonState::Up,
-                    ..
-                } => {
-                    let app = tray.app_handle();
-                    focus_main(app.get_webview_window("main"));
-                    request_refresh(&app.state::<SessionState>());
-                }
-                _ => {}
+        .on_tray_icon_event(|tray, event| match event {
+            tauri::tray::TrayIconEvent::Click {
+                button: tauri::tray::MouseButton::Left,
+                button_state: tauri::tray::MouseButtonState::Down,
+                position,
+                ..
+            } => {
+                let app = tray.app_handle();
+                record_tray_left_down(&app.state::<SessionState>(), position);
             }
+            tauri::tray::TrayIconEvent::Click {
+                button: tauri::tray::MouseButton::Left,
+                button_state: tauri::tray::MouseButtonState::Up,
+                position,
+                ..
+            } => {
+                let app = tray.app_handle();
+                if consume_tray_left_up(&app.state::<SessionState>(), position) {
+                    focus_main_from_tray(app);
+                }
+            }
+            // Windows 习惯双击托盘图标打开程序；双击事件本身不是拖动释放。
+            tauri::tray::TrayIconEvent::DoubleClick {
+                button: tauri::tray::MouseButton::Left,
+                ..
+            } => {
+                let app = tray.app_handle();
+                focus_main_from_tray(app);
+            }
+            tauri::tray::TrayIconEvent::Move { position, .. } => {
+                let app = tray.app_handle();
+                mark_tray_press_moved(&app.state::<SessionState>(), Some(position));
+            }
+            tauri::tray::TrayIconEvent::Leave { .. } => {
+                let app = tray.app_handle();
+                mark_tray_press_moved(&app.state::<SessionState>(), None);
+            }
+            _ => {}
         })
         .tooltip("Mira · 未连接受支持的鼠标")
         .build(app)?;
