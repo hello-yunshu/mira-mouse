@@ -1,8 +1,23 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
 import { notifyError } from './notify';
+
+const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }));
+
+const originalUserAgent = navigator.userAgent;
+
+beforeEach(() => {
+  invokeMock.mockRejectedValue(new Error('not mocked'));
+});
+
+afterEach(() => {
+  invokeMock.mockReset();
+  window.history.pushState({}, '', '/');
+  Object.defineProperty(navigator, 'userAgent', { configurable: true, value: originalUserAgent });
+});
 
 describe('Mira shell', () => {
   it('shows foreground errors inside the app and lets the user dismiss them', async () => {
@@ -23,7 +38,14 @@ describe('Mira shell', () => {
     expect(screen.getByRole('button', { name: '最小化窗口' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '最大化窗口' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: '关闭窗口' })).toBeInTheDocument();
-    window.history.pushState({}, '', '/');
+  });
+  it('hides to tray from the Windows close control and keeps maximize absent', () => {
+    Object.defineProperty(navigator, 'userAgent', { configurable: true, value: 'Windows' });
+    render(<App />);
+    expect(document.querySelector('.windows-drag-strip')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '最大化窗口' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '关闭窗口' }));
+    expect(invokeMock).toHaveBeenCalledWith('hide_to_tray');
   });
   it('renders capability data and labels the application-layer link', () => {
     render(<App />);
