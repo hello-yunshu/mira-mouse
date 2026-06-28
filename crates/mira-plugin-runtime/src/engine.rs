@@ -817,24 +817,7 @@ impl ProtocolPackage {
             .mutations
             .iter()
             .filter(|(_id, mutation)| {
-                if let Some(outputs) = ctx_outputs {
-                    let zero_skipped = mutation.skip_if_zero.iter().any(|reference| {
-                        output_value(outputs, reference).and_then(Value::as_u64) == Some(0)
-                    });
-                    let non_zero_skipped = mutation.skip_if_non_zero.iter().any(|reference| {
-                        output_value(outputs, reference)
-                            .and_then(Value::as_u64)
-                            .unwrap_or(0)
-                            != 0
-                    });
-                    let all_zero_skipped = !mutation.skip_if_all_zero.is_empty()
-                        && mutation.skip_if_all_zero.iter().all(|reference| {
-                            output_value(outputs, reference).and_then(Value::as_u64) == Some(0)
-                        });
-                    !(zero_skipped || non_zero_skipped || all_zero_skipped)
-                } else {
-                    true
-                }
+                ctx_outputs.is_none_or(|outputs| mutation_available(mutation, outputs))
             })
             .map(|(id, _mutation)| id)
             .filter_map(|id| id.strip_prefix(&prefix).map(str::to_owned))
@@ -1102,20 +1085,7 @@ impl ProtocolPackage {
             .mutations
             .get(mutation_id)
             .ok_or_else(|| format!("missing mutation {mutation_id}"))?;
-        let zero_skipped = mutation.skip_if_zero.iter().any(|reference| {
-            output_value(ctx_outputs, reference).and_then(Value::as_u64) == Some(0)
-        });
-        let non_zero_skipped = mutation.skip_if_non_zero.iter().any(|reference| {
-            output_value(ctx_outputs, reference)
-                .and_then(Value::as_u64)
-                .unwrap_or(0)
-                != 0
-        });
-        let all_zero_skipped = !mutation.skip_if_all_zero.is_empty()
-            && mutation.skip_if_all_zero.iter().all(|reference| {
-                output_value(ctx_outputs, reference).and_then(Value::as_u64) == Some(0)
-            });
-        if zero_skipped || non_zero_skipped || all_zero_skipped {
+        if !mutation_available(mutation, ctx_outputs) {
             return Err(format!(
                 "mutation {mutation_id} is not available on this device"
             ));
@@ -1256,6 +1226,11 @@ impl ProtocolPackage {
         let write_skipped = mutation.write_skip_if_zero.iter().any(|reference| {
             output_value(&session.outputs, reference).and_then(Value::as_u64) == Some(0)
         });
+        if write_skipped && memory_read.is_none() {
+            return Err(format!(
+                "mutation {mutation_id} is not available on this device"
+            ));
+        }
         if !write_skipped {
             let write_params = resolve_workflow_params(&mutation.write_params, &session.outputs)
                 .map_err(|error| format!("mutation {mutation_id} write params: {error}"))?;
@@ -2100,6 +2075,76 @@ fn output_value<'a>(
         .get(&reference.output)?
         .as_object()?
         .get(&reference.field)
+}
+
+fn output_condition_value<'a>(
+    outputs: &'a BTreeMap<String, Value>,
+    condition: &OutputCondition,
+) -> Option<&'a Value> {
+    output_value(
+        outputs,
+        &OutputReference {
+            output: condition.output.clone(),
+            field: condition.field.clone(),
+        },
+    )
+}
+
+fn mutation_base_available(
+    mutation: &MutationDefinition,
+    outputs: &BTreeMap<String, Value>,
+) -> bool {
+    let zero_skipped = mutation
+        .skip_if_zero
+        .iter()
+        .any(|reference| output_value(outputs, reference).and_then(Value::as_u64) == Some(0));
+    let non_zero_skipped = mutation.skip_if_non_zero.iter().any(|reference| {
+        output_value(outputs, reference)
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            != 0
+    });
+    let all_zero_skipped = !mutation.skip_if_all_zero.is_empty()
+        && mutation
+            .skip_if_all_zero
+            .iter()
+            .all(|reference| output_value(outputs, reference).and_then(Value::as_u64) == Some(0));
+    !(zero_skipped || non_zero_skipped || all_zero_skipped)
+}
+
+fn direct_write_available(
+    mutation: &MutationDefinition,
+    outputs: &BTreeMap<String, Value>,
+) -> bool {
+    !mutation
+        .write_skip_if_zero
+        .iter()
+        .any(|reference| output_value(outputs, reference).and_then(Value::as_u64) == Some(0))
+}
+
+fn memory_write_available(
+    mutation: &MutationDefinition,
+    outputs: &BTreeMap<String, Value>,
+) -> bool {
+    let Some(memory) = &mutation.memory else {
+        return false;
+    };
+    output_value(outputs, &memory.available_when)
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+        != 0
+        && memory
+            .enabled_when
+            .matches(output_condition_value(outputs, &memory.enabled_when))
+        && memory
+            .required_when
+            .iter()
+            .all(|condition| condition.matches(output_condition_value(outputs, condition)))
+}
+
+fn mutation_available(mutation: &MutationDefinition, outputs: &BTreeMap<String, Value>) -> bool {
+    mutation_base_available(mutation, outputs)
+        && (direct_write_available(mutation, outputs) || memory_write_available(mutation, outputs))
 }
 
 /// Deep merge two JSON values for model override loading.
@@ -3427,6 +3472,115 @@ mod tests {
             "test-set-lighting",
             &Map::new(),
             &outputs,
+            None,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not available on this device"));
+    }
+
+    #[test]
+    fn mutation_ids_require_a_real_direct_or_memory_write_path() {
+        let workflows = r#"{
+            "schemaVersion": 1,
+            "workflows": {},
+            "mutations": {
+                "test-set-lighting": {
+                    "transport": "feature",
+                    "inputs": {},
+                    "skipIfAllZero": [
+                        {"output": "colorLed", "field": "featureIndex"},
+                        {"output": "onboardProfiles", "field": "featureIndex"}
+                    ],
+                    "writeSkipIfZero": [{"output": "colorLed", "field": "featureIndex"}],
+                    "read": {"command": "read-lighting", "parser": "lighting", "params": {}},
+                    "writeCommand": "write-lighting",
+                    "writeParams": {},
+                    "memory": {
+                        "readWorkflow": "test-onboard-read",
+                        "availableWhen": {"output": "onboardProfiles", "field": "featureIndex"},
+                        "enabledWhen": {"output": "onboardMode", "field": "mode", "eq": 1},
+                        "requiredWhen": [{"output": "onboardDescription", "field": "profileFormatId", "eq": 5}],
+                        "size": {"output": "onboardDescription", "field": "sectorSize"},
+                        "chunkOutputPrefix": "chunk",
+                        "chunkField": "bytes",
+                        "chunkSize": 16,
+                        "checksum": "crc-ccitt-false",
+                        "patches": [{"offset": 0, "value": "0x01"}],
+                        "transport": "feature",
+                        "startCommand": "memory-start",
+                        "chunkCommand": "memory-chunk",
+                        "endTransport": "feature",
+                        "endCommand": "memory-end"
+                    },
+                    "preserveUnknown": false,
+                    "verify": {"command": "verify-lighting", "parser": "lighting", "params": {}, "assertions": []}
+                }
+            }
+        }"#;
+        let package = build_test_package(
+            r#"{"schemaVersion": 1, "commands": {}}"#,
+            r#"{"schemaVersion": 1, "parsers": {}}"#,
+            r#"{"schemaVersion": 1, "transports": {}}"#,
+            workflows,
+        );
+
+        let direct_outputs = BTreeMap::from([
+            ("colorLed".into(), serde_json::json!({"featureIndex": 7})),
+            (
+                "onboardProfiles".into(),
+                serde_json::json!({"featureIndex": 11}),
+            ),
+            ("onboardMode".into(), serde_json::json!({"mode": 1})),
+            (
+                "onboardDescription".into(),
+                serde_json::json!({"profileFormatId": 3, "sectorSize": 255}),
+            ),
+        ]);
+        assert_eq!(
+            package.mutation_ids("test", Some(&direct_outputs)),
+            vec!["set-lighting"]
+        );
+
+        let memory_outputs = BTreeMap::from([
+            ("colorLed".into(), serde_json::json!({"featureIndex": 0})),
+            (
+                "onboardProfiles".into(),
+                serde_json::json!({"featureIndex": 11}),
+            ),
+            ("onboardMode".into(), serde_json::json!({"mode": 1})),
+            (
+                "onboardDescription".into(),
+                serde_json::json!({"profileFormatId": 5, "sectorSize": 255}),
+            ),
+        ]);
+        assert_eq!(
+            package.mutation_ids("test", Some(&memory_outputs)),
+            vec!["set-lighting"]
+        );
+
+        let unavailable_outputs = BTreeMap::from([
+            ("colorLed".into(), serde_json::json!({"featureIndex": 0})),
+            (
+                "onboardProfiles".into(),
+                serde_json::json!({"featureIndex": 11}),
+            ),
+            ("onboardMode".into(), serde_json::json!({"mode": 1})),
+            (
+                "onboardDescription".into(),
+                serde_json::json!({"profileFormatId": 3, "sectorSize": 255}),
+            ),
+        ]);
+        assert!(package
+            .mutation_ids("test", Some(&unavailable_outputs))
+            .is_empty());
+
+        let api = test_hid_api();
+        let result = package.mutate(
+            api,
+            "test-path",
+            "test-set-lighting",
+            &Map::new(),
+            &unavailable_outputs,
             None,
         );
         assert!(result.is_err());
