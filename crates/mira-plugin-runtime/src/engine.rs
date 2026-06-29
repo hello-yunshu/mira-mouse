@@ -1943,12 +1943,11 @@ impl Session<'_> {
             {
                 return Err(format!("HID++ 1.0 transport error 0x{:02X}", response[5]));
             }
-            if response.first() != Some(report_id) {
+            let Some(response) =
+                input_payload_from_report(response, *report_id, *strip_report_id_on_read)
+            else {
                 continue;
-            }
-            if *strip_report_id_on_read {
-                response.remove(0);
-            }
+            };
             if payload.len() >= 3
                 && response.len() >= 5
                 && response[1] == 0xFF
@@ -2065,6 +2064,25 @@ impl Session<'_> {
         thread::sleep(Duration::from_millis(milliseconds));
         Ok(())
     }
+}
+
+fn input_payload_from_report(
+    mut response: Vec<u8>,
+    report_id: u8,
+    strip_report_id_on_read: bool,
+) -> Option<Vec<u8>> {
+    if response.first() == Some(&report_id) {
+        if strip_report_id_on_read {
+            response.remove(0);
+        }
+        return Some(response);
+    }
+
+    if strip_report_id_on_read {
+        return Some(response);
+    }
+
+    None
 }
 
 fn output_value<'a>(
@@ -2731,6 +2749,22 @@ fn rgb_to_hue_index(r: u8, g: u8, b: u8) -> u16 {
 mod tests {
     use super::*;
     use std::sync::OnceLock;
+
+    #[test]
+    fn input_payload_accepts_report_id_or_already_stripped_payload() {
+        assert_eq!(
+            input_payload_from_report(vec![0x11, 0x01, 0x02, 0x03], 0x11, true),
+            Some(vec![0x01, 0x02, 0x03])
+        );
+        assert_eq!(
+            input_payload_from_report(vec![0x01, 0x02, 0x03], 0x11, true),
+            Some(vec![0x01, 0x02, 0x03])
+        );
+        assert_eq!(
+            input_payload_from_report(vec![0x01, 0x02, 0x03], 0x11, false),
+            None
+        );
+    }
 
     #[test]
     fn parses_supported_field_kinds() {
