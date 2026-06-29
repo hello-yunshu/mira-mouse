@@ -36,6 +36,22 @@ type CachedPlugins = Vec<(
 )>;
 type PluginLocales = BTreeMap<String, BTreeMap<String, BTreeMap<String, String>>>;
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DeviceReadDiagnostic {
+    plugin_id: String,
+    family: String,
+    evidence: String,
+    connection: String,
+    device_key: String,
+    vendor_id: u16,
+    product_id: u16,
+    usage_page: u16,
+    usage: u16,
+    error_kind: String,
+    error: String,
+}
+
 const PLUGIN_REGISTRY_URL: &str =
     "https://raw.githubusercontent.com/hello-yunshu/mira-mouse-plugins/main/registry/index.json";
 const MAX_REGISTRY_BYTES: u64 = 1024 * 1024;
@@ -522,6 +538,9 @@ struct SessionState {
     /// 支持多设备并行管理：每轮轮询更新对应设备的快照，
     /// 断开的设备从 map 中移除。`device_snapshot` 命令返回 primary 设备。
     last_snapshot: Mutex<BTreeMap<String, DeviceSnapshot>>,
+    /// Last sanitized read error per matched HID path. Exposed only through
+    /// diagnostics and the manual HID scan to explain Windows access/timeouts.
+    last_read_errors: Mutex<BTreeMap<String, DeviceReadDiagnostic>>,
     plugins: Mutex<Option<CachedPlugins>>,
     tray_icon_level: Mutex<Option<i16>>,
     tray_is_charging: Mutex<Option<bool>>,
@@ -1140,8 +1159,67 @@ fn clear_snapshots(state: &SessionState) {
     if let Ok(mut cache) = state.onboard_memory_cache.lock() {
         cache.clear();
     }
+    if let Ok(mut errors) = state.last_read_errors.lock() {
+        errors.clear();
+    }
     if changed {
         note_state_change(state);
+    }
+}
+
+fn sanitized_device_key(device: &hid::MatchedDevice) -> String {
+    format!(
+        "device-{:04x}-{:04x}-{:02x}-{:02x}",
+        device.vendor_id, device.product_id, device.usage_page, device.usage
+    )
+}
+
+fn classify_device_read_error(error: &str) -> String {
+    let lower = error.to_ascii_lowercase();
+    if lower.contains("used by another process")
+        || lower.contains("access is denied")
+        || lower.contains("access denied")
+        || lower.contains("sharing violation")
+        || lower.contains("busy")
+    {
+        "access".into()
+    } else if lower.contains("timed out") || lower.contains("timeout") {
+        "timeout".into()
+    } else if lower.contains("input report")
+        || lower.contains("output report")
+        || lower.contains("feature report")
+    {
+        "hid-io".into()
+    } else {
+        "protocol".into()
+    }
+}
+
+fn device_read_diagnostic(device: &hid::MatchedDevice, error: String) -> DeviceReadDiagnostic {
+    DeviceReadDiagnostic {
+        plugin_id: device.plugin_id.clone(),
+        family: device.family.clone(),
+        evidence: device.evidence.clone(),
+        connection: device.connection.clone(),
+        device_key: sanitized_device_key(device),
+        vendor_id: device.vendor_id,
+        product_id: device.product_id,
+        usage_page: device.usage_page,
+        usage: device.usage,
+        error_kind: classify_device_read_error(&error),
+        error,
+    }
+}
+
+fn record_device_read_error(state: &SessionState, device: &hid::MatchedDevice, error: String) {
+    if let Ok(mut errors) = state.last_read_errors.lock() {
+        errors.insert(device.path.clone(), device_read_diagnostic(device, error));
+    }
+}
+
+fn clear_device_read_error(state: &SessionState, device_path: &str) {
+    if let Ok(mut errors) = state.last_read_errors.lock() {
+        errors.remove(device_path);
     }
 }
 
@@ -4742,7 +4820,14 @@ fn read_device_once(app: &AppHandle) {
                 plugins,
             ) {
                 Ok(pkg) => pkg,
-                Err(_) => continue,
+                Err(error) => {
+                    record_device_read_error(
+                        &state,
+                        device,
+                        format!("parse protocol package: {error}"),
+                    );
+                    continue;
+                }
             };
 
             // #9 防抖式 TTL 缓存：非 settling 状态下，500ms 内复用快照跳过 HID 往返。
@@ -4781,6 +4866,7 @@ fn read_device_once(app: &AppHandle) {
                 },
             ) {
                 Ok(mut reading) => {
+                    clear_device_read_error(&state, &device.path);
                     let writable_mutations = if inspection.signature_verified
                         && inspection.writes_enabled
                         && device_evidence_allows_writes(&device.evidence)
@@ -4836,6 +4922,7 @@ fn read_device_once(app: &AppHandle) {
                     }
                 }
                 Err(error) => {
+                    record_device_read_error(&state, device, error.clone());
                     eprintln!(
                         "[mira] background read failed for {}: {error}",
                         device.family
@@ -5000,6 +5087,8 @@ struct DiscoveredDevice {
     product_id: u16,
     usage_page: u16,
     usage: u16,
+    last_error_kind: Option<String>,
+    last_error: Option<String>,
 }
 
 #[tauri::command]
@@ -5023,23 +5112,33 @@ fn discover_devices(
     let _ = cached_api.refresh_devices();
     let api: &HidApi = cached_api;
     let matched = hid::enumerate_matched_devices(api, plugins);
+    let errors = state
+        .last_read_errors
+        .lock()
+        .map(|errors| errors.clone())
+        .unwrap_or_default();
     Ok(matched
         .into_iter()
-        .map(|d| DiscoveredDevice {
-            plugin_id: d.plugin_id,
-            family: d.family,
-            connection: d.connection,
-            evidence: d.evidence,
-            // 不暴露原始 HID 路径（macOS 上可能包含序列号），
-            // 用脱敏标识符替代，前端仅用作 React key。
-            path: format!(
-                "device-{:04x}-{:04x}-{:02x}-{:02x}",
-                d.vendor_id, d.product_id, d.usage_page, d.usage
-            ),
-            vendor_id: d.vendor_id,
-            product_id: d.product_id,
-            usage_page: d.usage_page,
-            usage: d.usage,
+        .map(|d| {
+            let diagnostic = errors.get(&d.path);
+            let path = sanitized_device_key(&d);
+            let last_error_kind = diagnostic.map(|diagnostic| diagnostic.error_kind.clone());
+            let last_error = diagnostic.map(|diagnostic| diagnostic.error.clone());
+            DiscoveredDevice {
+                plugin_id: d.plugin_id,
+                family: d.family,
+                connection: d.connection,
+                evidence: d.evidence,
+                // 不暴露原始 HID 路径（macOS 上可能包含序列号），
+                // 用脱敏标识符替代，前端仅用作 React key。
+                path,
+                vendor_id: d.vendor_id,
+                product_id: d.product_id,
+                usage_page: d.usage_page,
+                usage: d.usage,
+                last_error_kind,
+                last_error,
+            }
         })
         .collect())
 }
@@ -5718,9 +5817,15 @@ fn settings_set(app: tauri::AppHandle, settings: AppSettings) -> Result<AppSetti
 fn export_diagnostics(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     let package = app.package_info();
     let bundled = active_plugins_info(&app);
+    let read_errors: Vec<DeviceReadDiagnostic> = app
+        .state::<SessionState>()
+        .last_read_errors
+        .lock()
+        .map(|errors| errors.values().cloned().collect())
+        .unwrap_or_default();
     // Diagnostics are intentionally minimal and sanitized: no serial numbers,
-    // no HID report payloads, no user device identifiers. Only app metadata,
-    // platform, and bundled plugin verification status are included.
+    // no HID report payloads, no raw HID paths. Device errors use only
+    // VID/PID/usage and the plugin-declared family.
     Ok(serde_json::json!({
         "app": {
             "name": package.name,
@@ -5732,6 +5837,7 @@ fn export_diagnostics(app: tauri::AppHandle) -> Result<serde_json::Value, String
         "rust_version": env!("CARGO_PKG_RUST_VERSION"),
         "autostart_enabled": app.autolaunch().is_enabled().unwrap_or(false),
         "bundled_plugins": bundled,
+        "device_read_errors": read_errors,
         "updater_active": read_lock_file().is_some_and(|lock| lock.release_ready),
         "note": "Diagnostics contain no device serial numbers, HID payloads, or user-identifying data.",
     }))

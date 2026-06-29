@@ -230,4 +230,6 @@ export interface DiscoveredDevice {
   productId: number;
   usagePage: number;
   usage: number;
+  lastErrorKind?: string;
+  lastError?: string;
 }
