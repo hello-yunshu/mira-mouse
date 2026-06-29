@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Explicit test/development boundary. Production must obtain snapshots from Tauri commands.
-import type { DeviceState } from './types';
+import type { DeviceSnapshot, DeviceSnapshotEntry, DeviceState } from './types';
 import { DEFAULT_THEME_ACCENT } from './theme';
 
 export const MOCK_DEVICE: DeviceState = {
@@ -62,3 +62,76 @@ export const MOCK_DEVICE: DeviceState = {
   writableMutations: ['set-dpi-stage', 'set-dpi-value', 'set-polling-rate', 'set-mouse-lighting', 'set-receiver-lighting', 'set-wireless-sleep-time', 'set-bluetooth-sleep-time'],
   readonly: false,
 };
+
+function mockSnapshot(overrides: Partial<DeviceSnapshot> = {}): DeviceSnapshot {
+  return {
+    displayName: MOCK_DEVICE.name,
+    connection: MOCK_DEVICE.connection,
+    batteryPercent: MOCK_DEVICE.battery,
+    charging: MOCK_DEVICE.charging,
+    batteries: MOCK_DEVICE.batteries,
+    dpi: MOCK_DEVICE.dpiStages.find((stage) => stage.active)?.value,
+    dpiStages: MOCK_DEVICE.dpiStages,
+    pollingRateHz: MOCK_DEVICE.pollingRate,
+    supportedPollingRatesHz: MOCK_DEVICE.supportedPollingRates,
+    profile: MOCK_DEVICE.profile,
+    confirmedLightColor: MOCK_DEVICE.lighting?.mouseLightColor,
+    capabilities: MOCK_DEVICE.capabilities,
+    pluginCapabilities: MOCK_DEVICE.pluginCapabilities,
+    writableMutations: MOCK_DEVICE.writableMutations,
+    evidence: MOCK_DEVICE.evidence,
+    readonly: MOCK_DEVICE.readonly,
+    pluginId: MOCK_DEVICE.pluginId,
+    ...overrides,
+  };
+}
+
+export const MOCK_DEVICE_ENTRIES: DeviceSnapshotEntry[] = [
+  {
+    deviceKey: 'demo-wireless',
+    selected: true,
+    snapshot: mockSnapshot(),
+  },
+  {
+    deviceKey: 'demo-usb',
+    selected: false,
+    snapshot: mockSnapshot({
+      displayName: 'Mira Example USB Mouse',
+      connection: 'usb',
+      batteryPercent: 96,
+      charging: true,
+      batteries: [{ id: 'mouse', label: 'mock.mouseLabel', percentage: 96, charging: true }],
+      dpi: 1600,
+      dpiStages: MOCK_DEVICE.dpiStages.map((stage) => ({
+        ...stage,
+        active: stage.value === 1600,
+      })),
+      pollingRateHz: 8000,
+      profile: 'Profile 2',
+      confirmedLightColor: '#8fc7b8',
+      capabilities: {
+        ...MOCK_DEVICE.capabilities,
+        battery: { percentage: 96, charging: true, valid: true },
+        dpi: {
+          profile: 1,
+          currentStage: 4,
+          stageCount: 8,
+          dpiX: [400, 800, 1000, 1600, 2400, 3200, 6400, 12800],
+          dpiY: [400, 800, 1000, 1600, 2400, 3200, 6400, 12800],
+          stageColors: ['#7ea7d8', '#9a8bd0', '#bf7fa8', '#d39378', '#7eb2a0', '#a8c46a', '#c9a86c', '#c77a9a'],
+        },
+        settings: {
+          ...MOCK_DEVICE.capabilities.settings,
+          profile: 1,
+          pollingRate: 8000,
+          mouseLightStartColor: '#8fc7b8',
+          mouseLightEndColor: '#8fc7b8',
+        },
+        receiverLighting: {
+          ...MOCK_DEVICE.capabilities.receiverLighting,
+          color: '#8fc7b8',
+        },
+      },
+    }),
+  },
+];

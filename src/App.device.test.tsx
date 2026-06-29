@@ -467,7 +467,7 @@ describe('real device snapshot mapping', () => {
     fireEvent.click(screen.getByRole('button', { name: '切换到第 1 档' }));
     await waitFor(() => expect(screen.getByLabelText('当前 DPI：800，点击编辑')).toBeInTheDocument());
     expect(invokeMock).toHaveBeenCalledWith('device_mutate', { mutation: 'set-dpi-stage', params: { stage: 1 } });
-    expect(screen.getByText(/已写入/)).toBeInTheDocument();
+    expect(screen.getByText(/搞定啦/)).toBeInTheDocument();
     expect(document.documentElement.style.getPropertyValue('--accent')).toContain('210');
     fireEvent.click(screen.getByRole('button', { name: /76%/ }));
     expect(screen.getByRole('region', { name: '设备电量' })).toHaveTextContent('鼠标76%');
@@ -507,7 +507,7 @@ describe('real device snapshot mapping', () => {
     fireEvent.click(screen.getByRole('tab', { name: '接收器灯光' }));
     expect(screen.getByText('霓虹')).toBeInTheDocument();
     expect(screen.getByText('暗')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: '全部读取信息' }));
+    fireEvent.click(screen.getByRole('button', { name: '全部读数' }));
     await waitFor(() => expect(screen.getByText('鼠标 USB 固件')).toBeInTheDocument());
     expect(screen.getByText('按键映射')).toBeInTheDocument();
   });
@@ -552,7 +552,7 @@ describe('real device snapshot mapping', () => {
     expect(screen.queryByRole('tab', { name: '回报率' })).not.toBeInTheDocument();
     expect(screen.queryByRole('tab', { name: '灯光' })).not.toBeInTheDocument();
     expect(screen.queryByRole('region', { name: '设备状态' })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: '全部读取信息' }));
+    fireEvent.click(screen.getByRole('button', { name: '全部读数' }));
     expect(screen.getByText('设备连接')).toBeInTheDocument();
     expect(screen.getByText('当前 DPI')).toBeInTheDocument();
   });
