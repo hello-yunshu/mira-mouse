@@ -220,6 +220,12 @@ export interface DeviceSnapshot {
   pluginId?: string;
 }
 
+export interface DeviceSnapshotEntry {
+  deviceKey: string;
+  snapshot: DeviceSnapshot;
+  selected: boolean;
+}
+
 export interface DiscoveredDevice {
   pluginId: string;
   family: string;
