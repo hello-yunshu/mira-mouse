@@ -60,7 +60,39 @@ const snapshot: DeviceSnapshot = {
   writableMutations: ['set-dpi-stage', 'set-wireless-sleep-time', 'set-mouse-lighting'],
 };
 
+function entries(...snapshots: DeviceSnapshot[]) {
+  return snapshots.map((item, index) => ({
+    deviceKey: `device-${index}`,
+    snapshot: item,
+    selected: index === 0,
+  }));
+}
+
 describe('real device snapshot mapping', () => {
+  it('switches between multiple connected mouse snapshots from the dashboard title', async () => {
+    const firstSnapshot: DeviceSnapshot = {
+      displayName: 'First Mouse', connection: 'wireless', charging: false, batteries: [],
+      capabilities: {}, pluginCapabilities: [], writableMutations: [], evidence: 'hardware-verified',
+    };
+    const secondSnapshot: DeviceSnapshot = {
+      displayName: 'Second Mouse', connection: 'usb', charging: false, batteries: [],
+      capabilities: {}, pluginCapabilities: [], writableMutations: [], evidence: 'hardware-verified',
+    };
+    invokeMock.mockImplementation((command: string, args?: { deviceKey?: string }) => {
+      if (command === 'settings_get') return Promise.resolve(settings);
+      if (command === 'device_snapshots') return Promise.resolve(entries(firstSnapshot, secondSnapshot));
+      if (command === 'device_select' && args?.deviceKey === 'device-1') return Promise.resolve(secondSnapshot);
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+
+    render(<App />);
+    expect(await screen.findByRole('heading', { name: 'First Mouse' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '切换鼠标' }));
+    fireEvent.click(screen.getByText('Second Mouse').closest('button')!);
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('device_select', { deviceKey: 'device-1' }));
+    expect(await screen.findByRole('heading', { name: 'Second Mouse' })).toBeInTheDocument();
+  });
+
   it('keeps plugin-declared dashboard rows within the host layout limit', async () => {
     const capabilities = Array.from({ length: 7 }, (_, index) => ({
       id: `control-${index}`,
@@ -79,7 +111,7 @@ describe('real device snapshot mapping', () => {
     };
     invokeMock.mockImplementation((command: string) => {
       if (command === 'settings_get') return Promise.resolve(settings);
-      if (command === 'device_snapshot') return Promise.resolve(gridSnapshot);
+      if (command === 'device_snapshots') return Promise.resolve(entries(gridSnapshot));
       return Promise.reject(new Error(`unexpected command ${command}`));
     });
 
@@ -123,7 +155,7 @@ describe('real device snapshot mapping', () => {
     };
     invokeMock.mockImplementation((command: string, args?: { mutation?: string }) => {
       if (command === 'settings_get') return Promise.resolve(settings);
-      if (command === 'device_snapshot') return Promise.resolve(pluginSnapshot);
+      if (command === 'device_snapshots') return Promise.resolve(entries(pluginSnapshot));
       if (command === 'device_mutate' && args?.mutation === 'set-control-mode') return Promise.resolve({
         ...pluginSnapshot,
         capabilities: { ...pluginSnapshot.capabilities, controlMode: { mode: 2, modeName: 'host' } },
@@ -181,7 +213,7 @@ describe('real device snapshot mapping', () => {
     };
     invokeMock.mockImplementation((command: string) => {
       if (command === 'settings_get') return Promise.resolve(settings);
-      if (command === 'device_snapshot') return Promise.resolve(receiverOnlySnapshot);
+      if (command === 'device_snapshots') return Promise.resolve(entries(receiverOnlySnapshot));
       return Promise.reject(new Error(`unexpected command ${command}`));
     });
 
@@ -232,7 +264,7 @@ describe('real device snapshot mapping', () => {
     };
     invokeMock.mockImplementation((command: string) => {
       if (command === 'settings_get') return Promise.resolve(settings);
-      if (command === 'device_snapshot') return Promise.resolve(receiverOffSnapshot);
+      if (command === 'device_snapshots') return Promise.resolve(entries(receiverOffSnapshot));
       return Promise.reject(new Error(`unexpected command ${command}`));
     });
 
@@ -272,7 +304,7 @@ describe('real device snapshot mapping', () => {
     };
     invokeMock.mockImplementation((command: string, args?: { mutation?: string; params?: Record<string, unknown> }) => {
       if (command === 'settings_get') return Promise.resolve(settings);
-      if (command === 'device_snapshot') return Promise.resolve(logitechSnapshot);
+      if (command === 'device_snapshots') return Promise.resolve(entries(logitechSnapshot));
       if (command === 'device_mutate' && args?.mutation === 'set-pointer-speed') return Promise.resolve({
         ...logitechSnapshot,
         capabilities: { ...logitechSnapshot.capabilities, pointerSpeed: { speedRaw: args.params?.speed } },
@@ -346,7 +378,7 @@ describe('real device snapshot mapping', () => {
     };
     invokeMock.mockImplementation((command: string) => {
       if (command === 'settings_get') return Promise.resolve(settings);
-      if (command === 'device_snapshot') return Promise.resolve(logitechSnapshot);
+      if (command === 'device_snapshots') return Promise.resolve(entries(logitechSnapshot));
       return Promise.reject(new Error(`unexpected command ${command}`));
     });
 
@@ -397,7 +429,7 @@ describe('real device snapshot mapping', () => {
     };
     invokeMock.mockImplementation((command: string) => {
       if (command === 'settings_get') return Promise.resolve(settings);
-      if (command === 'device_snapshot') return Promise.resolve(logitechSnapshot);
+      if (command === 'device_snapshots') return Promise.resolve(entries(logitechSnapshot));
       return Promise.reject(new Error(`unexpected command ${command}`));
     });
 
@@ -410,7 +442,7 @@ describe('real device snapshot mapping', () => {
   it('keeps all plugin capabilities available to the UI', async () => {
     invokeMock.mockImplementation((command: string, args?: { mutation?: string; params?: Record<string, unknown> }) => {
       if (command === 'settings_get') return Promise.resolve(settings);
-      if (command === 'device_snapshot') return Promise.resolve(snapshot);
+      if (command === 'device_snapshots') return Promise.resolve(entries(snapshot));
       if (command === 'device_mutate') {
         if (args?.mutation === 'set-dpi-stage') return Promise.resolve({
           ...snapshot,
@@ -507,7 +539,7 @@ describe('real device snapshot mapping', () => {
     };
     invokeMock.mockImplementation((command: string) => {
       if (command === 'settings_get') return Promise.resolve(settings);
-      if (command === 'device_snapshot') return Promise.resolve(logitechSnapshot);
+      if (command === 'device_snapshots') return Promise.resolve(entries(logitechSnapshot));
       return Promise.reject(new Error(`unexpected command ${command}`));
     });
 
@@ -560,7 +592,7 @@ describe('real device snapshot mapping', () => {
     };
     invokeMock.mockImplementation((command: string, args?: { mutation?: string; params?: Record<string, unknown> }) => {
       if (command === 'settings_get') return Promise.resolve(settings);
-      if (command === 'device_snapshot') return Promise.resolve(extendedSnapshot);
+      if (command === 'device_snapshots') return Promise.resolve(entries(extendedSnapshot));
       if (command === 'device_mutate' && args?.mutation === 'set-dpi-value-extended') {
         return Promise.resolve({ ...extendedSnapshot, dpi: args.params?.dpi, dpiStages: [{ value: Number(args.params?.dpi), color: '#9a8bd0', active: true, enabled: true }] });
       }
@@ -614,7 +646,7 @@ describe('real device snapshot mapping', () => {
     };
     invokeMock.mockImplementation((command: string) => {
       if (command === 'settings_get') return Promise.resolve(settings);
-      if (command === 'device_snapshot') return Promise.resolve(minimalSnapshot);
+      if (command === 'device_snapshots') return Promise.resolve(entries(minimalSnapshot));
       return Promise.reject(new Error(`unexpected command ${command}`));
     });
 
@@ -660,7 +692,7 @@ describe('real device snapshot mapping', () => {
     };
     invokeMock.mockImplementation((command: string) => {
       if (command === 'settings_get') return Promise.resolve(settings);
-      if (command === 'device_snapshot') return Promise.resolve(partialSnapshot);
+      if (command === 'device_snapshots') return Promise.resolve(entries(partialSnapshot));
       return Promise.reject(new Error(`unexpected command ${command}`));
     });
 
@@ -707,7 +739,7 @@ describe('real device snapshot mapping', () => {
     };
     invokeMock.mockImplementation((command: string) => {
       if (command === 'settings_get') return Promise.resolve(settings);
-      if (command === 'device_snapshot') return Promise.resolve(noRateSnapshot);
+      if (command === 'device_snapshots') return Promise.resolve(entries(noRateSnapshot));
       return Promise.reject(new Error(`unexpected command ${command}`));
     });
 
@@ -747,7 +779,7 @@ describe('real device snapshot mapping', () => {
     };
     invokeMock.mockImplementation((command: string) => {
       if (command === 'settings_get') return Promise.resolve(settings);
-      if (command === 'device_snapshot') return Promise.resolve(localeSnapshot);
+      if (command === 'device_snapshots') return Promise.resolve(entries(localeSnapshot));
       if (command === 'plugin_locales') return Promise.resolve({
         'mira.logitech-hidpp': {
           'zh-CN': { 'plugin.label.capability.mouse-lighting': '插件鼠标灯光' },
@@ -810,7 +842,7 @@ describe('real device snapshot mapping', () => {
     };
     invokeMock.mockImplementation((command: string, args?: { mutation?: string; params?: Record<string, unknown> }) => {
       if (command === 'settings_get') return Promise.resolve(settings);
-      if (command === 'device_snapshot') return Promise.resolve(hidppSnapshot);
+      if (command === 'device_snapshots') return Promise.resolve(entries(hidppSnapshot));
       if (command === 'device_mutate' && args?.mutation === 'set-mouse-lighting') {
         const caps = hidppSnapshot.capabilities ?? {};
         return Promise.resolve({
@@ -904,7 +936,7 @@ describe('real device snapshot mapping', () => {
     };
     invokeMock.mockImplementation((command: string) => {
       if (command === 'settings_get') return Promise.resolve(settings);
-      if (command === 'device_snapshot') return Promise.resolve(compactLightingSnapshot);
+      if (command === 'device_snapshots') return Promise.resolve(entries(compactLightingSnapshot));
       return Promise.reject(new Error(`unexpected command ${command}`));
     });
 
@@ -946,7 +978,7 @@ describe('real device snapshot mapping', () => {
     };
     invokeMock.mockImplementation((command: string, args?: { mutation?: string; params?: Record<string, unknown> }) => {
       if (command === 'settings_get') return Promise.resolve(settings);
-      if (command === 'device_snapshot') return Promise.resolve(supportedOnlySnapshot);
+      if (command === 'device_snapshots') return Promise.resolve(entries(supportedOnlySnapshot));
       if (command === 'device_mutate' && args?.mutation === 'set-mouse-lighting') {
         return Promise.resolve({
           ...supportedOnlySnapshot,
@@ -1014,7 +1046,7 @@ describe('real device snapshot mapping', () => {
     };
     invokeMock.mockImplementation((command: string) => {
       if (command === 'settings_get') return Promise.resolve(settings);
-      if (command === 'device_snapshot') return Promise.resolve(disabledLightingSnapshot);
+      if (command === 'device_snapshots') return Promise.resolve(entries(disabledLightingSnapshot));
       return Promise.reject(new Error(`unexpected command ${command}`));
     });
 

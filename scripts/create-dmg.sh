@@ -56,7 +56,11 @@ cleanup() {
 trap cleanup EXIT
 
 echo "==> 拷贝文件"
-cp -R "$APP_PATH" "$MOUNT_POINT/"
+# Finder may attach metadata xattrs to the local .app while arranging test
+# bundles. Strip them before packaging so strict codesign verification remains
+# clean both on the source app and inside the DMG.
+xattr -cr "$APP_PATH" 2>/dev/null || true
+ditto --noextattr --noqtn "$APP_PATH" "$MOUNT_POINT/$(basename "$APP_PATH")"
 ln -sfh /Applications "$MOUNT_POINT/Applications"
 mkdir -p "$MOUNT_POINT/.background"
 cp "$BACKGROUND" "$MOUNT_POINT/.background/background.png"

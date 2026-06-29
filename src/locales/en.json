@@ -39,6 +39,7 @@
     "deviceAndDiagnostics": "Device & Diagnostics",
     "openFixture": "View Demo",
     "connectedDevice": "Connected device",
+    "switchDevice": "Switch mouse",
     "deviceCount": "{{count}} devices",
     "deviceBattery": "Device battery",
     "deviceControl": "Device controls",
@@ -428,7 +429,7 @@
     },
     "updateInstalled": {
       "title": "Mira update installed",
-      "body": "The new version takes effect after you click \"Relaunch to finish update\"."
+      "body": "Click this notification to relaunch and finish the update."
     },
     "pluginUpdateFound": {
       "title": "Plugin updates found",
@@ -449,6 +450,7 @@
     "autostartFailed": "Failed to set launch at login",
     "checkPluginUpdateFailed": "Failed to check for plugin updates",
     "installPluginUpdateFailed": "Failed to install plugin update",
+    "selectDeviceFailed": "Failed to switch mouse",
     "loadAboutFailed": "Failed to load about info",
     "openExternalFailed": "Failed to open web page",
     "checkUpdateFailed": "Failed to check for updates",

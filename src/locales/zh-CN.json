@@ -39,6 +39,7 @@
     "deviceAndDiagnostics": "设备与诊断",
     "openFixture": "查看演示",
     "connectedDevice": "已连接设备",
+    "switchDevice": "切换鼠标",
     "deviceCount": "{{count}} 台设备",
     "deviceBattery": "设备电量",
     "deviceControl": "设备控制",
@@ -428,7 +429,7 @@
     },
     "updateInstalled": {
       "title": "Mira 更新已安装",
-      "body": "新版本将在你点击“重启完成更新”后生效。"
+      "body": "点击此通知立即重启，完成更新。"
     },
     "pluginUpdateFound": {
       "title": "发现插件更新",
@@ -449,6 +450,7 @@
     "autostartFailed": "设置开机启动失败",
     "checkPluginUpdateFailed": "检查插件更新失败",
     "installPluginUpdateFailed": "安装插件更新失败",
+    "selectDeviceFailed": "切换鼠标失败",
     "loadAboutFailed": "加载关于信息失败",
     "openExternalFailed": "打开网页失败",
     "checkUpdateFailed": "检查更新失败",
