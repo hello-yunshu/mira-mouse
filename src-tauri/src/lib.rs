@@ -6501,16 +6501,16 @@ fn build_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                 focus_main_from_tray(app);
             }
         })
-        .on_tray_icon_event(|tray, event| match event {
-            tauri::tray::TrayIconEvent::Click {
+        .on_tray_icon_event(|tray, event| {
+            if let tauri::tray::TrayIconEvent::Click {
                 button: tauri::tray::MouseButton::Left,
                 button_state: tauri::tray::MouseButtonState::Up,
                 ..
-            } => {
+            } = event
+            {
                 let app = tray.app_handle();
                 focus_main_from_tray(app);
             }
-            _ => {}
         })
         .tooltip("Mira · 未连接受支持的鼠标")
         .build(app)?;
