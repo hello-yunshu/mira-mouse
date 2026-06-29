@@ -4647,6 +4647,7 @@ fn device_snapshots(state: tauri::State<'_, SessionState>) -> Vec<DeviceSnapshot
 
 #[tauri::command]
 fn device_select(
+    app: tauri::AppHandle,
     state: tauri::State<'_, SessionState>,
     device_key: String,
 ) -> Result<DeviceSnapshot, String> {
@@ -4665,6 +4666,14 @@ fn device_select(
         .lock()
         .map_err(|_| "selected device state unavailable".to_string())?;
     *selected = Some(device_key);
+    drop(selected);
+
+    let entries = device_snapshot_entries(&state);
+    let settings = cached_settings(&app);
+    let _ = update_tray(&app, Some(&snapshot), &settings);
+    let _ = app.emit("device-updated", &snapshot);
+    let _ = app.emit("device-snapshots-updated", entries);
+    request_night_mode_eval(&state);
     Ok(snapshot)
 }
 
@@ -5432,9 +5441,10 @@ fn device_mutate_blocking(
     if let Ok(mut cache) = state.last_read_at.lock() {
         cache.remove(&device_path);
     }
-    let _ = app.emit("device-updated", &snapshot);
+    let selected_after_write = selected_snapshot(&state);
+    let _ = app.emit("device-updated", &selected_after_write);
     let _ = app.emit("device-snapshots-updated", device_snapshot_entries(&state));
-    let _ = update_tray(app, Some(&snapshot), &cached_settings(app));
+    let _ = update_tray(app, selected_after_write.as_ref(), &cached_settings(app));
     Ok(snapshot)
 }
 
@@ -6134,11 +6144,11 @@ fn tr_low_battery_title(lang: &str) -> &'static str {
 fn tr_low_battery_body(lang: &str, threshold: u8, percent: u8) -> String {
     if lang == "en" {
         format!(
-            "Mouse battery is below {}% (currently {}%)",
+            "Mouse battery is below {}% (currently {}%). Please charge the device.",
             threshold, percent
         )
     } else {
-        format!("鼠标电量已低于 {}%（当前 {}%）", threshold, percent)
+        format!("鼠标电量已低于 {}%（当前 {}%），请及时充电。", threshold, percent)
     }
 }
 
