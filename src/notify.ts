@@ -3,6 +3,7 @@ export interface AppNotification {
   title: string;
   body?: string;
   kind: 'error' | 'info' | 'success';
+  action?: 'about-update' | 'settings-plugin-update' | 'relaunch';
 }
 
 const notificationTarget = new EventTarget();
@@ -21,9 +22,9 @@ export function notifyError(title: string, body?: string): void {
   console.error(title, body ?? '');
 }
 
-export function notifyInfo(title: string, body?: string): void {
+export function notifyInfo(title: string, body?: string, action?: AppNotification['action']): void {
   notificationTarget.dispatchEvent(new CustomEvent<AppNotification>('notification', {
-    detail: { title, body, kind: 'info' },
+    detail: { title, body, kind: 'info', action },
   }));
 }
 

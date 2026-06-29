@@ -2256,6 +2256,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "libudev-sys"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3c8469b4a23b962c1396b9b451dda50ef5b283e8dd309d69033475fa9b334324"
+dependencies = [
+ "libc",
+ "pkg-config",
+]
+
+[[package]]
 name = "linux-raw-sys"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2363,7 +2373,7 @@ dependencies = [
 
 [[package]]
 name = "mira-app"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "chrono",
  "ed25519-dalek",
@@ -2371,6 +2381,7 @@ dependencies = [
  "hidapi",
  "mira-core",
  "mira-plugin-runtime",
+ "notify-rust",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
@@ -2389,13 +2400,14 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tauri-plugin-updater",
  "tempfile",
+ "udev",
  "window-vibrancy",
  "winreg 0.55.0",
 ]
 
 [[package]]
 name = "mira-core"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "serde",
  "serde_json",
@@ -2404,7 +2416,7 @@ dependencies = [
 
 [[package]]
 name = "mira-plugin-api"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "semver",
  "serde",
@@ -2414,7 +2426,7 @@ dependencies = [
 
 [[package]]
 name = "mira-plugin-cli"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "anyhow",
  "clap",
@@ -2432,7 +2444,7 @@ dependencies = [
 
 [[package]]
 name = "mira-plugin-runtime"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "ed25519-dalek",
  "hex",
@@ -2450,7 +2462,7 @@ dependencies = [
 
 [[package]]
 name = "mira-testkit"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "mira-plugin-runtime",
 ]
@@ -3175,7 +3187,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4913,6 +4925,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
+name = "udev"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ebdbbd670373442a12fe9ef7aeb53aec4147a5a27a00bbc3ab639f08f48191a"
+dependencies = [
+ "libc",
+ "libudev-sys",
+ "pkg-config",
+]
+
+[[package]]
 name = "uds_windows"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5858,7 +5881,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "anyhow",
  "clap",
