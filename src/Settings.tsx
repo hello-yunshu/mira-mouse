@@ -513,6 +513,9 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, previewMode = fal
                   <div>
                     <strong>{d.pluginId} · {d.family}</strong>
                     <span className="setting-hint">VID {d.vendorId.toString(16).toUpperCase().padStart(4, '0')} · PID {d.productId.toString(16).toUpperCase().padStart(4, '0')} · usage {d.usagePage}/{d.usage}</span>
+                    {d.lastError && (
+                      <span className="setting-hint">Last read: {d.lastErrorKind ?? 'error'} - {d.lastError}</span>
+                    )}
                   </div>
                   <div className="plugin-meta">
                     <span className="badge">{d.connection}</span>
