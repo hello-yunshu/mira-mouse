@@ -1900,9 +1900,7 @@ impl Session<'_> {
         let mut report = Vec::with_capacity(*write_length);
         report.push(*report_id);
         report.extend_from_slice(payload);
-        let written = self
-            .device
-            .write(&report)
+        let written = write_output_report_with_fallback(&self.device, &report)
             .map_err(|error| format!("send output report: {error}"))?;
         if written != report.len() {
             return Err(format!(
@@ -2083,6 +2081,64 @@ fn input_payload_from_report(
     }
 
     None
+}
+
+fn write_output_report_with_fallback(device: &HidDevice, report: &[u8]) -> Result<usize, String> {
+    match device.write(report) {
+        Ok(written) => Ok(written),
+        Err(error) => {
+            let output_error = error.to_string();
+            if output_report_write_needs_feature_fallback(&output_error) {
+                if let Some(long_report) = hidpp_short_output_as_long_report(report) {
+                    match device.write(&long_report) {
+                        Ok(written) if written == long_report.len() => {
+                            return Ok(report.len());
+                        }
+                        Ok(written) => {
+                            return Err(format!(
+                                "{output_error}; fallback long output report: short write {written}/{}",
+                                long_report.len()
+                            ));
+                        }
+                        Err(long_error) => {
+                            let feature_result =
+                                device.send_feature_report(report).map(|_| report.len());
+                            return feature_result.map_err(|feature_error| {
+                                format!(
+                                    "{output_error}; fallback long output report: {long_error}; fallback feature report: {feature_error}"
+                                )
+                            });
+                        }
+                    }
+                }
+                device
+                    .send_feature_report(report)
+                    .map(|_| report.len())
+                    .map_err(|feature_error| {
+                        format!("{output_error}; fallback feature report: {feature_error}")
+                    })
+            } else {
+                Err(output_error)
+            }
+        }
+    }
+}
+
+fn hidpp_short_output_as_long_report(report: &[u8]) -> Option<Vec<u8>> {
+    if report.len() != 7 || report.first() != Some(&0x10) {
+        return None;
+    }
+    let mut long_report = Vec::with_capacity(20);
+    long_report.push(0x11);
+    long_report.extend_from_slice(&report[1..]);
+    long_report.resize(20, 0);
+    Some(long_report)
+}
+
+fn output_report_write_needs_feature_fallback(error: &str) -> bool {
+    let lower = error.to_ascii_lowercase();
+    lower.contains("writefile")
+        && (lower.contains("0x00000001") || lower.contains("incorrect function"))
 }
 
 fn output_value<'a>(
@@ -2764,6 +2820,31 @@ mod tests {
             input_payload_from_report(vec![0x01, 0x02, 0x03], 0x11, false),
             None
         );
+    }
+
+    #[test]
+    fn output_report_fallback_only_matches_windows_invalid_function() {
+        assert!(output_report_write_needs_feature_fallback(
+            "hidapi error: WriteFile: (0x00000001) Incorrect function."
+        ));
+        assert!(!output_report_write_needs_feature_fallback(
+            "hidapi error: WriteFile: (0x00000005) Access is denied."
+        ));
+        assert!(!output_report_write_needs_feature_fallback(
+            "hidapi error: timeout waiting for device"
+        ));
+    }
+
+    #[test]
+    fn hidpp_short_output_can_be_padded_as_long_output() {
+        assert_eq!(
+            hidpp_short_output_as_long_report(&[0x10, 0x01, 0x0b, 0x81, 0, 0, 0]),
+            Some(vec![
+                0x11, 0x01, 0x0b, 0x81, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+            ])
+        );
+        assert_eq!(hidpp_short_output_as_long_report(&[0x11, 1, 2, 3]), None);
+        assert_eq!(hidpp_short_output_as_long_report(&[0x10, 1, 2]), None);
     }
 
     #[test]
