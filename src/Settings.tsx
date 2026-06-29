@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useTranslation } from 'react-i18next';
 import type { AppSettings, BundledPluginInfo, AboutInfo, DiscoveredDevice, PluginInstallResult, PluginUpdateInfo, ThemeMode } from './types';
@@ -72,7 +72,7 @@ function isWindowsPlatform(): boolean {
   return previewPlatform === 'windows' || navigator.userAgent.includes('Windows');
 }
 
-export function SettingsPage({ onNavigateAbout, onThemeChange, previewMode = false, supportsAnyLighting = false, supportsReceiverLighting = false }: { onNavigateAbout: () => void; onThemeChange: (theme: ThemeMode) => void; previewMode?: boolean; supportsAnyLighting?: boolean; supportsReceiverLighting?: boolean }) {
+export function SettingsPage({ onNavigateAbout, onThemeChange, previewMode = false, supportsAnyLighting = false, supportsReceiverLighting = false, focusPluginUpdateToken = 0 }: { onNavigateAbout: () => void; onThemeChange: (theme: ThemeMode) => void; previewMode?: boolean; supportsAnyLighting?: boolean; supportsReceiverLighting?: boolean; focusPluginUpdateToken?: number }) {
   const { t } = useTranslation();
   const windowsPlatform = isWindowsPlatform();
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
@@ -84,7 +84,26 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, previewMode = fal
   const [diagnostics, setDiagnostics] = useState<string>('');
   const [discovered, setDiscovered] = useState<DiscoveredDevice[]>([]);
   const [saved, setSaved] = useState(false);
-  const [tab, setTab] = useState<SettingsTab>('general');
+  const [tabState, setTabState] = useState<{ tab: SettingsTab; focusToken: number }>(() => ({
+    tab: focusPluginUpdateToken > 0 ? 'plugins' : 'general',
+    focusToken: focusPluginUpdateToken,
+  }));
+  const pendingPluginFocus = useRef(false);
+  const tab = focusPluginUpdateToken > tabState.focusToken ? 'plugins' : tabState.tab;
+
+  // 点击「插件更新可用」通知后，先切到 plugins 标签，待渲染后再滚动聚焦。
+  useEffect(() => {
+    if (focusPluginUpdateToken === 0) return;
+    pendingPluginFocus.current = true;
+  }, [focusPluginUpdateToken]);
+
+  useEffect(() => {
+    if (!pendingPluginFocus.current || tab !== 'plugins') return;
+    pendingPluginFocus.current = false;
+    const target = document.getElementById('settings-plugin-update-section');
+    target?.scrollIntoView?.({ block: 'start', behavior: 'smooth' });
+    target?.focus?.({ preventScroll: true });
+  }, [tab, focusPluginUpdateToken]);
 
   const TABS: { id: SettingsTab; label: string }[] = [
     { id: 'general', label: t('settings.tab.general') },
@@ -233,7 +252,7 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, previewMode = fal
           <button
             key={tabItem.id}
             className={`sub-nav-link ${tab === tabItem.id ? 'active' : ''}`}
-            onClick={() => setTab(tabItem.id)}
+            onClick={() => setTabState({ tab: tabItem.id, focusToken: focusPluginUpdateToken })}
             aria-pressed={tab === tabItem.id}
           >
             {tabItem.label}
@@ -444,7 +463,7 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, previewMode = fal
       )}
 
       {tab === 'plugins' && (
-        <section className="card settings-section">
+        <section id="settings-plugin-update-section" className="card settings-section" tabIndex={-1}>
           <div className="card-title"><h2>{t('settings.section.plugins')}</h2></div>
           <SettingRow title={t('settings.pluginUpdateCheck.label')} hint={t('settings.pluginUpdateCheck.hint')}>
             <Toggle checked={settings.automaticPluginUpdateChecks} onChange={(v) => update({ automaticPluginUpdateChecks: v })} label={t('settings.pluginUpdateCheck.label')} />

@@ -5,6 +5,8 @@ import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import {
   BatteryHigh,
+  ArrowsLeftRight,
+  CaretDown,
   Gauge,
   Gear,
   Info,
@@ -23,7 +25,7 @@ import { applyTheme, pastelDisplayColor } from './theme';
 import i18n, { applyLanguage, loadPluginLocales, resolveLabelKey } from './i18n';
 import { SettingsPage } from './Settings';
 import { AboutPage } from './About';
-import type { AboutInfo, AppSettings, DeviceBattery, DeviceCapabilities, DeviceSnapshot, DeviceState, EffectOption, PluginCapability, PluginUpdateInfo, ReceiverLightingOptions, ThemeMode } from './types';
+import type { AboutInfo, AppSettings, DeviceBattery, DeviceCapabilities, DeviceSnapshot, DeviceSnapshotEntry, DeviceState, EffectOption, PluginCapability, PluginUpdateInfo, ReceiverLightingOptions, ThemeMode } from './types';
 import {
   offValue as pluginOffValue,
   requiresExtraColor as pluginRequiresExtraColor,
@@ -44,7 +46,7 @@ import {
 } from './pluginAdapter';
 import type { RangeSpec } from './types';
 import { onAppNotification, notifyError, notifyInfo, notifySuccess, type AppNotification } from './notify';
-import { startAutomaticAppUpdateCheck } from './updater';
+import { relaunchAfterUpdate, startAutomaticAppUpdateCheck } from './updater';
 import './styles.css';
 
 type View = 'dashboard' | 'settings' | 'about';
@@ -247,6 +249,14 @@ function snapshotToState(snapshot: DeviceSnapshot): DeviceState {
     writableMutations: snapshot.writableMutations ?? [],
     pluginId: snapshot.pluginId,
   };
+}
+
+function selectedDeviceEntry(entries: DeviceSnapshotEntry[]): DeviceSnapshotEntry | undefined {
+  return entries.find((entry) => entry.selected) ?? entries[0];
+}
+
+function entryToState(entry: DeviceSnapshotEntry | undefined): DeviceState | undefined {
+  return entry ? snapshotToState(entry.snapshot) : undefined;
 }
 
 function DeviceAura({ color }: { color?: string }) {
@@ -1165,10 +1175,14 @@ function MouseLightingEditModal({ field, pluginId, initial, effectOptions, offVa
 
 function Dashboard({
   device,
+  deviceEntries,
   onDeviceChange,
+  onDeviceSelect,
 }: {
   device: DeviceState;
+  deviceEntries: DeviceSnapshotEntry[];
   onDeviceChange: (device: DeviceState) => void;
+  onDeviceSelect: (deviceKey: string) => void;
 }) {
   const { t } = useTranslation();
   const stages = device.dpiStages.filter((stage) => stage.enabled);
@@ -1181,7 +1195,9 @@ function Dashboard({
   const [previewMessage, setPreviewMessage] = useState('');
   const [showDetails, setShowDetails] = useState(false);
   const [showBatteries, setShowBatteries] = useState(false);
+  const [showDeviceSwitcher, setShowDeviceSwitcher] = useState(false);
   const batteryControlRef = useRef<HTMLDivElement>(null);
+  const deviceSwitcherRef = useRef<HTMLDivElement>(null);
   const [writeBusy, setWriteBusy] = useState(false);
   const [editingDpiStage, setEditingDpiStage] = useState<number | null>(null);
   const [editingMouseLightColor, setEditingMouseLightColor] = useState(false);
@@ -1197,9 +1213,13 @@ function Dashboard({
   useEffect(() => {
     const closeOnOutsideClick = (event: MouseEvent) => {
       if (!batteryControlRef.current?.contains(event.target as Node)) setShowBatteries(false);
+      if (!deviceSwitcherRef.current?.contains(event.target as Node)) setShowDeviceSwitcher(false);
     };
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setShowBatteries(false);
+      if (event.key === 'Escape') {
+        setShowBatteries(false);
+        setShowDeviceSwitcher(false);
+      }
     };
     document.addEventListener('click', closeOnOutsideClick);
     document.addEventListener('keydown', closeOnEscape);
@@ -1245,6 +1265,8 @@ function Dashboard({
   };
 
   const currentStage = Math.max(1, stages.findIndex((stage) => stage.active) + 1);
+  const selectedEntry = selectedDeviceEntry(deviceEntries);
+  const multipleDevices = deviceEntries.length > 1;
   const receiverLighting = lightingCapability(device.capabilities, 'receiverLighting');
   const [sleepSetting, setSleepSetting] = useState<{ label: string; seconds: number; mutation: string; param: string; range?: RangeSpec }>();
   const [editingSleep, setEditingSleep] = useState(false);
@@ -1380,7 +1402,49 @@ function Dashboard({
           <h2 className="app-title">Mira</h2>
           <div className="device-copy">
             <p className="connection-state"><span />{connectionDisplay(device.connection, t)} · {t('common.connected')}</p>
-            <h1>{device.name}</h1>
+            {multipleDevices ? (
+              <div ref={deviceSwitcherRef} className={`device-switcher ${showDeviceSwitcher ? 'open' : ''}`}>
+                <h1>
+                  <button
+                    type="button"
+                    className="device-name-switch"
+                    aria-expanded={showDeviceSwitcher}
+                    aria-controls="device-switcher-list"
+                    aria-label={t('dashboard.switchDevice')}
+                    onClick={() => setShowDeviceSwitcher((visible) => !visible)}
+                  >
+                    <span>{device.name}</span>
+                    <span className="device-switch-icon" aria-hidden="true">
+                      <ArrowsLeftRight weight="regular" />
+                      <CaretDown weight="bold" />
+                    </span>
+                  </button>
+                </h1>
+                <section id="device-switcher-list" className="device-switcher-popover" aria-label={t('dashboard.switchDevice')}>
+                  {deviceEntries.map((entry) => {
+                    const state = snapshotToState(entry.snapshot);
+                    const selected = selectedEntry?.deviceKey === entry.deviceKey;
+                    return (
+                      <button
+                        key={entry.deviceKey}
+                        type="button"
+                        className={selected ? 'active' : ''}
+                        aria-pressed={selected}
+                        onClick={() => {
+                          setShowDeviceSwitcher(false);
+                          if (!selected) onDeviceSelect(entry.deviceKey);
+                        }}
+                      >
+                        <strong>{state.name}</strong>
+                        <span>{connectionDisplay(state.connection, t)}</span>
+                      </button>
+                    );
+                  })}
+                </section>
+              </div>
+            ) : (
+              <h1>{device.name}</h1>
+            )}
             {device.batteries.length > 0 && (
             <div ref={batteryControlRef} className={`battery-control ${showBatteries ? 'open' : ''}`}>
               <button
@@ -1852,12 +1916,15 @@ export default function App() {
   const { t } = useTranslation();
   const pureWeb = isPureWebPreview();
   const [device, setDevice] = useState<DeviceState | undefined>(pureWeb ? MOCK_DEVICE : undefined);
+  const [deviceEntries, setDeviceEntries] = useState<DeviceSnapshotEntry[]>([]);
   // F11: device-updated 事件高频触发时，用 startTransition 将 Dashboard 渲染标记为低优先级，
   // 避免 settling polls 期间（6 次 500ms）阻塞主线程。writeBusy 等用户交互状态保持同步。
   const [, startTransition] = useTransition();
   const [theme, setTheme] = useState<ThemeMode>('system');
   const [themeLoaded, setThemeLoaded] = useState(pureWeb);
   const [view, setView] = useState<View>('dashboard');
+  const [aboutFocusToken, setAboutFocusToken] = useState(0);
+  const [settingsPluginFocusToken, setSettingsPluginFocusToken] = useState(0);
   const [demoMode, setDemoMode] = useState(pureWeb);
   const [refreshNonce, setRefreshNonce] = useState(0);
   const [appNotification, setAppNotification] = useState<AppNotification>();
@@ -1868,12 +1935,30 @@ export default function App() {
   const exitDemo = useCallback(() => {
     setDemoMode(false);
     setDevice(undefined);
+    setDeviceEntries([]);
     setView('dashboard');
     setRefreshNonce((value) => value + 1);
     invoke('device_refresh').catch(() => {});
   }, []);
+  const openAboutUpdate = useCallback(() => {
+    setView('about');
+    setAboutFocusToken((value) => value + 1);
+  }, []);
+  const openSettingsPluginUpdate = useCallback(() => {
+    setView('settings');
+    setSettingsPluginFocusToken((value) => value + 1);
+  }, []);
 
   useEffect(() => onAppNotification(setAppNotification), []);
+
+  useEffect(() => {
+    if (pureWeb) return;
+    let unlisten: (() => void) | undefined;
+    listen('navigate-about-update', () => openAboutUpdate())
+      .then((un) => { unlisten = un; })
+      .catch(() => {});
+    return () => { if (unlisten) unlisten(); };
+  }, [openAboutUpdate, pureWeb]);
 
   // 加载插件 locale，注册为 i18n namespace（以插件 ID 命名）。
   // 异步加载完成后刷新插件标签 memo，加载前使用 host 回退标签。
@@ -1915,6 +2000,7 @@ export default function App() {
                 notifyInfo(
                   i18n.t('dashboard.pluginUpdateFound'),
                   i18n.t('dashboard.pluginUpdateFoundBody', { count: available.length }),
+                  'settings-plugin-update',
                 );
               }
             })
@@ -1929,16 +2015,21 @@ export default function App() {
     if (demoMode) return;
     let cancelled = false;
     let unlisten: (() => void) | undefined;
+    let unlistenEntries: (() => void) | undefined;
 
     // 启动时立即读取一次缓存
-    invoke<DeviceSnapshot | null>('device_snapshot')
-      .then((snapshot) => {
+    invoke<DeviceSnapshotEntry[]>('device_snapshots')
+      .then((entries) => {
         if (!cancelled) {
-          setDevice(snapshot ? snapshotToState(snapshot) : undefined);
+          setDeviceEntries(entries);
+          setDevice(entryToState(selectedDeviceEntry(entries)));
         }
       })
       .catch(() => {
-        if (!cancelled) setDevice(undefined);
+        if (!cancelled) {
+          setDeviceEntries([]);
+          setDevice(undefined);
+        }
       });
 
     // 监听后台线程发出的 device-updated 事件，无需轮询
@@ -1958,11 +2049,37 @@ export default function App() {
       }
     }).catch(() => {});
 
+    listen<DeviceSnapshotEntry[]>('device-snapshots-updated', (event) => {
+      if (cancelled) return;
+      const entries = event.payload;
+      startTransition(() => {
+        setDeviceEntries(entries);
+        setDevice(entryToState(selectedDeviceEntry(entries)));
+      });
+    }).then((un) => {
+      if (cancelled) {
+        un();
+      } else {
+        unlistenEntries = un;
+      }
+    }).catch(() => {});
+
     return () => {
       cancelled = true;
       if (unlisten) unlisten();
+      if (unlistenEntries) unlistenEntries();
     };
   }, [demoMode, refreshNonce]);
+
+  const selectDevice = useCallback((deviceKey: string) => {
+    if (demoMode) return;
+    void invoke<DeviceSnapshot>('device_select', { deviceKey })
+      .then((snapshot) => {
+        setDevice(snapshotToState(snapshot));
+        setDeviceEntries((entries) => entries.map((entry) => ({ ...entry, selected: entry.deviceKey === deviceKey })));
+      })
+      .catch((error) => notifyError(i18n.t('notification.selectDeviceFailed'), String(error)));
+  }, [demoMode]);
 
   const activeDpiColor = device?.dpiStages.find((stage) => stage.enabled && stage.active)?.color
     ?? device?.dpiStages.find((stage) => stage.enabled)?.color;
@@ -1983,13 +2100,18 @@ export default function App() {
       <button className={`nav-link nav-about ${view === 'about' ? 'active' : ''}`} onClick={() => setView('about')} aria-label={t('nav.about')}><Info weight="regular" /></button>
       {demoMode && <button className="nav-link nav-exit" onClick={exitDemo} aria-label={t('nav.exitDemo')} title={t('nav.exitDemo')}><SignOut weight="regular" /></button>}
     </div>
-    {view === 'dashboard' && (device ? <Dashboard device={device} onDeviceChange={setDevice} /> : <EmptyState onRefresh={() => { setDemoMode(false); setDevice(undefined); setRefreshNonce((value) => value + 1); invoke('device_refresh').catch(() => {}); }} onDemo={() => { setDemoMode(true); setDevice(MOCK_DEVICE); }} onOpenSettings={() => setView('settings')} />)}
-    {view === 'settings' && <SettingsPage previewMode={pureWeb} onNavigateAbout={() => setView('about')} onThemeChange={setTheme} supportsAnyLighting={device ? pluginSupportsAnyLighting(compatibilityCapabilities(device), device.writableMutations) : false} supportsReceiverLighting={device ? pluginSupportsLightingMutation(compatibilityCapabilities(device), device.writableMutations, 'receiver') : false} />}
-    {view === 'about' && <AboutPage previewMode={pureWeb} onBack={() => setView('settings')} />}
+    {view === 'dashboard' && (device ? <Dashboard device={device} deviceEntries={deviceEntries} onDeviceChange={setDevice} onDeviceSelect={selectDevice} /> : <EmptyState onRefresh={() => { setDemoMode(false); setDevice(undefined); setDeviceEntries([]); setRefreshNonce((value) => value + 1); invoke('device_refresh').catch(() => {}); }} onDemo={() => { setDemoMode(true); setDevice(MOCK_DEVICE); setDeviceEntries([]); }} onOpenSettings={() => setView('settings')} />)}
+    {view === 'settings' && <SettingsPage previewMode={pureWeb} focusPluginUpdateToken={settingsPluginFocusToken} onNavigateAbout={() => setView('about')} onThemeChange={setTheme} supportsAnyLighting={device ? pluginSupportsAnyLighting(compatibilityCapabilities(device), device.writableMutations) : false} supportsReceiverLighting={device ? pluginSupportsLightingMutation(compatibilityCapabilities(device), device.writableMutations, 'receiver') : false} />}
+    {view === 'about' && <AboutPage previewMode={pureWeb} focusUpdateToken={aboutFocusToken} onBack={() => setView('settings')} />}
     {appNotification && (
-      <aside className={`app-notification ${appNotification.kind}`} role={appNotification.kind === 'error' ? 'alert' : 'status'} aria-live={appNotification.kind === 'error' ? 'assertive' : 'polite'}>
+      <aside
+        className={`app-notification ${appNotification.kind} ${appNotification.action ? 'actionable' : ''}`}
+        role={appNotification.kind === 'error' ? 'alert' : 'status'}
+        aria-live={appNotification.kind === 'error' ? 'assertive' : 'polite'}
+        onClick={appNotification.action === 'about-update' ? openAboutUpdate : appNotification.action === 'settings-plugin-update' ? openSettingsPluginUpdate : appNotification.action === 'relaunch' ? () => void relaunchAfterUpdate() : undefined}
+      >
         <div><strong>{appNotification.title}</strong>{appNotification.body && <p>{appNotification.body}</p>}</div>
-        <button type="button" onClick={() => setAppNotification(undefined)} aria-label={t('dashboard.closeNotification')}><X weight="bold" /></button>
+        <button type="button" onClick={(event) => { event.stopPropagation(); setAppNotification(undefined); }} aria-label={t('dashboard.closeNotification')}><X weight="bold" /></button>
       </aside>
     )}
   </div>;

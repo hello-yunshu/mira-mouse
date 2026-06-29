@@ -347,6 +347,98 @@ option {
   letter-spacing: -.045em;
   overflow-wrap: anywhere;
 }
+.device-switcher {
+  position: relative;
+  width: min(220px, 100%);
+}
+.device-switcher h1 {
+  max-width: none;
+}
+.device-name-switch {
+  width: min(220px, 100%);
+  min-height: 30px;
+  padding: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 36px;
+  align-items: center;
+  gap: 8px;
+  color: inherit;
+  text-align: left;
+  background: transparent;
+  border-radius: 10px;
+}
+.device-name-switch:hover {
+  color: inherit;
+  background: rgb(127 120 140 / 8%);
+}
+.device-name-switch > span:first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.device-switch-icon {
+  width: 32px;
+  height: 24px;
+  display: inline-grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+}
+.device-switch-icon svg:first-child { width: 18px; height: 18px; }
+.device-switch-icon svg:last-child { width: 11px; height: 11px; }
+.device-switcher-popover {
+  position: absolute;
+  z-index: 9;
+  top: calc(100% + 8px);
+  left: 0;
+  width: min(240px, calc(100vw - 48px));
+  padding: 6px;
+  border: 1px solid var(--panel-border);
+  border-radius: 13px;
+  background: var(--floating-glass-bg);
+  -webkit-backdrop-filter: var(--floating-glass-blur);
+  backdrop-filter: var(--floating-glass-blur);
+  box-shadow: var(--floating-glass-shadow);
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-3px);
+  transition: opacity .14s ease, transform .14s ease, visibility 0s linear .14s;
+  pointer-events: none;
+}
+.device-switcher.open .device-switcher-popover {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+  transition-delay: 0s;
+  pointer-events: auto;
+}
+.device-switcher-popover button {
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 10px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  color: inherit;
+  text-align: left;
+  background: transparent;
+  border-radius: 8px;
+}
+.device-switcher-popover button:hover,
+.device-switcher-popover button.active {
+  background: rgb(127 120 140 / 10%);
+}
+.device-switcher-popover strong {
+  min-width: 0;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.device-switcher-popover span {
+  color: var(--muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
 .readonly-notice {
   margin: 8px 0 0;
   padding: 4px 10px;
@@ -427,6 +519,12 @@ option {
   -webkit-backdrop-filter: var(--floating-glass-blur);
   backdrop-filter: var(--floating-glass-blur);
   box-shadow: var(--floating-glass-shadow);
+}
+.app-notification.actionable {
+  cursor: pointer;
+}
+.app-notification.actionable:hover {
+  border-color: color-mix(in oklch, var(--accent), white 15%);
 }
 .app-notification.error {
   border-color: rgb(190 76 90 / 24%);

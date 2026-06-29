@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { check, type DownloadEvent, type Update } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
+import { invoke } from '@tauri-apps/api/core';
 import { notifyInfo } from './notify';
 import i18n from './i18n';
 
@@ -59,7 +60,12 @@ export async function checkForAppUpdate(automatic = false): Promise<void> {
       date: update.date,
       downloadedBytes: 0,
     });
-    if (automatic) notifyInfo(i18n.t('notification.updateFound.title'), i18n.t('notification.updateFound.body', { version: update.version }));
+    if (automatic) {
+      const title = i18n.t('notification.updateFound.title');
+      const body = i18n.t('notification.updateFound.body', { version: update.version });
+      notifyInfo(title, body, 'about-update');
+      void invoke('show_update_notification', { title, body }).catch(() => {});
+    }
   } catch (error) {
     publish({ phase: 'error', downloadedBytes: 0, error: String(error) });
     if (!automatic) throw error;
@@ -73,7 +79,7 @@ export async function startAutomaticAppUpdateCheck(enabled: boolean, installAuto
   if (installAutomatically && state.phase === 'available') {
     try {
       await installAppUpdate();
-      notifyInfo(i18n.t('notification.updateInstalled.title'), i18n.t('notification.updateInstalled.body'));
+      notifyInfo(i18n.t('notification.updateInstalled.title'), i18n.t('notification.updateInstalled.body'), 'relaunch');
     } catch {
       // The error state is already published for the About page.
     }

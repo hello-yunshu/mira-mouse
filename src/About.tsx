@@ -15,7 +15,7 @@ import {
   type AppUpdateState,
 } from './updater';
 
-export function AboutPage({ onBack, previewMode = false }: { onBack: () => void; previewMode?: boolean }) {
+export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0 }: { onBack: () => void; previewMode?: boolean; focusUpdateToken?: number }) {
   const { t } = useTranslation();
   const PREVIEW_INFO: AboutInfo = {
     name: 'Mira Mouse',
@@ -54,6 +54,13 @@ export function AboutPage({ onBack, previewMode = false }: { onBack: () => void;
   }, [previewMode, t]);
 
   useEffect(() => onAppUpdateState(setUpdate), []);
+
+  useEffect(() => {
+    if (focusUpdateToken === 0) return;
+    const target = document.getElementById('about-update-section');
+    target?.scrollIntoView?.({ block: 'start', behavior: 'smooth' });
+    target?.focus?.({ preventScroll: true });
+  }, [focusUpdateToken, info]);
 
   async function checkForUpdates() {
     if (!info?.updaterActive) return;
@@ -199,7 +206,7 @@ export function AboutPage({ onBack, previewMode = false }: { onBack: () => void;
         </section>
       ) : null}
 
-      <section className="card about-section">
+      <section id="about-update-section" className="card about-section" tabIndex={-1}>
         <div className="card-title"><h2>{t('about.section.checkUpdate')}</h2></div>
         <p className="setting-hint">
           {info.updaterActive
