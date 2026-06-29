@@ -34,8 +34,8 @@
   },
   "dashboard": {
     "eyebrow": "Mira Mouse",
-    "noDevice": "没有找到支持的鼠标",
-    "plugInHint": "插上鼠标后，可用的设置会出现在这里。",
+    "noDevice": "还没找到支持的鼠标呢",
+    "plugInHint": "插上鼠标，设置就会出现啦",
     "deviceAndDiagnostics": "设备与诊断",
     "openFixture": "查看演示",
     "connectedDevice": "已连接设备",
@@ -50,8 +50,8 @@
     "dpiStages": "DPI 档位",
     "switchToStage": "切换到第 {{stage}} 档",
     "editStageDpi": "编辑第 {{stage}} 档 DPI",
-    "noDpiStages": "设备未报告 DPI 档位信息。",
-    "dpiWriteUnavailable": "当前设备或插件未开放 DPI 写入。",
+    "noDpiStages": "这台鼠标还没带回 DPI 档位呢",
+    "dpiWriteUnavailable": "此设备当前无法修改 DPI。",
     "lightingTarget": "灯光对象",
     "lightingGroups": "灯光分组",
     "mouseLighting": "鼠标灯光",
@@ -60,34 +60,34 @@
     "endColor": "结束色",
     "mouseLightEndColor": "鼠标灯光结束色",
     "mouseLightColor": "鼠标灯光颜色",
-    "writing": "正在写入并回读确认…",
-    "writeConfirmed": "已写入，回读确认一致。",
-    "writeFailed": "写入失败，界面已保留设备真实状态：{{error}}",
+    "writing": "正在和鼠标沟通…",
+    "writeConfirmed": "搞定啦",
+    "writeFailed": "这次没写进去，界面先留住鼠标原本的状态：{{error}}",
     "currentPollingRate": "当前回报率",
     "currentPollingRateEdit": "当前回报率：{{value}} Hz，点击编辑",
     "pollingRateNotReportedEdit": "回报率未报告，点击设置",
     "setPollingRateTitle": "设置回报率",
     "pollingRateOptions": "回报率选项",
-    "pollingWriteHint": "选择回报率后将立即写入设备并回读确认。",
-    "pollingReadonlyHint": "显示设备当前报告的状态；当前设备或插件未开放写入。",
-    "writeUnavailableHint": "当前设备未开放这项写入。",
-    "readonlyReport": "只读设备报告",
-    "allReadInfo": "全部读取信息",
-    "closeDeviceDetails": "关闭设备详情",
-    "detailsNote": "以下是已签名设备插件返回的完整只读报告；经过验证的可写项目会在主界面提供独立控件。",
-    "noCapabilities": "设备没有报告扩展能力字段。",
+    "pollingWriteHint": "选好就同步到鼠标，还会自动核对一下",
+    "pollingReadonlyHint": "鼠标当前报告的状态，暂无法修改。",
+    "writeUnavailableHint": "此项当前无法修改",
+    "readonlyReport": "设备读数",
+    "allReadInfo": "全部读数",
+    "closeDeviceDetails": "关闭读数详情",
+    "detailsNote": "插件读回来的信息都在这了。能改的已经放到主界面啦。",
+    "noCapabilities": "这台鼠标还没透露更多细节呢",
     "dpiValue": "DPI 数值",
     "timeoutSeconds": "超时时间（秒）",
     "setSleepTitle": "设置{{label}}",
     "editReceiverLightingTitle": "编辑接收器{{field}}",
-    "lastUpdate": "最后更新：{{time}}",
+    "lastUpdate": "更新于 {{time}}",
     "closeNotification": "关闭通知",
     "windowsControls": "Windows 窗口控件",
     "minimizeWindow": "最小化窗口",
     "maximizeWindow": "最大化窗口",
     "closeWindow": "关闭窗口",
     "pluginUpdateFound": "发现插件更新",
-    "pluginUpdateFoundBody": "{{count}} 个已安装插件有新版本，可在“设置 → 插件”中更新。"
+    "pluginUpdateFoundBody": "{{count}} 个已安装插件有新版本可用，请在「设置 → 插件」中更新。"
   },
   "lighting": {
     "hardwareSync": "硬件同步",
@@ -239,60 +239,60 @@
     },
     "theme": {
       "label": "主题模式",
-      "hint": "跟随系统会自动适配浅色或深色",
+      "hint": "跟随系统自动切换浅色/深色模式",
       "system": "跟随系统",
       "light": "浅色",
       "dark": "深色"
     },
     "autostart": {
       "label": "开机自动启动",
-      "hint": "登录系统时自动启动 Mira"
+      "hint": "登录时自动启动 Mira"
     },
     "startHidden": {
       "label": "启动时隐藏窗口",
-      "hint": "仅驻留菜单栏/托盘，不显示主窗口"
+      "hint": "启动后隐藏窗口，仅显示菜单栏图标"
     },
     "trayBattery": {
       "label": "显示电量百分比",
-      "hint": "鼠标图标仍会按电量填充，这里只控制旁边的数字",
-      "disabledHint": "Windows 系统托盘不支持在图标旁显示文字"
+      "hint": "图标仍按电量填充，此处仅控制数字显示",
+      "disabledHint": "Windows 托盘图标旁边暂时放不了文字…"
     },
     "trayIconColor": {
       "label": "托盘图标颜色",
-      "hint": "白色适合深色菜单栏背景，黑色适合浅色背景，跟随主题自动切换",
+      "hint": "白色适配深色菜单栏，黑色适配浅色，跟随主题自动切换",
       "white": "白色",
       "black": "黑色",
       "auto": "跟随主题"
     },
     "receiverBattery": {
       "label": "标题附带接收器电量",
-      "hint": "托盘菜单中始终保留所有设备电量"
+      "hint": "托盘菜单中始终显示所有设备电量"
     },
     "trayConnection": {
       "label": "菜单显示连接状态",
-      "hint": "在托盘菜单中显示连接方式和设备名称"
+      "hint": "托盘菜单中展示连接方式和设备名称"
     },
     "refreshInterval": {
       "label": "刷新间隔：{{seconds}} 秒",
-      "hint": "窗口可见时的兜底轮询间隔；事件触发时立即读取，窗口隐藏时自动降为 60 秒"
+      "hint": "Mira 通过事件实时更新；此间隔仅作为窗口可见时的后备轮询，隐藏后降至 60 秒"
     },
     "updateCheck": {
       "label": "启动时检查 Mira 更新",
-      "hint": "启动后联网检查新版本，并在应用内提示结果"
+      "hint": "启动后自动检查新版本"
     },
     "updateInstall": {
       "label": "自动下载并安装",
-      "hint": "发现新版本后自动安装，完成后提示重启，不会强制中断当前工作"
+      "hint": "自动下载安装，完成后提示重启"
     },
     "lowBattery": {
       "label": "低电量阈值：{{value}}%",
-      "hint": "电量跨过阈值时通过系统通知提醒一次，充电期间不提醒",
-      "tooltip": "低电量提醒：仅在电量跨过阈值时提醒一次，不会反复弹窗。"
+      "hint": "电量低于阈值时提醒一次，充电期间不重复提醒",
+      "tooltip": "仅在跨越阈值时提醒一次，不会重复弹窗"
     },
     "nightMode": {
       "label": "启用安静灯光",
-      "hint": "在指定条件下自动关闭灯光，条件解除后恢复原状态",
-      "tooltip": "安静灯光：按触发场景自动关闭灯光，并在条件解除后可靠恢复进入前的状态。仅在灯光可写时生效。",
+      "hint": "触发条件满足时关闭灯光，条件解除后恢复原状态",
+      "tooltip": "安静灯光：在设定的场景下关闭灯光，条件解除后恢复原状态。仅在灯光可修改时生效。",
       "triggerSection": "触发场景（任一满足即关闭灯光）",
       "triggerTime": "特定时间",
       "triggerTimeHint": "在指定时段关闭灯光",
@@ -315,40 +315,40 @@
       "endHint": "恢复灯光的时间"
     },
     "config": {
-      "hint": "导出设备配置文件用于备份或迁移；导入时会检查插件兼容性并逐项应用。",
+      "hint": "导出用于备份或迁移。导入时 Mira 会先校验插件兼容性，再逐项同步。",
       "export": "导出配置",
       "import": "导入配置",
       "filterName": "Mira 配置"
     },
     "pluginUpdateCheck": {
       "label": "启动时检查插件更新",
-      "hint": "仅检查签名插件的新版本，不会静默替换插件"
+      "hint": "仅检查已签名插件的新版本"
     },
     "pluginUpdate": {
       "check": "检查插件更新",
       "checking": "检查中…",
       "allLatest": "插件均为最新",
-      "noPlugins": "未发现已安装插件。正式安装包默认携带 mira.amaster。",
+      "noPlugins": "未发现已安装的插件。正式安装包默认包含 mira.amaster。",
       "signatureVerified": "签名已验证",
       "signatureUnverified": "签名未验证",
       "defaultBundled": "默认内置",
       "updatable": "可更新至 v{{version}}",
-      "updating": "验证并安装中…",
+      "updating": "正在更新…",
       "update": "更新插件"
     },
     "privacy": {
       "telemetryLabel": "禁用遥测",
-      "telemetryHint": "Mira 不内置遥测，此选项始终开启",
+      "telemetryHint": "Mira 无遥测功能，此选项始终启用",
       "scanLabel": "扫描 HID 设备",
-      "scanHint": "列出与已安装插件匹配的真实 HID 设备（硬件测试用）",
+      "scanHint": "列出匹配已安装插件的真实 HID 设备，便于硬件调试",
       "scanButton": "扫描",
       "diagnosticsLabel": "导出诊断",
-      "diagnosticsHint": "诊断数据已脱敏，不含序列号或 HID 负载",
+      "diagnosticsHint": "诊断内容已脱敏，不含序列号或 HID 负载",
       "diagnosticsButton": "导出诊断"
     },
     "about": {
       "label": "查看关于页",
-      "hint": "版本、插件、联系方式、许可证和免责声明",
+      "hint": "查看版本、插件、联系方式、许可证等信息",
       "button": "打开关于页"
     }
   },
@@ -356,7 +356,7 @@
     "title": "关于",
     "eyebrow": "Mira Mouse",
     "unofficial": "非官方 · 兼容客户端",
-    "disclaimer": "Mira 是独立做出来的小工具，没有厂商授权、合作或背书。我们会认真一点：没经过真机确认的能力，不会在界面里假装已经稳稳支持。",
+    "disclaimer": "Mira 是独立开发的工具，无厂商授权、合作或背书。未经真机验证的功能不会在界面中显示为稳定支持。",
     "loadFailed": "加载关于信息失败：{{error}}",
     "loading": "加载中…",
     "buildDatePreview": "本地预览",
@@ -390,15 +390,15 @@
     },
     "autoUpdateEnabled": "已启用",
     "autoUpdateDisabled": "未启用",
-    "noBundledPlugins": "未发现内置插件。正式安装包默认携带 mira.amaster。",
+    "noBundledPlugins": "未发现内置插件。正式安装包默认包含 mira.amaster。",
     "signatureVerified": "签名已验证",
     "signatureUnverified": "签名未验证",
     "defaultBundled": "默认内置",
     "userUpdated": "用户更新",
     "developer": "开发者：{{name}}",
     "copyright": "版权：{{name}}",
-    "updateEnabledHint": "自动更新已启用，可手动检查新版本。",
-    "updateDisabledHint": "自动更新未启用。请前往 GitHub Release 页面手动下载新版本。",
+    "updateEnabledHint": "自动更新已启用，也可手动检查新版本",
+    "updateDisabledHint": "自动更新未启用，请前往 GitHub Release 页面手动下载。",
     "updateCheck": "检查更新",
     "updateChecking": "检查中…",
     "updateUpToDate": "已是最新",
@@ -412,7 +412,7 @@
     "viewLicenseDisabled": "查看开源许可证（需配置 GitHub 链接）",
     "viewThirdParty": "查看第三方许可",
     "viewThirdPartyDisabled": "查看第三方许可（需配置 GitHub 链接）",
-    "privacyHint": "Mira 不内置遥测、账户、广告或常驻网络服务。诊断导出已脱敏，不含设备序列号或 HID 负载。未经你确认不上传任何数据。",
+    "privacyHint": "Mira 无遥测、无账户、无广告、无常驻联网。诊断导出已脱敏，不含序列号或 HID 负载。未经确认不会上传任何数据。",
     "exportDiagnostics": "导出诊断",
     "reportIssueHint": "报告问题时请勿粘贴未脱敏的序列号或敏感日志。",
     "reportIssue": "报告问题",
@@ -421,40 +421,40 @@
   "notification": {
     "lowBattery": {
       "title": "低电量提醒",
-      "body": "鼠标电量已低于 {{threshold}}%（当前 {{percent}}%）"
+      "body": "鼠标电量已低于 {{threshold}}%（当前 {{percent}}%），请及时充电。"
     },
     "updateFound": {
-      "title": "发现 Mira 新版本",
-      "body": "v{{version}} 已可用，可在“关于”页查看并安装。"
+      "title": "发现新版本",
+      "body": "v{{version}} 已可用，可在「关于」页查看并安装。"
     },
     "updateInstalled": {
-      "title": "Mira 更新已安装",
-      "body": "点击此通知立即重启，完成更新。"
+      "title": "更新就绪",
+      "body": "点击重启以完成更新。"
     },
     "pluginUpdateFound": {
       "title": "发现插件更新",
-      "body": "{{count}} 个已安装插件有新版本，可在“设置 → 插件”中更新。"
+      "body": "{{count}} 个已安装插件有新版本可用，请在「设置 → 插件」中更新。"
     },
     "saveFailed": "保存失败",
     "writeFailed": "写入失败",
-    "writeFailedBody": "界面已保留设备真实状态：{{error}}",
-    "mutationUnavailable": "操作不可用",
-    "mutationUnavailableBody": "官方配置工具（Logi Options+、G HUB、AMaster）可能独占了设备，请关闭后重试。",
+    "writeFailedBody": "已保留鼠标原始状态，错误：{{error}}",
+    "mutationUnavailable": "当前无法修改",
+    "mutationUnavailableBody": "官方工具（Logi Options+、G HUB、AMaster）正在占用鼠标，请关闭后重试。",
     "exportFailed": "导出失败",
     "exportSuccess": "导出成功",
-    "exportSuccessBody": "配置已保存至 {{path}}",
+    "exportSuccessBody": "配置已导出至：{{path}}",
     "importFailed": "导入失败",
     "importSuccess": "导入成功",
-    "importSuccessBody": "配置已应用，设备状态已更新",
-    "scanFailed": "扫描失败",
-    "autostartFailed": "设置开机启动失败",
+    "importSuccessBody": "配置已同步，鼠标状态已刷新",
+    "scanFailed": "未找到设备",
+    "autostartFailed": "开机启动设置失败",
     "checkPluginUpdateFailed": "检查插件更新失败",
-    "installPluginUpdateFailed": "安装插件更新失败",
+    "installPluginUpdateFailed": "插件更新安装失败",
     "selectDeviceFailed": "切换鼠标失败",
     "loadAboutFailed": "加载关于信息失败",
     "openExternalFailed": "打开网页失败",
     "checkUpdateFailed": "检查更新失败",
-    "installUpdateFailed": "安装更新失败"
+    "installUpdateFailed": "更新安装失败"
   },
   "tray": {
     "open": "打开 Mira",

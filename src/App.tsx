@@ -5,7 +5,6 @@ import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import {
   BatteryHigh,
-  ArrowsLeftRight,
   CaretDown,
   Gauge,
   Gear,
@@ -20,7 +19,7 @@ import {
   X,
 } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
-import { MOCK_DEVICE } from './mock';
+import { MOCK_DEVICE, MOCK_DEVICE_ENTRIES } from './mock';
 import { applyTheme, pastelDisplayColor } from './theme';
 import i18n, { applyLanguage, loadPluginLocales, resolveLabelKey } from './i18n';
 import { SettingsPage } from './Settings';
@@ -1415,7 +1414,6 @@ function Dashboard({
                   >
                     <span>{device.name}</span>
                     <span className="device-switch-icon" aria-hidden="true">
-                      <ArrowsLeftRight weight="regular" />
                       <CaretDown weight="bold" />
                     </span>
                   </button>
@@ -1916,7 +1914,8 @@ export default function App() {
   const { t } = useTranslation();
   const pureWeb = isPureWebPreview();
   const [device, setDevice] = useState<DeviceState | undefined>(pureWeb ? MOCK_DEVICE : undefined);
-  const [deviceEntries, setDeviceEntries] = useState<DeviceSnapshotEntry[]>([]);
+  const [deviceEntries, setDeviceEntries] = useState<DeviceSnapshotEntry[]>(pureWeb ? MOCK_DEVICE_ENTRIES : []);
+  const deviceEntriesRef = useRef<DeviceSnapshotEntry[]>(pureWeb ? MOCK_DEVICE_ENTRIES : []);
   // F11: device-updated 事件高频触发时，用 startTransition 将 Dashboard 渲染标记为低优先级，
   // 避免 settling polls 期间（6 次 500ms）阻塞主线程。writeBusy 等用户交互状态保持同步。
   const [, startTransition] = useTransition();
@@ -1936,6 +1935,7 @@ export default function App() {
     setDemoMode(false);
     setDevice(undefined);
     setDeviceEntries([]);
+    deviceEntriesRef.current = [];
     setView('dashboard');
     setRefreshNonce((value) => value + 1);
     invoke('device_refresh').catch(() => {});
@@ -2021,6 +2021,7 @@ export default function App() {
     invoke<DeviceSnapshotEntry[]>('device_snapshots')
       .then((entries) => {
         if (!cancelled) {
+          deviceEntriesRef.current = entries;
           setDeviceEntries(entries);
           setDevice(entryToState(selectedDeviceEntry(entries)));
         }
@@ -2039,7 +2040,9 @@ export default function App() {
       // F11: 高频 device-updated 事件用 startTransition 降低渲染优先级，
       // 让用户交互（如点击按钮）能优先响应。
       startTransition(() => {
-        setDevice(snapshot ? snapshotToState(snapshot) : undefined);
+        setDevice(deviceEntriesRef.current.length > 1
+          ? entryToState(selectedDeviceEntry(deviceEntriesRef.current))
+          : (snapshot ? snapshotToState(snapshot) : undefined));
       });
     }).then((un) => {
       if (cancelled) {
@@ -2052,6 +2055,7 @@ export default function App() {
     listen<DeviceSnapshotEntry[]>('device-snapshots-updated', (event) => {
       if (cancelled) return;
       const entries = event.payload;
+      deviceEntriesRef.current = entries;
       startTransition(() => {
         setDeviceEntries(entries);
         setDevice(entryToState(selectedDeviceEntry(entries)));
@@ -2072,11 +2076,22 @@ export default function App() {
   }, [demoMode, refreshNonce]);
 
   const selectDevice = useCallback((deviceKey: string) => {
-    if (demoMode) return;
+    if (demoMode) {
+      const nextEntries = (deviceEntriesRef.current.length ? deviceEntriesRef.current : MOCK_DEVICE_ENTRIES)
+        .map((entry) => ({ ...entry, selected: entry.deviceKey === deviceKey }));
+      deviceEntriesRef.current = nextEntries;
+      setDeviceEntries(nextEntries);
+      setDevice(entryToState(selectedDeviceEntry(nextEntries)));
+      return;
+    }
     void invoke<DeviceSnapshot>('device_select', { deviceKey })
       .then((snapshot) => {
         setDevice(snapshotToState(snapshot));
-        setDeviceEntries((entries) => entries.map((entry) => ({ ...entry, selected: entry.deviceKey === deviceKey })));
+        setDeviceEntries((entries) => {
+          const nextEntries = entries.map((entry) => ({ ...entry, selected: entry.deviceKey === deviceKey }));
+          deviceEntriesRef.current = nextEntries;
+          return nextEntries;
+        });
       })
       .catch((error) => notifyError(i18n.t('notification.selectDeviceFailed'), String(error)));
   }, [demoMode]);
@@ -2100,7 +2115,7 @@ export default function App() {
       <button className={`nav-link nav-about ${view === 'about' ? 'active' : ''}`} onClick={() => setView('about')} aria-label={t('nav.about')}><Info weight="regular" /></button>
       {demoMode && <button className="nav-link nav-exit" onClick={exitDemo} aria-label={t('nav.exitDemo')} title={t('nav.exitDemo')}><SignOut weight="regular" /></button>}
     </div>
-    {view === 'dashboard' && (device ? <Dashboard device={device} deviceEntries={deviceEntries} onDeviceChange={setDevice} onDeviceSelect={selectDevice} /> : <EmptyState onRefresh={() => { setDemoMode(false); setDevice(undefined); setDeviceEntries([]); setRefreshNonce((value) => value + 1); invoke('device_refresh').catch(() => {}); }} onDemo={() => { setDemoMode(true); setDevice(MOCK_DEVICE); setDeviceEntries([]); }} onOpenSettings={() => setView('settings')} />)}
+    {view === 'dashboard' && (device ? <Dashboard device={device} deviceEntries={deviceEntries} onDeviceChange={setDevice} onDeviceSelect={selectDevice} /> : <EmptyState onRefresh={() => { setDemoMode(false); setDevice(undefined); setDeviceEntries([]); deviceEntriesRef.current = []; setRefreshNonce((value) => value + 1); invoke('device_refresh').catch(() => {}); }} onDemo={() => { setDemoMode(true); setDevice(MOCK_DEVICE); setDeviceEntries(MOCK_DEVICE_ENTRIES); deviceEntriesRef.current = MOCK_DEVICE_ENTRIES; }} onOpenSettings={() => setView('settings')} />)}
     {view === 'settings' && <SettingsPage previewMode={pureWeb} focusPluginUpdateToken={settingsPluginFocusToken} onNavigateAbout={() => setView('about')} onThemeChange={setTheme} supportsAnyLighting={device ? pluginSupportsAnyLighting(compatibilityCapabilities(device), device.writableMutations) : false} supportsReceiverLighting={device ? pluginSupportsLightingMutation(compatibilityCapabilities(device), device.writableMutations, 'receiver') : false} />}
     {view === 'about' && <AboutPage previewMode={pureWeb} focusUpdateToken={aboutFocusToken} onBack={() => setView('settings')} />}
     {appNotification && (

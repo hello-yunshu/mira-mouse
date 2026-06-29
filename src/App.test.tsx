@@ -29,7 +29,7 @@ describe('Mira shell', () => {
   });
   it('shows a quiet no-device state without stale numbers', () => {
     render(<App />);
-    expect(screen.getByText('没有找到支持的鼠标')).toBeInTheDocument();
+    expect(screen.getByText('还没找到支持的鼠标呢')).toBeInTheDocument();
     expect(screen.queryByText(/0 DPI|--%/)).not.toBeInTheDocument();
   });
   it('shows native-style window controls in the Windows web preview', () => {
@@ -60,13 +60,22 @@ describe('Mira shell', () => {
     fireEvent.click(screen.getByRole('tab', { name: '灯光' }));
     expect(screen.queryByText('fixture-verified')).not.toBeInTheDocument();
     expect(document.querySelector('[data-animation="realtime-deformation"]')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: '全部读取信息' }));
-    expect(screen.getByRole('dialog', { name: '全部读取信息' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '全部读数' }));
+    expect(screen.getByRole('dialog', { name: '全部读数' })).toBeInTheDocument();
     expect(screen.getByText('传感器与连接')).toBeInTheDocument();
     expect(screen.getByText('按键映射')).toBeInTheDocument();
     expect(screen.getByText('接收器灯光固件')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: '关闭设备详情' }));
-    expect(screen.queryByRole('dialog', { name: '全部读取信息' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '关闭读数详情' }));
+    expect(screen.queryByRole('dialog', { name: '全部读数' })).not.toBeInTheDocument();
+  });
+  it('shows the multi-mouse switcher in the demo fixture', () => {
+    render(<App />);
+    fireEvent.click(screen.getByText('查看演示'));
+    expect(screen.getByRole('heading', { name: 'Mira Example Wireless Mouse' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '切换鼠标' }));
+    fireEvent.click(screen.getByText('Mira Example USB Mouse').closest('button')!);
+    expect(screen.getByRole('heading', { name: 'Mira Example USB Mouse' })).toBeInTheDocument();
+    expect(screen.getByLabelText('当前 DPI：1600，点击编辑')).toBeInTheDocument();
   });
   it('returns to the dashboard when exiting demo mode from another page', () => {
     render(<App />);
@@ -74,7 +83,7 @@ describe('Mira shell', () => {
     fireEvent.click(screen.getByRole('button', { name: '设置' }));
     expect(screen.getByRole('heading', { name: '设置' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '退出演示' }));
-    expect(screen.getByText('没有找到支持的鼠标')).toBeInTheDocument();
+    expect(screen.getByText('还没找到支持的鼠标呢')).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: '设置' })).not.toBeInTheDocument();
   });
 });
