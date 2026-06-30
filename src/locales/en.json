@@ -249,8 +249,8 @@
       "hint": "Launch Mira automatically at login"
     },
     "startHidden": {
-      "label": "Hide window on launch",
-      "hint": "Hide window on launch, only show menu bar icon"
+      "label": "Hide window at login",
+      "hint": "Only hide the main window for launch-at-login; manual opens and update restarts still show it"
     },
     "trayBattery": {
       "label": "Show battery percentage",
