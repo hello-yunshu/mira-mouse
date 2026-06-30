@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+use auto_launch::AutoLaunchBuilder;
 use chrono::{Local, NaiveTime, Timelike};
 use ed25519_dalek::VerifyingKey;
 use hidapi::HidApi;
@@ -13,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
+    ffi::OsStr,
     fs,
     io::{Cursor, Read},
     path::PathBuf,
@@ -26,7 +28,6 @@ use tauri::{
     tray::TrayIconBuilder,
     AppHandle, Emitter, Manager, Theme, WebviewWindow,
 };
-use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_notification::NotificationExt;
 
 type CachedPlugins = Vec<(
@@ -35,6 +36,7 @@ type CachedPlugins = Vec<(
     std::collections::BTreeMap<String, Vec<u8>>,
 )>;
 type PluginLocales = BTreeMap<String, BTreeMap<String, BTreeMap<String, String>>>;
+const AUTOSTART_HIDDEN_ARG: &str = "--hidden";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1616,6 +1618,39 @@ fn mouse_lighting_off_effect(snapshot: &DeviceSnapshot) -> u8 {
         .unwrap_or(0)
 }
 
+fn launch_args_request_hidden<I, S>(args: I) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    args.into_iter().any(|arg| {
+        matches!(
+            arg.as_ref().to_str(),
+            Some(AUTOSTART_HIDDEN_ARG | "--minimized")
+        )
+    })
+}
+
+fn should_start_hidden_for_args<I, S>(settings: &AppSettings, args: I) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    settings.start_hidden && launch_args_request_hidden(args)
+}
+
+fn should_start_hidden(settings: &AppSettings) -> bool {
+    should_start_hidden_for_args(settings, std::env::args_os())
+}
+
+fn autostart_args(settings: &AppSettings) -> Vec<&'static str> {
+    if settings.start_hidden {
+        vec![AUTOSTART_HIDDEN_ARG]
+    } else {
+        Vec::new()
+    }
+}
+
 /// 从设备快照的 capabilities 中读取接收器灯光状态。
 ///
 /// 返回 SavedReceiverLight，用于进入夜间时保存、退出时恢复。
@@ -1663,6 +1698,26 @@ mod settings_tests {
         assert!(settings.automatic_update_checks);
         assert!(!settings.automatic_update_install);
         assert!(settings.automatic_plugin_update_checks);
+    }
+
+    #[test]
+    fn launch_arguments_only_hide_startup_window_when_enabled_in_settings() {
+        assert!(!launch_args_request_hidden(["mira"]));
+        assert!(!launch_args_request_hidden(["mira", "--updated"]));
+        assert!(launch_args_request_hidden(["mira", AUTOSTART_HIDDEN_ARG]));
+        assert!(launch_args_request_hidden(["mira", "--minimized"]));
+
+        let mut settings = AppSettings::default();
+        settings.start_hidden = false;
+        assert!(!should_start_hidden_for_args(
+            &settings,
+            ["mira", AUTOSTART_HIDDEN_ARG]
+        ));
+        settings.start_hidden = true;
+        assert!(should_start_hidden_for_args(
+            &settings,
+            ["mira", AUTOSTART_HIDDEN_ARG]
+        ));
     }
 
     #[test]
@@ -5410,11 +5465,59 @@ fn device_mutate_blocking(
     Ok(snapshot)
 }
 
+fn autostart_entry(
+    app: &AppHandle,
+    settings: &AppSettings,
+) -> Result<auto_launch::AutoLaunch, String> {
+    let mut builder = AutoLaunchBuilder::new();
+    let package = app.package_info();
+    builder.set_app_name(package.name.as_ref());
+    builder.set_args(&autostart_args(settings));
+
+    let current_exe = std::env::current_exe()
+        .map_err(|err| format!("failed to resolve current executable: {err}"))?;
+
+    #[cfg(target_os = "windows")]
+    builder.set_app_path(&current_exe.display().to_string());
+
+    #[cfg(target_os = "macos")]
+    {
+        builder.set_use_launch_agent(false);
+        let exe_path = current_exe
+            .canonicalize()
+            .map_err(|err| format!("failed to resolve app bundle path: {err}"))?
+            .display()
+            .to_string();
+        let parts: Vec<&str> = exe_path.split(".app/").collect();
+        let app_path = if parts.len() == 2 {
+            format!("{}.app", parts.first().unwrap())
+        } else {
+            exe_path
+        };
+        builder.set_app_path(&app_path);
+    }
+
+    #[cfg(target_os = "linux")]
+    if let Some(appimage) = app
+        .env()
+        .appimage
+        .and_then(|path| path.to_str().map(|path| path.to_string()))
+    {
+        builder.set_app_path(&appimage);
+    } else {
+        builder.set_app_path(&current_exe.display().to_string());
+    }
+
+    builder
+        .build()
+        .map_err(|err| format!("failed to prepare autostart entry: {err}"))
+}
+
 #[tauri::command]
 fn autostart_state(app: tauri::AppHandle) -> Result<bool, String> {
     #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
-    let mut enabled = app
-        .autolaunch()
+    let settings = cached_settings(&app);
+    let mut enabled = autostart_entry(&app, &settings)?
         .is_enabled()
         .map_err(|err| format!("failed to read autostart state: {err}"))?;
     #[cfg(target_os = "macos")]
@@ -5426,7 +5529,8 @@ fn autostart_state(app: tauri::AppHandle) -> Result<bool, String> {
 
 #[tauri::command]
 fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
-    let autolaunch = app.autolaunch();
+    let settings = cached_settings(&app);
+    let autolaunch = autostart_entry(&app, &settings)?;
     if enabled {
         #[cfg(target_os = "macos")]
         if running_from_disk_image() {
@@ -5435,6 +5539,11 @@ fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
                 "Mira is running from a mounted DMG. Drag Mira to Applications before enabling launch at login."
                     .to_string(),
             );
+        }
+        if autolaunch.is_enabled().unwrap_or(false) {
+            autolaunch
+                .disable()
+                .map_err(|err| format!("failed to replace autostart entry: {err}"))?;
         }
         autolaunch
             .enable()
@@ -5449,6 +5558,28 @@ fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
         #[cfg(target_os = "macos")]
         remove_legacy_launch_agent(&app)?;
         Ok(())
+    }
+}
+
+fn refresh_autostart_entry_if_enabled(app: &AppHandle) {
+    #[cfg(target_os = "macos")]
+    if running_from_disk_image() {
+        return;
+    }
+
+    let settings = cached_settings(app);
+    let Ok(autolaunch) = autostart_entry(app, &settings) else {
+        return;
+    };
+    let Ok(true) = autolaunch.is_enabled() else {
+        return;
+    };
+    if let Err(err) = autolaunch.disable() {
+        eprintln!("[mira] refresh autostart entry disable failed: {err}");
+        return;
+    }
+    if let Err(err) = autolaunch.enable() {
+        eprintln!("[mira] refresh autostart entry enable failed: {err}");
     }
 }
 
@@ -5511,7 +5642,8 @@ fn migrate_legacy_launch_agent(app: &AppHandle, enabled: bool) -> Result<bool, S
             remove_legacy_launch_agent(app)?;
             return Ok(false);
         }
-        app.autolaunch()
+        let settings = cached_settings(app);
+        autostart_entry(app, &settings)?
             .enable()
             .map_err(|err| format!("failed to migrate autostart item: {err}"))?;
     }
@@ -5781,6 +5913,7 @@ fn settings_set(app: tauri::AppHandle, settings: AppSettings) -> Result<AppSetti
     let previous_settings = cached_settings(&app);
     let theme_changed = previous_settings.theme != settings.theme;
     let tray_icon_color_changed = previous_settings.tray_icon_color != settings.tray_icon_color;
+    let start_hidden_changed = previous_settings.start_hidden != settings.start_hidden;
     let low_battery_threshold_changed =
         previous_settings.low_battery_threshold != settings.low_battery_threshold;
     // 安静灯光设置变更时唤醒调度器立即重新评估阶段。
@@ -5799,6 +5932,9 @@ fn settings_set(app: tauri::AppHandle, settings: AppSettings) -> Result<AppSetti
             && previous_settings.low_battery_threshold != settings.low_battery_threshold);
     save_settings(&app, &settings)?;
     update_cached_settings(&app, &settings);
+    if start_hidden_changed {
+        refresh_autostart_entry_if_enabled(&app);
+    }
     if theme_changed {
         apply_saved_app_theme(&app, &settings);
         #[cfg(target_os = "windows")]
@@ -5853,7 +5989,13 @@ fn export_diagnostics(app: tauri::AppHandle) -> Result<serde_json::Value, String
         "platform": std::env::consts::OS,
         "architecture": std::env::consts::ARCH,
         "rust_version": env!("CARGO_PKG_RUST_VERSION"),
-        "autostart_enabled": app.autolaunch().is_enabled().unwrap_or(false),
+        "autostart_enabled": autostart_entry(&app, &cached_settings(&app))
+            .and_then(|autostart| {
+                autostart
+                    .is_enabled()
+                    .map_err(|err| format!("failed to read autostart state: {err}"))
+            })
+            .unwrap_or(false),
         "bundled_plugins": bundled,
         "device_read_errors": read_errors,
         "updater_active": read_lock_file().is_some_and(|lock| lock.release_ready),
@@ -5943,6 +6085,31 @@ fn apply_windows_backdrop(window: &WebviewWindow, settings: &AppSettings) {
 #[tauri::command]
 fn hide_to_tray(app: tauri::AppHandle) {
     hide_main_window_to_tray(&app);
+}
+
+#[tauri::command]
+fn relaunch_app(app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let bundle = current_app_bundle_path()
+            .ok_or_else(|| "failed to locate current app bundle".to_string())?;
+        Command::new("/bin/sh")
+            .arg("-c")
+            .arg("while kill -0 \"$2\" 2>/dev/null; do sleep 0.1; done; /usr/bin/open \"$1\"")
+            .arg("mira-relaunch")
+            .arg(&bundle)
+            .arg(std::process::id().to_string())
+            .spawn()
+            .map_err(|err| format!("failed to schedule app relaunch: {err}"))?;
+        app.exit(0);
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        app.request_restart();
+        Ok(())
+    }
 }
 
 fn navigate_about_update(app: &AppHandle) {
@@ -6877,9 +7044,12 @@ pub fn run() {
         ))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
+            let startup_settings = cached_settings(app.handle());
+            let launch_hidden = should_start_hidden(&startup_settings);
+            refresh_autostart_entry_if_enabled(app.handle());
+
             // macOS native Vibrancy backdrop.
             #[cfg(target_os = "macos")]
             if let Some(window) = app.get_webview_window("main") {
@@ -6893,14 +7063,16 @@ pub fn run() {
                     None,
                 );
                 // Show after applying Vibrancy to avoid a black startup flash.
-                let _ = window.show();
+                if !launch_hidden {
+                    let _ = window.show();
+                }
             }
 
             // Windows 11 uses Mica; Windows 10 v1809+ falls back to Acrylic.
             // 移除系统标题栏（最小化/最大化/关闭按钮），改用前端 data-tauri-drag-region 拖拽。
             #[cfg(target_os = "windows")]
             if let Some(window) = app.get_webview_window("main") {
-                let settings = cached_settings(app.handle());
+                let settings = startup_settings.clone();
                 apply_saved_app_theme(app.handle(), &settings);
                 let _ = window.set_decorations(false);
                 let _ = window.set_maximizable(false);
@@ -7022,9 +7194,8 @@ pub fn run() {
             }
             spawn_night_mode_scheduler(app.handle().clone());
 
-            let start_hidden = cached_settings(app.handle()).start_hidden;
             if let Some(window) = app.get_webview_window("main") {
-                if start_hidden {
+                if launch_hidden {
                     if let Err(err) = window.hide() {
                         eprintln!("[mira] hide main window failed: {err}");
                     }
@@ -7061,6 +7232,7 @@ pub fn run() {
             settings_get,
             settings_set,
             hide_to_tray,
+            relaunch_app,
             show_update_notification,
             export_diagnostics,
             plugin_locales

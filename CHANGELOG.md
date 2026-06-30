@@ -1,6 +1,15 @@
 <!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
 # Changelog
 
+## 0.3.8 - 2026-07-01
+
+- Fixed macOS update relaunch to reopen the `.app` bundle instead of directly
+  spawning the bundle's internal executable, avoiding the system "choose an app
+  to open this" prompt introduced around 0.3.6.
+- Kept launch-at-login and "hide window at login" as separate settings; only
+  the combination starts Mira in the background.
+- Set Windows updater installs to quiet mode so automatic updates stay silent.
+
 ## 0.3.7 - 2026-07-01
 
 - Added multi-device support and refreshed UI messaging across the app.
