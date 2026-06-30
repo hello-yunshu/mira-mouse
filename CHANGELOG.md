@@ -1,6 +1,18 @@
 <!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
 # Changelog
 
+## 0.3.7 - 2026-07-01
+
+- Added multi-device support and refreshed UI messaging across the app.
+- Fixed the Linux udev hotplug monitor API and added a local pre-push guard.
+- Refined the Material Design UI with a dedicated guidelines doc and polished
+  styles, tooltip, and dashboard layout.
+- Simplified macOS Dock icon theme switching: the Dock icon is now provided by
+  the packaged `icon.icns` (with a matching `icon-dark.icns`), removing the
+  runtime `setApplicationIconImage` override that caused visual discrepancies.
+- Cleaned up repository contents: stopped tracking Tauri-generated schemas and
+  the local test config, hardened `.gitignore`, and refreshed reference docs.
+
 ## 0.3.1 - 2026-06-28
 
 - Branded the Windows NSIS installer and uninstaller with Mira liquid-glass
