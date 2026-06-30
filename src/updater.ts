@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { check, type DownloadEvent, type Update } from '@tauri-apps/plugin-updater';
-import { relaunch } from '@tauri-apps/plugin-process';
 import { invoke } from '@tauri-apps/api/core';
 import { notifyInfo } from './notify';
 import i18n from './i18n';
@@ -110,5 +109,5 @@ export async function installAppUpdate(): Promise<void> {
 }
 
 export async function relaunchAfterUpdate(): Promise<void> {
-  await relaunch();
+  await invoke('relaunch_app');
 }
