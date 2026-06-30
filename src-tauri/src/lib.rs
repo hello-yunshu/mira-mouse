@@ -1707,8 +1707,10 @@ mod settings_tests {
         assert!(launch_args_request_hidden(["mira", AUTOSTART_HIDDEN_ARG]));
         assert!(launch_args_request_hidden(["mira", "--minimized"]));
 
-        let mut settings = AppSettings::default();
-        settings.start_hidden = false;
+        let mut settings = AppSettings {
+            start_hidden: false,
+            ..Default::default()
+        };
         assert!(!should_start_hidden_for_args(
             &settings,
             ["mira", AUTOSTART_HIDDEN_ARG]
@@ -5515,8 +5517,8 @@ fn autostart_entry(
 
 #[tauri::command]
 fn autostart_state(app: tauri::AppHandle) -> Result<bool, String> {
-    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
     let settings = cached_settings(&app);
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
     let mut enabled = autostart_entry(&app, &settings)?
         .is_enabled()
         .map_err(|err| format!("failed to read autostart state: {err}"))?;
