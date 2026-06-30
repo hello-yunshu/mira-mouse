@@ -23,3 +23,6 @@ vite.config.js
 /docs/evidence-status.md
 /docs/final-verification-report.md
 /docs/spec-traceability.md
+/src-tauri/gen/
+src-tauri/tauri.test.conf.json
+/artifacts/
