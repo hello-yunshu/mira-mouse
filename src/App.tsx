@@ -1931,6 +1931,7 @@ export default function App() {
   const windowsPlatform = isWindowsPlatform();
   const macPlatform = isMacPlatform();
   const windowsWebPreview = isWindowsWebPreview();
+  const fallbackPlatform = !pureWeb && !windowsPlatform && !macPlatform;
   const exitDemo = useCallback(() => {
     setDemoMode(false);
     setDevice(undefined);
@@ -1954,10 +1955,18 @@ export default function App() {
   useEffect(() => {
     if (pureWeb) return;
     let unlisten: (() => void) | undefined;
+    let unlistenResume: (() => void) | undefined;
     listen('navigate-about-update', () => openAboutUpdate())
       .then((un) => { unlisten = un; })
       .catch(() => {});
-    return () => { if (unlisten) unlisten(); };
+    listen('window-resumed', () => {
+      setRefreshNonce((value) => value + 1);
+    }).then((un) => { unlistenResume = un; })
+      .catch(() => {});
+    return () => {
+      if (unlisten) unlisten();
+      if (unlistenResume) unlistenResume();
+    };
   }, [openAboutUpdate, pureWeb]);
 
   // 加载插件 locale，注册为 i18n namespace（以插件 ID 命名）。
@@ -2104,7 +2113,7 @@ export default function App() {
     applyTheme(theme, themeColor);
   }, [themeLoaded, theme, themeColor]);
 
-  return <div className={`app-shell ${pureWeb ? 'web-preview' : ''} ${windowsPlatform ? 'platform-windows' : ''} ${macPlatform ? 'platform-macos' : ''} ${windowsWebPreview ? 'windows-web-preview' : ''}`}>
+  return <div className={`app-shell ${pureWeb ? 'web-preview' : ''} ${windowsPlatform ? 'platform-windows' : ''} ${macPlatform ? 'platform-macos' : ''} ${fallbackPlatform ? 'platform-fallback' : ''} ${windowsWebPreview ? 'windows-web-preview' : ''}`}>
     {windowsWebPreview && <WindowsPreviewControls />}
     {windowsPlatform && !windowsWebPreview && !pureWeb && <WindowsWindowControls />}
     {windowsPlatform && !windowsWebPreview && !pureWeb && <div className="windows-drag-strip" data-tauri-drag-region />}
