@@ -1,8 +1,6 @@
 <!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
 # Official Reference Register
 
-Access date: 2026-06-18. Browser retrieval returned HTTP 403; package registries and official Git remotes were reachable. Locally resolved versions are Tauri CLI 2.11.2, React 19.2.7, TypeScript 6.0.3, Vite 8.0.16, Vitest 4.1.9, and Node 26.0.0. Rust crate resolution remains `blocked` because Rust installation execution was denied after download.
-
 - Tauri 2 documentation: <https://v2.tauri.app/>
 - Rust documentation: <https://doc.rust-lang.org/>
 - React documentation: <https://react.dev/>
