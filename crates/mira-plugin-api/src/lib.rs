@@ -9,6 +9,9 @@ pub const PLUGIN_API_VERSION: &str = "1.0.0";
 const MAX_DASHBOARD_ITEMS: usize = 6;
 const MAX_CONTROL_OPTIONS: usize = 8;
 const MAX_SUMMARY_ITEMS: usize = 4;
+const MAX_PLUGIN_NAME_CHARS: usize = 48;
+const MAX_UI_LABEL_CHARS: usize = 16;
+const MAX_UI_ACTION_LABEL_CHARS: usize = 20;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -92,6 +95,9 @@ impl PluginManifest {
         if !valid_plugin_id(&self.plugin_id) {
             return Err(ApiError::PluginId(self.plugin_id.clone()));
         }
+        if !valid_ui_text(&self.name, MAX_PLUGIN_NAME_CHARS) {
+            return Err(ApiError::PluginPresentation);
+        }
         let current = semver::Version::parse(PLUGIN_API_VERSION).expect("constant version");
         if !self.plugin_api.matches(&current) {
             return Err(ApiError::ApiIncompatible(self.plugin_api.to_string()));
@@ -161,7 +167,7 @@ impl PluginManifest {
                             item.as_object().is_some_and(|item| {
                                 item.get("label")
                                     .and_then(serde_json::Value::as_str)
-                                    .is_some_and(|label| !label.is_empty())
+                                    .is_some_and(|label| valid_ui_text(label, MAX_UI_LABEL_CHARS))
                                     && item
                                         .get("source")
                                         .and_then(serde_json::Value::as_str)
@@ -192,7 +198,7 @@ fn valid_options(value: &serde_json::Value, max_items: usize) -> bool {
                 item.as_object().is_some_and(|item| {
                     item.get("label")
                         .and_then(serde_json::Value::as_str)
-                        .is_some_and(|label| !label.is_empty())
+                        .is_some_and(|label| valid_ui_text(label, MAX_UI_LABEL_CHARS))
                         && item.get("value").is_some_and(|value| {
                             value.is_string() || value.is_number() || value.is_boolean()
                         })
@@ -203,6 +209,12 @@ fn valid_options(value: &serde_json::Value, max_items: usize) -> bool {
 
 fn valid_presentation_contract(capability: &Capability) -> bool {
     let metadata = &capability.metadata;
+    if !valid_optional_ui_text(metadata.get("label"), MAX_UI_LABEL_CHARS)
+        || !valid_optional_ui_text(metadata.get("actionLabel"), MAX_UI_ACTION_LABEL_CHARS)
+        || !valid_binding_labels(metadata.get("bindings"))
+    {
+        return false;
+    }
     if metadata
         .get("format")
         .is_some_and(|format| !valid_value_format(format))
@@ -242,6 +254,33 @@ fn valid_presentation_contract(capability: &Capability) -> bool {
         }
         _ => true,
     }
+}
+
+fn valid_optional_ui_text(value: Option<&serde_json::Value>, max_chars: usize) -> bool {
+    value.is_none_or(|value| {
+        value
+            .as_str()
+            .is_some_and(|text| valid_ui_text(text, max_chars))
+    })
+}
+
+fn valid_ui_text(value: &str, max_chars: usize) -> bool {
+    !value.is_empty()
+        && value.trim() == value
+        && value.chars().all(|c| c != '\n' && c != '\r')
+        && value.chars().count() <= max_chars
+}
+
+fn valid_binding_labels(value: Option<&serde_json::Value>) -> bool {
+    value.is_none_or(|value| {
+        value.as_array().is_some_and(|items| {
+            items.iter().all(|item| {
+                item.as_object().is_some_and(|item| {
+                    valid_optional_ui_text(item.get("label"), MAX_UI_LABEL_CHARS)
+                })
+            })
+        })
+    })
 }
 
 fn valid_mutation_contract(metadata: &BTreeMap<String, serde_json::Value>) -> bool {
@@ -645,6 +684,8 @@ pub enum ApiError {
     ApiIncompatible(String),
     #[error("stable writes require hardware-verified evidence")]
     UnsafeWriteEvidence,
+    #[error("plugin has an invalid UI presentation contract")]
+    PluginPresentation,
     #[error("capability {0} has an invalid placement")]
     CapabilityPlacement(String),
     #[error("capability {0} has an invalid summary declaration")]
@@ -684,6 +725,63 @@ mod tests {
             depends_on: vec![],
         };
         assert_eq!(manifest.validate(), Err(ApiError::UnsafeWriteEvidence));
+    }
+
+    #[test]
+    fn limits_plugin_display_name_length() {
+        let manifest = PluginManifest {
+            schema_version: 1,
+            plugin_id: "mira.example".into(),
+            name: "A plugin name that is intentionally too long for compact host UI".into(),
+            version: "1.0.0".into(),
+            plugin_api: ">=1.0.0, <2.0.0".parse().unwrap(),
+            publisher_key_id: None,
+            evidence: EvidenceLevel::FixtureVerified,
+            permissions: vec![],
+            capabilities: vec![],
+            writes_enabled: false,
+            exportable_fields: vec![],
+            depends_on: vec![],
+        };
+        assert_eq!(manifest.validate(), Err(ApiError::PluginPresentation));
+    }
+
+    #[test]
+    fn limits_host_rendered_capability_text() {
+        let capability = Capability {
+            id: "profile-mgmt-current".into(),
+            control: Control::ReadOnlyValue,
+            label_key: "capability.profile-mgmt-current".into(),
+            read_only: true,
+            placements: vec![],
+            metadata: BTreeMap::from([(
+                "label".into(),
+                serde_json::json!("当前配置文件名称特别特别特别特别长"),
+            )]),
+            probe: None,
+            connections: None,
+            min_firmware: None,
+        };
+        let manifest = PluginManifest {
+            schema_version: 1,
+            plugin_id: "mira.example".into(),
+            name: "Example".into(),
+            version: "1.0.0".into(),
+            plugin_api: ">=1.0.0, <2.0.0".parse().unwrap(),
+            publisher_key_id: None,
+            evidence: EvidenceLevel::FixtureVerified,
+            permissions: vec![],
+            capabilities: vec![capability],
+            writes_enabled: false,
+            exportable_fields: vec![],
+            depends_on: vec![],
+        };
+        assert_eq!(
+            manifest.validate(),
+            Err(ApiError::CapabilityPresentation(
+                "profile-mgmt-current".into()
+            ))
+        );
     }
 
     #[test]

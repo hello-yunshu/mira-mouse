@@ -592,14 +592,6 @@ struct SessionState {
     /// Channel used to wake the night mode scheduler thread for an immediate
     /// re-evaluation (settings change, manual toggle, etc.).
     night_mode_tx: Mutex<Option<std::sync::mpsc::Sender<()>>>,
-    /// 原生设备热插拔监听器是否就绪。
-    /// 由 `spawn_device_hotplug_watcher` 在平台原生监听器成功注册后置为 true。
-    /// `spawn_device_reader` 的无设备回退间隔据此决定：
-    /// - true：依赖事件即时唤醒，回退间隔延长到 60s
-    /// - false：使用 1s 轮询保证可用性
-    ///
-    /// 使用 AtomicBool（非 Mutex）以便 reader 热循环中无锁读取。
-    hotplug_available: std::sync::atomic::AtomicBool,
     /// debug 构建中记录上一次 matched device 数量，仅在变化时输出日志。
     #[cfg(debug_assertions)]
     last_matched_count: Mutex<usize>,
@@ -1132,12 +1124,14 @@ fn selected_device_path(state: &SessionState) -> Option<String> {
 
 /// 替换整个快照 map，并在变化时触发 settling burst。
 fn store_snapshots(state: &SessionState, snapshots: BTreeMap<String, DeviceSnapshot>) {
-    let selected_disconnected = state
-        .selected_device_path
-        .lock()
-        .ok()
-        .and_then(|selected| selected.clone())
-        .is_some_and(|path| !snapshots.contains_key(&path));
+    if let Ok(mut selected) = state.selected_device_path.lock() {
+        if selected
+            .as_ref()
+            .is_some_and(|path| !snapshots.contains_key(path))
+        {
+            *selected = None;
+        }
+    }
     let mut guard = state
         .last_snapshot
         .lock()
@@ -1145,11 +1139,6 @@ fn store_snapshots(state: &SessionState, snapshots: BTreeMap<String, DeviceSnaps
     let changed = *guard != snapshots;
     *guard = snapshots;
     drop(guard);
-    if selected_disconnected {
-        if let Ok(mut selected) = state.selected_device_path.lock() {
-            *selected = None;
-        }
-    }
     if changed {
         note_state_change(state);
         // 设备状态变化（连接/断开/灯光状态变化）时唤醒夜间模式调度器，
@@ -1175,6 +1164,9 @@ fn store_snapshot(state: &SessionState, device_path: String, snapshot: DeviceSna
 
 /// 清空所有快照，并在变化时触发 settling burst。
 fn clear_snapshots(state: &SessionState) {
+    if let Ok(mut selected) = state.selected_device_path.lock() {
+        *selected = None;
+    }
     let mut guard = state
         .last_snapshot
         .lock()
@@ -1182,9 +1174,6 @@ fn clear_snapshots(state: &SessionState) {
     let changed = !guard.is_empty();
     guard.clear();
     drop(guard);
-    if let Ok(mut selected) = state.selected_device_path.lock() {
-        *selected = None;
-    }
     // #9 设备断开时清除 TTL 缓存。
     if let Ok(mut cache) = state.last_read_at.lock() {
         cache.clear();
@@ -4647,7 +4636,6 @@ fn device_snapshots(state: tauri::State<'_, SessionState>) -> Vec<DeviceSnapshot
 
 #[tauri::command]
 fn device_select(
-    app: tauri::AppHandle,
     state: tauri::State<'_, SessionState>,
     device_key: String,
 ) -> Result<DeviceSnapshot, String> {
@@ -4666,14 +4654,6 @@ fn device_select(
         .lock()
         .map_err(|_| "selected device state unavailable".to_string())?;
     *selected = Some(device_key);
-    drop(selected);
-
-    let entries = device_snapshot_entries(&state);
-    let settings = cached_settings(&app);
-    let _ = update_tray(&app, Some(&snapshot), &settings);
-    let _ = app.emit("device-updated", &snapshot);
-    let _ = app.emit("device-snapshots-updated", entries);
-    request_night_mode_eval(&state);
     Ok(snapshot)
 }
 
@@ -5055,13 +5035,11 @@ fn read_device_once(app: &AppHandle) {
 ///   detect disconnects and battery drift.
 /// - The fallback interval adapts to the situation:
 ///   * 500 ms for a short settling window right after a state change.
-///   * 60 s when no device is connected and a native hotplug watcher is
-///     available (device insertion is detected via OS events). Falls back
-///     to 1 s while visible or 10 s while hidden when no watcher is available.
+///   * 1 s when no device is connected and the window is visible, so plug-in
+///     is detected quickly without continuous high-frequency polling.
 ///   * The user's configured `refresh_interval_seconds` when a device is
 ///     connected and stable.
-///   * 60 s when the window is hidden/minimized to tray and a device is already
-///     connected.
+///   * 60 s when the window is hidden/minimized to tray.
 fn spawn_device_reader(app: AppHandle) {
     let (tx, rx) = std::sync::mpsc::channel::<()>();
     *app.state::<SessionState>()
@@ -5100,30 +5078,15 @@ fn spawn_device_reader(app: AppHandle) {
         };
         let wait = if settling_now {
             std::time::Duration::from_millis(500)
+        } else if !visible {
+            std::time::Duration::from_secs(60)
         } else if connected {
-            if visible {
-                std::time::Duration::from_secs(u64::from(
-                    cached_settings(&app).refresh_interval_seconds,
-                ))
-            } else {
-                std::time::Duration::from_secs(60)
-            }
+            std::time::Duration::from_secs(u64::from(
+                cached_settings(&app).refresh_interval_seconds,
+            ))
         } else {
-            // No device connected: when native hotplug events are available, rely on
-            // them for instant detection and use a long fallback to catch misses.
-            // When unavailable, keep compatibility polling active. Hidden windows
-            // use a slower 10s fallback to save power without making first attach
-            // feel broken when a native watcher could not be installed.
-            let hotplug = state
-                .hotplug_available
-                .load(std::sync::atomic::Ordering::Relaxed);
-            if hotplug {
-                std::time::Duration::from_secs(60)
-            } else if visible {
-                std::time::Duration::from_secs(1)
-            } else {
-                std::time::Duration::from_secs(10)
-            }
+            // No device connected: poll faster so plug-in is noticed quickly.
+            std::time::Duration::from_secs(1)
         };
 
         match rx.recv_timeout(wait) {
@@ -5441,10 +5404,9 @@ fn device_mutate_blocking(
     if let Ok(mut cache) = state.last_read_at.lock() {
         cache.remove(&device_path);
     }
-    let selected_after_write = selected_snapshot(&state);
-    let _ = app.emit("device-updated", &selected_after_write);
+    let _ = app.emit("device-updated", &snapshot);
     let _ = app.emit("device-snapshots-updated", device_snapshot_entries(&state));
-    let _ = update_tray(app, selected_after_write.as_ref(), &cached_settings(app));
+    let _ = update_tray(app, Some(&snapshot), &cached_settings(app));
     Ok(snapshot)
 }
 
@@ -5953,9 +5915,9 @@ fn settings_prefer_dark(app: &AppHandle, settings: &AppSettings) -> bool {
 #[cfg_attr(test, allow(dead_code))]
 fn windows_acrylic_tint(app: &AppHandle, settings: &AppSettings) -> (u8, u8, u8, u8) {
     if settings_prefer_dark(app, settings) {
-        (24, 24, 28, 120)
+        (24, 24, 28, 168)
     } else {
-        (247, 245, 248, 132)
+        (247, 245, 248, 184)
     }
 }
 
@@ -6144,14 +6106,11 @@ fn tr_low_battery_title(lang: &str) -> &'static str {
 fn tr_low_battery_body(lang: &str, threshold: u8, percent: u8) -> String {
     if lang == "en" {
         format!(
-            "Mouse battery is below {}% (currently {}%). Please charge the device.",
+            "Mouse battery is below {}% (currently {}%)",
             threshold, percent
         )
     } else {
-        format!(
-            "鼠标电量已低于 {}%（当前 {}%），请及时充电。",
-            threshold, percent
-        )
+        format!("鼠标电量已低于 {}%（当前 {}%）", threshold, percent)
     }
 }
 
@@ -6365,6 +6324,7 @@ fn tray_app_icon_bytes_for_theme(dark: bool) -> &'static [u8] {
     }
 }
 
+#[cfg(any(not(target_os = "macos"), test))]
 fn app_icon_bytes_for_theme(dark: bool) -> &'static [u8] {
     if dark {
         include_bytes!("../icons/icon-dark.png")
@@ -6374,32 +6334,22 @@ fn app_icon_bytes_for_theme(dark: bool) -> &'static [u8] {
 }
 
 fn update_runtime_app_icon(app: &AppHandle, dark: bool) {
-    if let Ok(app_icon) = tauri::image::Image::from_bytes(app_icon_bytes_for_theme(dark)) {
-        if let Some(window) = app.get_webview_window("main") {
-            let _ = window.set_icon(app_icon);
+    #[cfg(target_os = "macos")]
+    {
+        // Dock 图标由打包时的 icon.icns 提供。不要在窗口聚焦/主题变化时重设
+        // NSApplication 图标，否则 macOS 会用运行时图像覆盖 Dock 中的 bundle
+        // 图标，造成前台打开后视觉突然变得更满/更大。
+        let _ = (app, dark);
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        if let Ok(app_icon) = tauri::image::Image::from_bytes(app_icon_bytes_for_theme(dark)) {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.set_icon(app_icon);
+            }
         }
     }
-    set_macos_application_icon(app_icon_bytes_for_theme(dark));
 }
-
-#[cfg(target_os = "macos")]
-fn set_macos_application_icon(bytes: &'static [u8]) {
-    use objc2::{AllocAnyThread, MainThreadMarker};
-    use objc2_app_kit::{NSApplication, NSImage};
-    use objc2_foundation::NSData;
-
-    let Some(mtm) = MainThreadMarker::new() else {
-        return;
-    };
-    let app = NSApplication::sharedApplication(mtm);
-    let data = NSData::with_bytes(bytes);
-    if let Some(app_icon) = NSImage::initWithData(NSImage::alloc(), &data) {
-        unsafe { app.setApplicationIconImage(Some(&app_icon)) };
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-fn set_macos_application_icon(_bytes: &'static [u8]) {}
 
 /// 直接查询系统外观，不依赖窗口状态。
 /// macOS: `defaults read -g AppleInterfaceStyle`（Light 模式返回非零退出码，Dark 返回 "Dark"）
@@ -6671,485 +6621,6 @@ fn spawn_linux_theme_watcher(app: AppHandle) {
             // gsettings 进程意外退出，等待后重启
             std::thread::sleep(std::time::Duration::from_secs(10));
         }
-    });
-}
-
-/// 启动原生设备热插拔监听器（事件驱动，跨平台）。
-/// - macOS: IOKit matched/terminated 通知
-/// - Windows: RegisterDeviceNotification (HID device interface)
-/// - Linux: libudev monitor (hid subsystem)
-///
-/// 监听器就绪后设置 `hotplug_available=true`，使 `spawn_device_reader`
-/// 的无设备回退间隔从 1s 延长到 60s（依赖事件即时唤醒）。
-/// 初始化失败时保持 false，reader 回退到 1s 轮询保证可用性。
-fn spawn_device_hotplug_watcher(app: AppHandle) {
-    #[cfg(target_os = "macos")]
-    install_macos_device_hotplug_watcher(app);
-
-    #[cfg(target_os = "windows")]
-    spawn_windows_device_hotplug_watcher(app);
-
-    #[cfg(target_os = "linux")]
-    spawn_linux_device_hotplug_watcher(app);
-
-    // Non-target platforms: no native watcher, hotplug_available stays false.
-    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-    {
-        let _ = app;
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn install_macos_device_hotplug_watcher(app: AppHandle) {
-    use std::ffi::c_void;
-
-    type CFRunLoopRef = *const c_void;
-    type CFRunLoopSourceRef = *const c_void;
-    type CFStringRef = *const c_void;
-    type CFMutableDictionaryRef = *mut c_void;
-    type IONotificationPortRef = *mut c_void;
-    // io_object_t / io_iterator_t are mach_port_t (u32) on macOS.
-    type IoObject = u32;
-    type IoIterator = u32;
-    type KernReturn = i32;
-
-    // kIOMasterPortDefault is 0.
-    const K_IO_MASTER_PORT_DEFAULT: u32 = 0;
-
-    #[link(name = "IOKit", kind = "framework")]
-    extern "C" {
-        fn IOServiceMatching(name: *const u8) -> CFMutableDictionaryRef;
-        fn IONotificationPortCreate(master_port: u32) -> IONotificationPortRef;
-        fn IONotificationPortGetRunLoopSource(
-            notify_port: IONotificationPortRef,
-        ) -> CFRunLoopSourceRef;
-        fn IOServiceAddMatchingNotification(
-            notify_port: IONotificationPortRef,
-            notification_type: *const u8,
-            matching: CFMutableDictionaryRef,
-            callback: extern "C" fn(refcon: *mut c_void, iterator: IoIterator),
-            refcon: *mut c_void,
-            notification: *mut IoIterator,
-        ) -> KernReturn;
-        fn IOIteratorNext(iterator: IoIterator) -> IoObject;
-        fn IOObjectRelease(object: IoObject) -> KernReturn;
-    }
-
-    #[link(name = "CoreFoundation", kind = "framework")]
-    extern "C" {
-        fn CFRunLoopGetCurrent() -> CFRunLoopRef;
-        fn CFRunLoopAddSource(rl: CFRunLoopRef, source: CFRunLoopSourceRef, mode: CFStringRef);
-        fn CFRunLoopRun();
-        static kCFRunLoopDefaultMode: CFStringRef;
-    }
-
-    extern "C" fn device_changed_callback(refcon: *mut c_void, iterator: IoIterator) {
-        // 排空迭代器——IOKit 通知仅在迭代器被排空后才会再次触发。
-        loop {
-            let next = unsafe { IOIteratorNext(iterator) };
-            if next == 0 {
-                break;
-            }
-            unsafe {
-                IOObjectRelease(next);
-            }
-        }
-        if refcon.is_null() {
-            return;
-        }
-        // refcon 指向 Box::leak 的 AppHandle（生命周期与进程相同）
-        let app: &AppHandle = unsafe { &*(refcon as *const AppHandle) };
-        let state = app.state::<SessionState>();
-        request_refresh(&state);
-    }
-
-    // AppHandle 泄漏到静态内存：refcon 生命周期需与进程一样长。
-    // 应用退出时进程终止，内存自动回收。
-    let app_box: &'static AppHandle = Box::leak(Box::new(app));
-
-    // 所有 IOKit 注册必须在与运行 RunLoop 相同的线程上完成。
-    // RunLoop 是 per-thread 的，因此 spawn 专用线程做注册 + 运行。
-    // refcon 在线程内从 app_box 构造（原始指针非 Send，不能跨线程传递）。
-    std::thread::spawn(move || {
-        let refcon = app_box as *const AppHandle as *mut c_void;
-        let notify_port = unsafe { IONotificationPortCreate(K_IO_MASTER_PORT_DEFAULT) };
-        if notify_port.is_null() {
-            eprintln!(
-                "[mira] device hotplug: macOS IOKit init failed, falling back to polling: IONotificationPortCreate returned null"
-            );
-            return;
-        }
-        let run_loop_source = unsafe { IONotificationPortGetRunLoopSource(notify_port) };
-        if run_loop_source.is_null() {
-            eprintln!(
-                "[mira] device hotplug: macOS IOKit init failed, falling back to polling: IONotificationPortGetRunLoopSource returned null"
-            );
-            return;
-        }
-
-        // 将 source 加入当前线程的 RunLoop，随后注册 matched + terminated 通知。
-        // IOServiceAddMatchingNotification 会消费 matching dictionary（无论成败）。
-        let run_loop = unsafe { CFRunLoopGetCurrent() };
-        unsafe {
-            CFRunLoopAddSource(run_loop, run_loop_source, kCFRunLoopDefaultMode);
-        }
-
-        for notif_name in [
-            c"IOServiceMatched".as_ptr() as *const u8,
-            c"IOServiceTerminated".as_ptr() as *const u8,
-        ] {
-            let matching = unsafe { IOServiceMatching(c"IOHIDDevice".as_ptr() as *const u8) };
-            if matching.is_null() {
-                eprintln!(
-                    "[mira] device hotplug: macOS IOKit init failed, falling back to polling: IOServiceMatching returned null"
-                );
-                return;
-            }
-            let mut iter: IoIterator = 0;
-            let kr = unsafe {
-                IOServiceAddMatchingNotification(
-                    notify_port,
-                    notif_name,
-                    matching,
-                    device_changed_callback,
-                    refcon,
-                    &mut iter,
-                )
-            };
-            if kr != 0 {
-                eprintln!(
-                    "[mira] device hotplug: macOS IOKit init failed, falling back to polling: IOServiceAddMatchingNotification error {kr}"
-                );
-                return;
-            }
-            // 排空初始迭代器：注册时会立即枚举当前已存在的匹配设备。
-            loop {
-                let next = unsafe { IOIteratorNext(iter) };
-                if next == 0 {
-                    break;
-                }
-                unsafe {
-                    IOObjectRelease(next);
-                }
-            }
-        }
-
-        // 标记热插拔监听就绪：reader 的无设备回退间隔延长到 60s。
-        let state = app_box.state::<SessionState>();
-        state
-            .hotplug_available
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-
-        // 运行 RunLoop 阻塞接收 IOKit 事件。
-        unsafe {
-            CFRunLoopRun();
-        }
-
-        state
-            .hotplug_available
-            .store(false, std::sync::atomic::Ordering::Relaxed);
-        request_refresh(&state);
-        eprintln!("[mira] device hotplug: macOS IOKit run loop exited, falling back to polling");
-    });
-}
-
-#[cfg(target_os = "windows")]
-fn spawn_windows_device_hotplug_watcher(app: AppHandle) {
-    use std::ffi::c_void;
-    use std::mem;
-    use std::ptr;
-
-    type Hwnd = *mut c_void;
-    type Hinstance = *mut c_void;
-    type HdevNotify = *mut c_void;
-    type Hmenu = *mut c_void;
-    type Lresult = isize;
-    type Lparam = isize;
-    type Wparam = usize;
-    type Uint = u32;
-    type Int = i32;
-    type LongPtr = isize;
-
-    const WM_DEVICECHANGE: Uint = 0x0219;
-    const DBT_DEVICEARRIVAL: Wparam = 0x8000;
-    const DBT_DEVICEREMOVECOMPLETE: Wparam = 0x8004;
-    const HWND_MESSAGE: Hwnd = -3isize as *mut c_void;
-    const GWLP_USERDATA: Int = -21;
-    const CS_HREDRAW: Uint = 0x0002;
-    const CS_VREDRAW: Uint = 0x0001;
-    const DBT_DEVTYP_DEVICEINTERFACE: Uint = 0x00000005;
-    const WS_EX_TOOLWINDOW: Uint = 0x00000080;
-    const DEVICE_NOTIFY_WINDOW_HANDLE: Uint = 0x00000000;
-
-    #[repr(C)]
-    #[allow(non_snake_case)]
-    struct WndclassExw {
-        cbSize: Uint,
-        style: Uint,
-        lpfnWndProc: Option<extern "system" fn(Hwnd, Uint, Wparam, Lparam) -> Lresult>,
-        cbClsExtra: Int,
-        cbWndExtra: Int,
-        hInstance: Hinstance,
-        hIcon: Hwnd,
-        hCursor: Hwnd,
-        hbrBackground: Hwnd,
-        lpszMenuName: *const u16,
-        lpszClassName: *const u16,
-        hIconSm: Hwnd,
-    }
-
-    #[repr(C)]
-    #[allow(non_snake_case)]
-    struct Msg {
-        hwnd: Hwnd,
-        message: Uint,
-        wParam: Wparam,
-        lParam: Lparam,
-        time: Uint,
-        pt_x: Int,
-        pt_y: Int,
-    }
-
-    #[repr(C)]
-    #[allow(non_snake_case)]
-    struct DevBroadcastDeviceinterfaceW {
-        dbcc_size: Uint,
-        dbcc_devicetype: Uint,
-        dbcc_reserved: Uint,
-        dbcc_classguid: Guid,
-        // dbcc_name is variable-length; we only need the header for registration.
-        dbcc_name: [u16; 1],
-    }
-
-    #[repr(C)]
-    #[allow(non_snake_case)]
-    struct Guid {
-        Data1: Uint,
-        Data2: u16,
-        Data3: u16,
-        Data4: [u8; 8],
-    }
-
-    extern "system" {
-        fn RegisterClassExW(lpwcx: *const WndclassExw) -> u16;
-        fn CreateWindowExW(
-            dwExStyle: Uint,
-            lpClassName: *const u16,
-            lpWindowName: *const u16,
-            dwStyle: Uint,
-            x: Int,
-            y: Int,
-            nWidth: Int,
-            nHeight: Int,
-            hWndParent: Hwnd,
-            hMenu: Hmenu,
-            hInstance: Hinstance,
-            lpParam: *mut c_void,
-        ) -> Hwnd;
-        fn DefWindowProcW(hwnd: Hwnd, msg: Uint, wParam: Wparam, lParam: Lparam) -> Lresult;
-        fn RegisterDeviceNotificationW(
-            hRecipient: Hwnd,
-            notificationFilter: *mut c_void,
-            flags: Uint,
-        ) -> HdevNotify;
-        fn GetMessageW(
-            lpMsg: *mut Msg,
-            hWnd: Hwnd,
-            wMsgFilterMin: Uint,
-            wMsgFilterMax: Uint,
-        ) -> Int;
-        fn TranslateMessage(lpMsg: *const Msg) -> Int;
-        fn DispatchMessageW(lpMsg: *const Msg) -> Lresult;
-        fn SetWindowLongPtrW(hwnd: Hwnd, nIndex: Int, dwNewLong: LongPtr) -> LongPtr;
-        fn GetWindowLongPtrW(hwnd: Hwnd, nIndex: Int) -> LongPtr;
-    }
-
-    extern "system" fn wnd_proc(
-        hwnd: Hwnd,
-        msg: Uint,
-        w_param: Wparam,
-        l_param: Lparam,
-    ) -> Lresult {
-        if msg == WM_DEVICECHANGE
-            && (w_param == DBT_DEVICEARRIVAL || w_param == DBT_DEVICEREMOVECOMPLETE)
-        {
-            // 从窗口用户数据读取 AppHandle 指针。
-            // GetWindowLongPtrW 返回 LONG_PTR (isize)，0 表示未设置/出错。
-            let raw = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) };
-            if raw != 0 {
-                let app: &AppHandle = unsafe { &*(raw as *const AppHandle) };
-                let state = app.state::<SessionState>();
-                request_refresh(&state);
-            }
-        }
-        unsafe { DefWindowProcW(hwnd, msg, w_param, l_param) }
-    }
-
-    std::thread::spawn(move || {
-        let class_name: Vec<u16> = "MiraDeviceHotplug\0".encode_utf16().collect();
-        let wc = WndclassExw {
-            cbSize: mem::size_of::<WndclassExw>() as Uint,
-            style: CS_HREDRAW | CS_VREDRAW,
-            lpfnWndProc: Some(wnd_proc),
-            cbClsExtra: 0,
-            cbWndExtra: 0,
-            hInstance: ptr::null_mut(),
-            hIcon: ptr::null_mut(),
-            hCursor: ptr::null_mut(),
-            hbrBackground: ptr::null_mut(),
-            lpszMenuName: ptr::null(),
-            lpszClassName: class_name.as_ptr(),
-            hIconSm: ptr::null_mut(),
-        };
-        let atom = unsafe { RegisterClassExW(&wc) };
-        if atom == 0 {
-            eprintln!(
-                "[mira] device hotplug: Windows init failed, falling back to polling: RegisterClassExW failed"
-            );
-            return;
-        }
-
-        let hwnd = unsafe {
-            CreateWindowExW(
-                WS_EX_TOOLWINDOW,
-                class_name.as_ptr(),
-                ptr::null(),
-                0,
-                0,
-                0,
-                0,
-                0,
-                HWND_MESSAGE,
-                ptr::null_mut(),
-                ptr::null_mut(),
-                ptr::null_mut(),
-            )
-        };
-        if hwnd.is_null() {
-            eprintln!(
-                "[mira] device hotplug: Windows init failed, falling back to polling: CreateWindowExW failed"
-            );
-            return;
-        }
-
-        // AppHandle 泄漏到静态内存：窗口用户数据持有它直到进程结束。
-        let app_box: &'static AppHandle = Box::leak(Box::new(app));
-        let raw = app_box as *const AppHandle as LongPtr;
-        unsafe {
-            SetWindowLongPtrW(hwnd, GWLP_USERDATA, raw);
-        }
-
-        // GUID_DEVINTERFACE_HID = {4D1E55B2-F16F-11CF-88CB-001111000030}.
-        // The reader enumerates HID interfaces, so this covers USB receivers,
-        // USB direct devices, and Bluetooth HID devices more accurately than
-        // listening for USB-device interfaces.
-        let filter = DevBroadcastDeviceinterfaceW {
-            dbcc_size: mem::size_of::<DevBroadcastDeviceinterfaceW>() as Uint,
-            dbcc_devicetype: DBT_DEVTYP_DEVICEINTERFACE,
-            dbcc_reserved: 0,
-            dbcc_classguid: Guid {
-                Data1: 0x4D1E55B2,
-                Data2: 0xF16F,
-                Data3: 0x11CF,
-                Data4: [0x88, 0xCB, 0x00, 0x11, 0x11, 0x00, 0x00, 0x30],
-            },
-            dbcc_name: [0],
-        };
-        let notify_handle = unsafe {
-            RegisterDeviceNotificationW(
-                hwnd,
-                &filter as *const _ as *mut c_void,
-                DEVICE_NOTIFY_WINDOW_HANDLE,
-            )
-        };
-        if notify_handle.is_null() {
-            eprintln!(
-                "[mira] device hotplug: Windows init failed, falling back to polling: RegisterDeviceNotificationW failed"
-            );
-            return;
-        }
-
-        // 标记热插拔监听就绪。
-        let state = app_box.state::<SessionState>();
-        state
-            .hotplug_available
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-
-        // 消息循环：GetMessageW 阻塞直到有消息（返回 >0），0 表示 WM_QUIT，-1 表示错误。
-        let mut msg = Msg {
-            hwnd: ptr::null_mut(),
-            message: 0,
-            wParam: 0,
-            lParam: 0,
-            time: 0,
-            pt_x: 0,
-            pt_y: 0,
-        };
-        loop {
-            let ret = unsafe { GetMessageW(&mut msg, ptr::null_mut(), 0, 0) };
-            if ret <= 0 {
-                break;
-            }
-            unsafe {
-                TranslateMessage(&msg);
-                DispatchMessageW(&msg);
-            }
-        }
-
-        state
-            .hotplug_available
-            .store(false, std::sync::atomic::Ordering::Relaxed);
-        request_refresh(&state);
-        eprintln!("[mira] device hotplug: Windows message loop exited, falling back to polling");
-    });
-}
-
-#[cfg(target_os = "linux")]
-fn spawn_linux_device_hotplug_watcher(app: AppHandle) {
-    std::thread::spawn(move || {
-        // 监听 HID 子系统设备的 add/remove 事件。
-        let monitor = match udev::MonitorBuilder::new()
-            .and_then(|monitor| monitor.match_subsystem("hid"))
-        {
-            Ok(monitor) => monitor,
-            Err(error) => {
-                eprintln!(
-                    "[mira] device hotplug: Linux libudev init failed, falling back to polling: {error}"
-                );
-                return;
-            }
-        };
-        let socket = match monitor.listen() {
-            Ok(s) => s,
-            Err(error) => {
-                eprintln!(
-                    "[mira] device hotplug: Linux libudev init failed, falling back to polling: {error}"
-                );
-                return;
-            }
-        };
-
-        // 标记热插拔监听就绪。
-        let state = app.state::<SessionState>();
-        state
-            .hotplug_available
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-
-        // 阻塞读取事件：迭代器结束表示监控流结束。
-        for event in socket.iter() {
-            if matches!(
-                event.event_type(),
-                udev::EventType::Add | udev::EventType::Remove
-            ) {
-                request_refresh(&state);
-            }
-        }
-
-        state
-            .hotplug_available
-            .store(false, std::sync::atomic::Ordering::Relaxed);
-        request_refresh(&state);
-        eprintln!("[mira] device hotplug: Linux libudev monitor ended, falling back to polling");
     });
 }
 
@@ -7514,10 +6985,6 @@ pub fn run() {
             // Spawn background thread that reads the device periodically.
             // This keeps `device_snapshot` instant — the UI never blocks on HID I/O.
             spawn_device_reader(app.handle().clone());
-
-            // 启动原生设备热插拔监听器（事件驱动，跨平台）。
-            // 就绪后设置 hotplug_available=true，使 reader 无设备时回退间隔从 1s 延长到 60s。
-            spawn_device_hotplug_watcher(app.handle().clone());
 
             // 启动系统主题变化监听器（事件驱动，跨平台）。
             // 窗口隐藏到托盘后仍可接收主题变化事件，无需轮询。

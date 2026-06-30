@@ -3,6 +3,25 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
+pub const MAX_DEVICE_DISPLAY_NAME_CHARS: usize = 32;
+
+pub fn normalize_device_display_name(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.chars().count() <= MAX_DEVICE_DISPLAY_NAME_CHARS {
+        return Some(trimmed.to_string());
+    }
+    Some(
+        trimmed
+            .chars()
+            .take(MAX_DEVICE_DISPLAY_NAME_CHARS.saturating_sub(1))
+            .collect::<String>()
+            + "…",
+    )
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DpiStage {
     pub value: u16,
@@ -142,5 +161,18 @@ mod tests {
         assert!(!crossing.update(Some(24), 30));
         assert!(!crossing.update(Some(31), 30));
         assert!(crossing.update(Some(30), 30));
+    }
+
+    #[test]
+    fn normalizes_device_display_names_for_host_ui() {
+        assert_eq!(
+            normalize_device_display_name("  G705 Mouse  ").as_deref(),
+            Some("G705 Mouse")
+        );
+        assert_eq!(normalize_device_display_name("   "), None);
+        let long = "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890";
+        let normalized = normalize_device_display_name(long).unwrap();
+        assert_eq!(normalized.chars().count(), MAX_DEVICE_DISPLAY_NAME_CHARS);
+        assert!(normalized.ends_with('…'));
     }
 }
