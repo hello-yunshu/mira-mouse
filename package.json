@@ -12,6 +12,9 @@
     "typecheck": "tsc -b --pretty false",
     "test": "vitest run",
     "lint": "eslint .",
+    "hooks:install": "bash scripts/install-git-hooks.sh",
+    "check:quick": "bash scripts/quick-check.sh",
+    "check:ci": "bash scripts/local-ci.sh",
     "check:boundaries": "node scripts/check-boundaries.mjs",
     "check:structured": "node scripts/check-structured.mjs && node scripts/check-version-sources.mjs"
   },
