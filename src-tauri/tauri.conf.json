@@ -110,6 +110,9 @@
         "https://github.com/hello-yunshu/mira-mouse/releases/latest/download/latest.json"
       ],
       "dialog": false,
+      "windows": {
+        "installMode": "quiet"
+      },
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEJGMTVEOEZDRUI0MTVBMkMKUldRc1drSHIvTmdWdnpsaThmK3F6d0s2QXBhVWJvRUFvRnBEd0RJUXlDWHBhRmROdUdERm5GaEgK"
     }
   }

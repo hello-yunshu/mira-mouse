@@ -4,12 +4,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   check: vi.fn(),
   invoke: vi.fn(),
-  relaunch: vi.fn(),
   downloadAndInstall: vi.fn(),
 }));
 
 vi.mock('@tauri-apps/plugin-updater', () => ({ check: mocks.check }));
-vi.mock('@tauri-apps/plugin-process', () => ({ relaunch: mocks.relaunch }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
 
 import {
@@ -24,7 +22,6 @@ describe('application updater', () => {
     mocks.check.mockReset();
     mocks.invoke.mockReset();
     mocks.downloadAndInstall.mockReset();
-    mocks.relaunch.mockReset();
   });
 
   it('sends a system notification during automatic checks when an update is available', async () => {
@@ -63,6 +60,6 @@ describe('application updater', () => {
     expect(mocks.check).toHaveBeenCalledTimes(1);
     expect(appUpdateState()).toMatchObject({ phase: 'installed', downloadedBytes: 100, totalBytes: 100 });
     await relaunchAfterUpdate();
-    expect(mocks.relaunch).toHaveBeenCalledOnce();
+    expect(mocks.invoke).toHaveBeenCalledWith('relaunch_app');
   });
 });
