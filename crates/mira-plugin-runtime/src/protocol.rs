@@ -220,7 +220,7 @@ fn standard_reading(
     reading.display_name = object(&outputs, "deviceName")
         .and_then(|device| device.get("name"))
         .and_then(Value::as_str)
-        .map(str::to_string);
+        .and_then(mira_core::normalize_device_display_name);
     reading.connection = object(&outputs, "device")
         .or_else(|| object(&outputs, "featureIndexDeviceInfo"))
         .and_then(|device| device.get("connection"))
@@ -927,6 +927,22 @@ mod tests {
         let reading = standard_reading(outputs, None);
         assert_eq!(reading.display_name.as_deref(), Some("G705 Mouse"));
         assert_eq!(reading.connection, Some(ConnectionKind::Wireless));
+    }
+
+    #[test]
+    fn limits_plugin_reported_device_name_for_host_layout() {
+        let outputs = BTreeMap::from([(
+            "deviceName".into(),
+            json!({"name": "  Logitech Prototype Mouse With A Very Long Engineering Name  "}),
+        )]);
+        let reading = standard_reading(outputs, None);
+        let display_name = reading.display_name.unwrap();
+        assert_eq!(
+            display_name.chars().count(),
+            mira_core::MAX_DEVICE_DISPLAY_NAME_CHARS
+        );
+        assert!(display_name.ends_with('…'));
+        assert!(!display_name.starts_with(' '));
     }
 
     #[test]

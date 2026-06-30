@@ -5,11 +5,9 @@ import { createPortal } from 'react-dom';
 /**
  * Tooltip — 内容通过 React Portal 渲染到 document.body。
  *
- * 原因：trigger 嵌在 `.card` 内，而 `.card` 自身应用了 `backdrop-filter`，
- * 按 CSS 规范它成为一个 backdrop root，会截断后代 `backdrop-filter` 的取样范围。
- * 若 tooltip 直接作为 `.card` 的子节点，其 backdrop-filter 只能取到卡片内部近透明的层，
- * 毛玻璃效果不可见。Portal 到 body 后，tooltip 不再受任何 backdrop-root 祖先影响，
- * backdrop-filter 可以正确取到 macOS 系统级 Vibrancy 背景。
+ * 原因：tooltip 是临时浮层，需要脱离普通内容 surface 的堆叠上下文，
+ * 让自己的特殊玻璃 token 独立工作。Portal 到 body 后，tooltip 不会被卡片、
+ * 滚动容器或未来可能新增的 backdrop root 截断取样范围。
  */
 export function Tooltip({ label, children }: PropsWithChildren<{ label: string }>) {
   const triggerRef = useRef<HTMLSpanElement>(null);
