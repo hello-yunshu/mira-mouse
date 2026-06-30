@@ -7107,32 +7107,19 @@ fn spawn_windows_device_hotplug_watcher(app: AppHandle) {
 #[cfg(target_os = "linux")]
 fn spawn_linux_device_hotplug_watcher(app: AppHandle) {
     std::thread::spawn(move || {
-        let context = match udev::Context::new() {
-            Ok(c) => c,
-            Err(error) => {
-                eprintln!(
-                    "[mira] device hotplug: Linux libudev init failed, falling back to polling: {error}"
-                );
-                return;
-            }
-        };
-        let mut monitor = match udev::Monitor::new(&context) {
-            Ok(m) => m,
-            Err(error) => {
-                eprintln!(
-                    "[mira] device hotplug: Linux libudev init failed, falling back to polling: {error}"
-                );
-                return;
-            }
-        };
         // 监听 HID 子系统设备的 add/remove 事件。
-        if let Err(error) = monitor.match_subsystem("hid") {
-            eprintln!(
-                "[mira] device hotplug: Linux libudev init failed, falling back to polling: {error}"
-            );
-            return;
-        }
-        let mut socket = match monitor.listen() {
+        let monitor = match udev::MonitorBuilder::new()
+            .and_then(|monitor| monitor.match_subsystem("hid"))
+        {
+            Ok(monitor) => monitor,
+            Err(error) => {
+                eprintln!(
+                    "[mira] device hotplug: Linux libudev init failed, falling back to polling: {error}"
+                );
+                return;
+            }
+        };
+        let socket = match monitor.listen() {
             Ok(s) => s,
             Err(error) => {
                 eprintln!(
@@ -7148,8 +7135,8 @@ fn spawn_linux_device_hotplug_watcher(app: AppHandle) {
             .hotplug_available
             .store(true, std::sync::atomic::Ordering::Relaxed);
 
-        // 阻塞读取事件：socket.next() 返回 None 表示流结束。
-        while let Some(event) = socket.next() {
+        // 阻塞读取事件：迭代器结束表示监控流结束。
+        for event in socket.iter() {
             if matches!(
                 event.event_type(),
                 udev::EventType::Add | udev::EventType::Remove
