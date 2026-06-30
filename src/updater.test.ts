@@ -38,8 +38,8 @@ describe('application updater', () => {
     });
     await checkForAppUpdate(true);
     expect(mocks.invoke).toHaveBeenCalledWith('show_update_notification', {
-      title: '发现 Mira 新版本',
-      body: 'v0.3.0 已可用，可在“关于”页查看并安装。',
+      title: '发现新版本',
+      body: 'v0.3.0 已可用，可在「关于」页查看并安装。',
     });
   });
 

@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ "${MIRA_SKIP_HOOKS:-}" = "1" ]; then
+  echo "MIRA_SKIP_HOOKS=1 set; skipping pre-push checks."
+  exit 0
+fi
+
+echo "Running Mira quick checks before push..."
+npm run check:quick

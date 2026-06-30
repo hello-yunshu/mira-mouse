@@ -6148,7 +6148,10 @@ fn tr_low_battery_body(lang: &str, threshold: u8, percent: u8) -> String {
             threshold, percent
         )
     } else {
-        format!("鼠标电量已低于 {}%（当前 {}%），请及时充电。", threshold, percent)
+        format!(
+            "鼠标电量已低于 {}%（当前 {}%），请及时充电。",
+            threshold, percent
+        )
     }
 }
 
@@ -6451,13 +6454,9 @@ fn handle_system_theme_changed(app: &AppHandle) {
         *cache = Some(dark);
     }
     update_runtime_app_icon(app, dark);
-    let snapshot = state
-        .last_snapshot
-        .lock()
-        .ok()
-        .and_then(|guard| {
-            selected_snapshot_entry(&state, &guard).map(|(_, snapshot)| snapshot.clone())
-        });
+    let snapshot = state.last_snapshot.lock().ok().and_then(|guard| {
+        selected_snapshot_entry(&state, &guard).map(|(_, snapshot)| snapshot.clone())
+    });
     let settings = cached_settings(app);
     let _ = update_tray(app, snapshot.as_ref(), &settings);
     #[cfg(target_os = "windows")]
@@ -6590,9 +6589,10 @@ fn spawn_windows_theme_watcher(app: AppHandle) {
     const REG_NOTIFY_CHANGE_LAST_SET: u32 = 0x00000004;
 
     std::thread::spawn(move || {
-        let sub_key: Vec<u16> = "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize\0"
-            .encode_utf16()
-            .collect();
+        let sub_key: Vec<u16> =
+            "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize\0"
+                .encode_utf16()
+                .collect();
 
         loop {
             let mut h_key: HKEY = ptr::null_mut();
@@ -6623,7 +6623,9 @@ fn spawn_windows_theme_watcher(app: AppHandle) {
                 )
             };
 
-            unsafe { RegCloseKey(h_key); }
+            unsafe {
+                RegCloseKey(h_key);
+            }
 
             if result == 0 {
                 handle_system_theme_changed(&app);
@@ -6748,7 +6750,9 @@ fn install_macos_device_hotplug_watcher(app: AppHandle) {
             if next == 0 {
                 break;
             }
-            unsafe { IOObjectRelease(next); }
+            unsafe {
+                IOObjectRelease(next);
+            }
         }
         if refcon.is_null() {
             return;
@@ -6775,8 +6779,7 @@ fn install_macos_device_hotplug_watcher(app: AppHandle) {
             );
             return;
         }
-        let run_loop_source =
-            unsafe { IONotificationPortGetRunLoopSource(notify_port) };
+        let run_loop_source = unsafe { IONotificationPortGetRunLoopSource(notify_port) };
         if run_loop_source.is_null() {
             eprintln!(
                 "[mira] device hotplug: macOS IOKit init failed, falling back to polling: IONotificationPortGetRunLoopSource returned null"
@@ -6825,7 +6828,9 @@ fn install_macos_device_hotplug_watcher(app: AppHandle) {
                 if next == 0 {
                     break;
                 }
-                unsafe { IOObjectRelease(next); }
+                unsafe {
+                    IOObjectRelease(next);
+                }
             }
         }
 
@@ -6836,15 +6841,15 @@ fn install_macos_device_hotplug_watcher(app: AppHandle) {
             .store(true, std::sync::atomic::Ordering::Relaxed);
 
         // 运行 RunLoop 阻塞接收 IOKit 事件。
-        unsafe { CFRunLoopRun(); }
+        unsafe {
+            CFRunLoopRun();
+        }
 
         state
             .hotplug_available
             .store(false, std::sync::atomic::Ordering::Relaxed);
         request_refresh(&state);
-        eprintln!(
-            "[mira] device hotplug: macOS IOKit run loop exited, falling back to polling"
-        );
+        eprintln!("[mira] device hotplug: macOS IOKit run loop exited, falling back to polling");
     });
 }
 
@@ -7030,7 +7035,9 @@ fn spawn_windows_device_hotplug_watcher(app: AppHandle) {
         // AppHandle 泄漏到静态内存：窗口用户数据持有它直到进程结束。
         let app_box: &'static AppHandle = Box::leak(Box::new(app));
         let raw = app_box as *const AppHandle as LongPtr;
-        unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, raw); }
+        unsafe {
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, raw);
+        }
 
         // GUID_DEVINTERFACE_HID = {4D1E55B2-F16F-11CF-88CB-001111000030}.
         // The reader enumerates HID interfaces, so this covers USB receivers,
@@ -7093,9 +7100,7 @@ fn spawn_windows_device_hotplug_watcher(app: AppHandle) {
             .hotplug_available
             .store(false, std::sync::atomic::Ordering::Relaxed);
         request_refresh(&state);
-        eprintln!(
-            "[mira] device hotplug: Windows message loop exited, falling back to polling"
-        );
+        eprintln!("[mira] device hotplug: Windows message loop exited, falling back to polling");
     });
 }
 
@@ -7157,9 +7162,7 @@ fn spawn_linux_device_hotplug_watcher(app: AppHandle) {
             .hotplug_available
             .store(false, std::sync::atomic::Ordering::Relaxed);
         request_refresh(&state);
-        eprintln!(
-            "[mira] device hotplug: Linux libudev monitor ended, falling back to polling"
-        );
+        eprintln!("[mira] device hotplug: Linux libudev monitor ended, falling back to polling");
     });
 }
 
