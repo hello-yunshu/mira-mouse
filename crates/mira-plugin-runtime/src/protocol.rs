@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use crate::engine::ProtocolPackage;
-use hidapi::HidApi;
+use hidapi::{HidApi, HidDevice};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Mutex;
@@ -16,6 +16,45 @@ pub type FeatureIndexCache = HashMap<String, HashMap<u16, Value>>;
 /// 写入 mutation 的预读阶段检查缓存，命中则跳过 16 chunk HID 往返。
 /// 写入后的验证读更新缓存。设备断开时由调用方清空。
 pub type OnboardMemoryCache = HashMap<String, (BTreeMap<String, Value>, Vec<u8>)>;
+
+/// 已打开的 HID 设备句柄缓存，按设备路径索引。
+/// `HidDevice` 不可 Clone，采用取用-归还策略：执行前从缓存取出（未命中则 open_path），
+/// 执行成功后归还；执行出错时句柄随 session 析构关闭，不归还（设备可能处于异常状态）。
+/// `device_io` 锁已序列化 HID 访问，缓存读写仅持有极短时段，无死锁风险。
+pub type HidHandleCache = HashMap<String, HidDevice>;
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct HidIoStats {
+    pub handle_cache_hits: u64,
+    pub handle_cache_misses: u64,
+    pub open_path_attempts: u64,
+    pub open_path_failures: u64,
+    pub handles_returned: u64,
+    pub handle_cache_lock_failures: u64,
+}
+
+impl HidIoStats {
+    pub fn record_cache_hit(&mut self) {
+        self.handle_cache_hits += 1;
+    }
+
+    pub fn record_cache_miss(&mut self) {
+        self.handle_cache_misses += 1;
+        self.open_path_attempts += 1;
+    }
+
+    pub fn record_open_failure(&mut self) {
+        self.open_path_failures += 1;
+    }
+
+    pub fn record_returned(&mut self) {
+        self.handles_returned += 1;
+    }
+
+    pub fn record_lock_failure(&mut self) {
+        self.handle_cache_lock_failures += 1;
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionKind {
@@ -53,6 +92,12 @@ pub struct ProtocolContext<'a> {
     /// Onboard memory 缓存（按设备路径索引）。写入 mutation 预读时命中缓存则跳过
     /// 16 chunk HID 往返；验证读后更新缓存。设备断开时由调用方清空。
     pub onboard_memory_cache: Option<&'a Mutex<OnboardMemoryCache>>,
+    /// 已打开的 HID 设备句柄缓存（按设备路径索引）。命中时复用句柄，跳过 open_path
+    /// 系统调用；未命中时 open_path 并在执行成功后归还。设备断开时由调用方清空。
+    pub cached_handles: Option<&'a Mutex<HidHandleCache>>,
+    /// 可选 HID I/O 计数器，用于 debug/诊断：统计句柄缓存命中、open_path 次数、
+    /// 归还次数和锁失败。未提供时不产生额外可见行为。
+    pub hid_io_stats: Option<&'a Mutex<HidIoStats>>,
 }
 
 pub fn read_device(ctx: &ProtocolContext) -> Result<DeviceReading, String> {
@@ -67,8 +112,14 @@ pub fn read_device_with_package(
     ctx: &ProtocolContext,
 ) -> Result<DeviceReading, String> {
     let workflow_id = format!("{}-read", ctx.family);
-    let mut outputs =
-        package.execute_with_cache(ctx.api, ctx.path, &workflow_id, ctx.feature_index_cache)?;
+    let mut outputs = package.execute_with_cache(
+        ctx.api,
+        ctx.path,
+        &workflow_id,
+        ctx.feature_index_cache,
+        ctx.cached_handles,
+        ctx.hid_io_stats,
+    )?;
     let capabilities = package.capabilities().cloned();
     maybe_merge_onboard_lighting(package, ctx, capabilities.as_ref(), &mut outputs)?;
     #[cfg(debug_assertions)]
@@ -110,21 +161,26 @@ fn maybe_merge_onboard_lighting(
         return Ok(());
     }
 
-    let cached = ctx.onboard_memory_cache.and_then(|cache| {
-        cache
-            .lock()
-            .ok()
-            .and_then(|guard| guard.get(ctx.path).map(|(outputs, _)| outputs.clone()))
-    });
-    let onboard_outputs = match cached {
-        Some(outputs) => outputs,
-        None => package.execute_with_cache(
-            ctx.api,
-            ctx.path,
-            &onboard_workflow_id,
-            ctx.feature_index_cache,
-        )?,
-    };
+    // 持锁期间直接遍历 cached_outputs 并插入，避免克隆整个 BTreeMap。
+    if let Some(cache) = ctx.onboard_memory_cache {
+        if let Ok(guard) = cache.lock() {
+            if let Some((cached_outputs, _)) = guard.get(ctx.path) {
+                for (key, value) in cached_outputs {
+                    outputs.entry(key.clone()).or_insert(value.clone());
+                }
+                return Ok(());
+            }
+        }
+    }
+    // Cache miss: execute onboard workflow and merge results.
+    let onboard_outputs = package.execute_with_cache(
+        ctx.api,
+        ctx.path,
+        &onboard_workflow_id,
+        ctx.feature_index_cache,
+        ctx.cached_handles,
+        ctx.hid_io_stats,
+    )?;
     for (key, value) in onboard_outputs {
         outputs.entry(key).or_insert(value);
     }
@@ -135,7 +191,14 @@ pub fn execute_plugin_workflow(
     ctx: &ProtocolContext,
     workflow_id: &str,
 ) -> Result<BTreeMap<String, Value>, String> {
-    ProtocolPackage::from_files(ctx.files)?.execute(ctx.api, ctx.path, workflow_id)
+    ProtocolPackage::from_files(ctx.files)?.execute_with_cache(
+        ctx.api,
+        ctx.path,
+        workflow_id,
+        ctx.feature_index_cache,
+        ctx.cached_handles,
+        ctx.hid_io_stats,
+    )
 }
 
 pub fn writable_mutations(ctx: &ProtocolContext) -> Result<Vec<String>, String> {
@@ -175,6 +238,8 @@ pub fn mutate_device_with_package(
         params,
         &ctx.outputs,
         ctx.onboard_memory_cache,
+        ctx.cached_handles,
+        ctx.hid_io_stats,
     )
 }
 
@@ -183,14 +248,14 @@ fn standard_reading(
     capabilities: Option<Value>,
 ) -> DeviceReading {
     let mut reading = DeviceReading {
-        capabilities: outputs.clone(),
+        capabilities: outputs,
         ..DeviceReading::default()
     };
 
     // Prefer device-reported rates from the protocol; fall back to the static
     // plugin manifest so the UI always receives a supported list.
-    if let Some(rates) = object(&outputs, "reportRateList")
-        .or_else(|| object(&outputs, "reportRateListExtended"))
+    if let Some(rates) = object(&reading.capabilities, "reportRateList")
+        .or_else(|| object(&reading.capabilities, "reportRateListExtended"))
         .and_then(|value| value.get("supportedRates"))
         .and_then(Value::as_array)
     {
@@ -217,12 +282,12 @@ fn standard_reading(
         }
     }
 
-    reading.display_name = object(&outputs, "deviceName")
+    reading.display_name = object(&reading.capabilities, "deviceName")
         .and_then(|device| device.get("name"))
         .and_then(Value::as_str)
         .and_then(mira_core::normalize_device_display_name);
-    reading.connection = object(&outputs, "device")
-        .or_else(|| object(&outputs, "featureIndexDeviceInfo"))
+    reading.connection = object(&reading.capabilities, "device")
+        .or_else(|| object(&reading.capabilities, "featureIndexDeviceInfo"))
         .and_then(|device| device.get("connection"))
         .and_then(Value::as_str)
         .and_then(|connection| match connection {
@@ -232,7 +297,7 @@ fn standard_reading(
             _ => None,
         });
 
-    if let Some(battery) = object(&outputs, "battery") {
+    if let Some(battery) = object(&reading.capabilities, "battery") {
         reading.battery_percent = reported_battery_percentage(battery, "percentage");
         reading.charging = battery_charging(battery, "charging");
         if let Some(percentage) = reading.battery_percent {
@@ -248,7 +313,7 @@ fn standard_reading(
     // Receiver transports expose their status object alongside ordinary workflow
     // outputs. Keeping this normalization in the runtime lets every UI consume the
     // same multi-device battery contract without knowing a brand protocol.
-    if let Some(receiver) = object(&outputs, "receiver") {
+    if let Some(receiver) = object(&reading.capabilities, "receiver") {
         if reading.battery_percent.is_none() {
             reading.battery_percent = receiver_mouse_battery_percentage(receiver);
         }
@@ -271,7 +336,7 @@ fn standard_reading(
             });
         }
     }
-    if let Some(receiver_battery) = object(&outputs, "receiverBattery") {
+    if let Some(receiver_battery) = object(&reading.capabilities, "receiverBattery") {
         if let Some(percentage) = reported_battery_percentage(receiver_battery, "percentage") {
             upsert_battery(
                 &mut reading.batteries,
@@ -285,24 +350,25 @@ fn standard_reading(
         }
     }
 
-    reading.profile = crate::onboard_profiles::active_profile_index(&outputs);
+    reading.profile = crate::onboard_profiles::active_profile_index(&reading.capabilities);
 
     // If the plugin already emitted a structured "profile" capability, keep it.
     // Otherwise, when 0x8101 Profile Management outputs are present, normalize
     // them into a single capability object so the UI does not need to know the
     // exact workflow output names.
-    if object(&outputs, "profile").is_none()
-        && (crate::onboard_profiles::profile_count(&outputs).is_some()
-            || crate::onboard_profiles::profile_management_info(&outputs).is_some())
+    if object(&reading.capabilities, "profile").is_none()
+        && (crate::onboard_profiles::profile_count(&reading.capabilities).is_some()
+            || crate::onboard_profiles::profile_management_info(&reading.capabilities).is_some())
     {
         let mut profile = serde_json::Map::new();
         if let Some(current) = reading.profile {
             profile.insert("current".into(), json!(current));
         }
-        if let Some(count) = crate::onboard_profiles::profile_count(&outputs) {
+        if let Some(count) = crate::onboard_profiles::profile_count(&reading.capabilities) {
             profile.insert("count".into(), json!(count));
         }
-        if let Some(info) = crate::onboard_profiles::profile_management_info(&outputs) {
+        if let Some(info) = crate::onboard_profiles::profile_management_info(&reading.capabilities)
+        {
             profile.insert(
                 "management".to_string(),
                 json!({
@@ -317,7 +383,9 @@ fn standard_reading(
             .insert("profile".into(), Value::Object(profile));
     }
 
-    if let Some(dpi) = object(&outputs, "dpi").or_else(|| object(&outputs, "dpiExtended")) {
+    if let Some(dpi) = object(&reading.capabilities, "dpi")
+        .or_else(|| object(&reading.capabilities, "dpiExtended"))
+    {
         let current = number(dpi, "currentStage").and_then(|value| usize::try_from(value).ok());
         let values = array(dpi, "dpiX");
         let colors = array(dpi, "stageColors");
@@ -368,14 +436,27 @@ fn standard_reading(
         }
     }
 
-    if let Some(settings) =
-        object(&outputs, "settings").or_else(|| object(&outputs, "settingsExtended"))
+    if let Some(settings) = object(&reading.capabilities, "settings")
+        .or_else(|| object(&reading.capabilities, "settingsExtended"))
     {
         reading.polling_rate_hz =
             number(settings, "pollingRate").and_then(|value| u16::try_from(value).ok());
     }
 
-    normalize_lighting_capabilities(&outputs, capabilities.as_ref(), &mut reading.capabilities);
+    // Compute lighting capabilities from outputs before mutating capabilities.
+    // Inlined to avoid simultaneous &reading.capabilities and &mut reading.capabilities.
+    let mouse_lighting = normalized_mouse_lighting(&reading.capabilities, capabilities.as_ref());
+    let receiver_lighting = normalized_receiver_lighting(&reading.capabilities);
+    if let Some(mouse_lighting) = mouse_lighting {
+        reading
+            .capabilities
+            .insert("mouseLighting".into(), Value::Object(mouse_lighting));
+    }
+    if let Some(receiver_lighting) = receiver_lighting {
+        reading
+            .capabilities
+            .insert("receiverLighting".into(), Value::Object(receiver_lighting));
+    }
 
     reading.light_color = object(&reading.capabilities, "mouseLighting")
         .and_then(|lighting| lighting.get("color"))
@@ -383,19 +464,6 @@ fn standard_reading(
         .map(str::to_string);
 
     reading
-}
-
-fn normalize_lighting_capabilities(
-    outputs: &BTreeMap<String, Value>,
-    plugin_capabilities: Option<&Value>,
-    capabilities: &mut BTreeMap<String, Value>,
-) {
-    if let Some(mouse_lighting) = normalized_mouse_lighting(outputs, plugin_capabilities) {
-        capabilities.insert("mouseLighting".into(), Value::Object(mouse_lighting));
-    }
-    if let Some(receiver_lighting) = normalized_receiver_lighting(outputs) {
-        capabilities.insert("receiverLighting".into(), Value::Object(receiver_lighting));
-    }
 }
 
 fn normalized_mouse_lighting(
@@ -1241,5 +1309,22 @@ mod tests {
         let reading = standard_reading(outputs, capabilities);
         assert!(!reading.capabilities.contains_key("mouseLighting"));
         assert_eq!(reading.light_color, None);
+    }
+
+    #[test]
+    fn hid_io_stats_records_handle_cache_events() {
+        let mut stats = HidIoStats::default();
+        stats.record_cache_miss();
+        stats.record_cache_hit();
+        stats.record_returned();
+        stats.record_open_failure();
+        stats.record_lock_failure();
+
+        assert_eq!(stats.handle_cache_misses, 1);
+        assert_eq!(stats.open_path_attempts, 1);
+        assert_eq!(stats.handle_cache_hits, 1);
+        assert_eq!(stats.handles_returned, 1);
+        assert_eq!(stats.open_path_failures, 1);
+        assert_eq!(stats.handle_cache_lock_failures, 1);
     }
 }
