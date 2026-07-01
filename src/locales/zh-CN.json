@@ -277,8 +277,8 @@
       "hint": "Mira 通过事件实时更新；此间隔仅作为窗口可见时的后备轮询，隐藏后降至 60 秒"
     },
     "updateCheck": {
-      "label": "启动时检查 Mira 更新",
-      "hint": "启动后自动检查新版本"
+      "label": "自动检查 Mira 更新",
+      "hint": "启动后立即检查，并在后台每 6 小时复查一次"
     },
     "updateInstall": {
       "label": "自动下载并安装",
@@ -397,7 +397,7 @@
     "userUpdated": "用户更新",
     "developer": "开发者：{{name}}",
     "copyright": "版权：{{name}}",
-    "updateEnabledHint": "自动更新已启用，也可手动检查新版本",
+    "updateEnabledHint": "自动检查已启用，也可手动检查新版本",
     "updateDisabledHint": "自动更新未启用，请前往 GitHub Release 页面手动下载。",
     "updateCheck": "检查更新",
     "updateChecking": "检查中…",
