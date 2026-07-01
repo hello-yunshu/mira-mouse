@@ -99,4 +99,22 @@ describe('application updater', () => {
     await vi.advanceTimersByTimeAsync(1);
     expect(mocks.check).toHaveBeenCalledTimes(2);
   });
+
+  it('skips the update-found notification when automatic install is enabled', async () => {
+    mocks.invoke.mockResolvedValue(undefined);
+    mocks.downloadAndInstall.mockImplementation(async (onEvent) => {
+      onEvent({ event: 'Started', data: { contentLength: 100 } });
+      onEvent({ event: 'Finished' });
+    });
+    mocks.check.mockResolvedValue({
+      version: '0.3.0',
+      body: 'Release notes',
+      date: '2026-06-23T00:00:00Z',
+      downloadAndInstall: mocks.downloadAndInstall,
+      close: vi.fn().mockResolvedValue(undefined),
+    });
+    await startAutomaticAppUpdateCheck(true, true);
+    expect(mocks.invoke).not.toHaveBeenCalledWith('show_update_notification', expect.anything());
+    expect(appUpdateState()).toMatchObject({ phase: 'installed' });
+  });
 });

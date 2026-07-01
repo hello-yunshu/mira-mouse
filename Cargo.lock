@@ -2373,7 +2373,7 @@ dependencies = [
 
 [[package]]
 name = "mira-app"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "auto-launch",
  "chrono",
@@ -2394,6 +2394,7 @@ dependencies = [
  "tauri-plugin-autostart",
  "tauri-plugin-dialog",
  "tauri-plugin-notification",
+ "tauri-plugin-process",
  "tauri-plugin-single-instance",
  "tauri-plugin-updater",
  "tempfile",
@@ -2404,7 +2405,7 @@ dependencies = [
 
 [[package]]
 name = "mira-core"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -2413,7 +2414,7 @@ dependencies = [
 
 [[package]]
 name = "mira-plugin-api"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "semver",
  "serde",
@@ -2423,7 +2424,7 @@ dependencies = [
 
 [[package]]
 name = "mira-plugin-cli"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -2441,7 +2442,7 @@ dependencies = [
 
 [[package]]
 name = "mira-plugin-runtime"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "ed25519-dalek",
  "hex",
@@ -2459,7 +2460,7 @@ dependencies = [
 
 [[package]]
 name = "mira-testkit"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "mira-plugin-runtime",
 ]
@@ -4361,6 +4362,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tauri-plugin-process"
+version = "2.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d55511a7bf6cd70c8767b02c97bf8134fa434daf3926cfc1be0a0f94132d165a"
+dependencies = [
+ "tauri",
+ "tauri-plugin",
+]
+
+[[package]]
 name = "tauri-plugin-single-instance"
 version = "2.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5868,7 +5879,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "anyhow",
  "clap",
