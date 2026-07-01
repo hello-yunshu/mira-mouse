@@ -6162,6 +6162,7 @@ fn relaunch_app(app: tauri::AppHandle) -> Result<(), String> {
     }
 }
 
+#[cfg(any(target_os = "windows", all(unix, not(target_os = "macos"))))]
 fn navigate_about_update(app: &AppHandle) {
     focus_main(app.get_webview_window("main"));
     let _ = app.emit("navigate-about-update", ());
@@ -6173,30 +6174,43 @@ fn show_update_notification(
     title: String,
     body: String,
 ) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        app.notification()
+            .builder()
+            .title(title)
+            .body(body)
+            .show()
+            .map_err(|err| format!("failed to show update notification: {err}"))?;
+        Ok(())
+    }
+
     #[cfg(any(target_os = "windows", all(unix, not(target_os = "macos"))))]
-    let identifier = app.config().identifier.clone();
-    std::thread::spawn(move || {
-        let mut notification = notify_rust::Notification::new();
-        notification
-            .summary(&title)
-            .body(&body)
-            .timeout(notify_rust::Timeout::Never);
-        #[cfg(target_os = "windows")]
-        notification.app_id(&identifier);
-        #[cfg(all(unix, not(target_os = "macos")))]
-        notification.appname(&identifier);
-        match notification.show() {
-            Ok(handle) => {
-                handle.wait_for_action(|action| {
-                    if action != "__closed" {
-                        navigate_about_update(&app);
-                    }
-                });
+    {
+        let identifier = app.config().identifier.clone();
+        std::thread::spawn(move || {
+            let mut notification = notify_rust::Notification::new();
+            notification
+                .summary(&title)
+                .body(&body)
+                .timeout(notify_rust::Timeout::Never);
+            #[cfg(target_os = "windows")]
+            notification.app_id(&identifier);
+            #[cfg(all(unix, not(target_os = "macos")))]
+            notification.appname(&identifier);
+            match notification.show() {
+                Ok(handle) => {
+                    handle.wait_for_action(|action| {
+                        if action != "__closed" {
+                            navigate_about_update(&app);
+                        }
+                    });
+                }
+                Err(error) => eprintln!("[mira] update notification failed: {error}"),
             }
-            Err(error) => eprintln!("[mira] update notification failed: {error}"),
-        }
-    });
-    Ok(())
+        });
+        Ok(())
+    }
 }
 
 fn focus_main_from_tray(app: &AppHandle) {
@@ -6550,36 +6564,13 @@ fn app_icon_bytes_for_theme(dark: bool) -> &'static [u8] {
     }
 }
 
-#[cfg(target_os = "macos")]
-fn app_icon_icns_bytes_for_theme(dark: bool) -> &'static [u8] {
-    if dark {
-        include_bytes!("../icons/icon-dark.icns")
-    } else {
-        include_bytes!("../icons/icon.icns")
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn set_macos_dock_icon(icon_bytes: &'static [u8]) {
-    use objc2::{AllocAnyThread, MainThreadMarker};
-    use objc2_app_kit::{NSApplication, NSImage};
-    use objc2_foundation::NSData;
-
-    let Some(mtm) = MainThreadMarker::new() else {
-        return;
-    };
-    let app = NSApplication::sharedApplication(mtm);
-    let data = NSData::with_bytes(icon_bytes);
-    if let Some(app_icon) = NSImage::initWithData(NSImage::alloc(), &data) {
-        unsafe { app.setApplicationIconImage(Some(&app_icon)) };
-    }
-}
-
 fn update_runtime_app_icon(app: &AppHandle, dark: bool) {
     #[cfg(target_os = "macos")]
     {
-        let icon_bytes = app_icon_icns_bytes_for_theme(dark);
-        let _ = app.run_on_main_thread(move || set_macos_dock_icon(icon_bytes));
+        // Dock 图标由打包时的 icon.icns 提供。不要在窗口聚焦/主题变化时重设
+        // NSApplication 图标，否则 macOS 会用运行时图像覆盖 Dock 中的 bundle
+        // 图标，造成前台打开后视觉突然变得更满/更大。
+        let _ = (app, dark);
     }
     #[cfg(not(target_os = "macos"))]
     {

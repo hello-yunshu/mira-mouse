@@ -62,4 +62,19 @@ describe('application updater', () => {
     await relaunchAfterUpdate();
     expect(mocks.invoke).toHaveBeenCalledWith('relaunch_app');
   });
+
+  it('does not send a native update notification when a manual download fails', async () => {
+    mocks.downloadAndInstall.mockRejectedValue(new Error('network down'));
+    mocks.check.mockResolvedValue({
+      version: '0.3.9',
+      body: 'Release notes',
+      date: '2026-07-01T00:00:00Z',
+      downloadAndInstall: mocks.downloadAndInstall,
+      close: vi.fn().mockResolvedValue(undefined),
+    });
+    await checkForAppUpdate();
+    await expect(installAppUpdate()).rejects.toThrow('network down');
+    expect(appUpdateState()).toMatchObject({ phase: 'error', error: 'Error: network down' });
+    expect(mocks.invoke).not.toHaveBeenCalledWith('show_update_notification', expect.anything());
+  });
 });
