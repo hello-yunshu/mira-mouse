@@ -148,7 +148,7 @@ button:focus-visible, select:focus-visible, .tooltip:focus-visible {
   position: relative; /* 为 nav-links 绝对定位提供基准 */
   height: 100%;
   overflow: hidden;
-  padding: 12px 16px;
+  padding: 0 16px 12px;
   display: flex;
   flex-direction: column;
   background: var(--window-tint);
@@ -166,7 +166,7 @@ button:focus-visible, select:focus-visible, .tooltip:focus-visible {
   /* 仅作为窗口拖拽区域，不再容纳 nav-links（已外置为绝对定位） */
   flex: 0 0 38px;
   min-height: 38px;
-  margin: 0 0 4px;
+  margin: 0;
   -webkit-user-select: none;
   user-select: none;
 }
@@ -253,6 +253,9 @@ option {
 .platform-windows .device-hero {
   min-height: 206px;
 }
+.platform-windows .top-nav {
+  margin: 0 0 10px;
+}
 /* Windows 下 app-title 定位 */
 .platform-windows .device-column .app-title {
   top: 0px;
@@ -264,7 +267,7 @@ option {
  * nav-links 抬高 10px（从 top:44px → 34px），使下方多出 10px 真实空白区 */
 .platform-windows .nav-links {
   right: max(16px, calc(50% - 234px));
-  top: 34px;
+  top: 38px;
   height: auto; /* 使用自然高度，让 bottom 与 app-title 底部对齐 */
 }
 
@@ -1370,6 +1373,9 @@ body:has(.platform-fallback:not(.web-preview)) {
   backdrop-filter: none;
   box-shadow: none;
 }
+.platform-macos .status-strip {
+  margin-bottom: 15px;
+}
 .status-strip > div,
 .status-strip > button {
   min-width: 0;
@@ -1726,7 +1732,7 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
 
 /* Responsive — 竖向窄屏适配 */
 @media (max-width: 440px) {
-  .app-shell { padding: 10px 12px; }
+  .app-shell { padding: 0 12px 10px; }
   /* 窄屏下 app-shell 水平 padding 为 12px，Windows nav-links 右边缘需相应调整以对齐 dashboard 右边缘 */
   .platform-windows .nav-links { right: max(12px, calc(50% - 234px)); top: 32px; }
   .device-hero { grid-template-columns: minmax(0, 1fr) 175px; min-height: 170px; }
