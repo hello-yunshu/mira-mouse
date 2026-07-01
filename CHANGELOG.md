@@ -1,13 +1,16 @@
 <!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
 # Changelog
 
-## 0.3.8 - 2026-07-01
+## 0.3.10 - 2026-07-01
 
 - Fixed macOS update relaunch to reopen the `.app` bundle instead of directly
   spawning the bundle's internal executable, avoiding the system "choose an app
   to open this" prompt introduced around 0.3.6.
-- Restored macOS Dock icon light/dark switching with packaged `.icns` assets so
-  the icon follows theme changes without using an oversized runtime PNG.
+- Kept the macOS Dock icon on the bundle-provided asset at runtime, avoiding
+  the visual jump where the icon became fuller after Mira was brought forward.
+- Switched macOS update notifications away from the `notify-rust` backend that
+  could ask macOS to locate a `use_default` application when update checks and
+  failed downloads overlapped.
 - Kept launch-at-login and "hide window at login" as separate settings; only
   the combination starts Mira in the background.
 - Set Windows updater installs to quiet mode so automatic updates stay silent.
