@@ -68,7 +68,7 @@ export async function checkForAppUpdate(automatic = false): Promise<void> {
       date: update.date,
       downloadedBytes: 0,
     });
-    if (automatic) {
+    if (automatic && !automaticInstallRequested) {
       const title = i18n.t('notification.updateFound.title');
       const body = i18n.t('notification.updateFound.body', { version: update.version });
       notifyInfo(title, body, 'about-update');
