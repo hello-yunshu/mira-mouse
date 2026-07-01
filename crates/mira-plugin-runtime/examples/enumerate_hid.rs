@@ -19,11 +19,12 @@ use ed25519_dalek::VerifyingKey;
 use hidapi::HidApi;
 use mira_plugin_runtime::{
     execute_plugin_workflow, extract_package, hid, inspect_package, mutate_device, read_device,
-    writable_mutations, ConnectionKind, ProtocolContext, TrustStore,
+    writable_mutations, ConnectionKind, FeatureIndexCache, HidHandleCache, HidIoStats,
+    OnboardMemoryCache, ProtocolContext, TrustStore,
 };
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeMap, fs, io::Cursor, path::PathBuf};
+use std::{collections::BTreeMap, fs, io::Cursor, path::PathBuf, sync::Mutex};
 
 const PRODUCTION_KEY_ID: &str = "mira-plugins-2026-001";
 const PRODUCTION_PUBLIC_KEY_HEX: &str =
@@ -199,6 +200,10 @@ fn main() {
         "bluetooth" => ConnectionKind::Bluetooth,
         _ => ConnectionKind::Usb,
     };
+    let feature_index_cache = Mutex::new(FeatureIndexCache::default());
+    let onboard_memory_cache = Mutex::new(OnboardMemoryCache::default());
+    let cached_handles = Mutex::new(HidHandleCache::default());
+    let hid_io_stats = Mutex::new(HidIoStats::default());
     let context = ProtocolContext {
         api: &api,
         path: &target.path,
@@ -206,10 +211,18 @@ fn main() {
         connection,
         files: &files,
         outputs: BTreeMap::new(),
-        feature_index_cache: None,
-        onboard_memory_cache: None,
+        feature_index_cache: Some(&feature_index_cache),
+        onboard_memory_cache: Some(&onboard_memory_cache),
+        cached_handles: Some(&cached_handles),
+        hid_io_stats: Some(&hid_io_stats),
     };
-    let reading = read_device(&context).expect("execute signed plugin workflow");
+    let reading = match read_device(&context) {
+        Ok(reading) => reading,
+        Err(error) => {
+            report_workflow_error("read device", &error, &hid_io_stats);
+            std::process::exit(classified_exit_code(&error));
+        }
+    };
 
     println!(
         "battery={:?} charging={} batteries={:?} dpi={:?} polling_rate={:?} profile={:?}",
@@ -232,15 +245,29 @@ fn main() {
         connection,
         files: &files,
         outputs: reading.capabilities.clone(),
-        feature_index_cache: None,
-        onboard_memory_cache: None,
+        feature_index_cache: Some(&feature_index_cache),
+        onboard_memory_cache: Some(&onboard_memory_cache),
+        cached_handles: Some(&cached_handles),
+        hid_io_stats: Some(&hid_io_stats),
     };
-    let allowed = writable_mutations(&read_context).expect("list writable mutations");
+    let allowed = match writable_mutations(&read_context) {
+        Ok(allowed) => allowed,
+        Err(error) => {
+            report_workflow_error("list writable mutations", &error, &hid_io_stats);
+            std::process::exit(classified_exit_code(&error));
+        }
+    };
     println!("writable mutations: {:?}", allowed);
+    print_hid_io_stats(&hid_io_stats);
 
     if let Ok(workflow_id) = std::env::var("MIRA_WORKFLOW") {
-        let outputs = execute_plugin_workflow(&read_context, &workflow_id)
-            .unwrap_or_else(|error| panic!("execute {workflow_id}: {error}"));
+        let outputs = match execute_plugin_workflow(&read_context, &workflow_id) {
+            Ok(outputs) => outputs,
+            Err(error) => {
+                report_workflow_error(&format!("execute {workflow_id}"), &error, &hid_io_stats);
+                std::process::exit(classified_exit_code(&error));
+            }
+        };
         println!(
             "workflow {workflow_id}: {}",
             serde_json::to_string_pretty(&outputs).expect("serialize workflow outputs")
@@ -248,6 +275,7 @@ fn main() {
         if workflow_id.ends_with("-onboard-read") {
             print_onboard_profile_summary(&outputs);
         }
+        print_hid_io_stats(&hid_io_stats);
     }
 
     if std::env::var("MIRA_WRITE_SMOKE").unwrap_or_default() == "1" {
@@ -258,8 +286,10 @@ fn main() {
             connection,
             files: &files,
             outputs: reading.capabilities.clone(),
-            feature_index_cache: None,
-            onboard_memory_cache: None,
+            feature_index_cache: Some(&feature_index_cache),
+            onboard_memory_cache: Some(&onboard_memory_cache),
+            cached_handles: Some(&cached_handles),
+            hid_io_stats: Some(&hid_io_stats),
         };
 
         if let Some(target_mode) = std::env::var("MIRA_WRITE_MODE")
@@ -401,6 +431,56 @@ fn main() {
                 }
             }
         }
+    }
+}
+
+fn report_workflow_error(action: &str, error: &str, hid_io_stats: &Mutex<HidIoStats>) {
+    eprintln!("{action}: {error}");
+    eprintln!("classification: {}", classify_workflow_error(error));
+    if classify_workflow_error(error) == "target-offline" {
+        eprintln!(
+            "the plugin package, signature, and HID match succeeded; the target device behind the receiver is currently offline or asleep"
+        );
+    }
+    print_hid_io_stats(hid_io_stats);
+}
+
+fn classify_workflow_error(error: &str) -> &'static str {
+    let lower = error.to_ascii_lowercase();
+    if lower.contains("proxy target is offline") {
+        "target-offline"
+    } else if lower.contains("no such device")
+        || lower.contains("device not found")
+        || lower.contains("failed to open")
+    {
+        "device-unavailable"
+    } else if lower.contains("timed out") || lower.contains("timeout") {
+        "device-timeout"
+    } else {
+        "workflow-error"
+    }
+}
+
+fn classified_exit_code(error: &str) -> i32 {
+    match classify_workflow_error(error) {
+        "target-offline" => 2,
+        "device-unavailable" => 3,
+        "device-timeout" => 4,
+        _ => 1,
+    }
+}
+
+fn print_hid_io_stats(hid_io_stats: &Mutex<HidIoStats>) {
+    if let Ok(stats) = hid_io_stats.lock() {
+        println!(
+            "hid io stats: cache_hits={} cache_misses={} open_attempts={} open_failures={} handles_returned={} lock_failures={}",
+            stats.handle_cache_hits,
+            stats.handle_cache_misses,
+            stats.open_path_attempts,
+            stats.open_path_failures,
+            stats.handles_returned,
+            stats.handle_cache_lock_failures,
+        );
     }
 }
 

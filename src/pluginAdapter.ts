@@ -88,7 +88,13 @@ export function parsePluginOptions(value: unknown): PluginOption[] {
 /// lightingRole.mouse/receiver 可为 string 或 string[]：数组时按优先级
 /// 选取第一个被 writableMutations 支持的 mutation。
 /// 其他能力读取优先级：1) metadata.mutation (string 或 string[]) 2) metadata.mutations (object)
+// 浅缓存：基于 (capability, writableMutations) 引用相等的单条目缓存。
+// 同一 capability 在单次渲染中被 capabilityVisible/capabilityBinding 反复查询时命中。
+const pluginMutationsCache = new WeakMap<PluginCapability, { mutations: string[]; result: Record<string, string> }>();
+
 export function pluginMutations(capability: PluginCapability, writableMutations: string[] = []): Record<string, string> {
+  const cached = pluginMutationsCache.get(capability);
+  if (cached && cached.mutations === writableMutations) return cached.result;
   const mutations: Record<string, string> = {};
   const lightingRole = capability.control === 'LightingZone'
     ? capability.metadata.lightingRole as LightingRole | undefined
@@ -100,6 +106,7 @@ export function pluginMutations(capability: PluginCapability, writableMutations:
     };
     applyRole('mouse');
     applyRole('receiver');
+    pluginMutationsCache.set(capability, { mutations: writableMutations, result: mutations });
     return mutations;
   }
   const defaultMutation = pickMutation(capability.metadata.mutation, writableMutations);
@@ -111,6 +118,7 @@ export function pluginMutations(capability: PluginCapability, writableMutations:
       if (picked) mutations[key] = picked;
     }
   }
+  pluginMutationsCache.set(capability, { mutations: writableMutations, result: mutations });
   return mutations;
 }
 
@@ -120,8 +128,9 @@ export function pluginMutations(capability: PluginCapability, writableMutations:
 export function pluginOptions(capability: PluginCapability, device?: DeviceState): PluginOption[] {
   const declared = parsePluginOptions(capability.metadata.options).slice(0, MAX_CONTROL_OPTIONS);
   if (capability.labelKey === 'capability.polling-rate' && device?.supportedPollingRates?.length) {
-    const allowed = new Set(declared.map((option) => Number(option.value)));
-    const supported = device.supportedPollingRates.filter((value) => allowed.size === 0 || allowed.has(value));
+    // 选项数 ≤ MAX_CONTROL_OPTIONS，线性 includes 比 Set 更快。
+    const allowed = declared.map((option) => Number(option.value));
+    const supported = device.supportedPollingRates.filter((value) => allowed.length === 0 || allowed.includes(value));
     return (supported.length ? supported : device.supportedPollingRates)
       .slice(0, MAX_CONTROL_OPTIONS)
       .map((value) => declared.find((option) => option.value === value) ?? { value, label: `${value} Hz` });

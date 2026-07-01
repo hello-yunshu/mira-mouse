@@ -7,8 +7,8 @@ use mira_core::{DeviceSnapshot, LowBatteryCrossing, PluginCapability, PluginCapa
 use mira_plugin_runtime::{
     extract_package, hid, inspect_package, mutate_device_with_package, read_device_with_package,
     writable_mutations_with_package, Capability, ConnectionKind, Control, DeviceReading,
-    ExportableField, FeatureIndexCache, OnboardMemoryCache, PackageInspection, ProtocolContext,
-    ProtocolPackage, TrustStore,
+    ExportableField, FeatureIndexCache, HidHandleCache, HidIoStats, OnboardMemoryCache,
+    PackageInspection, ProtocolContext, ProtocolPackage, TrustStore,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -588,6 +588,13 @@ struct SessionState {
     /// 写入 mutation 预读时命中缓存则跳过 16 chunk HID 往返；验证读后更新缓存。
     /// 设备断开时由 clear_snapshots 清空。
     onboard_memory_cache: Mutex<OnboardMemoryCache>,
+    /// 已打开的 HID 设备句柄缓存，按设备路径索引。
+    /// 命中时复用句柄跳过 open_path 系统调用；未命中时 open_path 并在执行成功后归还。
+    /// 设备断开时由 clear_snapshots 清空。device_io 锁已序列化 HID 访问，缓存读写仅持锁极短时段。
+    cached_handles: Mutex<HidHandleCache>,
+    /// debug 构建中的 HID 句柄复用计数器；release 构建不采集，避免额外锁开销。
+    #[cfg(debug_assertions)]
+    hid_io_stats: Mutex<HidIoStats>,
     /// 安静灯光（夜间模式）运行时状态：当前阶段 + 进入夜间时保存的灯光状态。
     /// 由 spawn_night_mode_scheduler 后台线程读写，settings_set 唤醒该线程。
     night_mode: Mutex<NightModeRuntime>,
@@ -597,6 +604,16 @@ struct SessionState {
     /// debug 构建中记录上一次 matched device 数量，仅在变化时输出日志。
     #[cfg(debug_assertions)]
     last_matched_count: Mutex<usize>,
+}
+
+#[cfg(debug_assertions)]
+fn hid_io_stats_ref(state: &SessionState) -> Option<&Mutex<HidIoStats>> {
+    Some(&state.hid_io_stats)
+}
+
+#[cfg(not(debug_assertions))]
+fn hid_io_stats_ref(_state: &SessionState) -> Option<&Mutex<HidIoStats>> {
+    None
 }
 
 /// Send an immediate-refresh signal to the background reader thread.
@@ -1125,7 +1142,7 @@ fn selected_device_path(state: &SessionState) -> Option<String> {
 }
 
 /// 替换整个快照 map，并在变化时触发 settling burst。
-fn store_snapshots(state: &SessionState, snapshots: BTreeMap<String, DeviceSnapshot>) {
+fn store_snapshots(state: &SessionState, snapshots: &BTreeMap<String, DeviceSnapshot>) {
     if let Ok(mut selected) = state.selected_device_path.lock() {
         if selected
             .as_ref()
@@ -1138,8 +1155,8 @@ fn store_snapshots(state: &SessionState, snapshots: BTreeMap<String, DeviceSnaps
         .last_snapshot
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    let changed = *guard != snapshots;
-    *guard = snapshots;
+    let changed = *guard != *snapshots;
+    *guard = snapshots.clone();
     drop(guard);
     if changed {
         note_state_change(state);
@@ -1186,6 +1203,10 @@ fn clear_snapshots(state: &SessionState) {
     }
     // UX3 设备断开时清除 onboard memory 缓存，避免重连后使用过期数据。
     if let Ok(mut cache) = state.onboard_memory_cache.lock() {
+        cache.clear();
+    }
+    // 设备断开时清除 HID 句柄缓存，避免复用已失效的句柄。
+    if let Ok(mut cache) = state.cached_handles.lock() {
         cache.clear();
     }
     if let Ok(mut errors) = state.last_read_errors.lock() {
@@ -4763,6 +4784,8 @@ fn reapply_software_profile(
         outputs: reading.capabilities.clone(),
         feature_index_cache: Some(&state.feature_index_cache),
         onboard_memory_cache: Some(&state.onboard_memory_cache),
+        cached_handles: Some(&state.cached_handles),
+        hid_io_stats: hid_io_stats_ref(state),
     };
     let mut failed = false;
     if allowed
@@ -4811,6 +4834,8 @@ fn reapply_software_profile(
                 outputs: BTreeMap::new(),
                 feature_index_cache: Some(&state.feature_index_cache),
                 onboard_memory_cache: Some(&state.onboard_memory_cache),
+                cached_handles: Some(&state.cached_handles),
+                hid_io_stats: hid_io_stats_ref(state),
             },
         )
         .ok()
@@ -4941,6 +4966,8 @@ fn read_device_once(app: &AppHandle) {
                     outputs: BTreeMap::new(),
                     feature_index_cache: Some(&state.feature_index_cache),
                     onboard_memory_cache: Some(&state.onboard_memory_cache),
+                    cached_handles: Some(&state.cached_handles),
+                    hid_io_stats: hid_io_stats_ref(&state),
                 },
             ) {
                 Ok(mut reading) => {
@@ -4960,6 +4987,8 @@ fn read_device_once(app: &AppHandle) {
                                 outputs: reading.capabilities.clone(),
                                 feature_index_cache: Some(&state.feature_index_cache),
                                 onboard_memory_cache: Some(&state.onboard_memory_cache),
+                                cached_handles: Some(&state.cached_handles),
+                                hid_io_stats: hid_io_stats_ref(&state),
                             },
                         )
                         .unwrap_or_default()
@@ -5049,9 +5078,24 @@ fn read_device_once(app: &AppHandle) {
         }
         DeviceReadOutcome::Ready(entries) => {
             // 多设备管理：用当前 matched 设备的快照整体替换 map，清除已断开的设备。
-            let new_map: BTreeMap<String, DeviceSnapshot> = entries.iter().cloned().collect();
-            store_snapshots(&state, new_map.clone());
-            let snapshot_entries = device_snapshot_entries(&state);
+            // into_iter 移动所有权，避免逐条克隆 DeviceSnapshot。
+            let new_map: BTreeMap<String, DeviceSnapshot> = entries.into_iter().collect();
+            // 清除断开设备的缓存句柄，仅保留仍连接的路径。
+            if let Ok(mut cache) = state.cached_handles.lock() {
+                cache.retain(|path, _| new_map.contains_key(path));
+            }
+            // 在存储前从 new_map 直接构建 entries，避免再次锁定 last_snapshot 克隆快照。
+            let selected_path =
+                selected_snapshot_entry(&state, &new_map).map(|(path, _)| path.clone());
+            let snapshot_entries: Vec<DeviceSnapshotEntry> = new_map
+                .iter()
+                .map(|(device_key, snapshot)| DeviceSnapshotEntry {
+                    device_key: device_key.clone(),
+                    snapshot: snapshot.clone(),
+                    selected: selected_path.as_ref() == Some(device_key),
+                })
+                .collect();
+            store_snapshots(&state, &new_map);
             let _ = app.emit("device-snapshots-updated", &snapshot_entries);
             // 选择当前设备通知前端（向后兼容单设备 API）。
             if let Some(snapshot) = selected_snapshot(&state) {
@@ -5390,6 +5434,8 @@ fn device_mutate_blocking(
             outputs: BTreeMap::new(),
             feature_index_cache: Some(&state.feature_index_cache),
             onboard_memory_cache: Some(&state.onboard_memory_cache),
+            cached_handles: Some(&state.cached_handles),
+            hid_io_stats: hid_io_stats_ref(&state),
         };
         let before = read_device_with_package(&package, &context)?;
         let mutate_context = ProtocolContext {
@@ -5401,6 +5447,8 @@ fn device_mutate_blocking(
             outputs: before.capabilities.clone(),
             feature_index_cache: Some(&state.feature_index_cache),
             onboard_memory_cache: Some(&state.onboard_memory_cache),
+            cached_handles: Some(&state.cached_handles),
+            hid_io_stats: hid_io_stats_ref(&state),
         };
         // 用与 mutate 一致的真实 outputs 计算 allowed 列表，避免空 outputs
         // 导致所有 mutation 都被视为可写，而实际 mutate 时被 skipIf 守门拒绝。
@@ -6863,7 +6911,8 @@ fn update_tray(
     let lang = effective_language(&settings.language);
 
     // 计算当前菜单签名，用于判断是否需要重建菜单
-    let current_signature = if let Some(snapshot) = snapshot {
+    // Clone batteries once and share between signature calculation and menu rebuild.
+    let prepared_batteries = snapshot.map(|snapshot| {
         let mut batteries = snapshot.batteries.clone();
         if batteries.is_empty() {
             if let Some(percentage) = snapshot.battery_percent {
@@ -6875,6 +6924,10 @@ fn update_tray(
                 });
             }
         }
+        batteries
+    });
+    let current_signature = if let Some(snapshot) = snapshot {
+        let batteries = prepared_batteries.as_ref().unwrap();
         TrayMenuSignature {
             connected: true,
             batteries: batteries
@@ -6910,17 +6963,8 @@ fn update_tray(
 
     if menu_changed {
         if let Some(snapshot) = snapshot {
-            let mut batteries = snapshot.batteries.clone();
-            if batteries.is_empty() {
-                if let Some(percentage) = snapshot.battery_percent {
-                    batteries.push(mira_core::DeviceBattery {
-                        id: "mouse".into(),
-                        label: tr_battery_fallback_label(lang).into(),
-                        percentage,
-                        charging: snapshot.charging,
-                    });
-                }
-            }
+            // Reuse the batteries prepared for the signature instead of cloning again.
+            let batteries = prepared_batteries.as_ref().unwrap();
             for (index, battery) in batteries.iter().enumerate() {
                 let label = tr_battery_label(lang, &battery.id, &battery.label);
                 let item = MenuItem::with_id(

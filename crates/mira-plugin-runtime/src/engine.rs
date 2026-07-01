@@ -8,7 +8,7 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::protocol::{FeatureIndexCache, OnboardMemoryCache};
+use crate::protocol::{FeatureIndexCache, HidHandleCache, HidIoStats, OnboardMemoryCache};
 
 const MAX_COMMANDS: usize = 56;
 const MAX_REPORTS: usize = 128;
@@ -671,7 +671,17 @@ impl ProtocolPackage {
         path: &str,
         workflow_id: &str,
     ) -> Result<BTreeMap<String, Value>, String> {
-        self.execute_with_initial_outputs(api, path, workflow_id, BTreeMap::new(), None, None, None)
+        self.execute_with_initial_outputs(
+            api,
+            path,
+            workflow_id,
+            BTreeMap::new(),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
     }
 
     /// Like `execute` but with an optional feature index cache.
@@ -684,6 +694,8 @@ impl ProtocolPackage {
         path: &str,
         workflow_id: &str,
         cache: Option<&Mutex<FeatureIndexCache>>,
+        cached_handles: Option<&Mutex<HidHandleCache>>,
+        hid_io_stats: Option<&Mutex<HidIoStats>>,
     ) -> Result<BTreeMap<String, Value>, String> {
         self.execute_with_initial_outputs(
             api,
@@ -693,6 +705,8 @@ impl ProtocolPackage {
             None,
             None,
             cache,
+            cached_handles,
+            hid_io_stats,
         )
     }
 
@@ -706,6 +720,8 @@ impl ProtocolPackage {
         timeout_ms: Option<u64>,
         inherited_deadline: Option<Instant>,
         feature_index_cache: Option<&Mutex<FeatureIndexCache>>,
+        cached_handles: Option<&Mutex<HidHandleCache>>,
+        hid_io_stats: Option<&Mutex<HidIoStats>>,
     ) -> Result<BTreeMap<String, Value>, String> {
         let workflow = self
             .workflows
@@ -716,7 +732,7 @@ impl ProtocolPackage {
             return Err("workflow command limit exceeded".into());
         }
         let c_path = CString::new(path).map_err(|_| "invalid HID path".to_string())?;
-        let device = api.open_path(&c_path).map_err(|error| error.to_string())?;
+        let device = take_or_open_device(api, &c_path, path, cached_handles, hid_io_stats)?;
         let mut session = Session {
             package: self,
             device,
@@ -803,7 +819,11 @@ impl ProtocolPackage {
                 }
             }
         }
-        Ok(session.outputs)
+        let Session {
+            device, outputs, ..
+        } = session;
+        return_device(path, device, cached_handles, hid_io_stats);
+        Ok(outputs)
     }
 
     pub fn mutation_ids(
@@ -831,8 +851,20 @@ impl ProtocolPackage {
         api: &HidApi,
         path: &str,
         definition: &MemoryMutationDefinition,
+        cached_handles: Option<&Mutex<HidHandleCache>>,
+        hid_io_stats: Option<&Mutex<HidIoStats>>,
     ) -> Result<(BTreeMap<String, Value>, Vec<u8>), String> {
-        let outputs = self.execute(api, path, &definition.read_workflow)?;
+        let outputs = self.execute_with_initial_outputs(
+            api,
+            path,
+            &definition.read_workflow,
+            BTreeMap::new(),
+            None,
+            None,
+            None,
+            cached_handles,
+            hid_io_stats,
+        )?;
         let size = output_value(&outputs, &definition.size)
             .and_then(Value::as_u64)
             .and_then(|value| usize::try_from(value).ok())
@@ -843,8 +875,13 @@ impl ProtocolPackage {
         }
         let count = size.div_ceil(definition.chunk_size);
         let mut memory = vec![0u8; size];
+        // Pre-allocate the chunk key buffer and reuse it across iterations to
+        // avoid per-iteration String allocations.
+        use std::fmt::Write;
+        let mut key = String::with_capacity(definition.chunk_output_prefix.len() + 2);
         for index in 0..count {
-            let key = format!("{}{index:02}", definition.chunk_output_prefix);
+            key.clear();
+            write!(&mut key, "{}{index:02}", definition.chunk_output_prefix).unwrap();
             let bytes = outputs
                 .get(&key)
                 .and_then(Value::as_object)
@@ -942,6 +979,7 @@ impl ProtocolPackage {
         Ok(updated)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn mutate(
         &self,
         api: &HidApi,
@@ -950,6 +988,8 @@ impl ProtocolPackage {
         params: &Map<String, Value>,
         ctx_outputs: &BTreeMap<String, Value>,
         onboard_memory_cache: Option<&Mutex<OnboardMemoryCache>>,
+        cached_handles: Option<&Mutex<HidHandleCache>>,
+        hid_io_stats: Option<&Mutex<HidIoStats>>,
     ) -> Result<Value, String> {
         if let Some(transaction) = self.transaction_for_mutation(mutation_id)? {
             return self.mutate_in_transaction(
@@ -960,6 +1000,8 @@ impl ProtocolPackage {
                 ctx_outputs,
                 transaction,
                 onboard_memory_cache,
+                cached_handles,
+                hid_io_stats,
             );
         }
         self.mutate_inner(
@@ -970,6 +1012,8 @@ impl ProtocolPackage {
             ctx_outputs,
             None,
             onboard_memory_cache,
+            cached_handles,
+            hid_io_stats,
         )
     }
 
@@ -1011,6 +1055,8 @@ impl ProtocolPackage {
         ctx_outputs: &BTreeMap<String, Value>,
         transaction: TransactionDefinition,
         onboard_memory_cache: Option<&Mutex<OnboardMemoryCache>>,
+        cached_handles: Option<&Mutex<HidHandleCache>>,
+        hid_io_stats: Option<&Mutex<HidIoStats>>,
     ) -> Result<Value, String> {
         // 事务级 timeout 是整个事务（snapshot + mutation + rollback）的总预算：
         // 三阶段共享同一 deadline，而非各自独立计时（否则总时间可达 3×timeout）。
@@ -1024,6 +1070,8 @@ impl ProtocolPackage {
                 None,
                 tx_deadline,
                 None,
+                cached_handles,
+                hid_io_stats,
             )?
         } else {
             ctx_outputs.clone()
@@ -1036,6 +1084,8 @@ impl ProtocolPackage {
             ctx_outputs,
             tx_deadline,
             onboard_memory_cache,
+            cached_handles,
+            hid_io_stats,
         ) {
             Ok(value) => Ok(value),
             Err(error) => {
@@ -1050,6 +1100,8 @@ impl ProtocolPackage {
                         None,
                         tx_deadline,
                         None,
+                        cached_handles,
+                        hid_io_stats,
                     ) {
                         Ok(_) => Err(format!(
                             "写入 {mutation_id} 失败：{error}。事务回滚已执行（回滚工作流：{rollback_workflow}），设备已恢复至写入前状态。"
@@ -1079,6 +1131,8 @@ impl ProtocolPackage {
         ctx_outputs: &BTreeMap<String, Value>,
         inherited_deadline: Option<Instant>,
         onboard_memory_cache: Option<&Mutex<OnboardMemoryCache>>,
+        cached_handles: Option<&Mutex<HidHandleCache>>,
+        hid_io_stats: Option<&Mutex<HidIoStats>>,
     ) -> Result<Value, String> {
         let mutation = self
             .workflows
@@ -1116,7 +1170,7 @@ impl ProtocolPackage {
         let direct_write_skipped = mutation.write_skip_if_zero.iter().any(|reference| {
             output_value(ctx_outputs, reference).and_then(Value::as_u64) == Some(0)
         });
-        let memory_read = match &mutation.memory {
+        let mut memory_read = match &mutation.memory {
             Some(memory)
                 if output_value(ctx_outputs, &memory.available_when)
                     .and_then(Value::as_u64)
@@ -1127,7 +1181,7 @@ impl ProtocolPackage {
                 // A cached sector can become stale when the user changes onboard
                 // profiles from hardware controls or another app during the same
                 // connection, and using it here would overwrite those changes.
-                match self.read_memory_mutation(api, path, memory) {
+                match self.read_memory_mutation(api, path, memory, cached_handles, hid_io_stats) {
                     Ok((outputs, bytes)) => {
                         let enabled = memory.enabled_when.matches(output_value(
                             &outputs,
@@ -1163,7 +1217,7 @@ impl ProtocolPackage {
             _ => None,
         };
         let c_path = CString::new(path).map_err(|_| "invalid HID path".to_string())?;
-        let device = api.open_path(&c_path).map_err(|error| error.to_string())?;
+        let device = take_or_open_device(api, &c_path, path, cached_handles, hid_io_stats)?;
         let mut session = Session {
             package: self,
             device,
@@ -1171,8 +1225,11 @@ impl ProtocolPackage {
             delay_ms: 0,
             outputs: {
                 let mut outputs = ctx_outputs.clone();
-                if let Some((memory_outputs, _)) = &memory_read {
-                    outputs.extend(memory_outputs.clone());
+                // Move memory outputs into session (avoids cloning the BTreeMap).
+                // std::mem::take leaves an empty map; later code only accesses
+                // the Vec<u8> bytes for verification, not the outputs.
+                if let Some((memory_outputs, _)) = &mut memory_read {
+                    outputs.extend(std::mem::take(memory_outputs));
                 }
                 outputs
             },
@@ -1364,9 +1421,11 @@ impl ProtocolPackage {
                 .map_err(|error| format!("mutation {mutation_id} verification failed: {error}"))?;
             parsed
         };
-        drop(session);
+        let Session { device, .. } = session;
+        return_device(path, device, cached_handles, hid_io_stats);
         if let Some((memory, expected)) = expected_memory {
-            let (verify_outputs, actual) = self.read_memory_mutation(api, path, memory)?;
+            let (verify_outputs, actual) =
+                self.read_memory_mutation(api, path, memory, cached_handles, hid_io_stats)?;
             // Compare data bytes excluding the trailing CRC. Some devices
             // (notably Logitech G705) report a sectorSize whose CRC position
             // doesn't match the engine's assumption — the device may
@@ -1650,6 +1709,78 @@ fn execute_with_candidates(
         "all candidates for {name} failed: {}",
         last_error.unwrap_or_else(|| "no candidates".into())
     ))
+}
+
+/// 从句柄缓存取出设备（命中时移除），未命中则 `open_path`。`HidDevice` 不可 Clone，
+/// 采用取用-归还：调用方执行成功后通过 `return_device` 归还；出错时句柄随 session
+/// 析构关闭，不归还（设备可能处于异常状态）。
+fn take_or_open_device(
+    api: &HidApi,
+    c_path: &CString,
+    path: &str,
+    cached_handles: Option<&Mutex<HidHandleCache>>,
+    hid_io_stats: Option<&Mutex<HidIoStats>>,
+) -> Result<HidDevice, String> {
+    if let Some(cache) = cached_handles {
+        match cache.lock() {
+            Ok(mut guard) => {
+                if let Some(device) = guard.remove(path) {
+                    record_hid_io_stat(hid_io_stats, HidIoStatEvent::CacheHit);
+                    return Ok(device);
+                }
+            }
+            Err(_) => record_hid_io_stat(hid_io_stats, HidIoStatEvent::LockFailure),
+        }
+    }
+    record_hid_io_stat(hid_io_stats, HidIoStatEvent::CacheMiss);
+    match api.open_path(c_path) {
+        Ok(device) => Ok(device),
+        Err(error) => {
+            record_hid_io_stat(hid_io_stats, HidIoStatEvent::OpenFailure);
+            Err(error.to_string())
+        }
+    }
+}
+
+/// 将设备归还到句柄缓存。锁中毒或无缓存时句柄直接析构关闭。
+fn return_device(
+    path: &str,
+    device: HidDevice,
+    cached_handles: Option<&Mutex<HidHandleCache>>,
+    hid_io_stats: Option<&Mutex<HidIoStats>>,
+) {
+    if let Some(cache) = cached_handles {
+        match cache.lock() {
+            Ok(mut guard) => {
+                guard.insert(path.to_string(), device);
+                record_hid_io_stat(hid_io_stats, HidIoStatEvent::Returned);
+            }
+            Err(_) => record_hid_io_stat(hid_io_stats, HidIoStatEvent::LockFailure),
+        }
+    }
+}
+
+enum HidIoStatEvent {
+    CacheHit,
+    CacheMiss,
+    OpenFailure,
+    Returned,
+    LockFailure,
+}
+
+fn record_hid_io_stat(stats: Option<&Mutex<HidIoStats>>, event: HidIoStatEvent) {
+    let Some(stats) = stats else {
+        return;
+    };
+    if let Ok(mut guard) = stats.lock() {
+        match event {
+            HidIoStatEvent::CacheHit => guard.record_cache_hit(),
+            HidIoStatEvent::CacheMiss => guard.record_cache_miss(),
+            HidIoStatEvent::OpenFailure => guard.record_open_failure(),
+            HidIoStatEvent::Returned => guard.record_returned(),
+            HidIoStatEvent::LockFailure => guard.record_lock_failure(),
+        }
+    }
 }
 
 /// Rate-limited HID session. Workflow definitions are capped by `MAX_COMMANDS`
@@ -3466,7 +3597,16 @@ mod tests {
         );
         let api = test_hid_api();
         let outputs = BTreeMap::new();
-        let result = package.mutate(api, "test-path", "nonexistent", &Map::new(), &outputs, None);
+        let result = package.mutate(
+            api,
+            "test-path",
+            "nonexistent",
+            &Map::new(),
+            &outputs,
+            None,
+            None,
+            None,
+        );
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("missing mutation"));
     }
@@ -3503,6 +3643,8 @@ mod tests {
             "test-set-dpi",
             &Map::new(),
             &outputs,
+            None,
+            None,
             None,
         );
         assert!(result.is_err());
@@ -3544,6 +3686,8 @@ mod tests {
             "test-set-lighting",
             &Map::new(),
             &outputs,
+            None,
+            None,
             None,
         );
         assert!(result.is_err());
@@ -3587,6 +3731,8 @@ mod tests {
             "test-set-lighting",
             &Map::new(),
             &outputs,
+            None,
+            None,
             None,
         );
         assert!(result.is_err());
@@ -3697,6 +3843,8 @@ mod tests {
             &Map::new(),
             &unavailable_outputs,
             None,
+            None,
+            None,
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("not available on this device"));
@@ -3794,6 +3942,8 @@ mod tests {
             &Map::new(),
             &outputs,
             None,
+            None,
+            None,
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("settle delay exceeds limit"));
@@ -3830,6 +3980,8 @@ mod tests {
             "test-set-dpi",
             &Map::new(),
             &outputs,
+            None,
+            None,
             None,
         );
         assert!(result.is_err());
@@ -3880,6 +4032,8 @@ mod tests {
             "test-set-dpi",
             &Map::new(),
             &outputs,
+            None,
+            None,
             None,
         );
         assert!(result.is_err());
@@ -3933,6 +4087,8 @@ mod tests {
             "test-set-dpi",
             &Map::new(),
             &outputs,
+            None,
+            None,
             None,
         );
         // Validation passed; the error should be from I/O (open_path), not validation.

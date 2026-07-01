@@ -6,5 +6,6 @@ export default defineConfig({
   plugins: [react()],
   clearScreen: false,
   server: { port: 1420, strictPort: true },
+  build: { target: 'esnext' },
   test: { environment: 'jsdom', setupFiles: ['./src/test-setup.ts'] },
 });

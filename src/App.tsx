@@ -968,7 +968,7 @@ function receiverLightingFieldLabel(field: ReceiverLightingField): string {
 function ReceiverLightingEditModal({ field, pluginId, initial, options, writeBusy, onClose, onApply }: ReceiverLightingEditModalProps) {
   const [draft, setDraft] = useState(initial);
   const submitDisabled = useMemo(
-    () => writeBusy || JSON.stringify(draft) === JSON.stringify(initial),
+    () => writeBusy || Object.keys(draft).every((k) => draft[k as keyof typeof draft] === initial[k as keyof typeof initial]),
     [writeBusy, draft, initial],
   );
   return (
@@ -1093,7 +1093,7 @@ function mouseLightingOnState(device: DeviceState, capability?: PluginCapability
 function MouseLightingEditModal({ field, pluginId, initial, effectOptions, offValue, supportedEffects, speedRange, brightnessRange, writeBusy, onClose, onApply }: MouseLightingEditModalProps) {
   const [draft, setDraft] = useState(initial);
   const submitDisabled = useMemo(
-    () => writeBusy || JSON.stringify(draft) === JSON.stringify(initial),
+    () => writeBusy || Object.keys(draft).every((k) => draft[k as keyof typeof draft] === initial[k as keyof typeof initial]),
     [writeBusy, draft, initial],
   );
   const visibleEffects = effectOptions.filter((opt) => supportedEffects.includes(opt.value));
@@ -1177,11 +1177,13 @@ function Dashboard({
   deviceEntries,
   onDeviceChange,
   onDeviceSelect,
+  pluginLocaleRevision,
 }: {
   device: DeviceState;
   deviceEntries: DeviceSnapshotEntry[];
   onDeviceChange: (device: DeviceState) => void;
   onDeviceSelect: (deviceKey: string) => void;
+  pluginLocaleRevision: number;
 }) {
   const { t } = useTranslation();
   const stages = device.dpiStages.filter((stage) => stage.enabled);
@@ -1270,50 +1272,103 @@ function Dashboard({
   const [sleepSetting, setSleepSetting] = useState<{ label: string; seconds: number; mutation: string; param: string; range?: RangeSpec }>();
   const [editingSleep, setEditingSleep] = useState(false);
   const pluginDescriptors = useMemo(() => compatibilityCapabilities(device), [device]);
-  const controlPlacements = pluginDescriptors
-    .flatMap((capability) => placementsFor(capability, 'control').map((placement) => ({ capability, placement })))
-    .filter(({ capability }) => capabilityVisible(capability, device))
-    .sort((a, b) => a.placement.order - b.placement.order);
-  const controlGroups = new Map<string, { id: string; label: string; icon: PluginIcon; capabilities: PluginCapability[] }>();
-  for (const { capability, placement } of controlPlacements) {
-    const id = placement.group || capability.id;
-    const existing = controlGroups.get(id);
-    if (existing) existing.capabilities.push(capability);
-    else controlGroups.set(id, { id, label: pluginLabel(capability, device.pluginId), icon: pluginIcon(placement.icon), capabilities: [capability] });
-  }
-  const controls = [...controlGroups.values()].slice(0, MAX_CONTROL_GROUPS);
-  const activeMode = controls.some((control) => control.id === mode) ? mode : controls[0]?.id;
-  const activeDescriptors = activeMode ? controlGroups.get(activeMode)?.capabilities ?? [] : [];
-  const activeDpiDescriptor = activeDescriptors.find((capability) => capability.control === 'DpiStages');
-  const activeLightingDescriptor = activeDescriptors.find((capability) => capability.control === 'LightingZone');
-  const activeGenericDescriptors = activeDescriptors.filter((capability) => !['DpiStages', 'LightingZone'].includes(capability.control));
-  const dpiMutations = activeDpiDescriptor ? pluginMutations(activeDpiDescriptor, device.writableMutations) : {};
-  const selectDpiMutation = dpiMutations.select;
-  const setDpiMutation = dpiMutations.value;
-  const lightingMutations = activeLightingDescriptor ? pluginMutations(activeLightingDescriptor, device.writableMutations) : {};
-  const mouseLightingMutation = lightingMutations.mouse;
-  const receiverLightingMutation = lightingMutations.receiver;
-  const supportsReceiverLighting = Boolean(receiverLightingMutation && writable(receiverLightingMutation))
-    || Boolean(device.lighting?.receiverLightColor)
-    || Boolean(device.capabilities.receiverLighting);
-  const activeLightingView = lightingView === 'receiver' && !supportsReceiverLighting ? 'mouse' : lightingView;
-  // HID++ 灯效扩展：从插件 metadata 读取 effectOptions，从设备能力读取实际支持的灯效。
-  // amaster 等旧插件无 effectOptions 时 hasMouseEffectOptions=false，UI 回退到简单颜色编辑。
-  const mouseEffectOptions = activeLightingDescriptor?.metadata?.effectOptions as {
-    offValue?: number;
-    effect?: EffectOption[];
-    speed?: { min: number; max: number; step: number };
-    brightness?: { min: number; max: number; step: number };
-  } | undefined;
-  const hasMouseEffectOptions = Boolean(mouseEffectOptions?.effect?.length);
-  const mouseOffEffect = mouseEffectOptions?.offValue ?? 0;
-  const mouseOnEffect = mouseEffectOptions?.effect?.find((effect) => effect.value !== mouseOffEffect)?.value ?? 1;
-  // 设备支持的灯效列表：优先从 device.capabilities.mouseLighting.supportedEffects 读取
-  // （由插件 protocol 解析提供），未提供时回退到 effectOptions.effect 全集。
-  const mouseSupportedEffects = activeLightingDescriptor
-    ? pluginSupportedEffectValues(activeLightingDescriptor, device.capabilities)
-    : [];
-  const mouseLightOn = mouseLightingOnState(device, activeLightingDescriptor);
+  const {
+    controls,
+    activeMode,
+    activeDpiDescriptor,
+    activeLightingDescriptor,
+    activeGenericDescriptors,
+    selectDpiMutation,
+    setDpiMutation,
+    mouseLightingMutation,
+    receiverLightingMutation,
+    supportsReceiverLighting,
+    activeLightingView,
+    mouseEffectOptions,
+    hasMouseEffectOptions,
+    mouseOffEffect,
+    mouseOnEffect,
+    mouseSupportedEffects,
+    mouseLightOn,
+    mouseEffectDefaults,
+    mouseHasEndColor,
+    mouseNeedsExtraColor,
+    mouseLightingRowCount,
+  } = useMemo(() => {
+    const controlPlacements = pluginDescriptors
+      .flatMap((capability) => placementsFor(capability, 'control').map((placement) => ({ capability, placement })))
+      .filter(({ capability }) => capabilityVisible(capability, device))
+      .sort((a, b) => a.placement.order - b.placement.order);
+    const controlGroups = new Map<string, { id: string; label: string; icon: PluginIcon; capabilities: PluginCapability[] }>();
+    for (const { capability, placement } of controlPlacements) {
+      const id = placement.group || capability.id;
+      const existing = controlGroups.get(id);
+      if (existing) existing.capabilities.push(capability);
+      else controlGroups.set(id, { id, label: pluginLabel(capability, device.pluginId), icon: pluginIcon(placement.icon), capabilities: [capability] });
+    }
+    const controls = [...controlGroups.values()].slice(0, MAX_CONTROL_GROUPS);
+    const activeMode = controls.some((control) => control.id === mode) ? mode : controls[0]?.id;
+    const activeDescriptors = activeMode ? controlGroups.get(activeMode)?.capabilities ?? [] : [];
+    const activeDpiDescriptor = activeDescriptors.find((capability) => capability.control === 'DpiStages');
+    const activeLightingDescriptor = activeDescriptors.find((capability) => capability.control === 'LightingZone');
+    const activeGenericDescriptors = activeDescriptors.filter((capability) => !['DpiStages', 'LightingZone'].includes(capability.control));
+    const dpiMutations = activeDpiDescriptor ? pluginMutations(activeDpiDescriptor, device.writableMutations) : {};
+    const selectDpiMutation = dpiMutations.select;
+    const setDpiMutation = dpiMutations.value;
+    const lightingMutations = activeLightingDescriptor ? pluginMutations(activeLightingDescriptor, device.writableMutations) : {};
+    const mouseLightingMutation = lightingMutations.mouse;
+    const receiverLightingMutation = lightingMutations.receiver;
+    const supportsReceiverLighting = Boolean(receiverLightingMutation && writable(receiverLightingMutation))
+      || Boolean(device.lighting?.receiverLightColor)
+      || Boolean(device.capabilities.receiverLighting);
+    const activeLightingView = lightingView === 'receiver' && !supportsReceiverLighting ? 'mouse' : lightingView;
+    // HID++ 灯效扩展：从插件 metadata 读取 effectOptions，从设备能力读取实际支持的灯效。
+    // amaster 等旧插件无 effectOptions 时 hasMouseEffectOptions=false，UI 回退到简单颜色编辑。
+    const mouseEffectOptions = activeLightingDescriptor?.metadata?.effectOptions as {
+      offValue?: number;
+      effect?: EffectOption[];
+      speed?: { min: number; max: number; step: number };
+      brightness?: { min: number; max: number; step: number };
+    } | undefined;
+    const hasMouseEffectOptions = Boolean(mouseEffectOptions?.effect?.length);
+    const mouseOffEffect = mouseEffectOptions?.offValue ?? 0;
+    const mouseOnEffect = mouseEffectOptions?.effect?.find((effect) => effect.value !== mouseOffEffect)?.value ?? 1;
+    // 设备支持的灯效列表：优先从 device.capabilities.mouseLighting.supportedEffects 读取
+    // （由插件 protocol 解析提供），未提供时回退到 effectOptions.effect 全集。
+    const mouseSupportedEffects = activeLightingDescriptor
+      ? pluginSupportedEffectValues(activeLightingDescriptor, device.capabilities)
+      : [];
+    const mouseLightOn = mouseLightingOnState(device, activeLightingDescriptor);
+    // 灯效写入默认值：从插件 effectOptions 提取（effect/speed/brightness），
+    // 替代 UI 硬编码 effect=1 / speed=0 / brightness=100。
+    const mouseEffectDefaults = effectDefaults(activeLightingDescriptor);
+    const mouseHasEndColor = Boolean(
+      device.lighting?.mouseLightEndColor
+        && device.lighting.mouseLightEndColor !== device.lighting.mouseLightColor,
+    );
+    const mouseNeedsExtraColor = Boolean(
+      activeLightingDescriptor
+        && device.lighting?.mouseLightEffect !== undefined
+        && pluginRequiresExtraColor(activeLightingDescriptor, device.lighting.mouseLightEffect),
+    );
+    const mouseLightingRowCount = hasMouseEffectOptions
+      ? 3
+        + (device.lighting?.supportsSpeed ? 1 : 0)
+        + (device.lighting?.supportsBrightness ? 1 : 0)
+        + (mouseNeedsExtraColor ? 1 : 0)
+      : 2 + (mouseHasEndColor ? 1 : 0);
+    return {
+      controls, activeMode, activeDpiDescriptor, activeLightingDescriptor, activeGenericDescriptors,
+      selectDpiMutation, setDpiMutation, mouseLightingMutation, receiverLightingMutation,
+      supportsReceiverLighting, activeLightingView, mouseEffectOptions, hasMouseEffectOptions,
+      mouseOffEffect, mouseOnEffect, mouseSupportedEffects, mouseLightOn, mouseEffectDefaults,
+      mouseHasEndColor, mouseNeedsExtraColor, mouseLightingRowCount,
+    };
+    // device/pluginDescriptors 驱动 capability 查询；mode/lightingView 影响 activeMode 与 activeLightingView；
+    // writable 闭包依赖 device.writableMutations。pluginLocaleRevision 在插件 locale 异步加载后刷新
+    // pluginLabel 标签（隐式读取 i18n store，linter 无法静态检测），故显式禁用本行检查。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [device, pluginDescriptors, mode, lightingView, writable, pluginLocaleRevision]);
   // 跟踪"上一次非 OFF 的灯效"，用于点击"状态"按钮开启时恢复之前的灯效，
   // 而不是始终回退到默认 mouseOnEffect（通常是 FIXED/常亮）。
   const lastNonOffEffectRef = useRef<number>(mouseOnEffect);
@@ -1326,73 +1381,62 @@ function Dashboard({
       lastNonOffEffectRef.current = effect;
     }
   }, [activeLightingDescriptor, device.capabilities, device.lighting?.mouseLightEffect, mouseOffEffect]);
-  // 灯效写入默认值：从插件 effectOptions 提取（effect/speed/brightness），
-  // 替代 UI 硬编码 effect=1 / speed=0 / brightness=100。
-  const mouseEffectDefaults = effectDefaults(activeLightingDescriptor);
-  const mouseHasEndColor = Boolean(
-    device.lighting?.mouseLightEndColor
-      && device.lighting.mouseLightEndColor !== device.lighting.mouseLightColor,
-  );
-  const mouseNeedsExtraColor = Boolean(
-    activeLightingDescriptor
-      && device.lighting?.mouseLightEffect !== undefined
-      && pluginRequiresExtraColor(activeLightingDescriptor, device.lighting.mouseLightEffect),
-  );
-  const mouseLightingRowCount = hasMouseEffectOptions
-    ? 3
-      + (device.lighting?.supportsSpeed ? 1 : 0)
-      + (device.lighting?.supportsBrightness ? 1 : 0)
-      + (mouseNeedsExtraColor ? 1 : 0)
-    : 2 + (mouseHasEndColor ? 1 : 0);
   const statusPlacements = useMemo(() => pluginDescriptors
     .flatMap((capability) => placementsFor(capability, 'status').map((placement) => ({ capability, placement })))
     .filter(({ capability }) => capabilityVisible(capability, device))
     .sort((a, b) => a.placement.order - b.placement.order)
     .slice(0, MAX_STATUS_ITEMS), [device, pluginDescriptors]);
-  const statusItems: {
-    id: string;
-    label: string;
-    value: string;
-    icon: typeof Gauge;
-    disabled?: boolean;
-    color?: string;
-    onClick?: () => void;
-  }[] = [];
-  for (const { capability, placement } of statusPlacements) {
-    const binding = capabilityBinding(capability, device);
-    const controlPlacement = placementsFor(capability, 'control')[0];
-    if (pluginValueFormat(capability.metadata.format) === 'sleep' || (capability.control === 'Number' && Array.isArray(capability.metadata.bindings))) {
-      const seconds = Number(binding.value);
-      if (!Number.isFinite(seconds) || !binding.mutation) continue;
-      const sleepRange = pluginRange(capability);
-      statusItems.push({
-        id: capability.id, label: binding.label, value: formatSleepTime(seconds), icon: pluginIcon(placement.icon),
-        disabled: !writable(binding.mutation),
-        onClick: () => {
-          setSleepSetting({ label: binding.label, seconds, mutation: binding.mutation!, param: binding.param, range: sleepRange });
-          setEditingSleep(true);
-        },
-      });
-    } else if (capability.control === 'LightingZone') {
-      const mutation = pluginMutations(capability, device.writableMutations).mouse;
-      const statusMouseLightOn = mouseLightingOnState(device, capability);
-      statusItems.push({
-        id: capability.id, label: binding.label,
-        value: typeof statusMouseLightOn === 'boolean'
-          ? (statusMouseLightOn ? i18n.t('lighting.on') : i18n.t('lighting.off'))
-          : device.lighting?.mouseLightColor ?? i18n.t('common.notReported'),
-        icon: pluginIcon(placement.icon), color: device.lighting?.mouseLightColor,
-        disabled: !mutation || !writable(mutation), onClick: () => setEditingMouseLightColor(true),
-      });
-    } else if (binding.value !== undefined) {
-      const target = controlPlacement?.group || (controlPlacement ? capability.id : undefined);
-      statusItems.push({
-        id: capability.id, label: binding.label, value: pluginValueLabel(capability, binding.value),
-        icon: pluginIcon(placement.icon),
-        disabled: !target, onClick: target ? () => setMode(target) : undefined,
-      });
+  const statusItems = useMemo(() => {
+    const items: {
+      id: string;
+      label: string;
+      value: string;
+      icon: typeof Gauge;
+      disabled?: boolean;
+      color?: string;
+      onClick?: () => void;
+    }[] = [];
+    for (const { capability, placement } of statusPlacements) {
+      const binding = capabilityBinding(capability, device);
+      const controlPlacement = placementsFor(capability, 'control')[0];
+      if (pluginValueFormat(capability.metadata.format) === 'sleep' || (capability.control === 'Number' && Array.isArray(capability.metadata.bindings))) {
+        const seconds = Number(binding.value);
+        if (!Number.isFinite(seconds) || !binding.mutation) continue;
+        const sleepRange = pluginRange(capability);
+        items.push({
+          id: capability.id, label: binding.label, value: formatSleepTime(seconds), icon: pluginIcon(placement.icon),
+          disabled: !writable(binding.mutation),
+          onClick: () => {
+            setSleepSetting({ label: binding.label, seconds, mutation: binding.mutation!, param: binding.param, range: sleepRange });
+            setEditingSleep(true);
+          },
+        });
+      } else if (capability.control === 'LightingZone') {
+        const mutation = pluginMutations(capability, device.writableMutations).mouse;
+        const statusMouseLightOn = mouseLightingOnState(device, capability);
+        items.push({
+          id: capability.id, label: binding.label,
+          value: typeof statusMouseLightOn === 'boolean'
+            ? (statusMouseLightOn ? i18n.t('lighting.on') : i18n.t('lighting.off'))
+            : device.lighting?.mouseLightColor ?? i18n.t('common.notReported'),
+          icon: pluginIcon(placement.icon), color: device.lighting?.mouseLightColor,
+          disabled: !mutation || !writable(mutation), onClick: () => setEditingMouseLightColor(true),
+        });
+      } else if (binding.value !== undefined) {
+        const target = controlPlacement?.group || (controlPlacement ? capability.id : undefined);
+        items.push({
+          id: capability.id, label: binding.label, value: pluginValueLabel(capability, binding.value),
+          icon: pluginIcon(placement.icon),
+          disabled: !target, onClick: target ? () => setMode(target) : undefined,
+        });
+      }
     }
-  }
+    return items;
+    // statusPlacements 派生自 device/pluginDescriptors；writable 闭包依赖 device.writableMutations。
+    // pluginLocaleRevision 在插件 locale 异步加载后刷新 binding.label（隐式读取 i18n store，linter
+    // 无法静态检测），故显式禁用本行检查。setState setter 稳定，无需列入。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [device, statusPlacements, writable, pluginLocaleRevision]);
 
   return (
     <main className="dashboard">
@@ -1419,7 +1463,7 @@ function Dashboard({
                   </button>
                 </h1>
                 <section id="device-switcher-list" className="device-switcher-popover" aria-label={t('dashboard.switchDevice')}>
-                  {deviceEntries.map((entry) => {
+                  {showDeviceSwitcher && deviceEntries.map((entry) => {
                     const state = snapshotToState(entry.snapshot);
                     const selected = selectedEntry?.deviceKey === entry.deviceKey;
                     return (
@@ -1927,7 +1971,7 @@ export default function App() {
   const [demoMode, setDemoMode] = useState(pureWeb);
   const [refreshNonce, setRefreshNonce] = useState(0);
   const [appNotification, setAppNotification] = useState<AppNotification>();
-  const [, setPluginLocaleRevision] = useState(0);
+  const [pluginLocaleRevision, setPluginLocaleRevision] = useState(0);
   const windowsPlatform = isWindowsPlatform();
   const macPlatform = isMacPlatform();
   const windowsWebPreview = isWindowsWebPreview();
@@ -2124,7 +2168,7 @@ export default function App() {
       <button className={`nav-link nav-about ${view === 'about' ? 'active' : ''}`} onClick={() => setView('about')} aria-label={t('nav.about')}><Info weight="regular" /></button>
       {demoMode && <button className="nav-link nav-exit" onClick={exitDemo} aria-label={t('nav.exitDemo')} title={t('nav.exitDemo')}><SignOut weight="regular" /></button>}
     </div>
-    {view === 'dashboard' && (device ? <Dashboard device={device} deviceEntries={deviceEntries} onDeviceChange={setDevice} onDeviceSelect={selectDevice} /> : <EmptyState onRefresh={() => { setDemoMode(false); setDevice(undefined); setDeviceEntries([]); deviceEntriesRef.current = []; setRefreshNonce((value) => value + 1); invoke('device_refresh').catch(() => {}); }} onDemo={() => { setDemoMode(true); setDevice(MOCK_DEVICE); setDeviceEntries(MOCK_DEVICE_ENTRIES); deviceEntriesRef.current = MOCK_DEVICE_ENTRIES; }} onOpenSettings={() => setView('settings')} />)}
+    {view === 'dashboard' && (device ? <Dashboard device={device} deviceEntries={deviceEntries} onDeviceChange={setDevice} onDeviceSelect={selectDevice} pluginLocaleRevision={pluginLocaleRevision} /> : <EmptyState onRefresh={() => { setDemoMode(false); setDevice(undefined); setDeviceEntries([]); deviceEntriesRef.current = []; setRefreshNonce((value) => value + 1); invoke('device_refresh').catch(() => {}); }} onDemo={() => { setDemoMode(true); setDevice(MOCK_DEVICE); setDeviceEntries(MOCK_DEVICE_ENTRIES); deviceEntriesRef.current = MOCK_DEVICE_ENTRIES; }} onOpenSettings={() => setView('settings')} />)}
     {view === 'settings' && <SettingsPage previewMode={pureWeb} focusPluginUpdateToken={settingsPluginFocusToken} onNavigateAbout={() => setView('about')} onThemeChange={setTheme} supportsAnyLighting={device ? pluginSupportsAnyLighting(compatibilityCapabilities(device), device.writableMutations) : false} supportsReceiverLighting={device ? pluginSupportsLightingMutation(compatibilityCapabilities(device), device.writableMutations, 'receiver') : false} />}
     {view === 'about' && <AboutPage previewMode={pureWeb} focusUpdateToken={aboutFocusToken} onBack={() => setView('settings')} />}
     {appNotification && (
