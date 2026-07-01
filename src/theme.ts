@@ -3,6 +3,7 @@ import type { ThemeMode } from './types';
 import { setTheme } from '@tauri-apps/api/app';
 
 export const DEFAULT_THEME_ACCENT = '#ffb3b3';
+const THEME_MODE_STORAGE_KEY = 'mira-theme-mode';
 
 function colorHueAndChroma(color: string): { hue: number; chroma: number; lightness: number } | undefined {
   if (!/^#[0-9a-f]{6}$/i.test(color)) return undefined;
@@ -62,6 +63,11 @@ export function pastelDisplayColor(color?: string, fallback = DEFAULT_THEME_ACCE
 export function applyTheme(mode: ThemeMode, accent?: string): void {
   lastMode = mode;
   lastAccent = accent;
+  try {
+    window.localStorage.setItem(THEME_MODE_STORAGE_KEY, mode);
+  } catch {
+    // Theme still applies when storage is unavailable, e.g. restricted webviews.
+  }
   document.documentElement.dataset.theme = mode;
   document.documentElement.style.setProperty('--accent', themeAccent(accent, resolveDark(mode)));
   void setTheme(mode === 'system' ? null : mode).catch(() => {});
