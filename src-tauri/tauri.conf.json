@@ -13,8 +13,8 @@
     "windows": [
       {
         "title": "Mira",
-        "width": 500,
-        "height": 667,
+        "width": 460,
+        "height": 660,
         "minWidth": 400,
         "minHeight": 533,
         "maximizable": false,
