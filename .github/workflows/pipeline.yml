@@ -142,8 +142,10 @@ jobs:
             case "$RUNNER_OS" in
               macOS)
                 rustup target add aarch64-apple-darwin x86_64-apple-darwin
-                npm exec tauri build -- --target universal-apple-darwin --bundles app --config '{"bundle":{"createUpdaterArtifacts":true}}'
-                bash scripts/create-dmg.sh target/universal-apple-darwin/release/bundle/macos/Mira.app
+                # Tauri 内置 --bundles dmg 会先构建 .app（DMG 的依赖），
+                # 再打包 DMG（使用 tauri.conf.json > bundle.macOS.dmg 的背景/布局配置），
+                # 同时基于 .app 生成 updater artifacts（.app.tar.gz + .sig）。
+                npm exec tauri build -- --target universal-apple-darwin --bundles dmg --config '{"bundle":{"createUpdaterArtifacts":true}}'
                 ;;
               Windows)
                 npm exec tauri build -- --bundles nsis --config '{"bundle":{"createUpdaterArtifacts":true}}'
