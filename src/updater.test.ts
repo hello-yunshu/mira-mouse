@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   check: vi.fn(),
@@ -11,10 +11,13 @@ vi.mock('@tauri-apps/plugin-updater', () => ({ check: mocks.check }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
 
 import {
+  APP_UPDATE_CHECK_INTERVAL_MS,
   appUpdateState,
   checkForAppUpdate,
   installAppUpdate,
   relaunchAfterUpdate,
+  startAutomaticAppUpdateCheck,
+  stopAutomaticAppUpdateCheck,
 } from './updater';
 
 describe('application updater', () => {
@@ -22,6 +25,11 @@ describe('application updater', () => {
     mocks.check.mockReset();
     mocks.invoke.mockReset();
     mocks.downloadAndInstall.mockReset();
+  });
+
+  afterEach(() => {
+    stopAutomaticAppUpdateCheck();
+    vi.useRealTimers();
   });
 
   it('sends a system notification during automatic checks when an update is available', async () => {
@@ -76,5 +84,19 @@ describe('application updater', () => {
     await expect(installAppUpdate()).rejects.toThrow('network down');
     expect(appUpdateState()).toMatchObject({ phase: 'error', error: 'Error: network down' });
     expect(mocks.invoke).not.toHaveBeenCalledWith('show_update_notification', expect.anything());
+  });
+
+  it('continues automatic checks while the app stays open in the background', async () => {
+    vi.useFakeTimers();
+    mocks.check.mockResolvedValue(null);
+
+    await startAutomaticAppUpdateCheck(true);
+    expect(mocks.check).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(APP_UPDATE_CHECK_INTERVAL_MS - 1);
+    expect(mocks.check).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(mocks.check).toHaveBeenCalledTimes(2);
   });
 });
