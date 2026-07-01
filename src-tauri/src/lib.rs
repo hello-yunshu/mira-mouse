@@ -6550,13 +6550,36 @@ fn app_icon_bytes_for_theme(dark: bool) -> &'static [u8] {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn app_icon_icns_bytes_for_theme(dark: bool) -> &'static [u8] {
+    if dark {
+        include_bytes!("../icons/icon-dark.icns")
+    } else {
+        include_bytes!("../icons/icon.icns")
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn set_macos_dock_icon(icon_bytes: &'static [u8]) {
+    use objc2::{AllocAnyThread, MainThreadMarker};
+    use objc2_app_kit::{NSApplication, NSImage};
+    use objc2_foundation::NSData;
+
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let app = NSApplication::sharedApplication(mtm);
+    let data = NSData::with_bytes(icon_bytes);
+    if let Some(app_icon) = NSImage::initWithData(NSImage::alloc(), &data) {
+        unsafe { app.setApplicationIconImage(Some(&app_icon)) };
+    }
+}
+
 fn update_runtime_app_icon(app: &AppHandle, dark: bool) {
     #[cfg(target_os = "macos")]
     {
-        // Dock 图标由打包时的 icon.icns 提供。不要在窗口聚焦/主题变化时重设
-        // NSApplication 图标，否则 macOS 会用运行时图像覆盖 Dock 中的 bundle
-        // 图标，造成前台打开后视觉突然变得更满/更大。
-        let _ = (app, dark);
+        let icon_bytes = app_icon_icns_bytes_for_theme(dark);
+        let _ = app.run_on_main_thread(move || set_macos_dock_icon(icon_bytes));
     }
     #[cfg(not(target_os = "macos"))]
     {

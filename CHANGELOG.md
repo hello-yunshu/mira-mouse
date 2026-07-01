@@ -6,6 +6,8 @@
 - Fixed macOS update relaunch to reopen the `.app` bundle instead of directly
   spawning the bundle's internal executable, avoiding the system "choose an app
   to open this" prompt introduced around 0.3.6.
+- Restored macOS Dock icon light/dark switching with packaged `.icns` assets so
+  the icon follows theme changes without using an oversized runtime PNG.
 - Kept launch-at-login and "hide window at login" as separate settings; only
   the combination starts Mira in the background.
 - Set Windows updater installs to quiet mode so automatic updates stay silent.
