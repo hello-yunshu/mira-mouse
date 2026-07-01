@@ -9,6 +9,7 @@ import { extractChannel, exportDiagnostics } from './plugin-utils';
 import { applyLanguage, type AppLanguage } from './i18n';
 import { save, open } from '@tauri-apps/plugin-dialog';
 import { ExternalLink } from './ExternalLink';
+import { startAutomaticAppUpdateCheck } from './updater';
 
 const DEFAULT_SETTINGS: AppSettings = {
   language: 'auto',
@@ -133,6 +134,7 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, previewMode = fal
 
   function update(patch: Partial<AppSettings>) {
     const next = { ...settings, ...patch };
+    const automaticUpdateChanged = patch.automaticUpdateChecks !== undefined || patch.automaticUpdateInstall !== undefined;
     setSettings(next);
     if (patch.theme && onThemeChange) onThemeChange(patch.theme as ThemeMode);
     if (previewMode) {
@@ -143,10 +145,27 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, previewMode = fal
     invoke<AppSettings>('settings_set', { settings: next })
       .then((savedSettings) => {
         setSettings(savedSettings);
+        if (automaticUpdateChanged) {
+          syncAutomaticAppUpdateChecks(savedSettings);
+        }
         setSaved(true);
         setTimeout(() => setSaved(false), 1500);
       })
       .catch((error) => notifyError(t('notification.saveFailed'), String(error)));
+  }
+
+  function syncAutomaticAppUpdateChecks(nextSettings: AppSettings) {
+    if (!nextSettings.automaticUpdateChecks) {
+      void startAutomaticAppUpdateCheck(false);
+      return;
+    }
+    void invoke<AboutInfo>('about_info')
+      .then((info) => {
+        if (info.updaterActive) {
+          return startAutomaticAppUpdateCheck(true, nextSettings.automaticUpdateInstall);
+        }
+      })
+      .catch(() => { /* Pre-release and offline builds skip automatic application checks. */ });
   }
 
   function toggleAutostart(enabled: boolean) {

@@ -1,11 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SettingsPage } from './Settings';
 import type { AppSettings } from './types';
 
-const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
+const { invokeMock, startAutomaticAppUpdateCheckMock } = vi.hoisted(() => ({
+  invokeMock: vi.fn(),
+  startAutomaticAppUpdateCheckMock: vi.fn(),
+}));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }));
+vi.mock('./updater', () => ({ startAutomaticAppUpdateCheck: startAutomaticAppUpdateCheckMock }));
 
 const settings: AppSettings = {
   theme: 'system', autostart: false, startHidden: true, lowBatteryThreshold: 20,
@@ -21,6 +25,11 @@ const settings: AppSettings = {
 };
 
 describe('SettingsPage', () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+    startAutomaticAppUpdateCheckMock.mockReset();
+  });
+
   it('loads settings and keeps unsupported controls honest', async () => {
     invokeMock.mockImplementation((command: string, payload?: { settings?: AppSettings }) => {
       if (command === 'settings_get') return Promise.resolve(settings);
@@ -84,5 +93,24 @@ describe('SettingsPage', () => {
     fireEvent.click(screen.getByRole('button', { name: '插件' }));
     fireEvent.click(screen.getByRole('button', { name: '检查插件更新' }));
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('plugin_updates_check'));
+  });
+
+  it('syncs automatic application update scheduling when settings change', async () => {
+    invokeMock.mockImplementation((command: string, payload?: { settings?: AppSettings }) => {
+      if (command === 'settings_get') return Promise.resolve(settings);
+      if (command === 'settings_set') return Promise.resolve(payload?.settings);
+      if (command === 'autostart_state') return Promise.resolve(false);
+      if (command === 'about_info') return Promise.resolve({ bundledPlugins: [], updaterActive: true });
+      return Promise.resolve(undefined);
+    });
+    render(<SettingsPage onNavigateAbout={vi.fn()} onThemeChange={vi.fn()} />);
+
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('settings_get'));
+    fireEvent.click(screen.getByRole('switch', { name: '自动检查 Mira 更新' }));
+    await waitFor(() => expect(startAutomaticAppUpdateCheckMock).toHaveBeenCalledWith(false));
+
+    fireEvent.click(screen.getByRole('switch', { name: '自动检查 Mira 更新' }));
+    fireEvent.click(screen.getByRole('switch', { name: '自动下载并安装' }));
+    await waitFor(() => expect(startAutomaticAppUpdateCheckMock).toHaveBeenCalledWith(true, true));
   });
 });
