@@ -6138,28 +6138,8 @@ fn hide_to_tray(app: tauri::AppHandle) {
 }
 
 #[tauri::command]
-fn relaunch_app(app: tauri::AppHandle) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        let bundle = current_app_bundle_path()
-            .ok_or_else(|| "failed to locate current app bundle".to_string())?;
-        Command::new("/bin/sh")
-            .arg("-c")
-            .arg("while kill -0 \"$2\" 2>/dev/null; do sleep 0.1; done; /usr/bin/open \"$1\"")
-            .arg("mira-relaunch")
-            .arg(&bundle)
-            .arg(std::process::id().to_string())
-            .spawn()
-            .map_err(|err| format!("failed to schedule app relaunch: {err}"))?;
-        app.exit(0);
-        Ok(())
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        app.request_restart();
-        Ok(())
-    }
+fn relaunch_app(app: tauri::AppHandle) {
+    app.restart();
 }
 
 #[cfg(any(target_os = "windows", all(unix, not(target_os = "macos"))))]
@@ -7104,6 +7084,7 @@ pub fn run() {
         ))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let startup_settings = cached_settings(app.handle());
