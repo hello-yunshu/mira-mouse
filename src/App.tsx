@@ -1539,7 +1539,7 @@ function Dashboard({
         ))}
       </div>
 
-      <section className="control-stage" aria-live="polite">
+      <section className={`control-stage ${previewMessage ? 'has-preview-message' : ''}`} aria-live="polite">
         {activeDpiDescriptor && (
           <div className="control-reading dpi-reading">
             <button

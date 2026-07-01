@@ -867,16 +867,20 @@ body:has(.platform-fallback:not(.web-preview)) {
 .control-tabs svg { width: 16px; height: 16px; flex: 0 0 auto; }
 
 .control-stage {
+  --control-stage-badge-row: 30px;
   position: relative;
-  height: 242px;
-  min-height: 242px;
-  padding: 10px;
-  padding-top: 5px;
-  padding-bottom: 15px;
+  height: 224px;
+  min-height: 224px;
+  padding: 8px 10px 12px;
   display: grid;
   grid-template-rows: minmax(0, 1fr);
   place-items: center;
   text-align: center;
+}
+.control-stage.has-preview-message {
+  grid-template-rows: var(--control-stage-badge-row) minmax(0, 1fr);
+  row-gap: 2px;
+  place-items: stretch center;
 }
 .control-reading {
   width: 100%;
@@ -885,6 +889,10 @@ body:has(.platform-fallback:not(.web-preview)) {
   display: grid;
   justify-items: center;
   align-content: center;
+}
+.control-stage.has-preview-message .control-reading {
+  grid-row: 2;
+  align-self: stretch;
 }
 .dpi-reading { grid-template-columns: 1fr; gap: 12px; }
 .primary-reading { display: inline-grid; position: relative; }
@@ -968,12 +976,11 @@ body:has(.platform-fallback:not(.web-preview)) {
 }
 .dpi-stage-value:hover:not(:disabled) { color: inherit; background: var(--control-hover-bg); }
 .dpi-stage-value:disabled { opacity: .48; }
-.preview-message,
-.write-badge {
-  position: absolute;
-  top: 6px;
-  left: 50%;
-  transform: translateX(-50%);
+.preview-message {
+  grid-row: 1;
+  position: relative;
+  justify-self: center;
+  align-self: start;
   margin: 0;
   padding: 5px 11px 5px 10px;
   display: inline-flex;
@@ -996,8 +1003,7 @@ body:has(.platform-fallback:not(.web-preview)) {
   z-index: 2;
   pointer-events: none;
 }
-.preview-message::before,
-.write-badge::before {
+.preview-message::before {
   content: "";
   width: 6px;
   height: 6px;
@@ -1759,6 +1765,19 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   input[type="range"] { width: 100%; }
   .plugin-item { grid-template-columns: 1fr; }
   .capability-groups { columns: 1; }
+}
+
+@media (max-height: 620px) {
+  .control-stage {
+    height: 210px;
+    min-height: 210px;
+    padding-top: 6px;
+    padding-bottom: 10px;
+  }
+  .status-strip { display: none; }
+  .dpi-reading { gap: 9px; }
+  .dpi-scale { margin: 10px 0 6px; }
+  .polling-reading { gap: 8px; }
 }
 
 /* Accessibility */
