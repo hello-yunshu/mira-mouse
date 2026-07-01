@@ -12,7 +12,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.3.8"
+version = "0.3.9"
 edition = "2021"
 license = "AGPL-3.0-or-later"
 rust-version = "1.82"
@@ -36,3 +36,4 @@ zip = { version = "2.2.2", default-features = false, features = ["deflate"] }
 lto = true
 codegen-units = 1
 strip = true
+panic = "abort"

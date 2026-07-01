@@ -22,5 +22,6 @@ pub use package::{
 pub use protocol::{
     execute_plugin_workflow, mutate_device, mutate_device_with_package, read_device,
     read_device_with_package, writable_mutations, writable_mutations_with_package, ConnectionKind,
-    DeviceReading, FeatureIndexCache, OnboardMemoryCache, ProtocolContext,
+    DeviceReading, FeatureIndexCache, HidHandleCache, HidIoStats, OnboardMemoryCache,
+    ProtocolContext,
 };

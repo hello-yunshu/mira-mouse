@@ -19,6 +19,7 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
-      - run: cargo install cargo-audit --locked
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@cargo-audit
       - run: cargo audit
       - run: node scripts/check-boundaries.mjs

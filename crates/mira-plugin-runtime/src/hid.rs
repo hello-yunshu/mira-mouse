@@ -82,8 +82,8 @@ pub fn enumerate_matched_devices(
                 if descriptor_matches(device, descriptor) {
                     // 型号识别：当 evidence 为 "hardware-verified" 且只有一个已验证型号时，
                     // 可以确定设备型号。多型号场景需要未来通过 workflow 探测扩展。
-                    let model = if evidence_label(descriptor.evidence.as_deref())
-                        == "hardware-verified"
+                    let evidence = evidence_label(descriptor.evidence.as_deref());
+                    let model = if evidence == "hardware-verified"
                         && devices.hardware_verified_models.len() == 1
                     {
                         Some(devices.hardware_verified_models[0].clone())
@@ -93,7 +93,7 @@ pub fn enumerate_matched_devices(
                     let candidate = MatchedDevice {
                         plugin_id: inspection.plugin_id.clone(),
                         family: descriptor.family.clone(),
-                        evidence: evidence_label(descriptor.evidence.as_deref()),
+                        evidence,
                         connection: connection_label(descriptor.connection.as_deref()),
                         path: device.path().to_string_lossy().into_owned(),
                         vendor_id: device.vendor_id(),

@@ -17,9 +17,14 @@ function colorHueAndChroma(color: string): { hue: number; chroma: number; lightn
   return { hue, chroma: max - min, lightness };
 }
 
+const themeAccentCache = new Map<string, string>();
+
 export function themeAccent(color?: string, isDark = false): string {
   if (!color || !/^#[0-9a-f]{6}$/i.test(color)) return DEFAULT_THEME_ACCENT;
   if (color.toLowerCase() === DEFAULT_THEME_ACCENT) return DEFAULT_THEME_ACCENT;
+  const cacheKey = `${color.toLowerCase()}|${isDark}`;
+  const cached = themeAccentCache.get(cacheKey);
+  if (cached !== undefined) return cached;
   const parsed = colorHueAndChroma(color);
   if (!parsed) return DEFAULT_THEME_ACCENT;
   const { hue, chroma, lightness } = parsed;
@@ -30,19 +35,28 @@ export function themeAccent(color?: string, isDark = false): string {
   if (isDark) {
     L = Math.round(Math.max(56, Math.min(64, 64 - (lightness - 0.5) * 18)) * 10) / 10;
   }
-  return `oklch(${L}% ${capped.toFixed(3)} ${hue})`;
+  const result = `oklch(${L}% ${capped.toFixed(3)} ${hue})`;
+  themeAccentCache.set(cacheKey, result);
+  return result;
 }
+
+const pastelDisplayColorCache = new Map<string, string>();
 
 export function pastelDisplayColor(color?: string, fallback = DEFAULT_THEME_ACCENT): string {
   if (!color || !/^#[0-9a-f]{6}$/i.test(color)) return fallback;
   if (color.toLowerCase() === DEFAULT_THEME_ACCENT) return DEFAULT_THEME_ACCENT;
+  const cacheKey = `${color.toLowerCase()}|${fallback}`;
+  const cached = pastelDisplayColorCache.get(cacheKey);
+  if (cached !== undefined) return cached;
   const parsed = colorHueAndChroma(color);
   if (!parsed) return fallback;
   const { hue, chroma } = parsed;
   const limit = hue < 25 || hue > 315 ? 0.058 : 0.082;
   const softened = chroma > 0.02 ? Math.max(chroma * 0.28, 0.026) : chroma * 0.28;
   const capped = Math.min(softened, limit);
-  return `oklch(78% ${capped.toFixed(3)} ${hue})`;
+  const result = `oklch(78% ${capped.toFixed(3)} ${hue})`;
+  pastelDisplayColorCache.set(cacheKey, result);
+  return result;
 }
 
 export function applyTheme(mode: ThemeMode, accent?: string): void {
