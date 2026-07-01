@@ -17,9 +17,17 @@ export interface AppUpdateState {
 }
 
 const target = new EventTarget();
+export const APP_UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 let pendingUpdate: Update | null = null;
 let state: AppUpdateState = { phase: 'idle', downloadedBytes: 0 };
 let automaticCheckStarted = false;
+let automaticCheckTimer: ReturnType<typeof window.setInterval> | undefined;
+let automaticInstallRequested = false;
+let lastAutomaticCheckAt: number | undefined;
+
+function handleVisibilityChange(): void {
+  if (document.visibilityState === 'visible') runAutomaticAppUpdateCheckIfDue();
+}
 
 function publish(next: AppUpdateState): void {
   state = next;
@@ -39,6 +47,7 @@ export function onAppUpdateState(listener: (state: AppUpdateState) => void): () 
 
 export async function checkForAppUpdate(automatic = false): Promise<void> {
   if (state.phase === 'checking' || state.phase === 'downloading') return;
+  if (automatic) lastAutomaticCheckAt = Date.now();
   publish({ phase: 'checking', downloadedBytes: 0 });
   try {
     if (pendingUpdate) {
@@ -71,11 +80,17 @@ export async function checkForAppUpdate(automatic = false): Promise<void> {
   }
 }
 
-export async function startAutomaticAppUpdateCheck(enabled: boolean, installAutomatically = false): Promise<void> {
-  if (!enabled || automaticCheckStarted) return;
-  automaticCheckStarted = true;
+function automaticCheckShouldRun(): boolean {
+  return state.phase !== 'checking'
+    && state.phase !== 'downloading'
+    && state.phase !== 'available'
+    && state.phase !== 'installed';
+}
+
+async function runAutomaticAppUpdateCheck(): Promise<void> {
+  if (!automaticCheckShouldRun()) return;
   await checkForAppUpdate(true);
-  if (installAutomatically && state.phase === 'available') {
+  if (automaticInstallRequested && state.phase === 'available') {
     try {
       await installAppUpdate();
       notifyInfo(i18n.t('notification.updateInstalled.title'), i18n.t('notification.updateInstalled.body'), 'relaunch');
@@ -83,6 +98,48 @@ export async function startAutomaticAppUpdateCheck(enabled: boolean, installAuto
       // The error state is already published for the About page.
     }
   }
+}
+
+function runAutomaticAppUpdateCheckIfDue(): void {
+  if (lastAutomaticCheckAt === undefined || Date.now() - lastAutomaticCheckAt >= APP_UPDATE_CHECK_INTERVAL_MS) {
+    void runAutomaticAppUpdateCheck();
+  }
+}
+
+function ensureAutomaticAppUpdateSchedule(): void {
+  if (automaticCheckTimer !== undefined || typeof window === 'undefined') return;
+  automaticCheckTimer = window.setInterval(() => {
+    void runAutomaticAppUpdateCheck();
+  }, APP_UPDATE_CHECK_INTERVAL_MS);
+  window.addEventListener('online', runAutomaticAppUpdateCheckIfDue);
+  window.addEventListener('focus', runAutomaticAppUpdateCheckIfDue);
+  document.addEventListener('visibilitychange', handleVisibilityChange);
+}
+
+export function stopAutomaticAppUpdateCheck(): void {
+  if (typeof window === 'undefined') return;
+  if (automaticCheckTimer !== undefined) {
+    window.clearInterval(automaticCheckTimer);
+    automaticCheckTimer = undefined;
+  }
+  window.removeEventListener('online', runAutomaticAppUpdateCheckIfDue);
+  window.removeEventListener('focus', runAutomaticAppUpdateCheckIfDue);
+  document.removeEventListener('visibilitychange', handleVisibilityChange);
+  automaticCheckStarted = false;
+  automaticInstallRequested = false;
+  lastAutomaticCheckAt = undefined;
+}
+
+export async function startAutomaticAppUpdateCheck(enabled: boolean, installAutomatically = false): Promise<void> {
+  if (!enabled) {
+    stopAutomaticAppUpdateCheck();
+    return;
+  }
+  automaticInstallRequested = installAutomatically;
+  ensureAutomaticAppUpdateSchedule();
+  if (automaticCheckStarted) return;
+  automaticCheckStarted = true;
+  await runAutomaticAppUpdateCheck();
 }
 
 export async function installAppUpdate(): Promise<void> {

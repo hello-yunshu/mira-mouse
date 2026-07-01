@@ -277,8 +277,8 @@
       "hint": "Mira updates from events in real time; this is just the backup check while visible, slowing to 60 s when hidden"
     },
     "updateCheck": {
-      "label": "Check for Mira updates on launch",
-      "hint": "Check for new versions on launch"
+      "label": "Check for Mira updates automatically",
+      "hint": "Checks on launch, then every 6 hours while Mira keeps running"
     },
     "updateInstall": {
       "label": "Auto download & install",
@@ -397,7 +397,7 @@
     "userUpdated": "User updated",
     "developer": "Developer: {{name}}",
     "copyright": "Copyright: {{name}}",
-    "updateEnabledHint": "Auto update is enabled; you can also check manually",
+    "updateEnabledHint": "Automatic checks are enabled; you can also check manually",
     "updateDisabledHint": "Auto update is off. Download the latest from the GitHub Release page.",
     "updateCheck": "Check for updates",
     "updateChecking": "Checking…",
