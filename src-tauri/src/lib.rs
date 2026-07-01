@@ -6137,11 +6137,6 @@ fn hide_to_tray(app: tauri::AppHandle) {
     hide_main_window_to_tray(&app);
 }
 
-#[tauri::command]
-fn relaunch_app(app: tauri::AppHandle) {
-    app.restart();
-}
-
 #[cfg(any(target_os = "windows", all(unix, not(target_os = "macos"))))]
 fn navigate_about_update(app: &AppHandle) {
     focus_main(app.get_webview_window("main"));
@@ -7078,10 +7073,6 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
             focus_main(app.get_webview_window("main"))
         }))
-        .plugin(tauri_plugin_autostart::init(
-            tauri_plugin_autostart::MacosLauncher::AppleScript,
-            None,
-        ))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_process::init())
@@ -7273,7 +7264,6 @@ pub fn run() {
             settings_get,
             settings_set,
             hide_to_tray,
-            relaunch_app,
             show_update_notification,
             export_diagnostics,
             plugin_locales

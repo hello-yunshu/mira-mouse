@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Minimum main-window capability set",
   "windows": ["main"],
-  "permissions": ["core:default", "core:app:allow-set-app-theme", "core:window:allow-start-dragging", "core:window:allow-minimize", "core:window:allow-close", "autostart:allow-enable", "autostart:allow-disable", "autostart:allow-is-enabled", "updater:default", "dialog:default"]
+  "permissions": ["core:default", "core:app:allow-set-app-theme", "core:window:allow-start-dragging", "core:window:allow-minimize", "core:window:allow-close", "updater:default", "dialog:default", "process:allow-restart"]
 }

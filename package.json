@@ -7,12 +7,12 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "assets:windows-installer": "python3 scripts/generate-windows-installer-assets.py",
-    "build:dmg": "npm exec tauri build -- --bundles app && bash scripts/create-dmg.sh",
+    "build:dmg": "npm exec tauri build -- --bundles dmg",
     "version:print": "node scripts/app-version.mjs",
     "typecheck": "tsc -b --pretty false",
     "test": "vitest run",
     "lint": "eslint .",
-    "hooks:install": "bash scripts/install-git-hooks.sh",
+    "prepare": "simple-git-hooks || true",
     "check:quick": "bash scripts/quick-check.sh",
     "check:ci": "bash scripts/local-ci.sh",
     "check:boundaries": "node scripts/check-boundaries.mjs",
@@ -21,8 +21,8 @@
   "dependencies": {
     "@phosphor-icons/react": "^2.1.10",
     "@tauri-apps/api": "^2.5.0",
-    "@tauri-apps/plugin-autostart": "^2.5.1",
     "@tauri-apps/plugin-dialog": "^2.0.0",
+    "@tauri-apps/plugin-process": "^2.3.1",
     "@tauri-apps/plugin-updater": "^2.5.0",
     "i18next": "^26.3.2",
     "react": "19.2.7",
@@ -43,10 +43,14 @@
     "eslint-plugin-react-refresh": "0.5.3",
     "globals": "17.7.0",
     "jsdom": "29.1.1",
+    "simple-git-hooks": "^2.13.1",
     "typescript": "6.0.3",
     "typescript-eslint": "8.62.0",
     "vite": "8.1.0",
     "vitest": "4.1.9",
     "yaml": "2.9.0"
+  },
+  "simple-git-hooks": {
+    "pre-push": "[ \"${MIRA_SKIP_HOOKS:-}\" = 1 ] && exit 0 || npm run check:quick"
   }
 }
