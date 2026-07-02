@@ -50,4 +50,4 @@ objc2-app-kit = { version = "0.3", default-features = false, features = ["std", 
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSData"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-udev = "0.7"
+udev = "0.9"
