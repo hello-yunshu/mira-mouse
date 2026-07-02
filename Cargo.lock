@@ -2373,7 +2373,7 @@ dependencies = [
 
 [[package]]
 name = "mira-app"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "auto-launch",
  "chrono",
@@ -2383,6 +2383,9 @@ dependencies = [
  "mira-core",
  "mira-plugin-runtime",
  "notify-rust",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
  "reqwest",
  "semver",
  "serde",
@@ -2404,7 +2407,7 @@ dependencies = [
 
 [[package]]
 name = "mira-core"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "serde",
  "serde_json",
@@ -2413,7 +2416,7 @@ dependencies = [
 
 [[package]]
 name = "mira-plugin-api"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "semver",
  "serde",
@@ -2423,7 +2426,7 @@ dependencies = [
 
 [[package]]
 name = "mira-plugin-cli"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "anyhow",
  "clap",
@@ -2441,7 +2444,7 @@ dependencies = [
 
 [[package]]
 name = "mira-plugin-runtime"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "ed25519-dalek",
  "hex",
@@ -2459,7 +2462,7 @@ dependencies = [
 
 [[package]]
 name = "mira-testkit"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "mira-plugin-runtime",
 ]
@@ -5864,7 +5867,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "anyhow",
  "clap",
