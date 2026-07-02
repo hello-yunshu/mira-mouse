@@ -129,9 +129,11 @@ fn sign_package(package: &Path, key_hex: Option<&str>) -> Result<Vec<u8>> {
             SigningKey::from_bytes(&array)
         }
         None => {
-            use rand::RngCore;
+            use rand::TryRngCore;
             let mut secret = [0u8; 32];
-            rand::rngs::OsRng.fill_bytes(&mut secret);
+            rand::rngs::OsRng
+                .try_fill_bytes(&mut secret)
+                .expect("OsRng fill_bytes failed");
             println!("private key: {}", hex::encode(secret));
             SigningKey::from_bytes(&secret)
         }
