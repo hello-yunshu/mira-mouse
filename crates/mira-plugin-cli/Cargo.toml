@@ -17,7 +17,7 @@ ed25519-dalek.workspace = true
 hex.workspace = true
 mira-plugin-api = { path = "../mira-plugin-api" }
 mira-plugin-runtime = { path = "../mira-plugin-runtime" }
-rand = "0.9"
+rand = "0.10"
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
