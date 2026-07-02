@@ -11,9 +11,9 @@
 
 <p align="center">
   <a href="README.md">中文</a> ·
-  <a href="#highlights">Highlights</a> ·
-  <a href="#quick-start">Quick Start</a> ·
-  <a href="#plugin-model">Plugin Model</a> ·
+  <a href="#features">Features</a> ·
+  <a href="#install">Install</a> ·
+  <a href="#supported-devices">Supported Devices</a> ·
   <a href="#development">Development</a>
 </p>
 
@@ -26,119 +26,26 @@
 
 ## Overview
 
-Mira is an unofficial, privacy-respecting mouse settings client for macOS, Windows, and Linux.
+Mira is an unofficial, privacy-respecting mouse settings client for macOS, Windows, and Linux. A plugin-driven architecture adapts to different mouse brands, providing DPI adjustment, lighting control, and polling rate configuration.
 
-Device protocols live in signed declarative `.mira-plugin` packages. The host app owns the stable UI shell, permission boundary, HID access, theming, settings, diagnostics, and updates.
+- No telemetry, accounts, or ads
+- Cross-platform desktop app
+- Device protocols decoupled from the UI; plugins extend independently
 
-Plugins can declare devices, protocol commands, parsers, workflows, capabilities, and bounded writes. They cannot execute native code, scripts, remote web content, or arbitrary WASM. The UI is rendered from plugin-declared capabilities instead of brand-specific hardcoding.
+## Features
 
-## Highlights
+- **DPI adjustment**: multi-stage DPI with per-profile configuration
+- **Polling rate**: 125 / 250 / 500 / 1000 / 2000 / 4000 / 8000 Hz
+- **Lighting control**: mouse and receiver RGB with color, effect, speed, brightness
+- **Night mode**: auto close/restore lighting based on local time, supports cross-midnight
+- **Battery status**: real-time mouse and receiver charge level
+- **Multi-device**: connect multiple devices simultaneously, independent configs
+- **Theme switching**: follows system dark/light theme, Dock icon syncs
+- **Auto update**: built-in update check, no manual download
 
-- **Plugin-driven device support**: matching, protocol, parsing, capability metadata, and write surfaces are declared by plugins.
-- **Bounded writes**: mutations declare input limits, pre-read state, preservation strategy, and readback assertions.
-- **Privacy first**: no telemetry, accounts, ads, or resident network service.
-- **Cross-platform desktop**: Tauri 2 + React 19, targeting DMG, NSIS, AppImage, Deb, and RPM.
-- **Auditable plugin packages**: lock-file hashes, signature checks, and bundle policy.
-- **Consistent host UI**: status, DPI, lighting, configuration, and diagnostics are rendered from stable host controls.
+## Install
 
-## Status
-
-Mira is pre-release. Frontend, runtime, plugin loading, declarative protocol execution, and tests are in place, but device compatibility must follow hardware evidence and locked plugin packages.
-
-Bundled resources currently include:
-
-| Plugin | Purpose | Status |
-|---|---|---|
-| `mira.amaster` | AMaster / Angry Miao compatible devices, Protocol A and AM35 research path | Hardware verification in progress, bundled by default |
-| `mira.logitech-hidpp` | Logitech HID++ 2.0 feature discovery, DPI, report rate, profiles, and lighting capability reads | Hardware verification in progress, bundled by default |
-| `mira.example-mock` | Runtime and UI sample plugin | Test-only, not bundled by default |
-
-Mira is not authorized, endorsed, or sponsored by any device manufacturer. Manufacturer names are used only to describe compatibility research.
-
-## Quick Start
-
-```bash
-npm install
-npm run typecheck
-npm test -- --run
-npm run build
-```
-
-Development preview:
-
-```bash
-npm run dev
-```
-
-Desktop development path:
-
-```bash
-npm exec tauri dev
-```
-
-Vite runs on `http://localhost:1420`; Tauri configuration lives in [`src-tauri/tauri.conf.json`](src-tauri/tauri.conf.json).
-
-## Plugin Model
-
-Mira follows one rule: **protocols belong to plugins; the interface belongs to the host app.**
-
-The plugin repository is [`hello-yunshu/mira-mouse-plugins`](https://github.com/hello-yunshu/mira-mouse-plugins). Plugins are locked through [`plugins.lock.json`](plugins.lock.json), including version, asset name, SHA-256, publisher key, bundle policy, and resource path.
-
-Useful docs:
-
-- [Plugin package format](docs/plugin-package-format.md)
-- [Plugin SDK](docs/plugin-sdk.md)
-- [Protocol DSL](docs/protocol-dsl.md)
-- [Plugin security](docs/plugin-security.md)
-- [Plugin adaptation roadmap](docs/plugin-adaptation-roadmap.md)
-
-## Project Structure
-
-```text
-src/                         React frontend, theme, i18n, device UI
-src-tauri/                   Tauri shell, system integration, plugin resources
-crates/mira-plugin-runtime/  Declarative protocol runtime
-crates/mira-plugin-api/      Plugin API types
-crates/mira-core/            Shared core types
-docs/                        Security, plugins, release, adaptation, verification
-schemas/                     Structured config schemas
-scripts/                     Validation, icon, packaging helpers
-```
-
-## Development
-
-```bash
-npm run lint
-npm run typecheck
-npm test -- --run
-npm run build
-npm run check:boundaries
-npm run check:structured
-cargo test
-```
-
-For plugin runtime or HID changes:
-
-```bash
-cargo run -p mira-plugin-runtime --example enumerate_hid
-```
-
-For plugin repository changes:
-
-```bash
-npm run validate
-npm test
-```
-
-## Release and Security
-
-Community downloads use stable names and are published on [GitHub Releases](https://github.com/hello-yunshu/mira-mouse/releases):
-
-- macOS: `Mira_macOS_<version>_universal.dmg`
-- Windows: `Mira_Windows_<version>_x64-setup.exe`
-- Linux: `Mira_Linux_<version>_amd64.AppImage`
-
-### macOS install
+### macOS
 
 Homebrew is recommended:
 
@@ -150,12 +57,53 @@ brew install --cask mira
 
 Direct DMG download is also supported. See [macOS install notes](docs/install-macos.md) and [Homebrew install notes](docs/install-homebrew.md).
 
-Unsigned community packages trigger Gatekeeper or SmartScreen warnings; releases ship with SHA-256 checksums. See:
+### Windows
 
-- [Unsigned release security](docs/unsigned-release-security.md)
-- [Zero-cost release guide](docs/zero-cost-release.md)
-- [Threat model](docs/threat-model.md)
-- [Security policy](SECURITY.md)
+Download `Mira_Windows_<version>_x64-setup.exe` and run the installer.
+
+### Linux
+
+Download `Mira_Linux_<version>_amd64.AppImage`, make it executable, and run:
+
+```bash
+chmod +x Mira_Linux_*_amd64.AppImage
+./Mira_Linux_*_amd64.AppImage
+```
+
+All platform artifacts are published on [GitHub Releases](https://github.com/hello-yunshu/mira-mouse/releases).
+
+> Unsigned community packages trigger Gatekeeper or SmartScreen warnings; releases ship with SHA-256 checksums. See [security notes](docs/unsigned-release-security.md).
+
+## Supported Devices
+
+| Brand | Protocol | Connection | Status |
+|---|---|---|---|
+| AMaster / Angry Miao | Protocol A | USB / 2.4G receiver | Hardware verification in progress |
+| Logitech | HID++ 2.0 | USB / 2.4G receiver | Hardware verification in progress |
+
+Mira is not authorized, endorsed, or sponsored by any device manufacturer. Manufacturer names are used only to describe compatibility.
+
+## Development
+
+Mira follows one rule: **protocols belong to plugins; the interface belongs to the host app.** Plugins ship as signed declarative `.mira-plugin` packages; the host owns the UI, permission boundary, HID access, and updates.
+
+Plugin repository: [`hello-yunshu/mira-mouse-plugins`](https://github.com/hello-yunshu/mira-mouse-plugins)
+
+Development commands:
+
+```bash
+npm install
+npm run dev              # frontend preview
+npm exec tauri dev       # desktop preview
+npm run lint && npm run typecheck && npm test -- --run
+cargo test
+```
+
+Further docs:
+
+- [Plugin package format](docs/plugin-package-format.md) · [Plugin SDK](docs/plugin-sdk.md) · [Protocol DSL](docs/protocol-dsl.md)
+- [Plugin security](docs/plugin-security.md) · [Threat model](docs/threat-model.md) · [Security policy](SECURITY.md)
+- [macOS install](docs/install-macos.md) · [Homebrew install](docs/install-homebrew.md)
 
 ## License
 
