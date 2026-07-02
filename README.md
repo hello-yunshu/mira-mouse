@@ -144,13 +144,24 @@ npm test
 
 ## 发布与安全
 
-社区下载计划使用稳定命名：
+社区下载使用稳定命名，资产发布在 [GitHub Releases](https://github.com/hello-yunshu/mira-mouse/releases)：
 
-- macOS: `Mira_<version>_universal-unsigned.dmg`
-- Windows: `Mira_<version>_x64-setup-unsigned.exe`
-- Linux: `Mira_<version>_x86_64.AppImage`, `mira_<version>_amd64.deb`, `mira-<version>-1.x86_64.rpm`
+- macOS: `Mira_macOS_<version>_universal.dmg`
+- Windows: `Mira_Windows_<version>_x64-setup.exe`
+- Linux: `Mira_Linux_<version>_amd64.AppImage`
 
-未签名社区包可能触发 Gatekeeper 或 SmartScreen 提示。发布时应同时提供 SHA-256。参见：
+### macOS 安装
+
+推荐使用 Homebrew：
+
+```bash
+brew tap hello-yunshu/mira
+brew install --cask mira
+```
+
+也可直接下载 DMG，详见 [macOS 安装说明](docs/install-macos.md) 与 [Homebrew 安装说明](docs/install-homebrew.md)。
+
+未签名社区包会触发 Gatekeeper 或 SmartScreen 提示，发布时同时提供 SHA-256。参见：
 
 - [未签名发布安全说明](docs/unsigned-release-security.md)
 - [零成本发布指南](docs/zero-cost-release.md)
