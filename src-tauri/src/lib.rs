@@ -5190,16 +5190,49 @@ fn spawn_device_reader(app: AppHandle) {
             std::time::Duration::from_secs(1)
         };
 
-        match rx.recv_timeout(wait) {
-            Ok(()) => {
-                // Drain any additional pending signals so a burst of focus
-                // events doesn't trigger a burst of redundant reads.
-                while rx.try_recv().is_ok() {}
-                continue;
+        // 将等待分成最多 10s 的块，检测系统睡眠/唤醒。
+        // Instant（单调时钟）在系统睡眠期间暂停，recv_timeout 不会在唤醒后立即超时；
+        // 用 SystemTime（墙上时钟）检测跳跃，唤醒后触发 settling_polls 快速轮询重新枚举设备。
+        // 分块保证最多 SLEEP_DETECT_CHUNK 延迟即可检测到唤醒。
+        const SLEEP_DETECT_CHUNK: std::time::Duration = std::time::Duration::from_secs(10);
+        let mut remaining = wait;
+        let mut woke_from_sleep = false;
+        let mut channel_disconnected = false;
+        while !remaining.is_zero() {
+            let chunk = remaining.min(SLEEP_DETECT_CHUNK);
+            let chunk_start = std::time::SystemTime::now();
+            match rx.recv_timeout(chunk) {
+                Ok(()) => {
+                    // Drain any additional pending signals so a burst of focus
+                    // events doesn't trigger a burst of redundant reads.
+                    while rx.try_recv().is_ok() {}
+                    break;
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    // 正常情况下 elapsed ≈ chunk；系统睡眠后 elapsed 远大于 chunk。
+                    if let Ok(elapsed) = chunk_start.elapsed() {
+                        if elapsed > chunk + std::time::Duration::from_secs(2) {
+                            woke_from_sleep = true;
+                            break;
+                        }
+                    }
+                    remaining = remaining.saturating_sub(chunk);
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    channel_disconnected = true;
+                    break;
+                }
             }
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         }
+        if channel_disconnected {
+            break;
+        }
+        if woke_from_sleep {
+            if let Some(state) = app.try_state::<SessionState>() {
+                note_state_change(&state);
+            }
+        }
+        continue;
     });
 }
 
@@ -6539,13 +6572,36 @@ fn app_icon_bytes_for_theme(dark: bool) -> &'static [u8] {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn app_icon_icns_bytes_for_theme(dark: bool) -> &'static [u8] {
+    if dark {
+        include_bytes!("../icons/icon-dark.icns")
+    } else {
+        include_bytes!("../icons/icon.icns")
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn set_macos_dock_icon(icon_bytes: &'static [u8]) {
+    use objc2::{AllocAnyThread, MainThreadMarker};
+    use objc2_app_kit::{NSApplication, NSImage};
+    use objc2_foundation::NSData;
+
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let app = NSApplication::sharedApplication(mtm);
+    let data = NSData::with_bytes(icon_bytes);
+    if let Some(app_icon) = NSImage::initWithData(NSImage::alloc(), &data) {
+        unsafe { app.setApplicationIconImage(Some(&app_icon)) };
+    }
+}
+
 fn update_runtime_app_icon(app: &AppHandle, dark: bool) {
     #[cfg(target_os = "macos")]
     {
-        // Dock 图标由打包时的 icon.icns 提供。不要在窗口聚焦/主题变化时重设
-        // NSApplication 图标，否则 macOS 会用运行时图像覆盖 Dock 中的 bundle
-        // 图标，造成前台打开后视觉突然变得更满/更大。
-        let _ = (app, dark);
+        let icon_bytes = app_icon_icns_bytes_for_theme(dark);
+        let _ = app.run_on_main_thread(move || set_macos_dock_icon(icon_bytes));
     }
     #[cfg(not(target_os = "macos"))]
     {

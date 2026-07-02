@@ -1,6 +1,21 @@
 <!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
 # Changelog
 
+## 0.5.3 - 2026-07-02
+
+- Fixed disabled toggles in Settings to display as off instead of on when the
+  option cannot be configured (e.g. receiver lighting when unsupported).
+- Added `supportsMouseLighting` check so the mouse lighting toggle is disabled
+  and shown as off when the device does not support mouse lighting mutations.
+- Added system wake detection in the device reader: long poll intervals are now
+  chunked into 10-second windows with `SystemTime` jump detection, triggering
+  fast re-enumeration after the Mac/PC wakes from sleep.
+- Restored macOS Dock icon theme switching via `setApplicationIconImage` with
+  properly padded `.icns` assets (81.6% content area) so the icon no longer
+  appears larger than other apps.
+- Regenerated all platform icons: macOS `.icns` files include Apple HIG padding
+  while Windows/Linux/Web assets remain full-bleed per their respective specs.
+
 ## 0.3.10 - 2026-07-01
 
 - Fixed macOS update relaunch to reopen the `.app` bundle instead of directly
