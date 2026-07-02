@@ -22,6 +22,8 @@ jobs:
       - name: Install cargo-audit
         uses: taiki-e/install-action@cargo-audit
       - run: cargo audit --ignore RUSTSEC-2026-0194 --ignore RUSTSEC-2026-0195
-        # quick-xml 0.37.x/0.39.x pinned by upstream (plist via tauri, tauri-winrt-notification via notify-rust)
-        # see audit.toml for details; remove once upstream releases quick-xml 0.41+ compatible versions
+        # quick-xml advisories (RUSTSEC-2026-0194/0195) ignored: both versions pinned by upstream —
+        # 0.39.x by plist 1.9.0 (^0.39.2) via tauri 2.11.x, 0.37.x by tauri-winrt-notification 0.7.2 (^0.37) via notify-rust 4.18.
+        # Cannot upgrade to fixed 0.41.0 until plist and tauri-winrt-notification release compatible versions.
+        # Re-evaluate periodically; remove --ignore flags once upstream bumps quick-xml.
       - run: node scripts/check-boundaries.mjs
