@@ -5,6 +5,11 @@ updates:
     schedule: { interval: weekly }
     open-pull-requests-limit: 5
     groups: { rust-patches: { update-types: [patch] } }
+    ignore:
+      # tauri itself depends on 0.6.x; upgrading our direct dep causes
+      # duplicate objc2 symbols (__CLASS_NSVisualEffectViewTagged) on macOS.
+      # Re-enable after tauri releases a version depending on 0.7+.
+      - dependency-name: "window-vibrancy"
   - package-ecosystem: npm
     directory: /
     schedule: { interval: weekly }
