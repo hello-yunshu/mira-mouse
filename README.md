@@ -156,6 +156,7 @@ npm test
 
 ```bash
 brew tap hello-yunshu/mira
+brew trust hello-yunshu/mira
 brew install --cask mira
 ```
 
