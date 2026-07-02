@@ -142,10 +142,10 @@ jobs:
             case "$RUNNER_OS" in
               macOS)
                 rustup target add aarch64-apple-darwin x86_64-apple-darwin
-                # Tauri 内置 --bundles dmg 会先构建 .app（DMG 的依赖），
-                # 再打包 DMG（使用 tauri.conf.json > bundle.macOS.dmg 的背景/布局配置），
-                # 同时基于 .app 生成 updater artifacts（.app.tar.gz + .sig）。
-                npm exec tauri build -- --target universal-apple-darwin --bundles dmg --config '{"bundle":{"createUpdaterArtifacts":true}}'
+                # --bundles app,dmg: app 是 updater-enabled target（触发 .app.tar.gz + .sig 生成），
+                # dmg 是最终分发产物（基于 .app 打包，使用 tauri.conf.json > bundle.macOS.dmg 配置）。
+                # 注意: 单独 --bundles dmg 不触发 updater artifacts（dmg 不在 updater-enabled 列表）。
+                npm exec tauri build -- --target universal-apple-darwin --bundles app,dmg --config '{"bundle":{"createUpdaterArtifacts":true}}'
                 ;;
               Windows)
                 npm exec tauri build -- --bundles nsis --config '{"bundle":{"createUpdaterArtifacts":true}}'
