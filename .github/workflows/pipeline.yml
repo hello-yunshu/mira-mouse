@@ -161,6 +161,7 @@ jobs:
           name: mira-bundle-${{ matrix.os }}
           path: |
             target/**/bundle/**/*_universal.dmg
+            target/**/bundle/**/*_aarch64.dmg
             target/**/bundle/**/*.app.tar.gz
             target/**/bundle/**/*.app.tar.gz.sig
             target/**/bundle/**/*-setup.exe
