@@ -132,15 +132,24 @@ npm test
 
 ## Release and Security
 
-Planned community downloads use stable names:
+Community downloads use stable names and are published on [GitHub Releases](https://github.com/hello-yunshu/mira-mouse/releases):
 
-- macOS: `Mira_<version>_universal-unsigned.dmg`
-- Windows: `Mira_<version>_x64-setup-unsigned.exe`
-- Linux: `Mira_<version>_x86_64.AppImage`, `mira_<version>_amd64.deb`, `mira-<version>-1.x86_64.rpm`
+- macOS: `Mira_macOS_<version>_universal.dmg`
+- Windows: `Mira_Windows_<version>_x64-setup.exe`
+- Linux: `Mira_Linux_<version>_amd64.AppImage`
 
-Unsigned community packages may trigger Gatekeeper or SmartScreen warnings. Release artifacts should be published with SHA-256 checksums.
+### macOS install
 
-See:
+Homebrew is recommended:
+
+```bash
+brew tap hello-yunshu/mira
+brew install --cask mira
+```
+
+Direct DMG download is also supported. See [macOS install notes](docs/install-macos.md) and [Homebrew install notes](docs/install-homebrew.md).
+
+Unsigned community packages trigger Gatekeeper or SmartScreen warnings; releases ship with SHA-256 checksums. See:
 
 - [Unsigned release security](docs/unsigned-release-security.md)
 - [Zero-cost release guide](docs/zero-cost-release.md)

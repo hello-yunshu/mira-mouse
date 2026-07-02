@@ -336,3 +336,80 @@ jobs:
               --title "Mira $VERSION" \
               --notes-file release-notes.md
           fi
+
+  homebrew-tap:
+    needs: [release-publish]
+    if: ${{ !cancelled() && needs.release-publish.result == 'success' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Detect HOMEBREW_TAP_TOKEN
+        id: token
+        env:
+          TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -n "$TOKEN" ]; then
+            echo "has_token=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_token=false" >> "$GITHUB_OUTPUT"
+            echo "HOMEBREW_TAP_TOKEN is not configured; tap sync will be skipped." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Resolve latest release tag and version
+        if: steps.token.outputs.has_token == 'true'
+        id: meta
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 --json tagName --jq '.[0].tagName')
+          version="${tag#app/v}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Download DMG and compute SHA-256
+        if: steps.token.outputs.has_token == 'true'
+        id: dmg
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern "Mira_macOS_${VERSION}_universal.dmg" --dir artifacts
+          dmg="artifacts/Mira_macOS_${VERSION}_universal.dmg"
+          test -f "$dmg"
+          sha=$(sha256sum "$dmg" | awk '{print $1}')
+          echo "sha256=$sha" >> "$GITHUB_OUTPUT"
+          echo "Computed SHA-256 for ${VERSION}: ${sha}" >> "$GITHUB_STEP_SUMMARY"
+      - name: Render and push Cask to tap repository
+        if: steps.token.outputs.has_token == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          SHA256: ${{ steps.dmg.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          mkdir -p Casks
+          sed -e "s/__VERSION__/${VERSION}/g" \
+              -e "s/__SHA256__/${SHA256}/g" \
+              homebrew/Casks/mira.rb > Casks/mira.rb
+          echo "=== Rendered Casks/mira.rb ==="
+          cat Casks/mira.rb
+          rm -rf tap
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/hello-yunshu/homebrew-mira.git" tap
+          mkdir -p tap/Casks
+          cp Casks/mira.rb tap/Casks/mira.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Casks/mira.rb
+          if git diff --cached --quiet; then
+            echo "No changes; tap already at mira ${VERSION}."
+            echo "Tap already at mira ${VERSION}; no push needed." >> "$GITHUB_STEP_SUMMARY"
+          else
+            git commit -m "Bump mira to ${VERSION}"
+            git push
+            echo "Pushed mira ${VERSION} to hello-yunshu/homebrew-mira." >> "$GITHUB_STEP_SUMMARY"
+          fi
