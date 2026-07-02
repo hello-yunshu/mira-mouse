@@ -7,8 +7,11 @@ Mira is distributed as a Homebrew Cask through a self-hosted tap at [`hello-yuns
 
 ```bash
 brew tap hello-yunshu/mira
+brew trust hello-yunshu/mira
 brew install --cask mira
 ```
+
+`brew trust` is required by Homebrew 4.x for third-party taps. It marks the tap as a trusted source so its Casks can be loaded. Without it, `brew install --cask mira` fails with `Refusing to load cask ... from untrusted tap`.
 
 `brew install --cask mira` mounts the DMG, copies `Mira.app` into `/Applications`, and warns about the unsigned-app caveats described below.
 
