@@ -52,12 +52,15 @@ function SettingRow({ title, hint, children }: { title: string; hint?: string; c
   );
 }
 
-function Toggle({ checked, onChange, label, disabled = false }: { checked: boolean; onChange: (v: boolean) => void; label: string; disabled?: boolean }) {
+function Toggle({ checked, onChange, label, disabled = false, showOnWhenDisabled = false }: { checked: boolean; onChange: (v: boolean) => void; label: string; disabled?: boolean; showOnWhenDisabled?: boolean }) {
+  // 被禁用且无法设置的开关统一显示为关闭，避免「打开但不可操作」的误导；
+  // showOnWhenDisabled 用于 telemetry 等需要保持显示状态的特例。
+  const effectiveChecked = disabled && !showOnWhenDisabled ? false : checked;
   return (
     <button
-      className={`toggle ${checked ? 'on' : ''}`}
+      className={`toggle ${effectiveChecked ? 'on' : ''}`}
       role="switch"
-      aria-checked={checked}
+      aria-checked={effectiveChecked}
       aria-label={label}
       disabled={disabled}
       onClick={() => onChange(!checked)}
@@ -73,7 +76,7 @@ function isWindowsPlatform(): boolean {
   return previewPlatform === 'windows' || navigator.userAgent.includes('Windows');
 }
 
-export function SettingsPage({ onNavigateAbout, onThemeChange, previewMode = false, supportsAnyLighting = false, supportsReceiverLighting = false, focusPluginUpdateToken = 0 }: { onNavigateAbout: () => void; onThemeChange: (theme: ThemeMode) => void; previewMode?: boolean; supportsAnyLighting?: boolean; supportsReceiverLighting?: boolean; focusPluginUpdateToken?: number }) {
+export function SettingsPage({ onNavigateAbout, onThemeChange, previewMode = false, supportsAnyLighting = false, supportsMouseLighting = false, supportsReceiverLighting = false, focusPluginUpdateToken = 0 }: { onNavigateAbout: () => void; onThemeChange: (theme: ThemeMode) => void; previewMode?: boolean; supportsAnyLighting?: boolean; supportsMouseLighting?: boolean; supportsReceiverLighting?: boolean; focusPluginUpdateToken?: number }) {
   const { t } = useTranslation();
   const windowsPlatform = isWindowsPlatform();
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
@@ -454,7 +457,7 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, previewMode = fal
                 </SettingRow>
                 <p className="setting-hint" style={{ paddingTop: 4 }}>{t('settings.nightMode.targetSection')}</p>
                 <SettingRow title={t('settings.nightMode.targetMouse')} hint={t('settings.nightMode.targetMouseHint')}>
-                  <Toggle checked={settings.nightModeTargetMouse} onChange={(v) => update({ nightModeTargetMouse: v })} label={t('settings.nightMode.targetMouse')} />
+                  <Toggle checked={settings.nightModeTargetMouse} onChange={(v) => update({ nightModeTargetMouse: v })} label={t('settings.nightMode.targetMouse')} disabled={!supportsMouseLighting} />
                 </SettingRow>
                 <SettingRow title={t('settings.nightMode.targetReceiver')} hint={t('settings.nightMode.targetReceiverHint')}>
                   <Toggle
@@ -536,7 +539,7 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, previewMode = fal
         <section className="card settings-section">
           <div className="card-title"><h2>{t('settings.section.privacy')}</h2></div>
           <SettingRow title={t('settings.privacy.telemetryLabel')} hint={t('settings.privacy.telemetryHint')}>
-            <Toggle checked={true} onChange={() => {}} label={t('settings.privacy.telemetryLabel')} disabled />
+            <Toggle checked={true} onChange={() => {}} label={t('settings.privacy.telemetryLabel')} disabled showOnWhenDisabled />
           </SettingRow>
           <SettingRow title={t('settings.privacy.scanLabel')} hint={t('settings.privacy.scanHint')}>
             <button className="secondary" onClick={scanDevices} disabled={previewMode}>{t('settings.privacy.scanButton')}</button>
