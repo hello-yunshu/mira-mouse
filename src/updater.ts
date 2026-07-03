@@ -73,7 +73,7 @@ export async function checkForAppUpdate(automatic = false): Promise<void> {
       const title = i18n.t('notification.updateFound.title');
       const body = i18n.t('notification.updateFound.body', { version: update.version });
       notifyInfo(title, body, 'about-update');
-      void invoke('show_update_notification', { title, body }).catch(() => {});
+      void invoke('show_update_notification', { title, body, action: 'about-update' }).catch(() => {});
     }
   } catch (error) {
     publish({ phase: 'error', downloadedBytes: 0, error: String(error) });
@@ -94,7 +94,6 @@ async function runAutomaticAppUpdateCheck(): Promise<void> {
   if (automaticInstallRequested && state.phase === 'available') {
     try {
       await installAppUpdate();
-      notifyInfo(i18n.t('notification.updateInstalled.title'), i18n.t('notification.updateInstalled.body'), 'relaunch');
     } catch {
       // The error state is already published for the About page.
     }
@@ -160,6 +159,12 @@ export async function installAppUpdate(): Promise<void> {
     await update.close().catch(() => undefined);
     pendingUpdate = null;
     publish({ ...state, phase: 'installed', downloadedBytes, totalBytes, error: undefined });
+    // 安装完成后发送重启通知：应用内 Toast（点击直接重启）+ 原生系统通知（点击跳转到关于页）。
+    // 无论手动还是自动安装都发送，覆盖用户在下载过程中切走、应用在后台等场景。
+    const title = i18n.t('notification.updateInstalled.title');
+    const body = i18n.t('notification.updateInstalled.body');
+    notifyInfo(title, body, 'relaunch');
+    void invoke('show_update_notification', { title, body, action: 'about-update' }).catch(() => {});
   } catch (error) {
     publish({ ...state, phase: 'error', downloadedBytes, totalBytes, error: String(error) });
     throw error;
