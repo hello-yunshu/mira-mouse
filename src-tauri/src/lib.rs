@@ -1087,6 +1087,10 @@ const SETTLING_POLL_COUNT: u8 = 6;
 /// 防止窗口聚焦、托盘点击等短时间多次 RefreshNow 信号触发重复 HID 往返。
 const READ_DEBOUNCE_TTL: Duration = Duration::from_millis(500);
 
+/// Give USB/Bluetooth HID stacks a brief moment to settle after system wake
+/// before rebuilding the cached HID session.
+const SYSTEM_WAKE_REFRESH_DELAY: Duration = Duration::from_millis(1200);
+
 /// Mark that the device state just changed, enabling a short burst of fast polls.
 /// This is used for plug/unplug, charging state changes, and after device writes
 /// so the UI catches the tail end of the transition without continuous polling.
@@ -1094,6 +1098,34 @@ fn note_state_change(state: &SessionState) {
     if let Ok(mut polls) = state.settling_polls.lock() {
         *polls = SETTLING_POLL_COUNT;
     }
+}
+
+/// System wake can leave HIDAPI's device list and open handles pointing at the
+/// pre-sleep USB/Bluetooth session. Keep the last UI snapshot visible, but make
+/// the next reader pass rebuild the HID view and re-read the device state.
+fn handle_system_wake(state: &SessionState) {
+    note_state_change(state);
+    std::thread::sleep(SYSTEM_WAKE_REFRESH_DELAY);
+    let _io_guard = state.device_io.lock().ok();
+    if let Ok(mut api) = state.cached_hidapi.lock() {
+        *api = None;
+    }
+    if let Ok(mut cache) = state.last_read_at.lock() {
+        cache.clear();
+    }
+    if let Ok(mut cache) = state.feature_index_cache.lock() {
+        cache.clear();
+    }
+    if let Ok(mut cache) = state.onboard_memory_cache.lock() {
+        cache.clear();
+    }
+    if let Ok(mut cache) = state.cached_handles.lock() {
+        cache.clear();
+    }
+    if let Ok(mut errors) = state.last_read_errors.lock() {
+        errors.clear();
+    }
+    request_night_mode_eval(state);
 }
 
 /// 从多设备快照 map 中选择 primary 设备。
@@ -5192,7 +5224,8 @@ fn spawn_device_reader(app: AppHandle) {
 
         // 将等待分成最多 10s 的块，检测系统睡眠/唤醒。
         // Instant（单调时钟）在系统睡眠期间暂停，recv_timeout 不会在唤醒后立即超时；
-        // 用 SystemTime（墙上时钟）检测跳跃，唤醒后触发 settling_polls 快速轮询重新枚举设备。
+        // 用 SystemTime（墙上时钟）检测跳跃，唤醒后稍作延迟，
+        // 再重建 HID 会话并触发 settling_polls 快速轮询重新枚举设备。
         // 分块保证最多 SLEEP_DETECT_CHUNK 延迟即可检测到唤醒。
         const SLEEP_DETECT_CHUNK: std::time::Duration = std::time::Duration::from_secs(10);
         let mut remaining = wait;
@@ -5229,7 +5262,7 @@ fn spawn_device_reader(app: AppHandle) {
         }
         if woke_from_sleep {
             if let Some(state) = app.try_state::<SessionState>() {
-                note_state_change(&state);
+                handle_system_wake(&state);
             }
         }
         continue;
