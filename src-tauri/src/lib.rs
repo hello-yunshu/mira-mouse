@@ -497,6 +497,10 @@ struct NightModeRuntime {
     saved_mouse_light: Option<SavedMouseLight>,
     /// 进入夜间模式时保存的接收器灯光状态。None 表示未保存。
     saved_receiver_light: Option<SavedReceiverLight>,
+    /// 当前转换尝试是否已展示过失败通知。
+    /// 调度器每分钟重试时，避免对同一 (current, target) 组合重复弹通知；
+    /// 阶段成功切换后由 `update_night_mode_phase` 重置。
+    notified: bool,
 }
 
 impl Default for NightModeRuntime {
@@ -505,6 +509,7 @@ impl Default for NightModeRuntime {
             phase: NightPhase::Day,
             saved_mouse_light: None,
             saved_receiver_light: None,
+            notified: false,
         }
     }
 }
@@ -604,6 +609,11 @@ struct SessionState {
     /// debug 构建中记录上一次 matched device 数量，仅在变化时输出日志。
     #[cfg(debug_assertions)]
     last_matched_count: Mutex<usize>,
+    /// macOS 原生通知点击后待执行的跳转动作。
+    /// macOS 上 `tauri-plugin-notification` 不暴露点击回调，改用 pending action +
+    /// 窗口 focus 消费的方式：发通知时写入 action，前端聚焦窗口时取走并执行跳转。
+    /// Windows/Linux 直接用 `notify-rust` 的 `wait_for_action` 处理点击，不写入此字段。
+    pending_notification_action: Mutex<Option<String>>,
 }
 
 #[cfg(debug_assertions)]
@@ -645,12 +655,13 @@ fn request_night_mode_eval(state: &SessionState) {
 fn apply_night_mode_transition(app: &AppHandle, target_phase: NightPhase) {
     let state = app.state::<SessionState>();
     // 读取当前运行时状态（持锁时间极短，仅 clone）。
-    let (current_phase, saved_mouse, saved_receiver) = {
+    let (current_phase, saved_mouse, saved_receiver, already_notified) = {
         let guard = state.night_mode.lock().unwrap_or_else(|e| e.into_inner());
         (
             guard.phase,
             guard.saved_mouse_light.clone(),
             guard.saved_receiver_light.clone(),
+            guard.notified,
         )
     };
     if current_phase == target_phase {
@@ -659,6 +670,9 @@ fn apply_night_mode_transition(app: &AppHandle, target_phase: NightPhase) {
 
     let settings = cached_settings(app);
     let lang = effective_language(&settings.language);
+    // 同一转换尝试已通知过失败时，本轮静默重试，不再重复弹通知。
+    let can_notify = !already_notified;
+    let mut did_notify = false;
 
     match target_phase {
         NightPhase::Night => {
@@ -736,12 +750,15 @@ fn apply_night_mode_transition(app: &AppHandle, target_phase: NightPhase) {
                                 eprintln!(
                                     "[mira] night mode: failed to turn off mouse lighting: {error}"
                                 );
-                                let _ = app
-                                    .notification()
-                                    .builder()
-                                    .title(tr_night_mode_title(lang))
-                                    .body(tr_night_mode_off_failed(lang, &error))
-                                    .show();
+                                if can_notify {
+                                    let _ = app
+                                        .notification()
+                                        .builder()
+                                        .title(tr_night_mode_title(lang))
+                                        .body(tr_night_mode_off_failed(lang, &error))
+                                        .show();
+                                    did_notify = true;
+                                }
                                 any_failed = true;
                             }
                         }
@@ -782,12 +799,15 @@ fn apply_night_mode_transition(app: &AppHandle, target_phase: NightPhase) {
                             }
                             Err(error) => {
                                 eprintln!("[mira] night mode: failed to turn off receiver lighting: {error}");
-                                let _ = app
-                                    .notification()
-                                    .builder()
-                                    .title(tr_night_mode_title(lang))
-                                    .body(tr_night_mode_off_failed_receiver(lang, &error))
-                                    .show();
+                                if can_notify {
+                                    let _ = app
+                                        .notification()
+                                        .builder()
+                                        .title(tr_night_mode_title(lang))
+                                        .body(tr_night_mode_off_failed_receiver(lang, &error))
+                                        .show();
+                                    did_notify = true;
+                                }
                                 any_failed = true;
                             }
                         }
@@ -860,12 +880,15 @@ fn apply_night_mode_transition(app: &AppHandle, target_phase: NightPhase) {
                     }
                     if let Err(error) = device_mutate_blocking(app, mouse_mutation, &params) {
                         eprintln!("[mira] night mode: failed to restore mouse lighting: {error}");
-                        let _ = app
-                            .notification()
-                            .builder()
-                            .title(tr_night_mode_title(lang))
-                            .body(tr_night_mode_restore_failed(lang, &error))
-                            .show();
+                        if can_notify {
+                            let _ = app
+                                .notification()
+                                .builder()
+                                .title(tr_night_mode_title(lang))
+                                .body(tr_night_mode_restore_failed(lang, &error))
+                                .show();
+                            did_notify = true;
+                        }
                         any_failed = true;
                     }
                 }
@@ -902,12 +925,15 @@ fn apply_night_mode_transition(app: &AppHandle, target_phase: NightPhase) {
                         eprintln!(
                             "[mira] night mode: failed to restore receiver lighting: {error}"
                         );
-                        let _ = app
-                            .notification()
-                            .builder()
-                            .title(tr_night_mode_title(lang))
-                            .body(tr_night_mode_restore_failed_receiver(lang, &error))
-                            .show();
+                        if can_notify {
+                            let _ = app
+                                .notification()
+                                .builder()
+                                .title(tr_night_mode_title(lang))
+                                .body(tr_night_mode_restore_failed_receiver(lang, &error))
+                                .show();
+                            did_notify = true;
+                        }
                         any_failed = true;
                     }
                 }
@@ -917,6 +943,13 @@ fn apply_night_mode_transition(app: &AppHandle, target_phase: NightPhase) {
                 update_night_mode_phase(app, NightPhase::Day, None, None);
             }
             // 有失败：不更新阶段，下一轮重试。
+        }
+    }
+
+    // 已展示失败通知时标记，使后续每分钟的重试静默，直到阶段成功切换后重置。
+    if did_notify {
+        if let Ok(mut guard) = state.night_mode.lock() {
+            guard.notified = true;
         }
     }
 }
@@ -935,6 +968,11 @@ fn update_night_mode_phase(
     };
     {
         let mut guard = state.night_mode.lock().unwrap_or_else(|e| e.into_inner());
+        // 阶段真正切换时清除失败通知标记，使下一次转换能再次通知；
+        // 部分失败重试时 phase 不变，保留标记以抑制重复弹通知。
+        if guard.phase != phase {
+            guard.notified = false;
+        }
         guard.phase = phase;
         guard.saved_mouse_light = saved_mouse;
         guard.saved_receiver_light = saved_receiver;
@@ -1087,10 +1125,6 @@ const SETTLING_POLL_COUNT: u8 = 6;
 /// 防止窗口聚焦、托盘点击等短时间多次 RefreshNow 信号触发重复 HID 往返。
 const READ_DEBOUNCE_TTL: Duration = Duration::from_millis(500);
 
-/// Give USB/Bluetooth HID stacks a brief moment to settle after system wake
-/// before rebuilding the cached HID session.
-const SYSTEM_WAKE_REFRESH_DELAY: Duration = Duration::from_millis(1200);
-
 /// Mark that the device state just changed, enabling a short burst of fast polls.
 /// This is used for plug/unplug, charging state changes, and after device writes
 /// so the UI catches the tail end of the transition without continuous polling.
@@ -1098,34 +1132,6 @@ fn note_state_change(state: &SessionState) {
     if let Ok(mut polls) = state.settling_polls.lock() {
         *polls = SETTLING_POLL_COUNT;
     }
-}
-
-/// System wake can leave HIDAPI's device list and open handles pointing at the
-/// pre-sleep USB/Bluetooth session. Keep the last UI snapshot visible, but make
-/// the next reader pass rebuild the HID view and re-read the device state.
-fn handle_system_wake(state: &SessionState) {
-    note_state_change(state);
-    std::thread::sleep(SYSTEM_WAKE_REFRESH_DELAY);
-    let _io_guard = state.device_io.lock().ok();
-    if let Ok(mut api) = state.cached_hidapi.lock() {
-        *api = None;
-    }
-    if let Ok(mut cache) = state.last_read_at.lock() {
-        cache.clear();
-    }
-    if let Ok(mut cache) = state.feature_index_cache.lock() {
-        cache.clear();
-    }
-    if let Ok(mut cache) = state.onboard_memory_cache.lock() {
-        cache.clear();
-    }
-    if let Ok(mut cache) = state.cached_handles.lock() {
-        cache.clear();
-    }
-    if let Ok(mut errors) = state.last_read_errors.lock() {
-        errors.clear();
-    }
-    request_night_mode_eval(state);
 }
 
 /// 从多设备快照 map 中选择 primary 设备。
@@ -5224,8 +5230,7 @@ fn spawn_device_reader(app: AppHandle) {
 
         // 将等待分成最多 10s 的块，检测系统睡眠/唤醒。
         // Instant（单调时钟）在系统睡眠期间暂停，recv_timeout 不会在唤醒后立即超时；
-        // 用 SystemTime（墙上时钟）检测跳跃，唤醒后稍作延迟，
-        // 再重建 HID 会话并触发 settling_polls 快速轮询重新枚举设备。
+        // 用 SystemTime（墙上时钟）检测跳跃，唤醒后触发 settling_polls 快速轮询重新枚举设备。
         // 分块保证最多 SLEEP_DETECT_CHUNK 延迟即可检测到唤醒。
         const SLEEP_DETECT_CHUNK: std::time::Duration = std::time::Duration::from_secs(10);
         let mut remaining = wait;
@@ -5262,7 +5267,7 @@ fn spawn_device_reader(app: AppHandle) {
         }
         if woke_from_sleep {
             if let Some(state) = app.try_state::<SessionState>() {
-                handle_system_wake(&state);
+                note_state_change(&state);
             }
         }
         continue;
@@ -6209,14 +6214,28 @@ fn navigate_about_update(app: &AppHandle) {
     let _ = app.emit("navigate-about-update", ());
 }
 
+/// 发送原生系统通知，可选地携带点击跳转动作。
+/// `action` 目前仅支持 `"about-update"`（跳转到「关于 → 检查更新」区域）。
+/// - macOS：`tauri-plugin-notification` 不暴露点击回调，改将 action 写入
+///   `pending_notification_action`，由前端窗口 focus 时通过
+///   `take_pending_notification_action` 取走并执行跳转。
+/// - Windows/Linux：`notify-rust` 的 `wait_for_action` 直接处理点击并 emit 事件。
 #[tauri::command]
 fn show_update_notification(
     app: tauri::AppHandle,
+    state: tauri::State<SessionState>,
     title: String,
     body: String,
+    action: Option<String>,
 ) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
+        if let Some(a) = &action {
+            if let Ok(mut guard) = state.pending_notification_action.lock() {
+                *guard = Some(a.clone());
+            }
+        }
+        let _ = state;
         app.notification()
             .builder()
             .title(title)
@@ -6228,6 +6247,7 @@ fn show_update_notification(
 
     #[cfg(any(target_os = "windows", all(unix, not(target_os = "macos"))))]
     {
+        let _ = &state;
         let identifier = app.config().identifier.clone();
         std::thread::spawn(move || {
             let mut notification = notify_rust::Notification::new();
@@ -6241,8 +6261,8 @@ fn show_update_notification(
             notification.appname(&identifier);
             match notification.show() {
                 Ok(handle) => {
-                    handle.wait_for_action(|action| {
-                        if action != "__closed" {
+                    handle.wait_for_action(|action_kind| {
+                        if action_kind != "__closed" {
                             navigate_about_update(&app);
                         }
                     });
@@ -6252,6 +6272,17 @@ fn show_update_notification(
         });
         Ok(())
     }
+}
+
+/// 取走并返回 macOS 原生通知点击后待执行的跳转动作（供前端窗口 focus 时调用）。
+/// Windows/Linux 不使用此机制（直接由 `wait_for_action` 处理），始终返回 `None`。
+#[tauri::command]
+fn take_pending_notification_action(state: tauri::State<SessionState>) -> Option<String> {
+    state
+        .pending_notification_action
+        .lock()
+        .map(|mut guard| guard.take())
+        .unwrap_or(None)
 }
 
 fn focus_main_from_tray(app: &AppHandle) {
@@ -6394,35 +6425,63 @@ fn tr_night_mode_title(lang: &str) -> &'static str {
     }
 }
 
-fn tr_night_mode_off_failed(lang: &str, error: &str) -> String {
-    if lang == "en" {
-        format!("Failed to turn off mouse lighting: {error}")
+/// 将设备写入/读取产生的原始协议错误转换为用户可读的提示。
+///
+/// 安静灯光调度器每分钟重试一次，原始错误（如
+/// `workflow ... condition at offset 5 timed out`、`proxy target is offline`）
+/// 对普通用户没有意义。这类超时通常意味着 2.4G 接收器无法与鼠标建立链路
+/// （鼠标休眠或离线），移动鼠标后会自动恢复，因此翻译为统一提示。
+/// 其它（配置/协议校验类）错误按原样返回，便于排查。
+fn friendly_device_error(error: &str, lang: &str) -> String {
+    let lower = error.to_ascii_lowercase();
+    let unreachable = lower.contains("timed out")
+        || lower.contains("timeout")
+        || lower.contains("proxy target is offline")
+        || lower.contains("offline");
+    if unreachable {
+        if lang == "en" {
+            "Mouse not responding; it may be sleeping. Mira will retry automatically once you move the mouse.".to_string()
+        } else {
+            "鼠标未响应，可能处于休眠状态。移动鼠标后 Mira 将自动重试。".to_string()
+        }
     } else {
-        format!("关闭鼠标灯光失败：{error}")
+        error.to_string()
+    }
+}
+
+fn tr_night_mode_off_failed(lang: &str, error: &str) -> String {
+    let detail = friendly_device_error(error, lang);
+    if lang == "en" {
+        format!("Failed to turn off mouse lighting: {detail}")
+    } else {
+        format!("关闭鼠标灯光失败：{detail}")
     }
 }
 
 fn tr_night_mode_restore_failed(lang: &str, error: &str) -> String {
+    let detail = friendly_device_error(error, lang);
     if lang == "en" {
-        format!("Failed to restore mouse lighting: {error}")
+        format!("Failed to restore mouse lighting: {detail}")
     } else {
-        format!("恢复鼠标灯光失败：{error}")
+        format!("恢复鼠标灯光失败：{detail}")
     }
 }
 
 fn tr_night_mode_off_failed_receiver(lang: &str, error: &str) -> String {
+    let detail = friendly_device_error(error, lang);
     if lang == "en" {
-        format!("Failed to turn off receiver lighting: {error}")
+        format!("Failed to turn off receiver lighting: {detail}")
     } else {
-        format!("关闭接收器灯光失败：{error}")
+        format!("关闭接收器灯光失败：{detail}")
     }
 }
 
 fn tr_night_mode_restore_failed_receiver(lang: &str, error: &str) -> String {
+    let detail = friendly_device_error(error, lang);
     if lang == "en" {
-        format!("Failed to restore receiver lighting: {error}")
+        format!("Failed to restore receiver lighting: {detail}")
     } else {
-        format!("恢复接收器灯光失败：{error}")
+        format!("恢复接收器灯光失败：{detail}")
     }
 }
 
@@ -7308,6 +7367,7 @@ pub fn run() {
                     },
                     saved_mouse_light: store.saved_mouse_light,
                     saved_receiver_light: store.saved_receiver_light,
+                    notified: false,
                 };
                 let state = app.state::<SessionState>();
                 let mut guard = state.night_mode.lock().unwrap_or_else(|e| e.into_inner());
@@ -7354,6 +7414,7 @@ pub fn run() {
             settings_set,
             hide_to_tray,
             show_update_notification,
+            take_pending_notification_action,
             export_diagnostics,
             plugin_locales
         ])
