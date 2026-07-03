@@ -28,6 +28,7 @@ describe('application updater', () => {
     mocks.invoke.mockReset();
     mocks.relaunch.mockReset();
     mocks.downloadAndInstall.mockReset();
+    mocks.invoke.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -36,7 +37,6 @@ describe('application updater', () => {
   });
 
   it('sends a system notification during automatic checks when an update is available', async () => {
-    mocks.invoke.mockResolvedValue(undefined);
     mocks.check.mockResolvedValue({
       version: '0.3.0',
       body: 'Release notes',
@@ -48,6 +48,7 @@ describe('application updater', () => {
     expect(mocks.invoke).toHaveBeenCalledWith('show_update_notification', {
       title: '发现新版本',
       body: 'v0.3.0 已可用，可在「关于」页查看并安装。',
+      action: 'about-update',
     });
   });
 
@@ -104,7 +105,6 @@ describe('application updater', () => {
   });
 
   it('skips the update-found notification when automatic install is enabled', async () => {
-    mocks.invoke.mockResolvedValue(undefined);
     mocks.downloadAndInstall.mockImplementation(async (onEvent) => {
       onEvent({ event: 'Started', data: { contentLength: 100 } });
       onEvent({ event: 'Finished' });
@@ -117,7 +117,10 @@ describe('application updater', () => {
       close: vi.fn().mockResolvedValue(undefined),
     });
     await startAutomaticAppUpdateCheck(true, true);
-    expect(mocks.invoke).not.toHaveBeenCalledWith('show_update_notification', expect.anything());
+    // 自动安装开启时跳过 update-found 通知
+    expect(mocks.invoke).not.toHaveBeenCalledWith('show_update_notification', expect.objectContaining({ title: '发现新版本' }));
+    // 安装完成后发送 update-installed 重启通知
+    expect(mocks.invoke).toHaveBeenCalledWith('show_update_notification', expect.objectContaining({ title: '更新就绪', action: 'about-update' }));
     expect(appUpdateState()).toMatchObject({ phase: 'installed' });
   });
 });

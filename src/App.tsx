@@ -2000,6 +2000,7 @@ export default function App() {
     if (pureWeb) return;
     let unlisten: (() => void) | undefined;
     let unlistenResume: (() => void) | undefined;
+    let unlistenFocus: (() => void) | undefined;
     listen('navigate-about-update', () => openAboutUpdate())
       .then((un) => { unlisten = un; })
       .catch(() => {});
@@ -2007,9 +2008,25 @@ export default function App() {
       setRefreshNonce((value) => value + 1);
     }).then((un) => { unlistenResume = un; })
       .catch(() => {});
+    // macOS 原生通知不暴露点击回调：发通知时将跳转动作写入 pending action，
+    // 窗口聚焦时取走并执行。Windows/Linux 由 `navigate-about-update` 事件直接处理，
+    // 此处返回 null 不影响。
+    try {
+      getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+        if (!focused) return;
+        invoke<string | null>('take_pending_notification_action')
+          .then((action) => {
+            if (action === 'about-update') openAboutUpdate();
+          })
+          .catch(() => {});
+      }).then((un) => { unlistenFocus = un; }).catch(() => {});
+    } catch {
+      // 非 Tauri 环境忽略
+    }
     return () => {
       if (unlisten) unlisten();
       if (unlistenResume) unlistenResume();
+      if (unlistenFocus) unlistenFocus();
     };
   }, [openAboutUpdate, pureWeb]);
 
