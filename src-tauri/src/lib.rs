@@ -6249,6 +6249,7 @@ fn show_update_notification(
     {
         let _ = &state;
         let identifier = app.config().identifier.clone();
+        let navigate = action.as_deref() == Some("about-update");
         std::thread::spawn(move || {
             let mut notification = notify_rust::Notification::new();
             notification
@@ -6261,11 +6262,13 @@ fn show_update_notification(
             notification.appname(&identifier);
             match notification.show() {
                 Ok(handle) => {
-                    handle.wait_for_action(|action_kind| {
-                        if action_kind != "__closed" {
-                            navigate_about_update(&app);
-                        }
-                    });
+                    if navigate {
+                        handle.wait_for_action(|action_kind| {
+                            if action_kind != "__closed" {
+                                navigate_about_update(&app);
+                            }
+                        });
+                    }
                 }
                 Err(error) => eprintln!("[mira] update notification failed: {error}"),
             }
