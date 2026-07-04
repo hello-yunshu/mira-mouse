@@ -92,7 +92,6 @@ export function Tooltip({ label, children }: PropsWithChildren<{ label: string }
     };
   }, [mounted, measure]);
 
-  // 卸载时清理定时器
   useEffect(() => () => { cancelHover(); cancelHide(); }, []);
 
   return (

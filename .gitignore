@@ -13,16 +13,9 @@
 *.tsbuildinfo
 vite.config.d.ts
 vite.config.js
-/Mira_AI_IDE_Implementation_Prompt.md
 /.trae/
 /design-qa.md
 /tmp/
-/docs/session-checkpoint.md
-/docs/execution-plan.md
-/docs/assumptions-and-blockers.md
-/docs/evidence-status.md
-/docs/final-verification-report.md
-/docs/spec-traceability.md
 /src-tauri/gen/
 src-tauri/tauri.test.conf.json
 /artifacts/

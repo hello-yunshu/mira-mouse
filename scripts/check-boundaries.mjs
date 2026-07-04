@@ -4,7 +4,7 @@ import { join, relative } from 'node:path';
 
 const root = new URL('..', import.meta.url).pathname;
 const ignored = new Set(['.git', 'node_modules', 'dist', 'target', 'AMasterDriver_v1.0.6_unpacked_reverse_bundle', 'src-tauri/resources/plugins']);
-const allowed = new Set(['Mira_AI_IDE_Implementation_Prompt.md', 'docs/assumptions-and-blockers.md', 'docs/execution-plan.md', 'docs/spec-traceability.md', 'docs/evidence-status.md', 'docs/final-verification-report.md', 'README.md', 'scripts/check-boundaries.mjs']);
+const allowed = new Set(['README.md', 'scripts/check-boundaries.mjs']);
 const forbidden = [/0x3151/i, /0x0e8d/i, /0x402a/i, /0x5007/i, /AM Mouse Tool/i, /Velora/i, /mira\.amaster\s*\)/i];
 const violations = [];
 async function walk(dir) {

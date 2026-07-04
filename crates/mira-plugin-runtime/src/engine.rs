@@ -554,7 +554,6 @@ impl ProtocolPackage {
             if command.request.base != RequestBase::Zero {
                 continue;
             }
-            // 检查所有 byte 定义是否无 param 依赖
             let cacheable = command
                 .request
                 .bytes
@@ -2165,7 +2164,6 @@ impl Session<'_> {
                 continue;
             }
             response.truncate(count);
-            // Match the expected read report ID
             if response.first() != Some(read_report_id) {
                 continue;
             }

@@ -2046,7 +2046,6 @@ export default function App() {
     return () => window.clearTimeout(timeout);
   }, [appNotification]);
 
-  // 从后端加载已保存的主题设置
   useEffect(() => {
     if (pureWeb) return;
     invoke<AppSettings>('settings_get')

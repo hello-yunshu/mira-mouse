@@ -1,31 +1,28 @@
 <!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
 # Plugin SDK
 
-Plugins declare device matching, topology, capabilities, host-controlled UI placement hints, fields, protocol workflows, localized labels, narrow Linux permission metadata, and offline Fixtures. They cannot provide CSS, HTML, JavaScript, native code, scripts, network access, or filesystem access.
+插件声明设备匹配、拓扑、能力（capabilities）、Host 侧控制的 UI 放置提示、字段、协议工作流、本地化标签、狭窄的 Linux 权限元数据，以及离线 Fixtures。插件不能提供 CSS、HTML、JavaScript、原生代码、脚本、网络访问或文件系统访问。
 
-## Declarative controls
+## 声明式控件
 
-The host renders `plugin.json.capabilities`; it does not select controls by
-vendor or model. Built-in complex renderers cover `DpiStages` and
-`LightingZone`. The generic renderer supports `Segmented`, `Select`, `Toggle`,
-`Slider`, `Number`, `Color`, `ReadOnlyValue`, and `Action`.
+Host 渲染 `plugin.json.capabilities`；它不会按厂商或型号选择控件。内置的复杂渲染器覆盖 `DpiStages` 和 `LightingZone`。通用渲染器支持 `Segmented`、`Select`、`Toggle`、`Slider`、`Number`、`Color`、`ReadOnlyValue` 和 `Action`。
 
-Capability `metadata` may contain only data interpreted by the host:
+Capability `metadata` 只能包含由 Host 解释的数据：
 
-- `label`: localized fallback label.
-- `section`: `control` or `status`.
-- `status`: also expose the current value in the dashboard status strip.
-- `source`: dotted path within the normalized `DeviceSnapshot` state.
-- `mutation` and `param`: stable mutation id and its single input name.
-- `options`: up to eight bounded `{ value, label }` entries for segmented/select controls.
-- `summary`: up to four bounded `{ label, source, unit?, format?, options? }`
-  entries rendered inside a host-owned control skeleton. The declared item count
-  controls the equal-width summary columns; plugins cannot change the skeleton.
-- `bindings`: ordered `{ when: { path, eq }, source, mutation, param, label }`
-  variants for connection-dependent controls such as wireless/Bluetooth sleep.
-- `min`, `max`, `step`, `unit`, `format`, `description`, `actionLabel`, `params`.
+- `label`：本地化的回退标签（fallback label）。
+- `section`：`control` 或 `status`。
+- `status`：同时在仪表盘状态条中暴露当前值。
+- `source`：在归一化的 `DeviceSnapshot` 状态中的点分路径。
+- `mutation` 和 `param`：稳定的 mutation id 及其单一输入名。
+- `options`：最多 8 个有界的 `{ value, label }` 条目，用于 segmented/select 控件。
+- `summary`：最多 4 个有界的 `{ label, source, unit?, format?, options? }`
+  条目，渲染在 Host 拥有的控件骨架（skeleton）中。声明的条目数量
+  控制等宽 summary 列；插件无法改变该骨架。
+- `bindings`：有序的 `{ when: { path, eq }, source, mutation, param, label }`
+  变体，用于依赖连接状态的控件，例如无线/蓝牙休眠。
+- `min`、`max`、`step`、`unit`、`format`、`description`、`actionLabel`、`params`。
 
-Each capability should also declare one or more `placements`:
+每个 capability 还应声明一个或多个 `placements`：
 
 ```json
 "placements": [
@@ -34,23 +31,16 @@ Each capability should also declare one or more `placements`:
 ]
 ```
 
-- `region`: `hero`, `control`, `status`, or `details`.
-- `group`: capabilities with the same value share one control tab.
-- `order`: ascending order within the region.
-- `span`: retained for manifest compatibility; equal-row dashboard surfaces
-  normalize visible items to the same width.
-- `icon`: a host-controlled token: `battery`, `gauge`, `wave`, `lightbulb`,
-  `timer`, `profile`, `info`, or `settings`.
+- `region`：`hero`、`control`、`status` 或 `details`。
+- `group`：相同值的 capability 共享一个 control 标签页。
+- `order`：在该 region 内的升序排列。
+- `span`：为 manifest 兼容性保留；等行仪表盘界面会将可见条目归一化为相同宽度。
+- `icon`：由 Host 控制的 token：`battery`、`gauge`、`wave`、`lightbulb`、
+  `timer`、`profile`、`info` 或 `settings`。
 
-The host keeps page sections stable and distributes every visible item at equal
-width across one full row. Dashboard control groups and status items are capped
-at six per region; extra declarations are rejected and defensively hidden by
-the host. Plugins cannot inject components or styles. Older manifests without
-`placements` use the legacy `metadata.section` compatibility adapter.
+Host 保持页面各 section 稳定，并将每个可见条目以等宽分布在一整行内。仪表盘 control group 和 status 条目在每个 region 内最多 6 个；多出的声明会被拒绝并由 Host 防御性隐藏。插件无法注入组件或样式。没有 `placements` 的旧版 manifest 使用传统的 `metadata.section` 兼容适配器。
 
-Metadata never supplies executable code or CSS. A control is writable
-only when the signed plugin is trusted, the connected device exposes the
-declared mutation, and the runtime validates its input schema.
+Metadata 永不提供可执行代码或 CSS。仅当签名插件受信任、连接的设备暴露了所声明的 mutation、且运行时校验其输入 schema 时，控件才可写。
 
 ```bash
 cargo xtask plugin new mira.example ./example
@@ -60,4 +50,4 @@ cargo xtask plugin pack ./example --output example.mira-plugin
 cargo xtask plugin inspect example.mira-plugin
 ```
 
-Production signing requires an externally protected key and a release review. The CLI intentionally refuses `sign` when no configured signing provider exists.
+生产签名需要外部受保护的密钥和一次 release review。CLI 在没有配置签名提供方时会故意拒绝 `sign`。
