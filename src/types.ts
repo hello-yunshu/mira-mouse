@@ -196,6 +196,9 @@ export interface AppSettings {
   automaticUpdateChecks: boolean;
   automaticUpdateInstall: boolean;
   automaticPluginUpdateChecks: boolean;
+  batteryHistoryEnabled: boolean;
+  batteryHistoryRetentionDays: number;
+  unusualDrainAlerts: boolean;
 }
 
 export interface DeviceSnapshot {
@@ -238,4 +241,65 @@ export interface DiscoveredDevice {
   usage: number;
   lastErrorKind?: string;
   lastError?: string;
+}
+
+// ─── 电量使用情况类型 ───────────────────────────────────────────────────────
+
+export type BatteryHistoryRange = '24h' | '10d';
+
+export type BatteryInsightType =
+  | 'estimatedRemaining'
+  | 'estimatedRunout'
+  | 'chargingHabit'
+  | 'abnormalDrain'
+  | 'powerSavingTip'
+  | 'batteryConsistency'
+  | 'deviceComparison';
+
+export type BatteryInsightSeverity = 'info' | 'warning' | 'critical';
+
+export interface BatteryHistoryResponse {
+  range: BatteryHistoryRange;
+  devices: BatteryHistoryDevice[];
+  series: BatteryHistorySeries[];
+  insights: BatteryInsight[];
+  generatedAt: string;
+}
+
+export interface BatteryHistoryDevice {
+  key: string;
+  deviceId: string;
+  deviceName: string;
+  connection: string;
+  componentId: string;
+  componentLabel: string;
+  latestPercentage?: number;
+  latestCharging?: boolean;
+  latestAt?: string;
+  lowBattery?: boolean;
+}
+
+export interface BatteryHistorySeries {
+  key: string;
+  points: BatteryHistoryPoint[];
+}
+
+export interface BatteryHistoryPoint {
+  bucketStart: string;
+  bucketLabel: string;
+  percentage?: number;
+  minPercentage?: number;
+  maxPercentage?: number;
+  charging?: boolean;
+  lowBattery?: boolean;
+  sampleCount: number;
+}
+
+export interface BatteryInsight {
+  type: BatteryInsightType;
+  severity: BatteryInsightSeverity;
+  title: string;
+  message: string;
+  /** 关联设备 key（{deviceId}:{componentId}）。undefined 表示跨设备洞察，前端应始终展示。 */
+  deviceKey?: string;
 }

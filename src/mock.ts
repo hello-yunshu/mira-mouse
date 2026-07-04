@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Explicit test/development boundary. Production must obtain snapshots from Tauri commands.
-import type { DeviceSnapshot, DeviceSnapshotEntry, DeviceState } from './types';
+import type { BatteryHistoryResponse, BatteryHistoryRange, DeviceSnapshot, DeviceSnapshotEntry, DeviceState } from './types';
 import { DEFAULT_THEME_ACCENT } from './theme';
 
 export const MOCK_DEVICE: DeviceState = {
@@ -135,3 +135,141 @@ export const MOCK_DEVICE_ENTRIES: DeviceSnapshotEntry[] = [
     }),
   },
 ];
+
+// ─── 电量使用情况 mock 数据 ─────────────────────────────────────────────────
+
+function mockBatteryHistoryResponse(range: BatteryHistoryRange): BatteryHistoryResponse {
+  const now = new Date();
+  const bucketCount = range === '24h' ? 24 : 10;
+
+  // 鼠标：24h 从 90% 降到 82%，中间有充电段；10d 从 100% 降到 82%。
+  const mousePoints = Array.from({ length: bucketCount }, (_, i) => {
+    if (range === '24h') {
+      const hourAgo = bucketCount - 1 - i;
+      const startPct = 90 - (hourAgo < 12 ? hourAgo * 1.0 : 12 + (hourAgo - 12) * 0.5);
+      const charging = hourAgo >= 4 && hourAgo <= 5; // 2 小时充电段
+      const pct = charging ? Math.min(100, startPct + 15) : Math.max(15, startPct);
+      const lowBattery = !charging && pct < 20;
+      return {
+        bucketStart: new Date(now.getTime() - hourAgo * 3600_000).toISOString(),
+        bucketLabel: `${String(new Date(now.getTime() - hourAgo * 3600_000).getHours()).padStart(2, '0')}:00`,
+        percentage: Math.round(pct),
+        minPercentage: Math.round(pct - 2),
+        maxPercentage: Math.round(pct + 2),
+        charging,
+        lowBattery,
+        sampleCount: 3 + (i % 4),
+      };
+    }
+    // 10d
+    const dayAgo = bucketCount - 1 - i;
+    const pct = Math.max(20, 100 - dayAgo * 2 - 5);
+    const charging = dayAgo === 5;
+    const lowBattery = !charging && pct < 20;
+    const day = new Date(now.getTime() - dayAgo * 86400_000);
+    return {
+      bucketStart: day.toISOString(),
+      bucketLabel: `${String(day.getMonth() + 1).padStart(2, '0')}-${String(day.getDate()).padStart(2, '0')}`,
+      percentage: pct,
+      minPercentage: Math.max(0, pct - 5),
+      maxPercentage: Math.min(100, pct + 3),
+      charging,
+      lowBattery,
+      sampleCount: 8 + (i % 5),
+    };
+  });
+
+  // 接收器：电量稳定在 95-100%。
+  const receiverPoints = Array.from({ length: bucketCount }, (_, i) => {
+    const ago = range === '24h' ? bucketCount - 1 - i : bucketCount - 1 - i;
+    const interval = range === '24h' ? 3600_000 : 86400_000;
+    const dt = new Date(now.getTime() - ago * interval);
+    const pct = 100 - (range === '24h' ? ago * 0.1 : ago * 0.5);
+    return {
+      bucketStart: dt.toISOString(),
+      bucketLabel: range === '24h'
+        ? `${String(dt.getHours()).padStart(2, '0')}:00`
+        : `${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`,
+      percentage: Math.round(pct),
+      minPercentage: Math.round(pct - 1),
+      maxPercentage: 100,
+      charging: false,
+      lowBattery: false,
+      sampleCount: 2 + (i % 3),
+    };
+  });
+
+  return {
+    range,
+    devices: [
+      {
+        key: 'mouse:abc123:mouse',
+        deviceId: 'abc123',
+        deviceName: 'Mira Example Wireless Mouse',
+        connection: 'wireless',
+        componentId: 'mouse',
+        componentLabel: 'mock.mouseLabel',
+        latestPercentage: 82,
+        latestCharging: false,
+        latestAt: now.toISOString(),
+        lowBattery: false,
+      },
+      {
+        key: 'mouse:abc123:receiver',
+        deviceId: 'abc123',
+        deviceName: 'Mira Example Wireless Mouse',
+        connection: 'wireless',
+        componentId: 'receiver',
+        componentLabel: 'mock.receiverLabel',
+        latestPercentage: 96,
+        latestCharging: false,
+        latestAt: now.toISOString(),
+        lowBattery: false,
+      },
+    ],
+    series: [
+      { key: 'mouse:abc123:mouse', points: mousePoints },
+      { key: 'mouse:abc123:receiver', points: receiverPoints },
+    ],
+    insights: [
+      {
+        type: 'estimatedRemaining',
+        severity: 'info',
+        title: 'estimatedRemaining',
+        message: range === '24h' ? '3 天 6 小时' : '4 天 2 小时',
+        deviceKey: 'mouse:abc123:mouse',
+      },
+      {
+        type: 'estimatedRunout',
+        severity: 'info',
+        title: 'estimatedRunout',
+        message: '07-08 14:00',
+        deviceKey: 'mouse:abc123:mouse',
+      },
+      {
+        type: 'chargingHabit',
+        severity: 'info',
+        title: 'chargingHabit',
+        message: 'start:18% end:92% count:3',
+        deviceKey: 'mouse:abc123:mouse',
+      },
+      {
+        type: 'batteryConsistency',
+        severity: 'info',
+        title: 'batteryConsistency',
+        message: 'stable',
+        deviceKey: 'mouse:abc123:mouse',
+      },
+      {
+        type: 'deviceComparison',
+        severity: 'info',
+        title: 'deviceComparison',
+        message: 'mouse:1.20 receiver:0.05',
+      },
+    ],
+    generatedAt: now.toISOString(),
+  };
+}
+
+export const MOCK_BATTERY_HISTORY_24H: BatteryHistoryResponse = mockBatteryHistoryResponse('24h');
+export const MOCK_BATTERY_HISTORY_10D: BatteryHistoryResponse = mockBatteryHistoryResponse('10d');
