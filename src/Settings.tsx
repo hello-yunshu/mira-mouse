@@ -36,6 +36,9 @@ const DEFAULT_SETTINGS: AppSettings = {
   automaticUpdateChecks: true,
   automaticUpdateInstall: false,
   automaticPluginUpdateChecks: true,
+  batteryHistoryEnabled: true,
+  batteryHistoryRetentionDays: 10,
+  unusualDrainAlerts: false,
 };
 
 type SettingsTab = 'general' | 'device' | 'plugins' | 'privacy' | 'about';
@@ -88,6 +91,7 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, previewMode = fal
   const [diagnostics, setDiagnostics] = useState<string>('');
   const [discovered, setDiscovered] = useState<DiscoveredDevice[]>([]);
   const [saved, setSaved] = useState(false);
+  const [confirmingClearBattery, setConfirmingClearBattery] = useState(false);
   const [tabState, setTabState] = useState<{ tab: SettingsTab; focusToken: number }>(() => ({
     tab: focusPluginUpdateToken > 0 ? 'plugins' : 'general',
     focusToken: focusPluginUpdateToken,
@@ -230,6 +234,40 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, previewMode = fal
     invoke<DiscoveredDevice[]>('discover_devices')
       .then(setDiscovered)
       .catch((err) => notifyError(t('notification.scanFailed'), String(err)));
+  }
+
+  // 电量历史清除
+  async function handleClearBatteryHistory() {
+    if (previewMode) {
+      notifyInfo(t('batteryUsage.clearDone'), '');
+      setConfirmingClearBattery(false);
+      return;
+    }
+    try {
+      await invoke('battery_history_clear');
+      notifyInfo(t('batteryUsage.clearDone'), '');
+      setConfirmingClearBattery(false);
+    } catch (err) {
+      notifyError(t('batteryUsage.clearHistory'), String(err));
+      setConfirmingClearBattery(false);
+    }
+  }
+
+  // 电量历史导出
+  async function handleExportBatteryHistory(format: 'json' | 'csv') {
+    if (previewMode) return;
+    try {
+      const ext = format === 'csv' ? 'csv' : 'json';
+      const path = await save({
+        defaultPath: `battery-history.${ext}`,
+        filters: [{ name: format.toUpperCase(), extensions: [ext] }],
+      });
+      if (!path) return;
+      await invoke('battery_history_export', { format, path });
+      notifyInfo(t('batteryUsage.exportDone'), '');
+    } catch (err) {
+      notifyError(t('batteryUsage.exportFailed'), String(err));
+    }
   }
 
   async function checkPluginUpdates() {
@@ -400,6 +438,62 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, previewMode = fal
                 aria-label={t('settings.lowBattery.label', { value: settings.lowBatteryThreshold })}
               />
             </SettingRow>
+          </section>
+
+          <section className="card settings-section" id="settings-battery-history-section">
+            <div className="card-title">
+              <h2>{t('settings.section.batteryHistory')}</h2>
+            </div>
+            <SettingRow title={t('batteryUsage.recordEnabled')} hint={t('batteryUsage.recordEnabledHint')}>
+              <Toggle
+                checked={settings.batteryHistoryEnabled}
+                onChange={(v) => update({ batteryHistoryEnabled: v })}
+                label={t('batteryUsage.recordEnabled')}
+              />
+            </SettingRow>
+            {settings.batteryHistoryEnabled && (
+              <>
+                <SettingRow title={t('batteryUsage.retentionDays')} hint={t('batteryUsage.retentionDaysHint')}>
+                  <select
+                    value={settings.batteryHistoryRetentionDays}
+                    onChange={(e) => update({ batteryHistoryRetentionDays: Number(e.target.value) })}
+                    aria-label={t('batteryUsage.retentionDays')}
+                  >
+                    {[3, 7, 10, 14, 30, 60, 90].map((d) => (
+                      <option key={d} value={d}>{d}</option>
+                    ))}
+                  </select>
+                </SettingRow>
+                <SettingRow title={t('batteryUsage.unusualDrainAlerts')} hint={t('batteryUsage.unusualDrainAlertsHint')}>
+                  <Toggle
+                    checked={settings.unusualDrainAlerts}
+                    onChange={(v) => update({ unusualDrainAlerts: v })}
+                    label={t('batteryUsage.unusualDrainAlerts')}
+                  />
+                </SettingRow>
+                <div className="battery-history-actions">
+                  {confirmingClearBattery ? (
+                    <div className="clear-confirm-bar">
+                      <span>{t('batteryUsage.clearConfirm')}</span>
+                      <button className="danger" onClick={handleClearBatteryHistory}>{t('batteryUsage.clearHistoryConfirm')}</button>
+                      <button onClick={() => setConfirmingClearBattery(false)}>{t('common.cancel')}</button>
+                    </div>
+                  ) : (
+                    <>
+                      <button className="action-btn" onClick={() => setConfirmingClearBattery(true)}>
+                        {t('batteryUsage.clearHistory')}
+                      </button>
+                      <button className="action-btn" onClick={() => handleExportBatteryHistory('json')}>
+                        {t('batteryUsage.exportJson')}
+                      </button>
+                      <button className="action-btn" onClick={() => handleExportBatteryHistory('csv')}>
+                        {t('batteryUsage.exportCsv')}
+                      </button>
+                    </>
+                  )}
+                </div>
+              </>
+            )}
           </section>
 
           <section className="card settings-section">
