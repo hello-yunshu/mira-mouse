@@ -1,8 +1,7 @@
 <!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
-# Roadmap
+# 路线图
 
-1. Complete offline core and malicious-package verification.
-2. Publish a reviewed, read-only AMaster plugin candidate with Fixture evidence.
-3. Establish immutable signed plugin and unsigned community application release chains.
-4. Add write capabilities only after model/firmware/transport-specific hardware readback evidence.
-
+1. 完成离线核心与恶意插件包验证。
+2. 发布经评审的、只读的 AMaster 插件候选版本，附带 Fixture 证据。
+3. 建立不可变的签名插件与未签名社区应用发布链。
+4. 仅在获得型号/固件/传输方式相关的硬件回读证据后，才加入写入能力。

@@ -653,7 +653,6 @@ describe('real device snapshot mapping', () => {
     render(<App />);
     expect(await screen.findByText('未知设备')).toBeInTheDocument();
     expect(screen.getByText('未知连接 · 已连接')).toBeInTheDocument();
-    // No control tabs should appear when no capabilities are reported.
     expect(screen.queryByRole('tab', { name: 'DPI' })).not.toBeInTheDocument();
     expect(screen.queryByRole('tab', { name: '回报率' })).not.toBeInTheDocument();
     expect(screen.queryByRole('tab', { name: '灯光' })).not.toBeInTheDocument();
@@ -860,7 +859,6 @@ describe('real device snapshot mapping', () => {
     expect(await screen.findByText('HID++ Light Mouse')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('tab', { name: '灯光' }));
 
-    // HID++ multi-field UI: effect/speed/brightness/color buttons visible
     expect(screen.getByText('常亮')).toBeInTheDocument();
     expect(screen.getByText('128')).toBeInTheDocument();
     expect(screen.getByText('50%')).toBeInTheDocument();
@@ -887,15 +885,12 @@ describe('real device snapshot mapping', () => {
     expect(screen.getByRole('slider').closest('label')).toHaveClass('range-field');
     fireEvent.click(screen.getByRole('button', { name: '取消' }));
 
-    // Click effect button to open edit modal
     fireEvent.click(screen.getByRole('button', { name: /灯效/ }));
     expect(screen.getByRole('dialog', { name: '灯效' })).toBeInTheDocument();
 
-    // Change effect to 'wave' (value 4) and submit
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 4 } });
     fireEvent.click(screen.getByRole('button', { name: '应用' }));
 
-    // Verify full params (effect/speed/brightness/color/extraColor) are submitted
     // extraColor defaults to #000000 when device hasn't reported it (non-starlight effect)
     // lightingRole.mouse uses the unified direct/memory mutation. Even if an older
     // snapshot still lists the narrow onboard mutation, the UI should not pick it.

@@ -1,5 +1,10 @@
 <!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
-# Code of Conduct
+# 行为准则
 
-Be respectful, specific, and patient. Harassment, discrimination, sexualized conduct, threats, doxxing, and publication of private device identifiers are not accepted. Maintainers may remove content or restrict participation to protect the community. Report conduct privately through the repository owner's verified GitHub contact once configured.
+请保持尊重、具体、耐心。以下行为不被接受：
 
+- 骚扰、歧视、性化言行
+- 威胁、人肉搜索（doxxing）
+- 公开他人设备的私有标识符
+
+维护者为保护社区，有权移除内容或限制参与。如需举报行为问题，请通过仓库所有者已验证的 GitHub 联系方式私下联系。

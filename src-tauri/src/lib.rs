@@ -1334,7 +1334,6 @@ fn production_trust_store() -> TrustStore {
         PRODUCTION_KEY_ID.to_string(),
         decode_key(PRODUCTION_PUBLIC_KEY_HEX),
     );
-    // Test packages are trusted in all builds until the first production release.
     trust
         .0
         .insert(TEST_KEY_ID.to_string(), decode_key(TEST_PUBLIC_KEY_HEX));

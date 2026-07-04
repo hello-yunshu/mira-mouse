@@ -1,5 +1,10 @@
 <!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
-# Trademark Policy
+# 商标政策
 
-The source licenses do not grant rights to use the Mira name, Mira Mouse name, or project logo to imply an official build or endorsement. Honest nominative use, unmodified redistribution clearly identified as such, and compatibility discussion are not restricted by this policy. Device manufacturer marks belong to their respective owners.
+源代码许可证不授予使用 Mira 名称、Mira Mouse 名称或项目徽标以暗示官方构建或背书的权利。以下使用不受本政策限制：
 
+- 诚实的指示性使用（nominative use）
+- 明确标注为未修改再分发的再分发
+- 兼容性讨论
+
+设备厂商商标归各自所有者所有。

@@ -1,41 +1,41 @@
 <!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
-# Install on macOS
+# 在 macOS 上安装
 
-The community DMG is published on the [GitHub Releases](https://github.com/hello-yunshu/mira-mouse/releases) page with the stable name `Mira_macOS_<version>_universal.dmg` (universal binary covering Apple silicon and Intel).
+社区 DMG 发布在 [GitHub Releases](https://github.com/hello-yunshu/mira-mouse/releases) 页面，文件名固定为 `Mira_macOS_<version>_universal.dmg`（universal 二进制，同时覆盖 Apple silicon 与 Intel）。
 
-## Option A: Homebrew (recommended)
+## 方案 A：Homebrew（推荐）
 
 ```bash
 brew tap hello-yunshu/mira
 brew install --cask mira
 ```
 
-Upgrades follow the standard Homebrew flow:
+升级遵循标准 Homebrew 流程：
 
 ```bash
 brew upgrade --cask mira
 ```
 
-See [install-homebrew.md](install-homebrew.md) for details on the tap, the unsigned-app caveats, and the available variables.
+关于 tap、未签名应用注意事项以及可用变量的详细信息，请参阅 [install-homebrew.md](install-homebrew.md)。
 
-## Option B: Direct DMG download
+## 方案 B：直接下载 DMG
 
-1. Download `Mira_macOS_<version>_universal.dmg` from the latest release.
-2. Verify the SHA-256 published next to the asset on the release page.
-3. Mount the DMG and drag `Mira.app` to `/Applications`.
+1. 从最新 release 下载 `Mira_macOS_<version>_universal.dmg`。
+2. 校验 release 页面上资产旁公布的 SHA-256。
+3. 挂载 DMG，将 `Mira.app` 拖入 `/Applications`。
 
-## First-launch warning
+## 首次启动警告
 
-Mira is built with ad-hoc signing (`signingIdentity: "-"`) and is **not** notarized. The first launch is blocked by Gatekeeper. To proceed, do one of the following:
+Mira 使用 ad-hoc 签名（`signingIdentity: "-"`）构建，**未**经过公证（notarized）。首次启动会被 Gatekeeper 拦截。如需继续，请选择以下任一方式：
 
-- Right-click `Mira.app` → **Open** → confirm in the Gatekeeper dialog.
-- Open **System Settings → Privacy & Security** → click **Open Anyway** next to the Mira block.
-- Run once in Terminal:
+- 右键点击 `Mira.app` → **打开（Open）** → 在 Gatekeeper 对话框中确认。
+- 打开 **系统设置（System Settings） → 隐私与安全性（Privacy & Security）** → 在 Mira 的拦截提示旁点击 **仍要打开（Open Anyway）**。
+- 在终端中执行一次：
 
   ```bash
   xattr -dr com.apple.quarantine /Applications/Mira.app
   ```
 
-## Permissions
+## 权限
 
-After launching, grant HID access in **System Settings → Privacy & Security → Input Monitoring** if Mira needs to communicate with the mouse.
+启动后，如果 Mira 需要与鼠标通信，请在 **系统设置 → 隐私与安全性 → 输入监控（Input Monitoring）** 中授予 HID 访问权限。

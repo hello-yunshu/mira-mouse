@@ -1,5 +1,4 @@
 <!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
-# Plugin Security
+# 插件安全
 
-Mira treats every plugin and Fixture as hostile input. It validates the ZIP structure without writing entries, checks exact content coverage, verifies signatures against explicit trust roots, constrains device matching and report behavior, and executes only bounded declarative operations. Conflicting device matches force read-only behavior. Developer-mode unsigned imports are visibly untrusted and cannot write.
-
+Mira 将每个插件和 Fixture 视为恶意输入。它在不写入条目的情况下校验 ZIP 结构，检查精确的内容覆盖范围，对照显式 trust roots 校验签名，约束设备匹配和上报行为，并仅执行有界的声明式操作。冲突的设备匹配会强制只读行为。开发者模式下的未签名导入被明显标记为不可信，且无法写入。
