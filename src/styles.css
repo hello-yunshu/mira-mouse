@@ -1879,3 +1879,373 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
     }
   }
 }
+
+/* ─── 电量使用情况 ─────────────────────────────────────────────────────── */
+/* 电池 popover 底部入口 */
+.battery-usage-entry {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  margin-top: 6px;
+  padding: 6px 4px;
+  border: none;
+  border-top: 1px solid var(--surface-group-border);
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  border-radius: 0 0 8px 8px;
+  transition: color .12s ease, background .12s ease;
+}
+.battery-usage-entry:hover {
+  color: var(--accent);
+  background: var(--surface-group-bg-hover);
+}
+.battery-usage-entry svg { width: 14px; height: 14px; }
+
+/* 模态遮罩 */
+.battery-usage-modal-overlay {
+  position: fixed;
+  z-index: 40;
+  inset: 0;
+  padding: 36px 16px 18px;
+  display: grid;
+  place-items: center;
+  background: var(--scrim-bg-strong);
+}
+.battery-usage-modal {
+  width: min(620px, calc(100vw - 32px));
+  max-height: calc(100vh - 54px);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--floating-glass-border);
+  border-radius: 18px;
+  padding: 16px 18px;
+  background: var(--floating-glass-bg);
+  -webkit-backdrop-filter: var(--floating-glass-blur);
+  backdrop-filter: var(--floating-glass-blur);
+  box-shadow: var(--floating-glass-shadow);
+}
+
+/* 标题区 */
+.battery-usage-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--surface-group-border);
+}
+.battery-usage-header h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 680;
+  letter-spacing: -.01em;
+}
+.battery-usage-header p {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+.battery-usage-close-icon {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background .12s ease, color .12s ease;
+}
+.battery-usage-close-icon:hover {
+  background: var(--surface-group-bg-hover);
+  color: inherit;
+}
+.battery-usage-close-icon svg { width: 16px; height: 16px; }
+
+/* 控制区：设备选择 + 时间范围 */
+.battery-usage-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 0;
+}
+.battery-device-selector {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.battery-device-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border: 1px solid var(--surface-group-border);
+  border-radius: 999px;
+  background: var(--surface-group-bg);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .12s ease, color .12s ease, border-color .12s ease;
+}
+.battery-device-chip svg { width: 13px; height: 13px; }
+.battery-device-chip:hover { background: var(--surface-group-bg-hover); }
+.battery-device-chip.active {
+  color: var(--accent);
+  border-color: color-mix(in oklch, var(--accent), transparent 40%);
+  background: color-mix(in oklch, var(--accent), transparent 88%);
+}
+.battery-range-toggle {
+  display: inline-flex;
+  border: 1px solid var(--surface-group-border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--surface-group-bg);
+}
+.battery-range-toggle button {
+  padding: 5px 12px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .12s ease, color .12s ease;
+}
+.battery-range-toggle button.active {
+  color: var(--accent);
+  background: color-mix(in oklch, var(--accent), transparent 86%);
+}
+
+/* 摘要卡片 */
+.battery-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 8px;
+  padding: 6px 0 10px;
+}
+.battery-summary-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--surface-group-border);
+  border-radius: 10px;
+  background: var(--surface-group-bg);
+}
+.battery-summary-item .summary-label {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
+}
+.battery-summary-item .summary-value {
+  font-size: 13px;
+  font-weight: 680;
+  letter-spacing: -.01em;
+}
+.battery-summary-item .summary-sub {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+/* 图表卡片 */
+.battery-chart-card {
+  padding: 8px 10px 6px;
+  border: 1px solid var(--surface-group-border);
+  border-radius: 12px;
+  background: var(--surface-group-bg);
+}
+.battery-chart-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--muted);
+}
+.battery-chart-header span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.battery-chart-header svg { width: 13px; height: 13px; }
+.battery-chart {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+.battery-chart-bar {
+  fill: color-mix(in oklch, var(--accent), transparent 30%);
+  transition: fill .12s ease;
+}
+.battery-chart-bar:hover { fill: var(--accent); }
+.battery-chart-charging { fill: #7eb2a0; }
+.battery-chart-low { fill: #d39378; }
+.battery-chart-empty { fill: var(--surface-group-border); }
+
+/* 图表 tooltip */
+.battery-chart-tooltip {
+  margin-top: 6px;
+  padding: 7px 10px;
+  border: 1px solid var(--surface-group-border);
+  border-radius: 10px;
+  background: var(--floating-glass-bg);
+  font-size: 11px;
+  color: var(--muted);
+}
+.battery-chart-tooltip .tooltip-row { display: flex; gap: 4px; }
+.battery-chart-tooltip .tooltip-row strong { color: inherit; font-weight: 680; }
+
+/* 洞察卡片 */
+.battery-insight-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px;
+  padding: 8px 0;
+}
+.battery-insight-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--surface-group-border);
+  border-radius: 10px;
+  background: var(--surface-group-bg);
+}
+.battery-insight-card .insight-icon {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 8px;
+  background: var(--surface-group-bg-hover);
+  color: var(--muted);
+}
+.battery-insight-card .insight-icon svg { width: 14px; height: 14px; }
+.battery-insight-card .insight-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.battery-insight-card .insight-body strong {
+  font-size: 11px;
+  font-weight: 680;
+}
+.battery-insight-card .insight-body span {
+  color: var(--muted);
+  font-size: 11px;
+  word-break: break-word;
+}
+.battery-insight-card.severity-warning { border-color: rgb(211 147 120 / 38%); }
+.battery-insight-card.severity-warning .insight-icon { color: #d39378; }
+.battery-insight-card.severity-critical { border-color: rgb(190 76 90 / 38%); }
+.battery-insight-card.severity-critical .insight-icon { color: #be4c5a; }
+
+/* 操作区 */
+.battery-history-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--surface-group-border);
+  margin-top: 6px;
+}
+.battery-history-actions .action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 12px;
+  border: 1px solid var(--control-secondary-border);
+  border-radius: 9px;
+  background: var(--control-secondary-bg);
+  color: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .12s ease, border-color .12s ease;
+}
+.battery-history-actions .action-btn:hover {
+  background: var(--surface-group-bg-hover);
+  border-color: var(--accent);
+}
+.battery-history-actions .action-btn svg { width: 13px; height: 13px; }
+.battery-history-actions .clear-confirm-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid rgb(190 76 90 / 30%);
+  border-radius: 9px;
+  background: rgb(190 76 90 / 8%);
+  font-size: 11px;
+}
+.battery-history-actions .clear-confirm-bar span { flex: 1; color: var(--muted); }
+.battery-history-actions .clear-confirm-bar button {
+  padding: 4px 10px;
+  border: 1px solid var(--control-secondary-border);
+  border-radius: 7px;
+  background: var(--control-secondary-bg);
+  color: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.battery-history-actions .clear-confirm-bar button.danger {
+  border-color: rgb(190 76 90 / 40%);
+  background: rgb(190 76 90 / 14%);
+  color: #be4c5a;
+}
+
+/* 空状态 */
+.battery-usage-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 32px 16px;
+  text-align: center;
+}
+.battery-usage-empty h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 680;
+}
+.battery-usage-empty p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  max-width: 320px;
+}
+.battery-usage-empty .battery-usage-close,
+.battery-usage-close {
+  margin-top: 6px;
+  padding: 6px 14px;
+  border: 1px solid var(--control-secondary-border);
+  border-radius: 9px;
+  background: var(--control-secondary-bg);
+  color: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .12s ease;
+}
+.battery-usage-empty .battery-usage-close:hover,
+.battery-usage-close:hover {
+  background: var(--surface-group-bg-hover);
+}

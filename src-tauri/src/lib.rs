@@ -4,6 +4,11 @@ use chrono::{Local, NaiveTime, Timelike};
 use ed25519_dalek::VerifyingKey;
 use hidapi::HidApi;
 use mira_core::{DeviceSnapshot, LowBatteryCrossing, PluginCapability, PluginCapabilityPlacement};
+
+mod battery_history;
+use battery_history::{
+    AbnormalDrainNotifyState, BatteryHistoryResponse, BatteryHistoryState,
+};
 use mira_plugin_runtime::{
     extract_package, hid, inspect_package, mutate_device_with_package, read_device_with_package,
     writable_mutations_with_package, Capability, ConnectionKind, Control, DeviceReading,
@@ -614,6 +619,10 @@ struct SessionState {
     /// 窗口 focus 消费的方式：发通知时写入 action，前端聚焦窗口时取走并执行跳转。
     /// Windows/Linux 直接用 `notify-rust` 的 `wait_for_action` 处理点击，不写入此字段。
     pending_notification_action: Mutex<Option<String>>,
+    /// 电量使用情况：内存缓存 + 去重追踪。启动时从 battery_history.json 加载。
+    battery_history: BatteryHistoryState,
+    /// 异常耗电通知节流：同一设备同一部件 24 小时内最多通知一次。
+    abnormal_drain_notify: AbnormalDrainNotifyState,
 }
 
 #[cfg(debug_assertions)]
@@ -1358,10 +1367,10 @@ struct AboutInfo {
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct DeviceSnapshotEntry {
-    device_key: String,
-    snapshot: DeviceSnapshot,
-    selected: bool,
+pub struct DeviceSnapshotEntry {
+    pub device_key: String,
+    pub snapshot: DeviceSnapshot,
+    pub selected: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -1427,6 +1436,12 @@ struct AppSettings {
     automatic_update_checks: bool,
     automatic_update_install: bool,
     automatic_plugin_update_checks: bool,
+    /// 电量使用情况：是否记录电量历史。默认开启。
+    battery_history_enabled: bool,
+    /// 电量历史保留天数。默认 10 天。
+    battery_history_retention_days: u16,
+    /// 异常耗电提醒：当设备掉电速度明显高于平时时通过现有通知方式提醒。
+    unusual_drain_alerts: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1469,6 +1484,9 @@ impl Default for AppSettings {
             automatic_update_checks: true,
             automatic_update_install: false,
             automatic_plugin_update_checks: true,
+            battery_history_enabled: true,
+            battery_history_retention_days: 10,
+            unusual_drain_alerts: false,
         }
     }
 }
@@ -1490,6 +1508,9 @@ impl AppSettings {
         }
         if !(1..=60).contains(&self.refresh_interval_seconds) {
             self.refresh_interval_seconds = defaults.refresh_interval_seconds;
+        }
+        if !(1..=90).contains(&self.battery_history_retention_days) {
+            self.battery_history_retention_days = defaults.battery_history_retention_days;
         }
         if !is_clock_time(&self.night_mode_start) {
             self.night_mode_start = defaults.night_mode_start;
@@ -5134,6 +5155,41 @@ fn read_device_once(app: &AppHandle) {
                 .collect();
             store_snapshots(&state, &new_map);
             let _ = app.emit("device-snapshots-updated", &snapshot_entries);
+            // 电量使用情况采样：在设备轮询成功后记录电量样本。
+            // 记录失败不影响设备功能（record_samples 内部静默处理）。
+            {
+                let settings = cached_settings(app);
+                battery_history::record_samples(
+                    &state.battery_history,
+                    app,
+                    settings.battery_history_enabled,
+                    settings.low_battery_threshold,
+                    settings.battery_history_retention_days as i64,
+                    &snapshot_entries,
+                );
+                // 异常耗电通知：仅在设置开启时检查，节流由 AbnormalDrainNotifyState 保证。
+                if settings.unusual_drain_alerts {
+                    let now = chrono::Utc::now();
+                    let alerts = battery_history::check_abnormal_drain(
+                        &state.battery_history,
+                        &state.abnormal_drain_notify,
+                        now,
+                    );
+                    if !alerts.is_empty() {
+                        let lang = effective_language(&settings.language);
+                        for (_key, device_name) in alerts {
+                            let _ = app
+                                .notification()
+                                .builder()
+                                .title(tr_abnormal_drain_title(lang))
+                                .body(tr_abnormal_drain_body(lang, &device_name))
+                                .show();
+                        }
+                        // 持久化节流状态：重启后 24h 内不重复通知。
+                        let _ = state.abnormal_drain_notify.save_to_disk(app);
+                    }
+                }
+            }
             // 选择当前设备通知前端（向后兼容单设备 API）。
             if let Some(snapshot) = selected_snapshot(&state) {
                 // 通知前端有新数据，前端通过事件监听更新，无需轮询
@@ -6287,6 +6343,60 @@ fn take_pending_notification_action(state: tauri::State<SessionState>) -> Option
         .unwrap_or(None)
 }
 
+// ─── 电量使用情况 Tauri 命令 ─────────────────────────────────────────────────
+
+/// 获取电量历史（24 小时或 10 天聚合 + 洞察分析）。
+#[tauri::command]
+fn battery_history_get(
+    state: tauri::State<SessionState>,
+    range: String,
+) -> Result<BatteryHistoryResponse, String> {
+    let settings = cached_settings_for_state(&state);
+    let range_str = if range == "24h" { "24h" } else { "10d" };
+    Ok(battery_history::build_response(
+        &state.battery_history,
+        settings.low_battery_threshold,
+        range_str,
+    ))
+}
+
+/// 清除电量历史。不影响低电量通知设置。
+#[tauri::command]
+fn battery_history_clear(
+    state: tauri::State<SessionState>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    battery_history::clear_history(&state.battery_history, &app)
+}
+
+/// 导出电量历史。默认 JSON，可选 CSV。仅包含脱敏后的电量历史数据。
+/// 如果提供 path，直接写入文件；否则返回内容字符串。
+#[tauri::command]
+fn battery_history_export(
+    state: tauri::State<SessionState>,
+    format: Option<String>,
+    path: Option<String>,
+) -> Result<String, String> {
+    let fmt = format.as_deref().unwrap_or("json");
+    let content = battery_history::export_history(&state.battery_history, fmt)?;
+    if let Some(p) = path {
+        std::fs::write(&p, &content).map_err(|e| format!("write failed: {e}"))?;
+        Ok(String::new())
+    } else {
+        Ok(content)
+    }
+}
+
+/// 从 SessionState 读取缓存的设置（避免在 command 中需要 AppHandle）。
+fn cached_settings_for_state(state: &SessionState) -> AppSettings {
+    state
+        .cached_settings
+        .lock()
+        .ok()
+        .and_then(|guard| guard.clone())
+        .unwrap_or_default()
+}
+
 fn focus_main_from_tray(app: &AppHandle) {
     focus_main(app.get_webview_window("main"));
     request_refresh(&app.state::<SessionState>());
@@ -6416,6 +6526,22 @@ fn tr_low_battery_body(lang: &str, threshold: u8, percent: u8) -> String {
         )
     } else {
         format!("鼠标电量已低于 {}%（当前 {}%）", threshold, percent)
+    }
+}
+
+fn tr_abnormal_drain_title(lang: &str) -> &'static str {
+    if lang == "en" {
+        "Unusual battery drain"
+    } else {
+        "异常耗电"
+    }
+}
+
+fn tr_abnormal_drain_body(lang: &str, device_key: &str) -> String {
+    if lang == "en" {
+        format!("Recent drain rate is noticeably higher than usual for {}.", device_key)
+    } else {
+        format!("{} 最近掉电速度明显高于平时。", device_key)
     }
 }
 
@@ -7344,6 +7470,17 @@ pub fn run() {
             // 窗口隐藏到托盘后仍可接收主题变化事件，无需轮询。
             spawn_theme_watcher(app.handle().clone());
 
+            // 电量使用情况：从磁盘加载历史数据到内存缓存。
+            // 文件不存在或损坏时返回空历史，不崩溃。
+            app.state::<SessionState>()
+                .battery_history
+                .load_from_disk(app.handle());
+
+            // 异常耗电通知节流状态：从磁盘加载，重启后保留 24h 节流状态。
+            app.state::<SessionState>()
+                .abnormal_drain_notify
+                .load_from_disk(app.handle());
+
             // 安静灯光：从磁盘加载持久化状态（saved_mouse_light），然后启动调度器线程。
             //
             // 初始 phase 的选择策略（关键）：
@@ -7418,7 +7555,10 @@ pub fn run() {
             show_update_notification,
             take_pending_notification_action,
             export_diagnostics,
-            plugin_locales
+            plugin_locales,
+            battery_history_get,
+            battery_history_clear,
+            battery_history_export
         ])
         .build(tauri::generate_context!())
         .expect("Mira application runtime failed")

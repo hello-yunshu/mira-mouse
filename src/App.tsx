@@ -6,6 +6,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import {
   BatteryHigh,
   CaretDown,
+  ChartBar,
   Gauge,
   Gear,
   Info,
@@ -24,6 +25,7 @@ import { applyTheme, pastelDisplayColor } from './theme';
 import i18n, { applyLanguage, loadPluginLocales, resolveLabelKey } from './i18n';
 import { SettingsPage } from './Settings';
 import { AboutPage } from './About';
+import { BatteryUsageModal } from './BatteryUsage';
 import type { AboutInfo, AppSettings, DeviceBattery, DeviceCapabilities, DeviceSnapshot, DeviceSnapshotEntry, DeviceState, EffectOption, PluginCapability, PluginUpdateInfo, ReceiverLightingOptions, ThemeMode } from './types';
 import {
   offValue as pluginOffValue,
@@ -1196,6 +1198,7 @@ function Dashboard({
   const [previewMessage, setPreviewMessage] = useState('');
   const [showDetails, setShowDetails] = useState(false);
   const [showBatteries, setShowBatteries] = useState(false);
+  const [showBatteryUsage, setShowBatteryUsage] = useState(false);
   const [showDeviceSwitcher, setShowDeviceSwitcher] = useState(false);
   const batteryControlRef = useRef<HTMLDivElement>(null);
   const deviceSwitcherRef = useRef<HTMLDivElement>(null);
@@ -1508,6 +1511,17 @@ function Dashboard({
                     <strong>{battery.percentage}%{battery.charging ? ` · ${t('common.charging')}` : ''}</strong>
                   </div>
                 ))}
+                <button
+                  type="button"
+                  className="battery-usage-entry"
+                  onClick={() => {
+                    setShowBatteries(false);
+                    setShowBatteryUsage(true);
+                  }}
+                >
+                  <ChartBar weight="regular" />
+                  <span>{t('batteryUsage.title')}</span>
+                </button>
               </section>
             </div>
             )}
@@ -1950,6 +1964,11 @@ function Dashboard({
         <button className="details-button" onClick={() => setShowDetails(true)}><ReadCvLogo weight="regular" />{t('dashboard.allReadInfo')}</button>
       </div>
       {showDetails && <DeviceDetails capabilities={device.capabilities} pluginCapabilities={pluginDescriptors} onClose={() => setShowDetails(false)} />}
+      <BatteryUsageModal
+        open={showBatteryUsage}
+        onClose={() => setShowBatteryUsage(false)}
+        hasBattery={device.batteries.length > 0}
+      />
     </main>
   );
 }
