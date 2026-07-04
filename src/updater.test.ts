@@ -117,9 +117,7 @@ describe('application updater', () => {
       close: vi.fn().mockResolvedValue(undefined),
     });
     await startAutomaticAppUpdateCheck(true, true);
-    // 自动安装开启时跳过 update-found 通知
     expect(mocks.invoke).not.toHaveBeenCalledWith('show_update_notification', expect.objectContaining({ title: '发现新版本' }));
-    // 安装完成后发送 update-installed 重启通知
     expect(mocks.invoke).toHaveBeenCalledWith('show_update_notification', expect.objectContaining({ title: '更新就绪', action: 'about-update' }));
     expect(appUpdateState()).toMatchObject({ phase: 'installed' });
   });
