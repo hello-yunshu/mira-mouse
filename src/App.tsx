@@ -26,6 +26,7 @@ import i18n, { applyLanguage, loadPluginLocales, resolveLabelKey } from './i18n'
 import { SettingsPage } from './Settings';
 import { AboutPage } from './About';
 import { BatteryUsageModal } from './BatteryUsage';
+import { BatteryLevelIcon } from './BatteryLevelIcon';
 import type { AboutInfo, AppSettings, DeviceBattery, DeviceCapabilities, DeviceSnapshot, DeviceSnapshotEntry, DeviceState, EffectOption, PluginCapability, PluginUpdateInfo, ReceiverLightingOptions, ThemeMode } from './types';
 import {
   offValue as pluginOffValue,
@@ -1179,12 +1180,14 @@ function Dashboard({
   deviceEntries,
   onDeviceChange,
   onDeviceSelect,
+  onOpenBatteryUsage,
   pluginLocaleRevision,
 }: {
   device: DeviceState;
   deviceEntries: DeviceSnapshotEntry[];
   onDeviceChange: (device: DeviceState) => void;
   onDeviceSelect: (deviceKey: string) => void;
+  onOpenBatteryUsage: () => void;
   pluginLocaleRevision: number;
 }) {
   const { t } = useTranslation();
@@ -1198,7 +1201,6 @@ function Dashboard({
   const [previewMessage, setPreviewMessage] = useState('');
   const [showDetails, setShowDetails] = useState(false);
   const [showBatteries, setShowBatteries] = useState(false);
-  const [showBatteryUsage, setShowBatteryUsage] = useState(false);
   const [showDeviceSwitcher, setShowDeviceSwitcher] = useState(false);
   const batteryControlRef = useRef<HTMLDivElement>(null);
   const deviceSwitcherRef = useRef<HTMLDivElement>(null);
@@ -1498,29 +1500,49 @@ function Dashboard({
                 aria-controls="device-batteries"
                 onClick={() => setShowBatteries((visible) => !visible)}
               >
-                <BatteryHigh weight="regular" />
+                <BatteryLevelIcon percentage={device.batteries[0].percentage} charging={device.batteries[0].charging} />
                 {device.batteries[0].percentage}%
                 {device.batteries[0].charging ? ` · ${t('common.charging')}` : ''}
                 <span className="battery-count">{t('dashboard.deviceCount', { count: device.batteries.length })}</span>
               </button>
               <section id="device-batteries" className="battery-popover" aria-label={t('dashboard.deviceBattery')}>
-                <p>{t('dashboard.deviceBattery')}</p>
-                {device.batteries.map((battery) => (
-                  <div key={battery.id} className="battery-device">
-                    <span><BatteryHigh weight="regular" />{t(battery.label, { defaultValue: battery.label })}</span>
-                    <strong>{battery.percentage}%{battery.charging ? ` · ${t('common.charging')}` : ''}</strong>
-                  </div>
-                ))}
+                <div className="battery-popover-header">
+                  <span>{t('dashboard.deviceBattery')}</span>
+                  <strong>{t('dashboard.deviceCount', { count: device.batteries.length })}</strong>
+                </div>
+                <div className="battery-device-list">
+                  {device.batteries.map((battery) => {
+                    const batteryLevel = Math.max(0, Math.min(100, battery.percentage));
+                    const batteryTone = battery.charging ? 'charging' : batteryLevel <= 20 ? 'low' : 'normal';
+                    return (
+                      <div key={battery.id} className={`battery-device ${batteryTone}`}>
+	                        <div className="battery-device-main">
+	                          <span className="battery-device-label">
+	                            <BatteryLevelIcon percentage={battery.percentage} charging={battery.charging} />
+	                            <span>{t(battery.label, { defaultValue: battery.label })}</span>
+	                          </span>
+                          <span className="battery-device-value">
+                            <strong>{battery.percentage}%</strong>
+                            {battery.charging && <small>{t('common.charging')}</small>}
+                          </span>
+                        </div>
+                        <span className="battery-meter" aria-hidden="true">
+                          <span className="battery-meter-fill" style={{ width: `${batteryLevel}%` }} />
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
                 <button
                   type="button"
                   className="battery-usage-entry"
                   onClick={() => {
                     setShowBatteries(false);
-                    setShowBatteryUsage(true);
+                    onOpenBatteryUsage();
                   }}
                 >
                   <ChartBar weight="regular" />
-                  <span>{t('batteryUsage.title')}</span>
+                  <span>{t('batteryUsage.viewTrend')}</span>
                 </button>
               </section>
             </div>
@@ -1964,11 +1986,6 @@ function Dashboard({
         <button className="details-button" onClick={() => setShowDetails(true)}><ReadCvLogo weight="regular" />{t('dashboard.allReadInfo')}</button>
       </div>
       {showDetails && <DeviceDetails capabilities={device.capabilities} pluginCapabilities={pluginDescriptors} onClose={() => setShowDetails(false)} />}
-      <BatteryUsageModal
-        open={showBatteryUsage}
-        onClose={() => setShowBatteryUsage(false)}
-        hasBattery={device.batteries.length > 0}
-      />
     </main>
   );
 }
@@ -1990,6 +2007,7 @@ export default function App() {
   const [demoMode, setDemoMode] = useState(pureWeb);
   const [refreshNonce, setRefreshNonce] = useState(0);
   const [appNotification, setAppNotification] = useState<AppNotification>();
+  const [showBatteryUsage, setShowBatteryUsage] = useState(false);
   const [pluginLocaleRevision, setPluginLocaleRevision] = useState(0);
   const windowsPlatform = isWindowsPlatform();
   const macPlatform = isMacPlatform();
@@ -2011,6 +2029,9 @@ export default function App() {
   const openSettingsPluginUpdate = useCallback(() => {
     setView('settings');
     setSettingsPluginFocusToken((value) => value + 1);
+  }, []);
+  const openBatteryUsage = useCallback(() => {
+    setShowBatteryUsage(true);
   }, []);
 
   useEffect(() => onAppNotification(setAppNotification), []);
@@ -2036,6 +2057,7 @@ export default function App() {
         invoke<string | null>('take_pending_notification_action')
           .then((action) => {
             if (action === 'about-update') openAboutUpdate();
+            if (action === 'battery-usage') openBatteryUsage();
           })
           .catch(() => {});
       }).then((un) => { unlistenFocus = un; }).catch(() => {});
@@ -2047,7 +2069,7 @@ export default function App() {
       if (unlistenResume) unlistenResume();
       if (unlistenFocus) unlistenFocus();
     };
-  }, [openAboutUpdate, pureWeb]);
+  }, [openAboutUpdate, openBatteryUsage, pureWeb]);
 
   // 加载插件 locale，注册为 i18n namespace（以插件 ID 命名）。
   // 异步加载完成后刷新插件标签 memo，加载前使用 host 回退标签。
@@ -2203,15 +2225,20 @@ export default function App() {
       <button className={`nav-link nav-about ${view === 'about' ? 'active' : ''}`} onClick={() => setView('about')} aria-label={t('nav.about')}><Info weight="regular" /></button>
       {demoMode && <button className="nav-link nav-exit" onClick={exitDemo} aria-label={t('nav.exitDemo')} title={t('nav.exitDemo')}><SignOut weight="regular" /></button>}
     </div>
-    {view === 'dashboard' && (device ? <Dashboard device={device} deviceEntries={deviceEntries} onDeviceChange={setDevice} onDeviceSelect={selectDevice} pluginLocaleRevision={pluginLocaleRevision} /> : <EmptyState onRefresh={() => { setDemoMode(false); setDevice(undefined); setDeviceEntries([]); deviceEntriesRef.current = []; setRefreshNonce((value) => value + 1); invoke('device_refresh').catch(() => {}); }} onDemo={() => { setDemoMode(true); setDevice(MOCK_DEVICE); setDeviceEntries(MOCK_DEVICE_ENTRIES); deviceEntriesRef.current = MOCK_DEVICE_ENTRIES; }} onOpenSettings={() => setView('settings')} />)}
-    {view === 'settings' && <SettingsPage previewMode={pureWeb} focusPluginUpdateToken={settingsPluginFocusToken} onNavigateAbout={() => setView('about')} onThemeChange={setTheme} supportsAnyLighting={device ? pluginSupportsAnyLighting(compatibilityCapabilities(device), device.writableMutations) : false} supportsMouseLighting={device ? pluginSupportsLightingMutation(compatibilityCapabilities(device), device.writableMutations, 'mouse') : false} supportsReceiverLighting={device ? pluginSupportsLightingMutation(compatibilityCapabilities(device), device.writableMutations, 'receiver') : false} />}
+    {view === 'dashboard' && (device ? <Dashboard device={device} deviceEntries={deviceEntries} onDeviceChange={setDevice} onDeviceSelect={selectDevice} onOpenBatteryUsage={openBatteryUsage} pluginLocaleRevision={pluginLocaleRevision} /> : <EmptyState onRefresh={() => { setDemoMode(false); setDevice(undefined); setDeviceEntries([]); deviceEntriesRef.current = []; setRefreshNonce((value) => value + 1); invoke('device_refresh').catch(() => {}); }} onDemo={() => { setDemoMode(true); setDevice(MOCK_DEVICE); setDeviceEntries(MOCK_DEVICE_ENTRIES); deviceEntriesRef.current = MOCK_DEVICE_ENTRIES; }} onOpenSettings={() => setView('settings')} />)}
+    {view === 'settings' && <SettingsPage previewMode={pureWeb} focusPluginUpdateToken={settingsPluginFocusToken} onNavigateAbout={() => setView('about')} onOpenBatteryUsage={openBatteryUsage} onThemeChange={setTheme} supportsAnyLighting={device ? pluginSupportsAnyLighting(compatibilityCapabilities(device), device.writableMutations) : false} supportsMouseLighting={device ? pluginSupportsLightingMutation(compatibilityCapabilities(device), device.writableMutations, 'mouse') : false} supportsReceiverLighting={device ? pluginSupportsLightingMutation(compatibilityCapabilities(device), device.writableMutations, 'receiver') : false} />}
     {view === 'about' && <AboutPage previewMode={pureWeb} focusUpdateToken={aboutFocusToken} onBack={() => setView('settings')} />}
+    <BatteryUsageModal
+      open={showBatteryUsage}
+      onClose={() => setShowBatteryUsage(false)}
+      hasBattery={(device?.batteries.length ?? 0) > 0}
+    />
     {appNotification && (
       <aside
         className={`app-notification ${appNotification.kind} ${appNotification.action ? 'actionable' : ''}`}
         role={appNotification.kind === 'error' ? 'alert' : 'status'}
         aria-live={appNotification.kind === 'error' ? 'assertive' : 'polite'}
-        onClick={appNotification.action === 'about-update' ? openAboutUpdate : appNotification.action === 'settings-plugin-update' ? openSettingsPluginUpdate : appNotification.action === 'relaunch' ? () => void relaunchAfterUpdate() : undefined}
+        onClick={appNotification.action === 'about-update' ? openAboutUpdate : appNotification.action === 'settings-plugin-update' ? openSettingsPluginUpdate : appNotification.action === 'battery-usage' ? openBatteryUsage : appNotification.action === 'relaunch' ? () => void relaunchAfterUpdate() : undefined}
       >
         <div><strong>{appNotification.title}</strong>{appNotification.body && <p>{appNotification.body}</p>}</div>
         <button type="button" onClick={(event) => { event.stopPropagation(); setAppNotification(undefined); }} aria-label={t('dashboard.closeNotification')}><X weight="bold" /></button>
