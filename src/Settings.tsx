@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useTranslation } from 'react-i18next';
+import { ChartBar } from '@phosphor-icons/react';
 import type { AppSettings, BundledPluginInfo, AboutInfo, DiscoveredDevice, PluginInstallResult, PluginUpdateInfo, ThemeMode } from './types';
 import { Tooltip } from './Tooltip';
 import { notifyError, notifyInfo } from './notify';
@@ -37,7 +38,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   automaticUpdateInstall: false,
   automaticPluginUpdateChecks: true,
   batteryHistoryEnabled: true,
-  batteryHistoryRetentionDays: 10,
+  batteryHistoryRetentionDays: 30,
   unusualDrainAlerts: false,
 };
 
@@ -79,7 +80,7 @@ function isWindowsPlatform(): boolean {
   return previewPlatform === 'windows' || navigator.userAgent.includes('Windows');
 }
 
-export function SettingsPage({ onNavigateAbout, onThemeChange, previewMode = false, supportsAnyLighting = false, supportsMouseLighting = false, supportsReceiverLighting = false, focusPluginUpdateToken = 0 }: { onNavigateAbout: () => void; onThemeChange: (theme: ThemeMode) => void; previewMode?: boolean; supportsAnyLighting?: boolean; supportsMouseLighting?: boolean; supportsReceiverLighting?: boolean; focusPluginUpdateToken?: number }) {
+export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, onThemeChange, previewMode = false, supportsAnyLighting = false, supportsMouseLighting = false, supportsReceiverLighting = false, focusPluginUpdateToken = 0 }: { onNavigateAbout: () => void; onOpenBatteryUsage?: () => void; onThemeChange: (theme: ThemeMode) => void; previewMode?: boolean; supportsAnyLighting?: boolean; supportsMouseLighting?: boolean; supportsReceiverLighting?: boolean; focusPluginUpdateToken?: number }) {
   const { t } = useTranslation();
   const windowsPlatform = isWindowsPlatform();
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
@@ -443,6 +444,10 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, previewMode = fal
           <section className="card settings-section" id="settings-battery-history-section">
             <div className="card-title">
               <h2>{t('settings.section.batteryHistory')}</h2>
+              <button type="button" className="settings-inline-action" onClick={onOpenBatteryUsage}>
+                <ChartBar weight="regular" />
+                <span>{t('batteryUsage.viewTrend')}</span>
+              </button>
             </div>
             <SettingRow title={t('batteryUsage.recordEnabled')} hint={t('batteryUsage.recordEnabledHint')}>
               <Toggle
@@ -471,29 +476,29 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, previewMode = fal
                     label={t('batteryUsage.unusualDrainAlerts')}
                   />
                 </SettingRow>
-                <div className="battery-history-actions">
-                  {confirmingClearBattery ? (
-                    <div className="clear-confirm-bar">
-                      <span>{t('batteryUsage.clearConfirm')}</span>
-                      <button className="danger" onClick={handleClearBatteryHistory}>{t('batteryUsage.clearHistoryConfirm')}</button>
-                      <button onClick={() => setConfirmingClearBattery(false)}>{t('common.cancel')}</button>
-                    </div>
-                  ) : (
-                    <>
-                      <button className="action-btn" onClick={() => setConfirmingClearBattery(true)}>
-                        {t('batteryUsage.clearHistory')}
-                      </button>
-                      <button className="action-btn" onClick={() => handleExportBatteryHistory('json')}>
-                        {t('batteryUsage.exportJson')}
-                      </button>
-                      <button className="action-btn" onClick={() => handleExportBatteryHistory('csv')}>
-                        {t('batteryUsage.exportCsv')}
-                      </button>
-                    </>
-                  )}
-                </div>
               </>
             )}
+            <div className="battery-history-actions">
+              {confirmingClearBattery ? (
+                <div className="clear-confirm-bar">
+                  <span>{t('batteryUsage.clearConfirm')}</span>
+                  <button className="danger" onClick={handleClearBatteryHistory}>{t('batteryUsage.clearHistoryConfirm')}</button>
+                  <button onClick={() => setConfirmingClearBattery(false)}>{t('common.cancel')}</button>
+                </div>
+              ) : (
+                <>
+                  <button className="action-btn" onClick={() => setConfirmingClearBattery(true)}>
+                    {t('batteryUsage.clearHistory')}
+                  </button>
+                  <button className="action-btn" onClick={() => handleExportBatteryHistory('json')}>
+                    {t('batteryUsage.exportJson')}
+                  </button>
+                  <button className="action-btn" onClick={() => handleExportBatteryHistory('csv')}>
+                    {t('batteryUsage.exportCsv')}
+                  </button>
+                </>
+              )}
+            </div>
           </section>
 
           <section className="card settings-section">
@@ -506,7 +511,7 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, previewMode = fal
             </SettingRow>
             {settings.nightModeEnabled && (
               <>
-                <p className="setting-hint" style={{ paddingTop: 4 }}>{t('settings.nightMode.triggerSection')}</p>
+                <p className="settings-subsection-title">{t('settings.nightMode.triggerSection')}</p>
                 <SettingRow title={t('settings.nightMode.triggerTime')} hint={t('settings.nightMode.triggerTimeHint')}>
                   <Toggle
                     checked={settings.nightModeTriggerTime}
@@ -549,7 +554,7 @@ export function SettingsPage({ onNavigateAbout, onThemeChange, previewMode = fal
                 <SettingRow title={t('settings.nightMode.triggerLowBattery')} hint={t('settings.nightMode.triggerLowBatteryHint', { value: settings.lowBatteryThreshold })}>
                   <Toggle checked={settings.nightModeTriggerLowBattery} onChange={(v) => update({ nightModeTriggerLowBattery: v })} label={t('settings.nightMode.triggerLowBattery')} />
                 </SettingRow>
-                <p className="setting-hint" style={{ paddingTop: 4 }}>{t('settings.nightMode.targetSection')}</p>
+                <p className="settings-subsection-title">{t('settings.nightMode.targetSection')}</p>
                 <SettingRow title={t('settings.nightMode.targetMouse')} hint={t('settings.nightMode.targetMouseHint')}>
                   <Toggle checked={settings.nightModeTargetMouse} onChange={(v) => update({ nightModeTargetMouse: v })} label={t('settings.nightMode.targetMouse')} disabled={!supportsMouseLighting} />
                 </SettingRow>

@@ -3,7 +3,7 @@ export interface AppNotification {
   title: string;
   body?: string;
   kind: 'error' | 'info' | 'success';
-  action?: 'about-update' | 'settings-plugin-update' | 'relaunch';
+  action?: 'about-update' | 'settings-plugin-update' | 'battery-usage' | 'relaunch';
 }
 
 const notificationTarget = new EventTarget();

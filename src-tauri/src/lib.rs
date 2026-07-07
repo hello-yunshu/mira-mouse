@@ -6,9 +6,7 @@ use hidapi::HidApi;
 use mira_core::{DeviceSnapshot, LowBatteryCrossing, PluginCapability, PluginCapabilityPlacement};
 
 mod battery_history;
-use battery_history::{
-    AbnormalDrainNotifyState, BatteryHistoryResponse, BatteryHistoryState,
-};
+use battery_history::{AbnormalDrainNotifyState, BatteryHistoryResponse, BatteryHistoryState};
 use mira_plugin_runtime::{
     extract_package, hid, inspect_package, mutate_device_with_package, read_device_with_package,
     writable_mutations_with_package, Capability, ConnectionKind, Control, DeviceReading,
@@ -1438,7 +1436,7 @@ struct AppSettings {
     automatic_plugin_update_checks: bool,
     /// 电量使用情况：是否记录电量历史。默认开启。
     battery_history_enabled: bool,
-    /// 电量历史保留天数。默认 10 天。
+    /// 电量历史保留天数。默认 30 天。
     battery_history_retention_days: u16,
     /// 异常耗电提醒：当设备掉电速度明显高于平时时通过现有通知方式提醒。
     unusual_drain_alerts: bool,
@@ -1485,7 +1483,7 @@ impl Default for AppSettings {
             automatic_update_install: false,
             automatic_plugin_update_checks: true,
             battery_history_enabled: true,
-            battery_history_retention_days: 10,
+            battery_history_retention_days: 30,
             unusual_drain_alerts: false,
         }
     }
@@ -1777,6 +1775,7 @@ mod settings_tests {
         assert!(settings.automatic_update_checks);
         assert!(!settings.automatic_update_install);
         assert!(settings.automatic_plugin_update_checks);
+        assert_eq!(settings.battery_history_retention_days, 30);
     }
 
     #[test]
@@ -5177,6 +5176,9 @@ fn read_device_once(app: &AppHandle) {
                     );
                     if !alerts.is_empty() {
                         let lang = effective_language(&settings.language);
+                        if let Ok(mut guard) = state.pending_notification_action.lock() {
+                            *guard = Some("battery-usage".to_string());
+                        }
                         for (_key, device_name) in alerts {
                             let _ = app
                                 .notification()
@@ -5207,6 +5209,9 @@ fn read_device_once(app: &AppHandle) {
                 if notify {
                     if let Some(percent) = battery_value {
                         let lang = effective_language(&settings.language);
+                        if let Ok(mut guard) = state.pending_notification_action.lock() {
+                            *guard = Some("battery-usage".to_string());
+                        }
                         let _ = app
                             .notification()
                             .builder()
@@ -6270,7 +6275,7 @@ fn navigate_about_update(app: &AppHandle) {
 }
 
 /// 发送原生系统通知，可选地携带点击跳转动作。
-/// `action` 目前仅支持 `"about-update"`（跳转到「关于 → 检查更新」区域）。
+/// `action` 目前支持 `"about-update"` 与 `"battery-usage"`。
 /// - macOS：`tauri-plugin-notification` 不暴露点击回调，改将 action 写入
 ///   `pending_notification_action`，由前端窗口 focus 时通过
 ///   `take_pending_notification_action` 取走并执行跳转。
@@ -6537,11 +6542,14 @@ fn tr_abnormal_drain_title(lang: &str) -> &'static str {
     }
 }
 
-fn tr_abnormal_drain_body(lang: &str, device_key: &str) -> String {
+fn tr_abnormal_drain_body(lang: &str, device_name: &str) -> String {
     if lang == "en" {
-        format!("Recent drain rate is noticeably higher than usual for {}.", device_key)
+        format!(
+            "Recent drain rate is noticeably higher than usual for {}.",
+            device_name
+        )
     } else {
-        format!("{} 最近掉电速度明显高于平时。", device_key)
+        format!("{} 最近掉电速度明显高于平时。", device_name)
     }
 }
 
@@ -7462,6 +7470,21 @@ pub fn run() {
                 });
             }
 
+            // 电量历史 + 异常耗电节流状态：在后台线程加载，避免阻塞启动。
+            // load_from_disk 采用合并策略：保留内存中比磁盘最新样本更晚的记录，
+            // 即使轮询线程在此期间已写入新样本也不会丢失（见 merge_samples）。
+            let bg_handle = app.handle().clone();
+            std::thread::spawn(move || {
+                bg_handle
+                    .state::<SessionState>()
+                    .battery_history
+                    .load_from_disk(&bg_handle);
+                bg_handle
+                    .state::<SessionState>()
+                    .abnormal_drain_notify
+                    .load_from_disk(&bg_handle);
+            });
+
             // Spawn background thread that reads the device periodically.
             // This keeps `device_snapshot` instant — the UI never blocks on HID I/O.
             spawn_device_reader(app.handle().clone());
@@ -7469,17 +7492,6 @@ pub fn run() {
             // 启动系统主题变化监听器（事件驱动，跨平台）。
             // 窗口隐藏到托盘后仍可接收主题变化事件，无需轮询。
             spawn_theme_watcher(app.handle().clone());
-
-            // 电量使用情况：从磁盘加载历史数据到内存缓存。
-            // 文件不存在或损坏时返回空历史，不崩溃。
-            app.state::<SessionState>()
-                .battery_history
-                .load_from_disk(app.handle());
-
-            // 异常耗电通知节流状态：从磁盘加载，重启后保留 24h 节流状态。
-            app.state::<SessionState>()
-                .abnormal_drain_notify
-                .load_from_disk(app.handle());
 
             // 安静灯光：从磁盘加载持久化状态（saved_mouse_light），然后启动调度器线程。
             //
