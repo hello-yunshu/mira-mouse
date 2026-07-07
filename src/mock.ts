@@ -140,19 +140,22 @@ export const MOCK_DEVICE_ENTRIES: DeviceSnapshotEntry[] = [
 
 function mockBatteryHistoryResponse(range: BatteryHistoryRange): BatteryHistoryResponse {
   const now = new Date();
-  const bucketCount = range === '24h' ? 24 : 10;
+  const bucketCount = range === '24h' ? 48 : 10;
 
   // 鼠标：24h 从 90% 降到 82%，中间有充电段；10d 从 100% 降到 82%。
   const mousePoints = Array.from({ length: bucketCount }, (_, i) => {
     if (range === '24h') {
-      const hourAgo = bucketCount - 1 - i;
+      // 48 个 30 分钟 bucket，halfHourAgo 表示该 bucket 距今的半小时数
+      const halfHourAgo = bucketCount - 1 - i;
+      const hourAgo = halfHourAgo * 0.5;
       const startPct = 90 - (hourAgo < 12 ? hourAgo * 1.0 : 12 + (hourAgo - 12) * 0.5);
       const charging = hourAgo >= 4 && hourAgo <= 5; // 2 小时充电段
       const pct = charging ? Math.min(100, startPct + 15) : Math.max(15, startPct);
       const lowBattery = !charging && pct < 20;
+      const dt = new Date(now.getTime() - halfHourAgo * 1800_000);
       return {
-        bucketStart: new Date(now.getTime() - hourAgo * 3600_000).toISOString(),
-        bucketLabel: `${String(new Date(now.getTime() - hourAgo * 3600_000).getHours()).padStart(2, '0')}:00`,
+        bucketStart: dt.toISOString(),
+        bucketLabel: `${String(dt.getHours()).padStart(2, '0')}:${String(dt.getMinutes()).padStart(2, '0')}`,
         percentage: Math.round(pct),
         minPercentage: Math.round(pct - 2),
         maxPercentage: Math.round(pct + 2),
@@ -182,13 +185,14 @@ function mockBatteryHistoryResponse(range: BatteryHistoryRange): BatteryHistoryR
   // 接收器：电量稳定在 95-100%。
   const receiverPoints = Array.from({ length: bucketCount }, (_, i) => {
     const ago = range === '24h' ? bucketCount - 1 - i : bucketCount - 1 - i;
-    const interval = range === '24h' ? 3600_000 : 86400_000;
+    const interval = range === '24h' ? 1800_000 : 86400_000;
     const dt = new Date(now.getTime() - ago * interval);
-    const pct = 100 - (range === '24h' ? ago * 0.1 : ago * 0.5);
+    const hourAgo = range === '24h' ? ago * 0.5 : ago;
+    const pct = 100 - (range === '24h' ? hourAgo * 0.1 : ago * 0.5);
     return {
       bucketStart: dt.toISOString(),
       bucketLabel: range === '24h'
-        ? `${String(dt.getHours()).padStart(2, '0')}:00`
+        ? `${String(dt.getHours()).padStart(2, '0')}:${String(dt.getMinutes()).padStart(2, '0')}`
         : `${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`,
       percentage: Math.round(pct),
       minPercentage: Math.round(pct - 1),
@@ -236,7 +240,7 @@ function mockBatteryHistoryResponse(range: BatteryHistoryRange): BatteryHistoryR
         type: 'estimatedRemaining',
         severity: 'info',
         title: 'estimatedRemaining',
-        message: range === '24h' ? '3 天 6 小时' : '4 天 2 小时',
+        message: range === '24h' ? 'remainingDaysHours|3|6' : 'remainingDaysHours|4|2',
         deviceKey: 'mouse:abc123:mouse',
       },
       {
@@ -250,21 +254,29 @@ function mockBatteryHistoryResponse(range: BatteryHistoryRange): BatteryHistoryR
         type: 'chargingHabit',
         severity: 'info',
         title: 'chargingHabit',
-        message: 'start:18% end:92% count:3',
+        message: 'chargingHabitStartEnd|18|92|3',
         deviceKey: 'mouse:abc123:mouse',
       },
       {
         type: 'batteryConsistency',
         severity: 'info',
         title: 'batteryConsistency',
-        message: 'stable',
+        message: 'consistencyStable',
         deviceKey: 'mouse:abc123:mouse',
       },
       {
-        type: 'deviceComparison',
+        type: 'averageDailyDrain',
         severity: 'info',
-        title: 'deviceComparison',
-        message: 'mouse:1.20 receiver:0.05',
+        title: 'averageDailyDrain',
+        message: `averageDailyDrain|${range === '24h' ? '2.3' : '1.8'}`,
+        deviceKey: 'mouse:abc123:mouse',
+      },
+      {
+        type: 'chargingCount',
+        severity: 'info',
+        title: 'chargingCount',
+        message: `chargingCount|${range === '24h' ? '1' : '6'}`,
+        deviceKey: 'mouse:abc123:mouse',
       },
     ],
     generatedAt: now.toISOString(),

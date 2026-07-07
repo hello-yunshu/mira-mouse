@@ -254,7 +254,10 @@ export type BatteryInsightType =
   | 'abnormalDrain'
   | 'powerSavingTip'
   | 'batteryConsistency'
-  | 'deviceComparison';
+  | 'deviceComparison'
+  | 'averageDailyDrain'
+  | 'chargingCount'
+  | 'lowestLevel';
 
 export type BatteryInsightSeverity = 'info' | 'warning' | 'critical';
 

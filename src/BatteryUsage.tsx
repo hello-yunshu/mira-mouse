@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { CSSProperties } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { save } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
-import { BatteryHigh, Lightning, Warning, X, Trash, Download, Clock, ChartBar } from '@phosphor-icons/react';
+import { Warning, X, Trash, Download, Clock, ChartBar, CaretUpDown, Plug, Gauge, ArrowsLeftRight, Lightbulb, TrendDown, BatteryCharging, BatteryLow } from '@phosphor-icons/react';
 import type {
   BatteryHistoryRange,
   BatteryHistoryResponse,
@@ -13,6 +14,7 @@ import type {
 } from './types';
 import { MOCK_BATTERY_HISTORY_24H, MOCK_BATTERY_HISTORY_10D } from './mock';
 import { notifyError, notifySuccess } from './notify';
+import { BatteryLevelIcon } from './BatteryLevelIcon';
 
 // ─── 工具函数 ───────────────────────────────────────────────────────────────
 
@@ -33,6 +35,84 @@ function formatRelativeTime(iso: string, t: (key: string) => string): string {
   return `${days} d`;
 }
 
+function formatInsightMessage(insight: BatteryInsight, t: (key: string, options?: Record<string, unknown>) => string): string {
+  const message = insight.message;
+  if (!message) return '';
+  if (message === 'notEnoughData' || message === 'veryLowDrain') {
+    return t(`batteryUsage.${message}`);
+  }
+
+  const [kind, ...parts] = message.split('|');
+  switch (kind) {
+    case 'remainingMinutes':
+      return t('batteryUsage.remainingMinutes', { minutes: parts[0] ?? '?' });
+    case 'remainingHours':
+      return t('batteryUsage.remainingHours', { hours: parts[0] ?? '?' });
+    case 'remainingDaysHours':
+      return t('batteryUsage.remainingDaysHours', { days: parts[0] ?? '?', hours: parts[1] ?? '?' });
+    case 'chargingHabitStartEnd':
+      return t('batteryUsage.chargingHabitStartEnd', {
+        start: parts[0] ?? '?',
+        end: parts[1] ?? '?',
+        count: parts[2] ?? '?',
+      });
+    case 'chargingHabitStartOnly':
+      return t('batteryUsage.chargingHabitStartOnly', {
+        start: parts[0] ?? '?',
+        count: parts[1] ?? '?',
+      });
+    case 'abnormalDrain2h':
+      return t('batteryUsage.abnormalDrain2h', { drop: parts[0] ?? '?' });
+    case 'consistencyStable':
+    case 'consistencyFaster':
+    case 'consistencySlower':
+      return t(`batteryUsage.${kind}`);
+    case 'powerSavingTipLow':
+      return t('batteryUsage.powerSavingTipLow', {
+        component: t(parts[0] ?? '', { defaultValue: parts[0] ?? '' }),
+      });
+    case 'deviceComparisonDrain':
+      return t('batteryUsage.deviceComparisonDrain', {
+        fastest: t(parts[0] ?? '', { defaultValue: parts[0] ?? '' }),
+        fastestRate: parts[1] ?? '?',
+        slowest: t(parts[2] ?? '', { defaultValue: parts[2] ?? '' }),
+        slowestRate: parts[3] ?? '?',
+      });
+    case 'averageDailyDrain':
+      return t('batteryUsage.averageDailyDrainMsg', { percent: parts[0] ?? '?' });
+    case 'chargingCount':
+      return t('batteryUsage.chargingCountMsg', { count: parts[0] ?? '?' });
+    case 'lowestLevel':
+      return t('batteryUsage.lowestLevelMsg', { level: parts[0] ?? '?' });
+    default:
+      return t(`batteryUsage.${message}`, { defaultValue: message });
+  }
+}
+
+// ─── 溢出文字弹窗 ───────────────────────────────────────────────────────────
+// 检测单行/多行文字是否溢出容器，hover 时显示完整内容的毛玻璃弹窗。
+function OverflowTip({ text, className, multiline }: { text: string; className?: string; multiline?: boolean }) {
+  const ref = useRef<HTMLSpanElement>(null);
+  const [show, setShow] = useState(false);
+
+  const check = () => {
+    const el = ref.current;
+    if (!el) return false;
+    return multiline ? el.scrollHeight > el.clientHeight : el.scrollWidth > el.clientWidth;
+  };
+
+  return (
+    <span
+      className={`overflow-tip-host${multiline ? ' multiline' : ''}`}
+      onMouseEnter={() => { if (check()) setShow(true); }}
+      onMouseLeave={() => setShow(false)}
+    >
+      <span ref={ref} className={className}>{text}</span>
+      {show && <span className="overflow-tip" role="tooltip">{text}</span>}
+    </span>
+  );
+}
+
 // ─── SVG 图表 ───────────────────────────────────────────────────────────────
 
 interface ChartProps {
@@ -46,121 +126,165 @@ function BatteryUsageChart({ points, range }: ChartProps) {
   const [focusIndex, setFocusIndex] = useState<number | null>(null);
 
   const width = 520;
-  const height = 160;
-  const padding = { top: 12, right: 8, bottom: 24, left: 28 };
+  const height = 136;
+  const padding = { top: 8, right: 8, bottom: 20, left: 28 };
   const chartWidth = width - padding.left - padding.right;
   const chartHeight = height - padding.top - padding.bottom;
-  const barGap = 2;
-  const barWidth = (chartWidth - barGap * (points.length - 1)) / points.length;
+  const pointCount = Math.max(points.length, 1);
+  const slotWidth = chartWidth / pointCount;
+  // 24h 采用 30 分钟粒度（48 个点），柱宽占 slot 的 82%，让柱子紧密排列（类似 iOS 电量图表）。
+  // 10d 粒度较粗，保留较窄柱宽 + 间距。
+  const visualBarWidth = Math.max(2, Math.min(range === '24h' ? slotWidth * 0.82 : slotWidth * 0.5, slotWidth - 1));
 
   const activeIndex = hoverIndex ?? focusIndex;
   const activePoint = activeIndex !== null ? points[activeIndex] : null;
+  const tooltipStyle = activeIndex !== null
+    ? ({ '--tooltip-x': `${((padding.left + activeIndex * slotWidth + slotWidth / 2) / width) * 100}%` } as CSSProperties)
+    : undefined;
 
   const yTicks = [0, 25, 50, 75, 100];
 
   return (
     <div className="battery-chart-card">
       <div className="battery-chart-header">
-        <span><ChartBar weight="regular" /> {t('batteryUsage.title')}</span>
+        <span><ChartBar weight="regular" /> {t('batteryUsage.change' + (range === '24h' ? '24h' : '10d'))}</span>
       </div>
-      <svg
-        className="battery-chart"
-        viewBox={`0 0 ${width} ${height}`}
-        role="img"
-        aria-label={t('batteryUsage.title')}
-      >
-        {/* Y 轴参考线 */}
-        {yTicks.map((tick) => {
-          const y = padding.top + chartHeight - (tick / 100) * chartHeight;
-          return (
-            <g key={tick}>
-              <line
-                x1={padding.left}
-                y1={y}
-                x2={width - padding.right}
-                y2={y}
-                stroke="var(--muted)"
-                strokeOpacity={0.12}
-                strokeWidth={1}
-              />
-              <text
-                x={padding.left - 6}
-                y={y + 3}
-                textAnchor="end"
-                fontSize={9}
-                fill="var(--muted)"
-              >
-                {tick}
-              </text>
-            </g>
-          );
-        })}
-
-        {/* 电量柱 */}
-        {points.map((point, i) => {
-          const x = padding.left + i * (barWidth + barGap);
-          const hasData = point.percentage !== undefined;
-          const pct = point.percentage ?? 0;
-          const barH = hasData ? (pct / 100) * chartHeight : 0;
-          const y = padding.top + chartHeight - barH;
-          const isCharging = point.charging ?? false;
-          const isLow = point.lowBattery ?? false;
-          const isEmpty = !hasData;
-
-          let barClass = 'battery-chart-bar';
-          if (isEmpty) barClass += ' battery-chart-empty';
-          else if (isCharging) barClass += ' battery-chart-charging';
-          else if (isLow) barClass += ' battery-chart-low';
-
-          return (
-            <g
-              key={i}
-              onMouseEnter={() => setHoverIndex(i)}
-              onMouseLeave={() => setHoverIndex(null)}
-              onFocus={() => setFocusIndex(i)}
-              onBlur={() => setFocusIndex(null)}
-              tabIndex={0}
-              role="button"
-              aria-label={`${point.bucketLabel}: ${hasData ? `${pct}%` : t('batteryUsage.notEnoughData')}`}
-            >
-              <rect
-                x={x}
-                y={isEmpty ? padding.top + chartHeight - 2 : y}
-                width={barWidth}
-                height={isEmpty ? 2 : barH}
-                rx={1.5}
-                className={barClass}
-              />
-              {/* X 轴标签：稀疏显示 */}
-              {(range === '24h' ? i % 4 === 0 : i % 2 === 0) && (
+      <div className="battery-chart-stage">
+        <svg
+          className="battery-chart"
+          viewBox={`0 0 ${width} ${height}`}
+          role="img"
+          aria-label={t('batteryUsage.title')}
+        >
+          <defs>
+            <linearGradient id="battery-bar-normal" x1="0" y1="1" x2="0" y2="0">
+              <stop offset="0%" stopColor="#34c759" />
+              <stop offset="100%" stopColor="#8ff4a4" />
+            </linearGradient>
+            <linearGradient id="battery-bar-charging" x1="0" y1="1" x2="0" y2="0">
+              <stop offset="0%" stopColor="#0a84ff" />
+              <stop offset="100%" stopColor="#64d2ff" />
+            </linearGradient>
+            <linearGradient id="battery-bar-low" x1="0" y1="1" x2="0" y2="0">
+              <stop offset="0%" stopColor="#ff453a" />
+              <stop offset="100%" stopColor="#ffd60a" />
+            </linearGradient>
+          </defs>
+          <rect
+            className="battery-chart-plot"
+            x={padding.left}
+            y={padding.top}
+            width={chartWidth}
+            height={chartHeight}
+            rx={10}
+          />
+          {/* Y 轴参考线 */}
+          {yTicks.map((tick) => {
+            const y = padding.top + chartHeight - (tick / 100) * chartHeight;
+            return (
+              <g key={tick}>
+                <line
+                  x1={padding.left}
+                  y1={y}
+                  x2={width - padding.right}
+                  y2={y}
+                  stroke="var(--muted)"
+                  strokeOpacity={0.12}
+                  strokeWidth={1}
+                />
                 <text
-                  x={x + barWidth / 2}
-                  y={height - 8}
-                  textAnchor="middle"
+                  x={padding.left - 6}
+                  y={y + 3}
+                  textAnchor="end"
                   fontSize={9}
                   fill="var(--muted)"
                 >
-                  {point.bucketLabel}
+                  {tick}
                 </text>
-              )}
-            </g>
-          );
-        })}
-      </svg>
+              </g>
+            );
+          })}
 
-      {/* Tooltip */}
-      {activePoint && activePoint.percentage !== undefined && (
-        <div className="battery-chart-tooltip" role="tooltip">
-          <div className="tooltip-row"><strong>{t('batteryUsage.tooltipTime')}: </strong>{activePoint.bucketLabel}</div>
-          <div className="tooltip-row"><strong>{t('batteryUsage.tooltipPercentage')}: </strong>{activePoint.percentage}%</div>
-          {activePoint.minPercentage !== undefined && activePoint.maxPercentage !== undefined && (
-            <div className="tooltip-row"><strong>{t('batteryUsage.tooltipMin')}/{t('batteryUsage.tooltipMax')}: </strong>{activePoint.minPercentage}%-{activePoint.maxPercentage}%</div>
-          )}
-          <div className="tooltip-row"><strong>{t('batteryUsage.tooltipCharging')}: </strong>{activePoint.charging ? t('common.on') : t('common.off')}</div>
-          <div className="tooltip-row"><strong>{t('batteryUsage.tooltipLowBattery')}: </strong>{activePoint.lowBattery ? t('common.on') : t('common.off')}</div>
-          <div className="tooltip-row"><strong>{t('batteryUsage.tooltipSamples')}: </strong>{activePoint.sampleCount}</div>
-        </div>
-      )}
+          {/* 电量柱 */}
+          {points.map((point, i) => {
+            const slotX = padding.left + i * slotWidth;
+            const x = slotX + (slotWidth - visualBarWidth) / 2;
+            const hasData = point.percentage !== undefined;
+            const pct = point.percentage ?? 0;
+            const barH = hasData ? (pct / 100) * chartHeight : 0;
+            const renderedBarH = hasData ? Math.max(barH, 3) : 2;
+            const y = padding.top + chartHeight - renderedBarH;
+            const isCharging = point.charging ?? false;
+            const isLow = point.lowBattery ?? false;
+            const isEmpty = !hasData;
+            const fillId = isCharging ? 'battery-bar-charging' : isLow ? 'battery-bar-low' : 'battery-bar-normal';
+
+            let barClass = 'battery-chart-bar';
+            if (isEmpty) barClass += ' battery-chart-empty';
+            else if (isCharging) barClass += ' battery-chart-charging';
+            else if (isLow) barClass += ' battery-chart-low';
+
+            return (
+              <g
+                key={i}
+                onMouseEnter={() => setHoverIndex(i)}
+                onMouseLeave={() => setHoverIndex(null)}
+                onPointerEnter={() => setHoverIndex(i)}
+                onPointerLeave={() => setHoverIndex(null)}
+                onFocus={() => setFocusIndex(i)}
+                onBlur={() => setFocusIndex(null)}
+                tabIndex={0}
+                role="button"
+                aria-label={`${point.bucketLabel}: ${hasData ? `${pct}%` : t('batteryUsage.notEnoughData')}`}
+              >
+                <rect
+                  className="battery-chart-hit-area"
+                  x={slotX}
+                  y={padding.top}
+                  width={slotWidth}
+                  height={chartHeight}
+                  fill="transparent"
+                />
+                <rect
+                  x={x}
+                  y={y}
+                  width={visualBarWidth}
+                  height={renderedBarH}
+                  rx={visualBarWidth / 2}
+                  className={barClass}
+                  fill={isEmpty ? undefined : `url(#${fillId})`}
+                />
+                {/* X 轴标签：稀疏显示。24h 48 个点每 6 个显示一次（约每 3 小时），10d 每 2 个显示一次。 */}
+                {(range === '24h' ? i % 6 === 0 : i % 2 === 0) && (
+                  <text
+                    x={slotX + slotWidth / 2}
+                    y={height - 8}
+                    textAnchor="middle"
+                    fontSize={9}
+                    fill="var(--muted)"
+                  >
+                    {point.bucketLabel.split(':')[0]}:00
+                  </text>
+                )}
+              </g>
+            );
+          })}
+        </svg>
+
+        {/* Tooltip */}
+        {activePoint && activePoint.percentage !== undefined && (
+          <div className="battery-chart-tooltip" style={tooltipStyle} role="tooltip">
+            <div className="tooltip-row"><strong>{t('batteryUsage.tooltipTime')}: </strong><span>{activePoint.bucketLabel}</span></div>
+            <div className="tooltip-row"><strong>{t('batteryUsage.tooltipPercentage')}: </strong><span>{activePoint.percentage}%</span></div>
+            {activePoint.minPercentage !== undefined && activePoint.maxPercentage !== undefined && (
+              <div className="tooltip-row"><strong>{t('batteryUsage.tooltipMin')}/{t('batteryUsage.tooltipMax')}: </strong><span>{activePoint.minPercentage}%-{activePoint.maxPercentage}%</span></div>
+            )}
+            <div className="tooltip-row"><strong>{t('batteryUsage.tooltipCharging')}: </strong><span>{activePoint.charging ? t('common.on') : t('common.off')}</span></div>
+            <div className="tooltip-row"><strong>{t('batteryUsage.tooltipLowBattery')}: </strong><span>{activePoint.lowBattery ? t('common.on') : t('common.off')}</span></div>
+            <div className="tooltip-row"><strong>{t('batteryUsage.tooltipSamples')}: </strong><span>{activePoint.sampleCount}</span></div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -190,24 +314,129 @@ function BatteryUsageSummary({ device, insights, range }: SummaryProps) {
 
   return (
     <div className="battery-summary-grid">
-      <div className="battery-summary-item">
-        <span className="summary-label">{t('batteryUsage.currentBattery')}</span>
-        <strong className="summary-value">{device.latestPercentage ?? '--'}%</strong>
-        {device.latestAt && <span className="summary-sub">{formatRelativeTime(device.latestAt, t)}</span>}
+      <div className="battery-summary-item primary">
+        <span className="summary-label with-icon">
+          <BatteryLevelIcon percentage={device.latestPercentage} charging={charging} />
+          {t('batteryUsage.currentBattery')}
+        </span>
+        <OverflowTip className="summary-value" text={`${device.latestPercentage ?? '--'}%`} />
+        {device.latestAt && <OverflowTip className="summary-sub" text={formatRelativeTime(device.latestAt, t)} />}
       </div>
       <div className="battery-summary-item">
-        <span className="summary-label">{t('batteryUsage.change' + (range === '24h' ? '24h' : '10d'))}</span>
-        <strong className="summary-value">{statusText}</strong>
-        <span className="summary-sub">{charging ? t('batteryUsage.charging') : t('batteryUsage.notCharging')}</span>
+        <OverflowTip className="summary-label" text={t('batteryUsage.change' + (range === '24h' ? '24h' : '10d'))} />
+        <OverflowTip className="summary-value" text={statusText} />
+        <OverflowTip className="summary-sub" text={charging ? t('batteryUsage.charging') : t('batteryUsage.notCharging')} />
       </div>
       <div className="battery-summary-item">
-        <span className="summary-label">{t('batteryUsage.estimatedRemaining')}</span>
-        <strong className="summary-value">{remaining?.message ?? t('batteryUsage.notEnoughData')}</strong>
+        <OverflowTip className="summary-label" text={t('batteryUsage.estimatedRemaining')} />
+        <OverflowTip className="summary-value" text={remaining ? formatInsightMessage(remaining, t) : t('batteryUsage.notEnoughData')} />
       </div>
       <div className="battery-summary-item">
-        <span className="summary-label">{t('batteryUsage.estimatedRunout')}</span>
-        <strong className="summary-value">{!charging ? (runout?.message ?? t('batteryUsage.notEnoughData')) : t('batteryUsage.charging')}</strong>
+        <OverflowTip className="summary-label" text={t('batteryUsage.estimatedRunout')} />
+        <OverflowTip className="summary-value" text={!charging ? (runout?.message ?? t('batteryUsage.notEnoughData')) : t('batteryUsage.charging')} />
       </div>
+    </div>
+  );
+}
+
+function BatteryUsageStatusStrip({
+  device,
+  devices,
+  insights,
+  onSelectDevice,
+}: {
+  device: BatteryHistoryDevice | undefined;
+  devices: BatteryHistoryDevice[];
+  insights: BatteryInsight[];
+  onSelectDevice: (key: string) => void;
+}) {
+  const { t } = useTranslation();
+  const [menuOpen, setMenuOpen] = useState(false);
+  const stripRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (!stripRef.current?.contains(e.target as Node)) setMenuOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [menuOpen]);
+
+  if (!device) return null;
+
+  const charging = device.latestCharging ?? false;
+  const lowBattery = device.lowBattery ?? false;
+  const remaining = insights.find((i) => i.type === 'estimatedRemaining');
+  const statusText = charging
+    ? t('batteryUsage.charging')
+    : lowBattery
+      ? t('batteryUsage.lowBattery')
+      : t('batteryUsage.normal');
+
+  const hasMultipleDevices = devices.length > 1;
+
+  const toggleMenu = () => {
+    if (hasMultipleDevices) setMenuOpen((v) => !v);
+  };
+
+  return (
+    <div
+      ref={stripRef}
+      className={`battery-status-strip ${charging ? 'charging' : lowBattery ? 'low' : 'normal'} ${hasMultipleDevices ? 'switchable' : ''}`}
+      role={hasMultipleDevices ? 'button' : undefined}
+      tabIndex={hasMultipleDevices ? 0 : undefined}
+      aria-expanded={hasMultipleDevices ? menuOpen : undefined}
+      aria-haspopup={hasMultipleDevices ? 'menu' : undefined}
+      aria-label={hasMultipleDevices ? t('batteryUsage.switchDevice') : undefined}
+      onClick={hasMultipleDevices ? toggleMenu : undefined}
+      onKeyDown={hasMultipleDevices ? (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleMenu(); }
+      } : undefined}
+    >
+      <div className="battery-status-device">
+        <BatteryLevelIcon percentage={device.latestPercentage} charging={charging} />
+        <div className="battery-status-device-info">
+          <span>{device.deviceName}</span>
+          <strong>{t(device.componentLabel, { defaultValue: device.componentLabel })}</strong>
+        </div>
+      </div>
+      <div className="battery-status-metric">
+        <strong>{device.latestPercentage ?? '--'}%</strong>
+        <span>{remaining ? formatInsightMessage(remaining, t) : statusText}</span>
+      </div>
+      {hasMultipleDevices && (
+        <CaretUpDown weight="thin" className="battery-status-switch-icon" aria-hidden="true" />
+      )}
+
+      {menuOpen && hasMultipleDevices && (
+        <div className="battery-device-menu" role="menu" onClick={(e) => e.stopPropagation()}>
+          {devices.map((d) => {
+            const dCharging = d.latestCharging ?? false;
+            const active = d.key === device.key;
+            return (
+              <button
+                key={d.key}
+                type="button"
+                role="menuitemradio"
+                aria-checked={active}
+                className={`battery-device-menu-item ${active ? 'active' : ''}`}
+                onClick={() => {
+                  onSelectDevice(d.key);
+                  setMenuOpen(false);
+                }}
+              >
+                <BatteryLevelIcon percentage={d.latestPercentage} charging={dCharging} />
+                <span className="battery-device-menu-copy">
+                  <span className="battery-device-menu-title">{d.deviceName}</span>
+                  <span className="battery-device-menu-label">{t(d.componentLabel, { defaultValue: d.componentLabel })}</span>
+                </span>
+                <span className="battery-device-menu-percent">{d.latestPercentage ?? '--'}%</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -216,24 +445,44 @@ function BatteryUsageSummary({ device, insights, range }: SummaryProps) {
 
 function BatteryInsightCards({ insights }: { insights: BatteryInsight[] }) {
   const { t } = useTranslation();
-  if (insights.length === 0) return null;
+
+  // 过滤掉已在上方摘要 grid 中展示的"预计剩余"和"预计耗尽"，避免重复。
+  // 同时过滤"设备对比"和"最低电量"——前者信息密度低，后者已由摘要区当前电量覆盖。
+  const deduped = insights.filter(
+    (i) => i.type !== 'estimatedRemaining'
+      && i.type !== 'estimatedRunout'
+      && i.type !== 'deviceComparison'
+      && i.type !== 'lowestLevel',
+  );
+
+  if (deduped.length === 0) return null;
 
   const iconFor = (type: BatteryInsight['type']) => {
     switch (type) {
       case 'abnormalDrain': return <Warning weight="regular" />;
-      case 'powerSavingTip': return <Lightning weight="regular" />;
+      case 'powerSavingTip': return <Lightbulb weight="regular" />;
+      case 'chargingHabit': return <Plug weight="regular" />;
+      case 'batteryConsistency': return <Gauge weight="regular" />;
+      case 'deviceComparison': return <ArrowsLeftRight weight="regular" />;
+      case 'averageDailyDrain': return <TrendDown weight="regular" />;
+      case 'chargingCount': return <BatteryCharging weight="regular" />;
+      case 'lowestLevel': return <BatteryLow weight="regular" />;
       default: return <Clock weight="regular" />;
     }
   };
 
+  // 固定 2 列布局：奇数时截断最后一个，保证始终是 2 的倍数，避免单块占行。
+  const visibleCount = deduped.length - (deduped.length % 2);
+  const visible = deduped.slice(0, visibleCount);
+
   return (
     <div className="battery-insight-cards">
-      {insights.map((insight, i) => (
+      {visible.map((insight, i) => (
         <div key={i} className={`battery-insight-card severity-${insight.severity}`}>
           <span className="insight-icon">{iconFor(insight.type)}</span>
           <div className="insight-body">
-            <strong>{t(`batteryUsage.${insight.title}`)}</strong>
-            <span>{insight.message}</span>
+            <OverflowTip className="insight-title" text={t(`batteryUsage.${insight.title}`)} />
+            <OverflowTip className="insight-text" text={formatInsightMessage(insight, t)} multiline />
           </div>
         </div>
       ))}
@@ -449,7 +698,6 @@ export function BatteryUsageModal({ open, onClose, hasBattery }: BatteryUsageMod
         <div className="battery-usage-header">
           <div>
             <h2>{t('batteryUsage.title')}</h2>
-            <p>{t('batteryUsage.subtitle')}</p>
           </div>
           <button className="battery-usage-close-icon" onClick={onClose} aria-label={t('batteryUsage.close')}>
             <X weight="regular" />
@@ -461,22 +709,8 @@ export function BatteryUsageModal({ open, onClose, hasBattery }: BatteryUsageMod
           <BatteryHistoryEmptyState onClose={onClose} />
         ) : (
           <>
-            {/* 设备选择 + 时间范围 */}
+            {/* 时间范围切换 */}
             <div className="battery-usage-controls">
-              <div className="battery-device-selector" role="tablist">
-                {response?.devices.map((device) => (
-                  <button
-                    key={device.key}
-                    role="tab"
-                    aria-selected={effectiveDeviceKey === device.key}
-                    className={`battery-device-chip ${effectiveDeviceKey === device.key ? 'active' : ''}`}
-                    onClick={() => setSelectedDeviceKey(device.key)}
-                  >
-                    <BatteryHigh weight="regular" />
-                    {device.deviceName} · {t(device.componentLabel, { defaultValue: device.componentLabel })}
-                  </button>
-                ))}
-              </div>
               <div className="battery-range-toggle" role="tablist">
                 <button
                   role="tab"
@@ -497,7 +731,13 @@ export function BatteryUsageModal({ open, onClose, hasBattery }: BatteryUsageMod
               </div>
             </div>
 
-            {/* 摘要 */}
+            {/* 设备状态条：多设备时点击可切换 */}
+            <BatteryUsageStatusStrip
+              device={selectedDevice}
+              devices={response?.devices ?? []}
+              insights={selectedInsights}
+              onSelectDevice={setSelectedDeviceKey}
+            />
             <BatteryUsageSummary
               device={selectedDevice}
               insights={selectedInsights}
