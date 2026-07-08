@@ -260,10 +260,10 @@
     },
     "trayIconColor": {
       "label": "托盘图标颜色",
-      "hint": "白色适配深色菜单栏，黑色适配浅色，跟随主题自动切换",
+      "hint": "白色适配深色菜单栏，黑色适配浅色，跟随系统外观自动切换",
       "white": "白色",
       "black": "黑色",
-      "auto": "跟随主题"
+      "auto": "跟随系统外观"
     },
     "receiverBattery": {
       "label": "标题附带接收器电量",
@@ -508,7 +508,7 @@
     "mouse": "鼠标",
     "receiver": "接收器",
     "clear": "清除电量历史",
-    "clearConfirm": "确认清除电量历史？此操作不会影响设备设置。",
+    "clearConfirm": "确认清除当前设备的电量历史？此操作不会影响设备设置。",
     "clearDone": "已清除电量历史",
     "exportHistory": "导出电量历史",
     "disabledTitle": "电量使用情况已关闭",
@@ -550,7 +550,7 @@
     "unusualDrainAlerts": "异常耗电提醒",
     "unusualDrainAlertsHint": "当设备掉电速度明显高于平时，通过现有通知方式提醒。",
     "close": "关闭",
-    "tooltipTime": "时间",
+    "tooltipTime": "累计使用",
     "tooltipPercentage": "电量",
     "tooltipMin": "最低",
     "tooltipMax": "最高",

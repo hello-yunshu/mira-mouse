@@ -132,9 +132,8 @@ function BatteryUsageChart({ points, range }: ChartProps) {
   const chartHeight = height - padding.top - padding.bottom;
   const pointCount = Math.max(points.length, 1);
   const slotWidth = chartWidth / pointCount;
-  // 24h 采用 30 分钟粒度（48 个点），柱宽占 slot 的 82%，让柱子紧密排列（类似 iOS 电量图表）。
-  // 10d 粒度较粗，保留较窄柱宽 + 间距。
-  const visualBarWidth = Math.max(2, Math.min(range === '24h' ? slotWidth * 0.82 : slotWidth * 0.5, slotWidth - 1));
+  // 24h 采用更高密度聚合（最多 96 个点），柱体保持细窄，交互命中区仍覆盖整个 slot。
+  const visualBarWidth = Math.max(1.5, Math.min(range === '24h' ? slotWidth * 0.58 : slotWidth * 0.46, slotWidth - 1));
 
   const activeIndex = hoverIndex ?? focusIndex;
   const activePoint = activeIndex !== null ? points[activeIndex] : null;
@@ -254,8 +253,8 @@ function BatteryUsageChart({ points, range }: ChartProps) {
                   className={barClass}
                   fill={isEmpty ? undefined : `url(#${fillId})`}
                 />
-                {/* X 轴标签：稀疏显示。24h 48 个点每 6 个显示一次（约每 3 小时），10d 每 2 个显示一次。 */}
-                {(range === '24h' ? i % 6 === 0 : i % 2 === 0) && (
+                {/* X 轴标签：稀疏显示累计使用时长，断连/长空闲间隔已在后端压缩。 */}
+                {(range === '24h' ? i % 12 === 0 : i % 8 === 0) && (
                   <text
                     x={slotX + slotWidth / 2}
                     y={height - 8}
@@ -263,7 +262,7 @@ function BatteryUsageChart({ points, range }: ChartProps) {
                     fontSize={9}
                     fill="var(--muted)"
                   >
-                    {point.bucketLabel.split(':')[0]}:00
+                    {point.bucketLabel}
                   </text>
                 )}
               </g>
@@ -607,21 +606,32 @@ export function BatteryUsageModal({ open, onClose, hasBattery }: BatteryUsageMod
 
   const handleClear = useCallback(async () => {
     if (pureWeb) {
-      setResponse(null);
+      if (effectiveDeviceKey) {
+        setResponse((current) => current
+          ? {
+              ...current,
+              devices: current.devices.filter((d) => d.key !== effectiveDeviceKey),
+              series: current.series.filter((s) => s.key !== effectiveDeviceKey),
+              insights: current.insights.filter((i) => i.deviceKey !== effectiveDeviceKey),
+            }
+          : null);
+      } else {
+        setResponse(null);
+      }
       setConfirmingClear(false);
       notifySuccess(t('batteryUsage.clearDone'));
       return;
     }
     try {
-      await invoke('battery_history_clear');
-      setResponse(null);
+      await invoke('battery_history_clear', { deviceKey: effectiveDeviceKey || undefined });
+      setSelectedDeviceKey('');
       setConfirmingClear(false);
       notifySuccess(t('batteryUsage.clearDone'));
       loadData();
     } catch (err) {
       notifyError(t('batteryUsage.clear'), String(err));
     }
-  }, [pureWeb, loadData, t]);
+  }, [effectiveDeviceKey, pureWeb, loadData, t]);
 
   const handleExport = useCallback(async (format: 'json' | 'csv') => {
     try {

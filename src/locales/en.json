@@ -260,10 +260,10 @@
     },
     "trayIconColor": {
       "label": "Tray icon color",
-      "hint": "White for dark menu bars, black for light, follows the theme",
+      "hint": "White for dark menu bars, black for light, follows system appearance",
       "white": "White",
       "black": "Black",
-      "auto": "Follow theme"
+      "auto": "System appearance"
     },
     "receiverBattery": {
       "label": "Include receiver battery in title",
@@ -508,7 +508,7 @@
     "mouse": "Mouse",
     "receiver": "Receiver",
     "clear": "Clear battery history",
-    "clearConfirm": "Clear battery history? This will not affect device settings.",
+    "clearConfirm": "Clear battery history for this device? This will not affect device settings.",
     "clearDone": "Battery history cleared",
     "exportHistory": "Export battery history",
     "disabledTitle": "Battery usage is turned off",
@@ -550,7 +550,7 @@
     "unusualDrainAlerts": "Unusual battery drain alerts",
     "unusualDrainAlertsHint": "Notify using the existing alert system when a device drains faster than usual.",
     "close": "Close",
-    "tooltipTime": "Time",
+    "tooltipTime": "Usage elapsed",
     "tooltipPercentage": "Battery",
     "tooltipMin": "Min",
     "tooltipMax": "Max",
