@@ -137,6 +137,7 @@ describe('BatteryUsageModal', () => {
     const confirmBtn = await screen.findByRole('button', { name: '确认清除' });
     fireEvent.click(confirmBtn);
     await waitFor(() => expect(clearCount).toBe(1));
+    expect(invokeMock).toHaveBeenCalledWith('battery_history_clear', { deviceKey: 'mouse:abc123:mouse' });
   });
 
   it('returns null when closed', () => {

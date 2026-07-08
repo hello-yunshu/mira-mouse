@@ -6,6 +6,7 @@ use hidapi::HidApi;
 use mira_core::{DeviceSnapshot, LowBatteryCrossing, PluginCapability, PluginCapabilityPlacement};
 
 mod battery_history;
+mod tray;
 use battery_history::{AbnormalDrainNotifyState, BatteryHistoryResponse, BatteryHistoryState};
 use mira_plugin_runtime::{
     extract_package, hid, inspect_package, mutate_device_with_package, read_device_with_package,
@@ -544,9 +545,9 @@ struct SessionState {
     /// diagnostics and the manual HID scan to explain Windows access/timeouts.
     last_read_errors: Mutex<BTreeMap<String, DeviceReadDiagnostic>>,
     plugins: Mutex<Option<CachedPlugins>>,
-    tray_icon_level: Mutex<Option<i16>>,
-    tray_is_charging: Mutex<Option<bool>>,
-    tray_uses_dark: Mutex<Option<bool>>,
+    /// 托盘图标控制器：内部维护动态图标缓存和 diff 逻辑。
+    /// 替换旧的 tray_icon_level / tray_is_charging / tray_uses_dark 三个缓存字段。
+    tray_renderer: Mutex<tray::renderer::PlatformTrayController>,
     /// 缓存托盘菜单签名，避免每轮轮询都重建菜单（仅图标做了 diff）。
     /// 签名相同时跳过菜单重建，仅更新 title/tooltip（轻量文本操作）。
     tray_menu_signature: Mutex<Option<TrayMenuSignature>>,
@@ -1408,9 +1409,12 @@ struct AppSettings {
     tray_show_battery_title: bool,
     tray_include_receiver_battery: bool,
     tray_show_connection: bool,
-    /// 托盘鼠标图标颜色： "white"（白色轮廓）、"black"（黑色轮廓）、"auto"（跟随系统主题）。
-    /// 默认 "white"，不自动跟随主题。
+    /// 托盘鼠标图标颜色： "white"（白色轮廓）、"black"（黑色轮廓）、"auto"（跟随菜单栏/系统外观）。
+    /// 默认 "auto"。
     tray_icon_color: String,
+    /// 托盘渲染模式："auto"（macOS 原生/其他平台动态图片）、"dynamic-image"、"static"。
+    /// 默认 "auto"。当前未在设置页暴露，仅后端字段。
+    tray_render_mode: String,
     low_battery_threshold: u8,
     night_mode_enabled: bool,
     night_mode_start: String,
@@ -1465,7 +1469,8 @@ impl Default for AppSettings {
             tray_show_battery_title: true,
             tray_include_receiver_battery: false,
             tray_show_connection: true,
-            tray_icon_color: "white".into(),
+            tray_icon_color: "auto".into(),
+            tray_render_mode: "auto".into(),
             low_battery_threshold: 20,
             night_mode_enabled: false,
             night_mode_start: "22:00".into(),
@@ -1500,6 +1505,12 @@ impl AppSettings {
         }
         if !matches!(self.tray_icon_color.as_str(), "white" | "black" | "auto") {
             self.tray_icon_color = defaults.tray_icon_color;
+        }
+        if !matches!(
+            self.tray_render_mode.as_str(),
+            "auto" | "native-macos" | "dynamic-image" | "static"
+        ) {
+            self.tray_render_mode = defaults.tray_render_mode;
         }
         if !(5..=50).contains(&self.low_battery_threshold) {
             self.low_battery_threshold = defaults.low_battery_threshold;
@@ -1599,10 +1610,12 @@ fn should_be_night(
 
     // 状态组（可多选）：需要设备快照。
     let charging_trigger = settings.night_mode_trigger_charging
-        && snapshot.map(mouse_battery_charging).unwrap_or(false);
+        && snapshot
+            .map(tray::state::mouse_battery_charging)
+            .unwrap_or(false);
     let low_battery_trigger = settings.night_mode_trigger_low_battery
         && snapshot
-            .and_then(mouse_battery_percentage)
+            .and_then(tray::state::mouse_battery_percentage)
             .map(|p| p < settings.low_battery_threshold)
             .unwrap_or(false);
 
@@ -1933,7 +1946,8 @@ mod settings_tests {
 
     #[test]
     fn default_tray_icon_is_decodable_and_transparent() {
-        let icon = tauri::image::Image::from_bytes(tray_app_icon_bytes()).unwrap();
+        let icon = tauri::image::Image::from_bytes(tray::static_icon::static_tray_app_icon_bytes())
+            .unwrap();
         assert_eq!((icon.width(), icon.height()), (64, 64));
 
         let mut alpha = icon.rgba().iter().skip(3).step_by(4);
@@ -1943,8 +1957,10 @@ mod settings_tests {
 
     #[test]
     fn dark_app_icons_are_decodable_and_transparent() {
-        let tray_icon =
-            tauri::image::Image::from_bytes(tray_app_icon_bytes_for_theme(true)).unwrap();
+        let tray_icon = tauri::image::Image::from_bytes(
+            tray::static_icon::static_tray_app_icon_bytes_for_theme(true),
+        )
+        .unwrap();
         assert_eq!((tray_icon.width(), tray_icon.height()), (64, 64));
         let mut tray_alpha = tray_icon.rgba().iter().skip(3).step_by(4);
         assert!(tray_alpha.clone().any(|value| *value == 0));
@@ -2010,9 +2026,9 @@ mod settings_tests {
         };
         let mut settings = AppSettings::default();
         assert_eq!(battery_title(&snapshot, &settings).as_deref(), Some("64%"));
-        assert!(!mouse_battery_charging(&snapshot));
+        assert!(!tray::state::mouse_battery_charging(&snapshot));
         snapshot.batteries[0].charging = true;
-        assert!(mouse_battery_charging(&snapshot));
+        assert!(tray::state::mouse_battery_charging(&snapshot));
         settings.tray_include_receiver_battery = true;
         assert_eq!(
             battery_title(&snapshot, &settings).as_deref(),
@@ -5199,7 +5215,7 @@ fn read_device_once(app: &AppHandle) {
                 let settings = cached_settings(app);
                 let _ = update_tray(app, Some(&snapshot), &settings);
                 // 低电量跨阈值检测：充电时不触发，充电结束后若仍低于阈值才再次提醒
-                let battery_value = low_battery_notification_value(&snapshot);
+                let battery_value = tray::state::low_battery_notification_value(&snapshot);
                 let threshold = settings.low_battery_threshold;
                 let notify = state
                     .low_battery
@@ -5663,7 +5679,7 @@ fn autostart_entry(
 
     #[cfg(target_os = "macos")]
     {
-        builder.set_use_launch_agent(false);
+        builder.set_macos_launch_mode(auto_launch::MacOSLaunchMode::AppleScript);
         let exe_path = current_exe
             .canonicalize()
             .map_err(|err| format!("failed to resolve app bundle path: {err}"))?
@@ -6124,18 +6140,17 @@ fn settings_set(app: tauri::AppHandle, settings: AppSettings) -> Result<AppSetti
         }
     }
     if tray_icon_color_changed {
-        // Force this settings change through to the native tray immediately,
-        // even if the cached icon variant drifted from the currently shown icon.
-        if let Ok(mut active_dark) = app.state::<SessionState>().tray_uses_dark.lock() {
-            *active_dark = None;
-        }
+        // tray_icon_color 变化会改变 TrayVisualStyle → TrayIconCacheKey，
+        // 控制器的 needs_update() 自然返回 true，无需手动失效缓存。
     }
     let state = app.state::<SessionState>();
     let snapshot = selected_snapshot(&state);
     update_tray(&app, snapshot.as_ref(), &settings)
         .map_err(|error| format!("update tray: {error}"))?;
     if low_battery_threshold_changed {
-        let battery_value = snapshot.as_ref().and_then(low_battery_notification_value);
+        let battery_value = snapshot
+            .as_ref()
+            .and_then(tray::state::low_battery_notification_value);
         app.state::<SessionState>()
             .low_battery
             .lock()
@@ -6370,8 +6385,9 @@ fn battery_history_get(
 fn battery_history_clear(
     state: tauri::State<SessionState>,
     app: tauri::AppHandle,
+    device_key: Option<String>,
 ) -> Result<(), String> {
-    battery_history::clear_history(&state.battery_history, &app)
+    battery_history::clear_history(&state.battery_history, &app, device_key.as_deref())
 }
 
 /// 导出电量历史。默认 JSON，可选 CSV。仅包含脱敏后的电量历史数据。
@@ -6402,9 +6418,18 @@ fn cached_settings_for_state(state: &SessionState) -> AppSettings {
         .unwrap_or_default()
 }
 
-fn focus_main_from_tray(app: &AppHandle) {
+pub(crate) fn focus_main_from_tray(app: &AppHandle) {
     focus_main(app.get_webview_window("main"));
     request_refresh(&app.state::<SessionState>());
+}
+
+pub(crate) fn open_battery_usage_from_tray(app: &AppHandle) {
+    let state = app.state::<SessionState>();
+    if let Ok(mut guard) = state.pending_notification_action.lock() {
+        *guard = Some("battery-usage".to_string());
+    }
+    focus_main_from_tray(app);
+    let _ = app.emit("open-battery-usage", ());
 }
 
 const TRAY_ID: &str = "mira-status";
@@ -6438,7 +6463,7 @@ fn tr_connection(connection: mira_core::Connection, lang: &str) -> &'static str 
     }
 }
 
-fn tr_open(lang: &str) -> &'static str {
+pub(crate) fn tr_open(lang: &str) -> &'static str {
     if lang == "en" {
         "Open Mira"
     } else {
@@ -6446,7 +6471,7 @@ fn tr_open(lang: &str) -> &'static str {
     }
 }
 
-fn tr_quit(lang: &str) -> &'static str {
+pub(crate) fn tr_quit(lang: &str) -> &'static str {
     if lang == "en" {
         "Quit Mira"
     } else {
@@ -6462,7 +6487,7 @@ fn tr_disconnected(lang: &str) -> &'static str {
     }
 }
 
-fn tr_charging_suffix(lang: &str) -> &'static str {
+pub(crate) fn tr_charging_suffix(lang: &str) -> &'static str {
     if lang == "en" {
         " · Charging"
     } else {
@@ -6625,7 +6650,7 @@ fn tr_tooltip_connected(_lang: &str, connection: &str, name: &str) -> String {
     format!("Mira · {} · {}", connection, name)
 }
 
-fn tr_tooltip_disconnected(lang: &str) -> String {
+pub(crate) fn tr_tooltip_disconnected(lang: &str) -> String {
     if lang == "en" {
         "Mira · No supported mouse connected".to_string()
     } else {
@@ -6641,7 +6666,7 @@ fn tr_connection_status(lang: &str, connection: &str, name: &str) -> String {
     }
 }
 
-fn tr_battery_item(lang: &str, label: &str, percentage: u8, charging: bool) -> String {
+pub(crate) fn tr_battery_item(lang: &str, label: &str, percentage: u8, charging: bool) -> String {
     let charging_suffix = if charging {
         tr_charging_suffix(lang)
     } else {
@@ -6654,7 +6679,7 @@ fn tr_battery_item(lang: &str, label: &str, percentage: u8, charging: bool) -> S
     }
 }
 
-fn connection_label(connection: mira_core::Connection, lang: &str) -> &'static str {
+pub(crate) fn connection_label(connection: mira_core::Connection, lang: &str) -> &'static str {
     tr_connection(connection, lang)
 }
 
@@ -6663,7 +6688,7 @@ fn battery_title(snapshot: &DeviceSnapshot, settings: &AppSettings) -> Option<St
         return None;
     }
     let lang = effective_language(&settings.language);
-    let mouse_percentage = mouse_battery_percentage(snapshot)?;
+    let mouse_percentage = tray::state::mouse_battery_percentage(snapshot)?;
     let mut title = format!("{mouse_percentage}%");
     if settings.tray_include_receiver_battery {
         if let Some(receiver) = snapshot
@@ -6682,114 +6707,9 @@ fn battery_title(snapshot: &DeviceSnapshot, settings: &AppSettings) -> Option<St
     Some(title)
 }
 
-fn mouse_battery_percentage(snapshot: &DeviceSnapshot) -> Option<u8> {
-    snapshot
-        .batteries
-        .iter()
-        .find(|battery| battery.id == "mouse")
-        .or_else(|| snapshot.batteries.first())
-        .map(|battery| battery.percentage)
-        .or(snapshot.battery_percent)
-}
-
-fn mouse_battery_charging(snapshot: &DeviceSnapshot) -> bool {
-    snapshot
-        .batteries
-        .iter()
-        .find(|battery| battery.id == "mouse")
-        .or_else(|| snapshot.batteries.first())
-        .map(|battery| battery.charging)
-        .unwrap_or(snapshot.charging)
-}
-
-fn low_battery_notification_value(snapshot: &DeviceSnapshot) -> Option<u8> {
-    if mouse_battery_charging(snapshot) {
-        None
-    } else {
-        mouse_battery_percentage(snapshot)
-    }
-}
-
-/// Battery level icons for each (dark, charging) combination.
-/// Index 0 = 0%, 1 = 10%, ..., 9 = 90%, 10 = 100%.
-/// `include_bytes!` requires string literals, so the 44 icons are expanded
-/// into four `const` arrays once; the lookup function then indexes by level.
-const TRAY_ICONS_LIGHT_CHARGING: [&[u8]; 11] = [
-    include_bytes!("../icons/tray-mouse-charging-levels/mouse-0.png"),
-    include_bytes!("../icons/tray-mouse-charging-levels/mouse-10.png"),
-    include_bytes!("../icons/tray-mouse-charging-levels/mouse-20.png"),
-    include_bytes!("../icons/tray-mouse-charging-levels/mouse-30.png"),
-    include_bytes!("../icons/tray-mouse-charging-levels/mouse-40.png"),
-    include_bytes!("../icons/tray-mouse-charging-levels/mouse-50.png"),
-    include_bytes!("../icons/tray-mouse-charging-levels/mouse-60.png"),
-    include_bytes!("../icons/tray-mouse-charging-levels/mouse-70.png"),
-    include_bytes!("../icons/tray-mouse-charging-levels/mouse-80.png"),
-    include_bytes!("../icons/tray-mouse-charging-levels/mouse-90.png"),
-    include_bytes!("../icons/tray-mouse-charging-levels/mouse-100.png"),
-];
-const TRAY_ICONS_DARK_CHARGING: [&[u8]; 11] = [
-    include_bytes!("../icons/tray-mouse-charging-levels-dark/mouse-0.png"),
-    include_bytes!("../icons/tray-mouse-charging-levels-dark/mouse-10.png"),
-    include_bytes!("../icons/tray-mouse-charging-levels-dark/mouse-20.png"),
-    include_bytes!("../icons/tray-mouse-charging-levels-dark/mouse-30.png"),
-    include_bytes!("../icons/tray-mouse-charging-levels-dark/mouse-40.png"),
-    include_bytes!("../icons/tray-mouse-charging-levels-dark/mouse-50.png"),
-    include_bytes!("../icons/tray-mouse-charging-levels-dark/mouse-60.png"),
-    include_bytes!("../icons/tray-mouse-charging-levels-dark/mouse-70.png"),
-    include_bytes!("../icons/tray-mouse-charging-levels-dark/mouse-80.png"),
-    include_bytes!("../icons/tray-mouse-charging-levels-dark/mouse-90.png"),
-    include_bytes!("../icons/tray-mouse-charging-levels-dark/mouse-100.png"),
-];
-const TRAY_ICONS_LIGHT: [&[u8]; 11] = [
-    include_bytes!("../icons/tray-mouse-levels/mouse-0.png"),
-    include_bytes!("../icons/tray-mouse-levels/mouse-10.png"),
-    include_bytes!("../icons/tray-mouse-levels/mouse-20.png"),
-    include_bytes!("../icons/tray-mouse-levels/mouse-30.png"),
-    include_bytes!("../icons/tray-mouse-levels/mouse-40.png"),
-    include_bytes!("../icons/tray-mouse-levels/mouse-50.png"),
-    include_bytes!("../icons/tray-mouse-levels/mouse-60.png"),
-    include_bytes!("../icons/tray-mouse-levels/mouse-70.png"),
-    include_bytes!("../icons/tray-mouse-levels/mouse-80.png"),
-    include_bytes!("../icons/tray-mouse-levels/mouse-90.png"),
-    include_bytes!("../icons/tray-mouse-levels/mouse-100.png"),
-];
-const TRAY_ICONS_DARK: [&[u8]; 11] = [
-    include_bytes!("../icons/tray-mouse-levels-dark/mouse-0.png"),
-    include_bytes!("../icons/tray-mouse-levels-dark/mouse-10.png"),
-    include_bytes!("../icons/tray-mouse-levels-dark/mouse-20.png"),
-    include_bytes!("../icons/tray-mouse-levels-dark/mouse-30.png"),
-    include_bytes!("../icons/tray-mouse-levels-dark/mouse-40.png"),
-    include_bytes!("../icons/tray-mouse-levels-dark/mouse-50.png"),
-    include_bytes!("../icons/tray-mouse-levels-dark/mouse-60.png"),
-    include_bytes!("../icons/tray-mouse-levels-dark/mouse-70.png"),
-    include_bytes!("../icons/tray-mouse-levels-dark/mouse-80.png"),
-    include_bytes!("../icons/tray-mouse-levels-dark/mouse-90.png"),
-    include_bytes!("../icons/tray-mouse-levels-dark/mouse-100.png"),
-];
-
-fn tray_icon_bytes(level: u8, dark: bool, charging: bool) -> &'static [u8] {
-    // `level` is pre-rounded to a multiple of 10 by the caller (0..=100).
-    // `min(10)` clamps any stray value to the 100% icon.
-    let index = (level / 10).min(10) as usize;
-    match (dark, charging) {
-        (true, true) => TRAY_ICONS_DARK_CHARGING[index],
-        (false, true) => TRAY_ICONS_LIGHT_CHARGING[index],
-        (true, false) => TRAY_ICONS_DARK[index],
-        (false, false) => TRAY_ICONS_LIGHT[index],
-    }
-}
-
-fn tray_app_icon_bytes() -> &'static [u8] {
-    tray_app_icon_bytes_for_theme(false)
-}
-
-fn tray_app_icon_bytes_for_theme(dark: bool) -> &'static [u8] {
-    if dark {
-        include_bytes!("../icons/tray-app-icon-dark.png")
-    } else {
-        include_bytes!("../icons/tray-app-icon.png")
-    }
-}
+// Battery helpers and static PNG icon arrays have been migrated to:
+//   crate::tray::state::{mouse_battery_percentage, mouse_battery_charging, low_battery_notification_value}
+//   crate::tray::static_icon::{static_tray_icon_bytes, static_tray_app_icon_bytes, static_tray_app_icon_bytes_for_theme}
 
 #[cfg(any(not(target_os = "macos"), test))]
 fn app_icon_bytes_for_theme(dark: bool) -> &'static [u8] {
@@ -7136,49 +7056,70 @@ fn update_tray(
     snapshot: Option<&DeviceSnapshot>,
     settings: &AppSettings,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(target_os = "macos")]
+    if objc2::MainThreadMarker::new().is_none() {
+        let app = app.clone();
+        let snapshot = snapshot.cloned();
+        let settings = settings.clone();
+        let app_for_update = app.clone();
+        app.run_on_main_thread(move || {
+            if let Err(error) = update_tray(&app_for_update, snapshot.as_ref(), &settings) {
+                eprintln!("[mira] tray update on main thread failed: {error}");
+            }
+        })?;
+        return Ok(());
+    }
+
     let Some(tray) = app.tray_by_id(TRAY_ID) else {
         return Ok(());
     };
-    let desired_dark = match settings.tray_icon_color.as_str() {
-        "white" => true,
-        "black" => false,
-        _ => tray_theme_is_dark(app), // "auto" 跟随系统主题
+
+    // 构建 tray 模块所需的设置子集和状态
+    let tray_settings = tray::state::TraySettings {
+        show_receiver: settings.tray_include_receiver_battery,
+        show_connection: settings.tray_show_connection,
+        show_battery_title: settings.tray_show_battery_title,
+        low_battery_threshold: settings.low_battery_threshold,
+        tray_icon_color: &settings.tray_icon_color,
+        tray_render_mode: &settings.tray_render_mode,
     };
-    let state = app.state::<SessionState>();
-    if let Ok(mut active) = state.tray_icon_level.lock() {
-        let desired_level = snapshot
-            .map(|snapshot| {
-                let percentage = mouse_battery_percentage(snapshot).unwrap_or(0);
-                (((percentage.saturating_add(5)) / 10).min(10) * 10) as i16
-            })
-            .unwrap_or(-1);
-        let desired_charging = snapshot.map(mouse_battery_charging).unwrap_or(false);
-        let mut theme_changed = false;
-        if let Ok(mut active_dark) = state.tray_uses_dark.lock() {
-            theme_changed = *active_dark != Some(desired_dark);
-            *active_dark = Some(desired_dark);
-        }
-        let mut charging_changed = false;
-        if let Ok(mut active_charging) = state.tray_is_charging.lock() {
-            charging_changed = *active_charging != Some(desired_charging);
-            *active_charging = Some(desired_charging);
-        }
-        if *active != Some(desired_level) || theme_changed || charging_changed {
-            if desired_level >= 0 {
-                tray.set_icon(Some(tauri::image::Image::from_bytes(tray_icon_bytes(
-                    desired_level as u8,
-                    desired_dark,
-                    desired_charging,
-                ))?))?;
+    let tray_state = tray::state::TrayStatusState::from_snapshot(snapshot, &tray_settings);
+    #[cfg(target_os = "macos")]
+    tray::macos::set_app_lang(effective_language(&settings.language));
+    let system_dark = tray_theme_is_dark(app);
+    let theme = tray::style::resolve_tray_theme(&tray_settings, system_dark);
+    let style = tray::style::TrayVisualStyle::from_settings(&tray_settings, theme);
+
+    // 图标更新委托给平台控制器（内部做 diff，未变化时跳过 set_icon）
+    let session = app.state::<SessionState>();
+    if let Ok(mut controller) = session.tray_renderer.lock() {
+        if let Err(err) = tray::renderer::TrayController::update_icon(
+            &mut *controller,
+            &tray,
+            &tray_state,
+            &style,
+        ) {
+            eprintln!("[mira] tray icon update failed, falling back: {err}");
+            // fallback 到静态图标：不 panic，不影响菜单和 tooltip 更新
+            let icon_bytes = if tray_state.connected {
+                let percentage = tray_state.mouse_battery.unwrap_or(0);
+                let level = ((percentage.saturating_add(5)) / 10).min(10) * 10;
+                tray::static_icon::static_tray_icon_bytes(
+                    level,
+                    style.theme.is_dark(),
+                    tray_state.mouse_charging,
+                )
             } else {
-                tray.set_icon(Some(tauri::image::Image::from_bytes(
-                    tray_app_icon_bytes_for_theme(desired_dark),
-                )?))?;
+                tray::static_icon::static_tray_app_icon_bytes_for_theme(style.theme.is_dark())
+            };
+            if let Ok(image) = tauri::image::Image::from_bytes(icon_bytes) {
+                let _ = tray.set_icon(Some(image));
+                let _ = tray.set_icon_as_template(false);
             }
-            tray.set_icon_as_template(false)?;
-            *active = Some(desired_level);
         }
     }
+
+    let state = app.state::<SessionState>();
     let menu = Menu::new(app)?;
 
     let lang = effective_language(&settings.language);
@@ -7313,11 +7254,15 @@ fn update_tray(
 }
 
 fn build_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(target_os = "macos")]
+    tray::macos::set_app_handle(app.handle().clone());
+
     let lang = effective_language("auto");
     let open_i = MenuItem::with_id(app, "open", tr_open(lang), true, None::<&str>)?;
     let quit_i = MenuItem::with_id(app, "quit", tr_quit(lang), true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&open_i, &quit_i])?;
-    let initial_icon = tauri::image::Image::from_bytes(tray_app_icon_bytes())?;
+    let initial_icon =
+        tauri::image::Image::from_bytes(tray::static_icon::static_tray_app_icon_bytes())?;
 
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(initial_icon)
@@ -7326,6 +7271,9 @@ fn build_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .menu(&menu)
         .on_menu_event(|app, event| match event.id().as_ref() {
             "quit" => app.exit(0),
+            id if id.starts_with("battery-") => {
+                open_battery_usage_from_tray(app);
+            }
             _ => {
                 focus_main_from_tray(app);
             }

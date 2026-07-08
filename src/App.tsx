@@ -2041,8 +2041,12 @@ export default function App() {
     let unlisten: (() => void) | undefined;
     let unlistenResume: (() => void) | undefined;
     let unlistenFocus: (() => void) | undefined;
+    let unlistenBatteryUsage: (() => void) | undefined;
     listen('navigate-about-update', () => openAboutUpdate())
       .then((un) => { unlisten = un; })
+      .catch(() => {});
+    listen('open-battery-usage', () => openBatteryUsage())
+      .then((un) => { unlistenBatteryUsage = un; })
       .catch(() => {});
     listen('window-resumed', () => {
       setRefreshNonce((value) => value + 1);
@@ -2068,6 +2072,7 @@ export default function App() {
       if (unlisten) unlisten();
       if (unlistenResume) unlistenResume();
       if (unlistenFocus) unlistenFocus();
+      if (unlistenBatteryUsage) unlistenBatteryUsage();
     };
   }, [openAboutUpdate, openBatteryUsage, pureWeb]);
 

@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Instant;
 
-use chrono::{DateTime, Duration, Local, NaiveDate, Timelike, Utc};
+use chrono::{DateTime, Duration, Local, Utc};
 use mira_core::Connection;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -85,7 +85,7 @@ impl BatteryHistoryState {
                     if let Ok(mut last) = self.last_record.lock() {
                         last.clear();
                         for sample in guard.iter() {
-                            let key = format!("{}:{}", sample.device_id, sample.component_id);
+                            let key = sample_device_key(sample);
                             last.insert(key, (sample.clone(), Instant::now()));
                         }
                     }
@@ -218,6 +218,145 @@ pub fn anonymize_device_key(device_key: &str) -> String {
     hex::encode(&hash[..8])
 }
 
+fn normalize_history_device_name(value: &str) -> String {
+    value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+fn stable_device_id_for_entry(entry: &DeviceSnapshotEntry) -> String {
+    let snapshot = &entry.snapshot;
+    let plugin = snapshot.plugin_id.as_deref().unwrap_or("unknown-plugin");
+    let normalized_name = normalize_history_device_name(&snapshot.display_name);
+    let source = if normalized_name.is_empty() {
+        format!("path:{}", entry.device_key)
+    } else {
+        format!("plugin:{plugin}|name:{normalized_name}")
+    };
+    anonymize_device_key(&source)
+}
+
+fn history_device_group_id(device_id: &str, device_name: &str) -> String {
+    let normalized_name = normalize_history_device_name(device_name);
+    if normalized_name.is_empty() {
+        device_id.to_string()
+    } else {
+        anonymize_device_key(&format!("device-name:{normalized_name}"))
+    }
+}
+
+fn history_key(device_id: &str, device_name: &str, component_id: &str) -> String {
+    format!(
+        "{}:{}",
+        history_device_group_id(device_id, device_name),
+        component_id
+    )
+}
+
+fn sample_device_key(sample: &BatterySample) -> String {
+    history_key(&sample.device_id, &sample.device_name, &sample.component_id)
+}
+
+fn sample_legacy_key(sample: &BatterySample) -> String {
+    format!("{}:{}", sample.device_id, sample.component_id)
+}
+
+#[derive(Debug, Clone)]
+struct SampleGroup {
+    key: String,
+    component_id: String,
+    device_ids: BTreeSet<String>,
+    names: BTreeSet<String>,
+    aliases: BTreeSet<String>,
+}
+
+impl SampleGroup {
+    fn new(sample: &BatterySample) -> Self {
+        let mut group = SampleGroup {
+            key: sample_device_key(sample),
+            component_id: sample.component_id.clone(),
+            device_ids: BTreeSet::new(),
+            names: BTreeSet::new(),
+            aliases: BTreeSet::new(),
+        };
+        group.add_sample(sample);
+        group
+    }
+
+    fn add_sample(&mut self, sample: &BatterySample) {
+        self.device_ids.insert(sample.device_id.clone());
+        let name = normalize_history_device_name(&sample.device_name);
+        if !name.is_empty() {
+            self.names.insert(name);
+        }
+        self.aliases.insert(sample_device_key(sample));
+        self.aliases.insert(sample_legacy_key(sample));
+    }
+
+    fn absorb(&mut self, other: SampleGroup) {
+        self.device_ids.extend(other.device_ids);
+        self.names.extend(other.names);
+        self.aliases.extend(other.aliases);
+    }
+
+    fn matches_sample(&self, sample: &BatterySample) -> bool {
+        if self.component_id != sample.component_id {
+            return false;
+        }
+        if self.device_ids.contains(&sample.device_id) {
+            return true;
+        }
+        let name = normalize_history_device_name(&sample.device_name);
+        !name.is_empty() && self.names.contains(&name)
+    }
+
+    fn matches_key(&self, key: &str) -> bool {
+        self.key == key || self.aliases.contains(key)
+    }
+}
+
+fn build_sample_groups(samples: &[BatterySample]) -> Vec<SampleGroup> {
+    let mut groups: Vec<SampleGroup> = Vec::new();
+    for sample in samples {
+        let matches: Vec<usize> = groups
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, group)| group.matches_sample(sample).then_some(idx))
+            .collect();
+        let Some(first) = matches.first().copied() else {
+            groups.push(SampleGroup::new(sample));
+            continue;
+        };
+
+        groups[first].add_sample(sample);
+        for idx in matches.into_iter().skip(1).rev() {
+            let other = groups.remove(idx);
+            groups[first].absorb(other);
+        }
+    }
+    groups
+}
+
+fn samples_for_group<'a>(
+    samples: &'a [BatterySample],
+    groups: &'a [SampleGroup],
+    key: &str,
+) -> Vec<&'a BatterySample> {
+    if let Some(group) = groups.iter().find(|group| group.matches_key(key)) {
+        samples
+            .iter()
+            .filter(|sample| group.matches_sample(sample))
+            .collect()
+    } else {
+        samples
+            .iter()
+            .filter(|sample| sample_device_key(sample) == key || sample_legacy_key(sample) == key)
+            .collect()
+    }
+}
+
 fn normalize_percentage(raw: u8) -> Option<u8> {
     if raw == 0xFF {
         return None;
@@ -248,7 +387,7 @@ pub fn record_samples(
         let mut changed = false;
 
         for entry in entries {
-            let device_id = anonymize_device_key(&entry.device_key);
+            let device_id = stable_device_id_for_entry(entry);
             let snapshot = &entry.snapshot;
             let connection = connection_str(&snapshot.connection);
             let device_name = &snapshot.display_name;
@@ -279,7 +418,7 @@ pub fn record_samples(
             };
 
             for (component_id, component_label, percentage, charging) in batteries {
-                let key = format!("{}:{}", device_id, component_id);
+                let key = history_key(&device_id, device_name, &component_id);
                 let low_power = !charging && percentage < low_battery_threshold;
                 let should_record = match last_record.get(&key) {
                     Some((prev, last_instant)) => {
@@ -309,7 +448,6 @@ pub fn record_samples(
                         charging,
                         low_power,
                     };
-                    let key = format!("{}:{}", sample.device_id, sample.component_id);
                     last_record.insert(key, (sample.clone(), Instant::now()));
                     samples.push(sample);
                     changed = true;
@@ -370,6 +508,7 @@ pub fn build_response(
     let now = Utc::now();
 
     struct DeviceAccum {
+        key: String,
         device_id: String,
         device_name: String,
         connection: String,
@@ -380,38 +519,45 @@ pub fn build_response(
         latest_at: DateTime<Utc>,
         low_battery: bool,
     }
+    let groups = build_sample_groups(samples_ref);
     let mut device_keys: BTreeMap<String, DeviceAccum> = BTreeMap::new();
-    for s in samples_ref.iter() {
-        let key = format!("{}:{}", s.device_id, s.component_id);
-        device_keys
-            .entry(key.clone())
-            .and_modify(|d| {
-                if s.at > d.latest_at {
-                    d.latest_percentage = s.percentage;
-                    d.latest_charging = s.charging;
-                    d.latest_at = s.at;
-                    d.low_battery = !s.charging && s.percentage < low_battery_threshold;
-                    d.device_name = s.device_name.clone();
-                    d.connection = s.connection.clone();
-                    d.component_label = s.component_label.clone();
-                }
-            })
-            .or_insert(DeviceAccum {
-                device_id: s.device_id.clone(),
-                device_name: s.device_name.clone(),
-                connection: s.connection.clone(),
-                component_id: s.component_id.clone(),
-                component_label: s.component_label.clone(),
-                latest_percentage: s.percentage,
-                latest_charging: s.charging,
-                latest_at: s.at,
-                low_battery: !s.charging && s.percentage < low_battery_threshold,
-            });
+    for group in &groups {
+        for s in samples_ref
+            .iter()
+            .filter(|sample| group.matches_sample(sample))
+        {
+            device_keys
+                .entry(group.key.clone())
+                .and_modify(|d| {
+                    if s.at > d.latest_at {
+                        d.device_id = s.device_id.clone();
+                        d.latest_percentage = s.percentage;
+                        d.latest_charging = s.charging;
+                        d.latest_at = s.at;
+                        d.low_battery = !s.charging && s.percentage < low_battery_threshold;
+                        d.device_name = s.device_name.clone();
+                        d.connection = s.connection.clone();
+                        d.component_label = s.component_label.clone();
+                    }
+                })
+                .or_insert(DeviceAccum {
+                    key: group.key.clone(),
+                    device_id: s.device_id.clone(),
+                    device_name: s.device_name.clone(),
+                    connection: s.connection.clone(),
+                    component_id: s.component_id.clone(),
+                    component_label: s.component_label.clone(),
+                    latest_percentage: s.percentage,
+                    latest_charging: s.charging,
+                    latest_at: s.at,
+                    low_battery: !s.charging && s.percentage < low_battery_threshold,
+                });
+        }
     }
     let devices: Vec<BatteryHistoryDevice> = device_keys
         .values()
         .map(|d| BatteryHistoryDevice {
-            key: format!("{}:{}", d.device_id, d.component_id),
+            key: d.key.clone(),
             device_id: d.device_id.clone(),
             device_name: d.device_name.clone(),
             connection: d.connection.clone(),
@@ -428,14 +574,8 @@ pub fn build_response(
         .iter()
         .map(|d| {
             let key = &d.key;
-            let device_samples: Vec<&BatterySample> = samples_ref
-                .iter()
-                .filter(|s| format!("{}:{}", s.device_id, s.component_id) == *key)
-                .collect();
-            let points = match range {
-                "24h" => aggregate_24h(&device_samples, now, low_battery_threshold),
-                _ => aggregate_10d(&device_samples, now, low_battery_threshold),
-            };
+            let device_samples = samples_for_group(samples_ref, &groups, key);
+            let points = aggregate_active_usage(&device_samples, now, range, low_battery_threshold);
             BatteryHistorySeries {
                 key: key.clone(),
                 points,
@@ -454,160 +594,109 @@ pub fn build_response(
     }
 }
 
-/// 24 小时聚合：48 个 30 分钟 bucket，每个 bucket 显示该时段最后一个有效电量。
-/// 采用 30 分钟粒度让图表柱子紧密排列（类似 iOS 电量图表），呈现更细腻的趋势。
+/// 按累计使用时长聚合图表点。
 ///
-/// 时区说明：bucket 边界基于用户本地时区（`Local`），让"今天 14:00-14:30"
-/// 与用户感知一致。夏令时切换（DST）会导致某天 bucket 数为 46 或 50，
-/// 此处不做特殊处理——DST 切换瞬间用户通常不会频繁查看电量图表，
-/// 且 chrono 的 `Duration::minutes` 会正确处理本地时间偏移。
-fn aggregate_24h(
+/// 鼠标会断续连接和使用，真实时钟 X 轴会把大量空闲/断连时间画成空洞。
+/// 这里仍用 24h / 10d 作为筛选范围，但横坐标只累计相邻采样间隔较短的在线时间，
+/// 将长间隔压缩掉，让趋势尽量连续。
+#[derive(Clone, Copy)]
+struct ActiveSample<'a> {
+    sample: &'a BatterySample,
+    active_minutes: i64,
+}
+
+fn aggregate_active_usage(
     samples: &[&BatterySample],
     now: DateTime<Utc>,
+    range: &str,
     low_battery_threshold: u8,
 ) -> Vec<BatteryHistoryPoint> {
-    let local_now = now.with_timezone(&Local);
-    // 对齐到 30 分钟边界（下取整），再向前推 23.5 小时作为起点。
-    // 48 个 30 分钟 bucket 覆盖完整 24 小时，且最后一个 bucket 包含当前时刻。
-    let aligned = local_now
-        .with_second(0)
-        .unwrap_or(local_now)
-        .with_nanosecond(0)
-        .unwrap_or(local_now);
-    let aligned = if aligned.minute() >= 30 {
-        aligned.with_minute(30).unwrap_or(aligned)
-    } else {
-        aligned.with_minute(0).unwrap_or(aligned)
+    let cutoff = match range {
+        "24h" => now - Duration::hours(24),
+        _ => now - Duration::days(10),
     };
-    let start = aligned - Duration::minutes(47 * 30);
 
-    let mut points = Vec::with_capacity(48);
-    for i in 0..48 {
-        let bucket_start = start + Duration::minutes(i * 30);
-        let bucket_end = bucket_start + Duration::minutes(30);
-        let bucket_samples: Vec<&&BatterySample> = samples
-            .iter()
-            .filter(|s| {
-                let local = s.at.with_timezone(&Local);
-                local >= bucket_start && local < bucket_end
-            })
-            .collect();
-
-        points.push(build_point_24h(
-            bucket_samples,
-            bucket_start,
-            low_battery_threshold,
-        ));
+    let mut sorted: Vec<&BatterySample> = samples
+        .iter()
+        .copied()
+        .filter(|sample| sample.at >= cutoff)
+        .collect();
+    sorted.sort_by_key(|sample| sample.at);
+    if sorted.is_empty() {
+        return Vec::new();
     }
-    points
+
+    let mut active_samples = Vec::with_capacity(sorted.len());
+    let mut active_minutes = 0i64;
+    let mut prev: Option<&BatterySample> = None;
+    for sample in sorted {
+        if let Some(prev_sample) = prev {
+            let gap = (sample.at - prev_sample.at).num_minutes();
+            if gap > 0 && gap <= SESSION_GAP_THRESHOLD_MINUTES {
+                active_minutes += gap;
+            }
+        }
+        active_samples.push(ActiveSample {
+            sample,
+            active_minutes,
+        });
+        prev = Some(sample);
+    }
+
+    let max_points = if range == "24h" { 96usize } else { 80usize };
+    let chunk_size = active_samples.len().div_ceil(max_points).max(1);
+    active_samples
+        .chunks(chunk_size)
+        .map(|chunk| build_active_usage_point(chunk, low_battery_threshold))
+        .collect()
 }
 
-fn build_point_24h(
-    bucket_samples: Vec<&&BatterySample>,
-    bucket_start: DateTime<Local>,
+fn build_active_usage_point(
+    chunk: &[ActiveSample<'_>],
     low_battery_threshold: u8,
 ) -> BatteryHistoryPoint {
-    if bucket_samples.is_empty() {
-        return BatteryHistoryPoint {
-            bucket_start: bucket_start.with_timezone(&Utc).to_rfc3339(),
-            bucket_label: format!("{:02}:{:02}", bucket_start.hour(), bucket_start.minute()),
-            percentage: None,
-            min_percentage: None,
-            max_percentage: None,
-            charging: None,
-            low_battery: None,
-            sample_count: 0,
-        };
-    }
-
-    let last = bucket_samples.last().unwrap();
-    let min = bucket_samples.iter().map(|s| s.percentage).min();
-    let max = bucket_samples.iter().map(|s| s.percentage).max();
-    let charging = bucket_samples.iter().any(|s| s.charging);
-    let low_battery = bucket_samples
+    let first = chunk.first().unwrap().sample;
+    let last_active = chunk.last().unwrap();
+    let last = last_active.sample;
+    let min = chunk.iter().map(|s| s.sample.percentage).min();
+    let max = chunk.iter().map(|s| s.sample.percentage).max();
+    let charging = chunk.iter().any(|s| s.sample.charging);
+    let low_battery = chunk
         .iter()
-        .any(|s| !s.charging && s.percentage < low_battery_threshold);
+        .any(|s| !s.sample.charging && s.sample.percentage < low_battery_threshold);
 
     BatteryHistoryPoint {
-        bucket_start: bucket_start.with_timezone(&Utc).to_rfc3339(),
-        bucket_label: format!("{:02}:{:02}", bucket_start.hour(), bucket_start.minute()),
+        bucket_start: first.at.to_rfc3339(),
+        bucket_label: format_active_duration(last_active.active_minutes),
         percentage: Some(last.percentage),
         min_percentage: min,
         max_percentage: max,
         charging: Some(charging),
         low_battery: Some(low_battery),
-        sample_count: bucket_samples.len() as u32,
+        sample_count: chunk.len() as u32,
     }
 }
 
-fn aggregate_10d(
-    samples: &[&BatterySample],
-    now: DateTime<Utc>,
-    low_battery_threshold: u8,
-) -> Vec<BatteryHistoryPoint> {
-    let local_now = now.with_timezone(&Local);
-    let today = local_now.date_naive();
-
-    let mut points = Vec::with_capacity(10);
-    for i in (0..10).rev() {
-        let day = today - Duration::days(i);
-        let day_samples: Vec<&&BatterySample> = samples
-            .iter()
-            .filter(|s| {
-                let local = s.at.with_timezone(&Local);
-                local.date_naive() == day
-            })
-            .collect();
-
-        points.push(build_point_10d(day_samples, day, low_battery_threshold));
+fn format_active_duration(minutes: i64) -> String {
+    if minutes < 60 {
+        return format!("{}m", minutes.max(0));
     }
-    points
-}
-
-fn build_point_10d(
-    bucket_samples: Vec<&&BatterySample>,
-    day: NaiveDate,
-    low_battery_threshold: u8,
-) -> BatteryHistoryPoint {
-    let midnight = day.and_hms_opt(0, 0, 0).unwrap();
-    let bucket_start = midnight
-        .and_local_timezone(Local)
-        .single()
-        .map(|dt| dt.with_timezone(&Utc))
-        .unwrap_or_else(|| midnight.and_utc())
-        .to_rfc3339();
-    let bucket_label = format!("{}", day.format("%m-%d"));
-
-    if bucket_samples.is_empty() {
-        return BatteryHistoryPoint {
-            bucket_start,
-            bucket_label,
-            percentage: None,
-            min_percentage: None,
-            max_percentage: None,
-            charging: None,
-            low_battery: None,
-            sample_count: 0,
-        };
-    }
-
-    let last = bucket_samples.last().unwrap();
-    let min = bucket_samples.iter().map(|s| s.percentage).min();
-    let max = bucket_samples.iter().map(|s| s.percentage).max();
-    let charging = bucket_samples.iter().any(|s| s.charging);
-    let low_battery = bucket_samples
-        .iter()
-        .any(|s| !s.charging && s.percentage < low_battery_threshold);
-
-    BatteryHistoryPoint {
-        bucket_start,
-        bucket_label,
-        percentage: Some(last.percentage),
-        min_percentage: min,
-        max_percentage: max,
-        charging: Some(charging),
-        low_battery: Some(low_battery),
-        sample_count: bucket_samples.len() as u32,
+    let hours = minutes / 60;
+    let mins = minutes % 60;
+    if hours < 24 {
+        if mins == 0 {
+            format!("{hours}h")
+        } else {
+            format!("{hours}h {mins}m")
+        }
+    } else {
+        let days = hours / 24;
+        let rem_hours = hours % 24;
+        if rem_hours == 0 {
+            format!("{days}d")
+        } else {
+            format!("{days}d {rem_hours}h")
+        }
     }
 }
 
@@ -619,13 +708,11 @@ fn build_insights(
     now: DateTime<Utc>,
 ) -> Vec<BatteryInsight> {
     let mut insights = Vec::new();
+    let groups = build_sample_groups(samples);
 
     for device in devices {
         let key = &device.key;
-        let device_samples: Vec<&BatterySample> = samples
-            .iter()
-            .filter(|s| format!("{}:{}", s.device_id, s.component_id) == *key)
-            .collect();
+        let device_samples = samples_for_group(samples, &groups, key);
         if device_samples.is_empty() {
             continue;
         }
@@ -985,19 +1072,19 @@ pub fn check_abnormal_drain(
         let guard = state.samples.lock().unwrap_or_else(|e| e.into_inner());
         guard.clone()
     };
-    let mut groups: BTreeMap<String, (String, Vec<&BatterySample>)> = BTreeMap::new();
-    for s in samples.iter() {
-        let key = format!("{}:{}", s.device_id, s.component_id);
-        let entry = groups.entry(key).or_default();
-        entry.0 = s.device_name.clone();
-        entry.1.push(s);
-    }
+    let sample_groups = build_sample_groups(&samples);
     let mut result = Vec::new();
-    for (key, (device_name, group_samples)) in &groups {
-        if detect_abnormal_drain(group_samples, now).is_some()
-            && notify_state.should_notify(key, now)
+    for group in &sample_groups {
+        let group_samples = samples_for_group(&samples, &sample_groups, &group.key);
+        let device_name = group_samples
+            .iter()
+            .max_by_key(|sample| sample.at)
+            .map(|sample| sample.device_name.clone())
+            .unwrap_or_default();
+        if detect_abnormal_drain(&group_samples, now).is_some()
+            && notify_state.should_notify(&group.key, now)
         {
-            result.push((key.clone(), device_name.clone()));
+            result.push((group.key.clone(), device_name));
         }
     }
     result
@@ -1114,13 +1201,14 @@ fn compare_devices(
         "24h" => now - Duration::hours(24),
         _ => now - Duration::days(10),
     };
+    let groups = build_sample_groups(samples);
 
     let mut rates: Vec<(String, f64)> = Vec::new();
     for device in devices {
         let key = &device.key;
-        let device_samples: Vec<&BatterySample> = samples
-            .iter()
-            .filter(|s| format!("{}:{}", s.device_id, s.component_id) == *key && s.at >= cutoff)
+        let device_samples: Vec<&BatterySample> = samples_for_group(samples, &groups, key)
+            .into_iter()
+            .filter(|s| s.at >= cutoff)
             .collect();
         if let Some(rate) = drain_rate(&device_samples, cutoff, now) {
             rates.push((device.component_label.clone(), rate));
@@ -1212,18 +1300,97 @@ fn csv_escape(field: &str) -> String {
     s
 }
 
-pub fn clear_history(state: &BatteryHistoryState, app: &AppHandle) -> Result<(), String> {
+pub fn clear_history(
+    state: &BatteryHistoryState,
+    app: &AppHandle,
+    device_key: Option<&str>,
+) -> Result<(), String> {
+    let persisted_samples = {
+        let mut samples = state.samples.lock().unwrap_or_else(|e| e.into_inner());
+        let mut last = state.last_record.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(device_key) = device_key {
+            let groups = build_sample_groups(&samples);
+            let target_group = groups
+                .iter()
+                .find(|group| group.matches_key(device_key))
+                .cloned();
+            samples.retain(|sample| {
+                target_group
+                    .as_ref()
+                    .map(|group| !group.matches_sample(sample))
+                    .unwrap_or_else(|| {
+                        sample_device_key(sample) != device_key
+                            && sample_legacy_key(sample) != device_key
+                    })
+            });
+            last.retain(|key, (sample, _)| {
+                key != device_key
+                    && target_group
+                        .as_ref()
+                        .map(|group| !group.matches_sample(sample))
+                        .unwrap_or_else(|| {
+                            sample_device_key(sample) != device_key
+                                && sample_legacy_key(sample) != device_key
+                        })
+            });
+        } else {
+            samples.clear();
+            last.clear();
+        }
+        samples.clone()
+    };
+
+    let file = BatteryHistoryFile {
+        schema_version: SCHEMA_VERSION,
+        samples: persisted_samples,
+    };
+    save_history(app, &file)
+}
+
+#[allow(dead_code)]
+fn clear_device_history(
+    state: &BatteryHistoryState,
+    app: &AppHandle,
+    device_key: &str,
+) -> Result<(), String> {
+    clear_history(state, app, Some(device_key))
+}
+
+#[cfg(test)]
+fn clear_history_in_memory(state: &BatteryHistoryState, device_key: Option<&str>) {
     {
         let mut samples = state.samples.lock().unwrap_or_else(|e| e.into_inner());
         let mut last = state.last_record.lock().unwrap_or_else(|e| e.into_inner());
-        samples.clear();
-        last.clear();
+        if let Some(device_key) = device_key {
+            let groups = build_sample_groups(&samples);
+            let target_group = groups
+                .iter()
+                .find(|group| group.matches_key(device_key))
+                .cloned();
+            samples.retain(|sample| {
+                target_group
+                    .as_ref()
+                    .map(|group| !group.matches_sample(sample))
+                    .unwrap_or_else(|| {
+                        sample_device_key(sample) != device_key
+                            && sample_legacy_key(sample) != device_key
+                    })
+            });
+            last.retain(|key, (sample, _)| {
+                key != device_key
+                    && target_group
+                        .as_ref()
+                        .map(|group| !group.matches_sample(sample))
+                        .unwrap_or_else(|| {
+                            sample_device_key(sample) != device_key
+                                && sample_legacy_key(sample) != device_key
+                        })
+            });
+        } else {
+            samples.clear();
+            last.clear();
+        }
     }
-    let file = BatteryHistoryFile {
-        schema_version: SCHEMA_VERSION,
-        samples: Vec::new(),
-    };
-    save_history(app, &file)
 }
 
 pub struct AbnormalDrainNotifyState {
@@ -1368,33 +1535,47 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_24h_generates_48_buckets() {
+    fn aggregate_active_usage_generates_continuous_points() {
         let now = Utc::now();
         let samples: Vec<BatterySample> = vec![
-            make_sample(now - Duration::hours(2), 90, false),
-            make_sample(now - Duration::hours(1), 85, false),
+            make_sample(now - Duration::minutes(10), 90, false),
+            make_sample(now - Duration::minutes(5), 85, false),
             make_sample(now, 80, false),
         ];
         let refs: Vec<&BatterySample> = samples.iter().collect();
-        let points = aggregate_24h(&refs, now, 20);
-        assert_eq!(points.len(), 48);
-        let non_empty = points.iter().filter(|p| p.sample_count > 0).count();
-        assert!(non_empty >= 3);
+        let points = aggregate_active_usage(&refs, now, "24h", 20);
+        assert_eq!(points.len(), 3);
+        assert_eq!(points[0].bucket_label, "0m");
+        assert_eq!(points[1].bucket_label, "5m");
+        assert_eq!(points[2].bucket_label, "10m");
     }
 
     #[test]
-    fn aggregate_10d_generates_10_buckets() {
+    fn aggregate_active_usage_compresses_long_gaps() {
         let now = Utc::now();
         let samples: Vec<BatterySample> = vec![
-            make_sample(now - Duration::days(9), 90, false),
-            make_sample(now - Duration::days(5), 80, false),
+            make_sample(now - Duration::hours(6), 90, false),
+            make_sample(now - Duration::minutes(5), 80, false),
             make_sample(now, 70, false),
         ];
         let refs: Vec<&BatterySample> = samples.iter().collect();
-        let points = aggregate_10d(&refs, now, 20);
-        assert_eq!(points.len(), 10);
-        let non_empty = points.iter().filter(|p| p.sample_count > 0).count();
-        assert!(non_empty >= 3);
+        let points = aggregate_active_usage(&refs, now, "10d", 20);
+        assert_eq!(points.len(), 3);
+        assert_eq!(points[0].bucket_label, "0m");
+        assert_eq!(points[1].bucket_label, "0m");
+        assert_eq!(points[2].bucket_label, "5m");
+    }
+
+    #[test]
+    fn aggregate_active_usage_caps_24h_at_dense_ios_like_points() {
+        let now = Utc::now();
+        let samples: Vec<BatterySample> = (0..192)
+            .map(|i| make_sample(now - Duration::minutes((191 - i) * 5), 90, false))
+            .collect();
+        let refs: Vec<&BatterySample> = samples.iter().collect();
+        let points = aggregate_active_usage(&refs, now, "24h", 20);
+        assert_eq!(points.len(), 96);
+        assert!(points.iter().all(|point| point.sample_count == 2));
     }
 
     #[test]
@@ -1957,6 +2138,63 @@ mod tests {
         let resp = build_response(&state, 20, "24h");
         assert_eq!(resp.devices.len(), 1);
         assert_eq!(resp.devices[0].device_name, "New Name");
+    }
+
+    #[test]
+    fn build_response_merges_same_named_device_with_different_ids() {
+        let state = BatteryHistoryState::new();
+        let now = Utc::now();
+        {
+            let mut samples = state.samples.lock().unwrap();
+            let mut s1 = make_sample(now - Duration::hours(1), 80, false);
+            s1.device_id = "old-path-hash".into();
+            s1.device_name = "Mira Mouse".into();
+            let mut s2 = make_sample(now, 75, false);
+            s2.device_id = "new-path-hash".into();
+            s2.device_name = "Mira Mouse".into();
+            samples.push(s1);
+            samples.push(s2);
+        }
+
+        let resp = build_response(&state, 20, "24h");
+
+        assert_eq!(resp.devices.len(), 1);
+        assert_eq!(resp.devices[0].latest_percentage, Some(75));
+        let total_samples: u32 = resp.series[0].points.iter().map(|p| p.sample_count).sum();
+        assert_eq!(total_samples, 2);
+    }
+
+    #[test]
+    fn clear_history_in_memory_only_removes_requested_device() {
+        let state = BatteryHistoryState::new();
+        let now = Utc::now();
+        let mut mouse = make_sample(now, 80, false);
+        mouse.device_name = "Mira Mouse".into();
+        let mut receiver = make_sample(now, 100, false);
+        receiver.device_name = "Mira Receiver".into();
+        receiver.component_id = "receiver".into();
+        receiver.component_label = "mock.receiverLabel".into();
+        let mouse_key = sample_device_key(&mouse);
+        let receiver_key = sample_device_key(&receiver);
+        {
+            let mut samples = state.samples.lock().unwrap();
+            samples.push(mouse.clone());
+            samples.push(receiver.clone());
+        }
+        {
+            let mut last = state.last_record.lock().unwrap();
+            last.insert(mouse_key.clone(), (mouse, Instant::now()));
+            last.insert(receiver_key.clone(), (receiver, Instant::now()));
+        }
+
+        clear_history_in_memory(&state, Some(&mouse_key));
+
+        let samples = state.samples.lock().unwrap();
+        assert_eq!(samples.len(), 1);
+        assert_eq!(sample_device_key(&samples[0]), receiver_key);
+        let last = state.last_record.lock().unwrap();
+        assert!(!last.contains_key(&mouse_key));
+        assert!(last.contains_key(&receiver_key));
     }
 
     #[test]
