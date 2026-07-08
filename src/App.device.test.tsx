@@ -14,7 +14,7 @@ afterAll(() => Reflect.deleteProperty(window, '__TAURI_INTERNALS__'));
 const settings: AppSettings = {
   theme: 'light', autostart: false, startHidden: false, lowBatteryThreshold: 20,
   trayShowBatteryTitle: true, trayIncludeReceiverBattery: false, trayShowConnection: true,
-  trayIconColor: 'white',
+  trayIconColor: 'auto', trayRenderMode: 'auto',
   nightModeEnabled: false, nightModeStart: '22:00', nightModeEnd: '07:00',
   nightModeTriggerTime: true, nightModeTriggerTheme: false, nightModeThemeDark: true,
   nightModeTriggerCharging: false, nightModeTriggerLowBattery: false,

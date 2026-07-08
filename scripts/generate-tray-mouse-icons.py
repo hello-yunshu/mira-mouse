@@ -14,14 +14,21 @@ OUTLINE_ALPHA = 160  # ~0.63，轮廓再透明一点点
 WHEEL_WIDTH = 7  # 中键粗细 7px
 WHEEL_LENGTH = 14  # 中键长度增加 2px
 WHEEL_GAP = 2  # 中键四周 2px 透明边缘
+CHARGING_BOLT_GAP = [
+    (44, 5),
+    (34, 28),
+    (46, 28),
+    (26, 58),
+    (32, 38),
+    (20, 38),
+]
 CHARGING_BOLT = [
-    (31, 33),
-    (37, 33),
-    (34, 39),
-    (38, 39),
-    (29, 52),
-    (32, 43),
-    (27, 43),
+    (43, 8),
+    (36, 29),
+    (45, 29),
+    (28, 55),
+    (33, 36),
+    (23, 36),
 ]
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -117,11 +124,16 @@ def draw_mouse_icon(size: int, level: int, dark: bool, charging: bool = False):
     )
 
     if charging:
+        gap_points = [
+            (int(round(x * scale)), int(round(y * scale)))
+            for x, y in CHARGING_BOLT_GAP
+        ]
+        draw.polygon(gap_points, fill=(0, 0, 0, 0))
         points = [
             (int(round(x * scale)), int(round(y * scale)))
             for x, y in CHARGING_BOLT
         ]
-        draw.polygon(points, fill=wheel)
+        draw.polygon(points, fill=(255, 255, 255, 255))
 
     return image
 

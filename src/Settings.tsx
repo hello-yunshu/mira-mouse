@@ -20,7 +20,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   trayShowBatteryTitle: true,
   trayIncludeReceiverBattery: false,
   trayShowConnection: true,
-  trayIconColor: 'white',
+  trayIconColor: 'auto',
+  trayRenderMode: 'auto',
   lowBatteryThreshold: 20,
   nightModeEnabled: false,
   nightModeStart: '22:00',
@@ -245,7 +246,7 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
       return;
     }
     try {
-      await invoke('battery_history_clear');
+      await invoke('battery_history_clear', { deviceKey: null });
       notifyInfo(t('batteryUsage.clearDone'), '');
       setConfirmingClearBattery(false);
     } catch (err) {
@@ -372,9 +373,9 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
             </SettingRow>
             <SettingRow title={t('settings.trayIconColor.label')} hint={t('settings.trayIconColor.hint')}>
               <select value={settings.trayIconColor} onChange={(e) => update({ trayIconColor: e.target.value })} aria-label={t('settings.trayIconColor.label')}>
+                <option value="auto">{t('settings.trayIconColor.auto')}</option>
                 <option value="white">{t('settings.trayIconColor.white')}</option>
                 <option value="black">{t('settings.trayIconColor.black')}</option>
-                <option value="auto">{t('settings.trayIconColor.auto')}</option>
               </select>
             </SettingRow>
             <SettingRow title={t('settings.receiverBattery.label')} hint={t('settings.receiverBattery.hint')}>

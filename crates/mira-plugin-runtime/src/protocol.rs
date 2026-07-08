@@ -313,7 +313,10 @@ fn standard_reading(
     // Receiver transports expose their status object alongside ordinary workflow
     // outputs. Keeping this normalization in the runtime lets every UI consume the
     // same multi-device battery contract without knowing a brand protocol.
-    if let Some(receiver) = object(&reading.capabilities, "receiver") {
+    let receiver_idle = object(&reading.capabilities, "receiverIdle");
+    let receiver_proxy = object(&reading.capabilities, "receiver");
+    let receiver = receiver_idle.or(receiver_proxy);
+    if let Some(receiver) = receiver {
         if reading.battery_percent.is_none() {
             reading.battery_percent = receiver_mouse_battery_percentage(receiver);
         }
@@ -786,7 +789,12 @@ fn receiver_mouse_battery_percentage(object: &serde_json::Map<String, Value>) ->
 
 fn receiver_status_battery_percentage(object: &serde_json::Map<String, Value>) -> Option<u8> {
     let percentage = percentage_value(object, "receiverBattery")?;
-    (percentage > 0).then_some(percentage)
+    // Protocol A receivers can report 0x32 while charging even when the real
+    // level is different; treat it as an unavailable placeholder, not 50%.
+    if percentage == 0 || percentage == 50 {
+        return None;
+    }
+    Some(percentage)
 }
 
 fn protocol_a_receiver_battery_charging(percentage: u8) -> bool {
@@ -895,13 +903,43 @@ mod tests {
     fn normalizes_protocol_a_receiver_battery_charging_status() {
         let outputs = BTreeMap::from([(
             "receiver".into(),
-            json!({"mouseBattery": 75, "mouseOnline": true, "receiverBattery": 50}),
+            json!({"mouseBattery": 75, "mouseOnline": true, "receiverBattery": 88}),
         )]);
         let reading = standard_reading(outputs, None);
         assert_eq!(reading.batteries.len(), 2);
         assert_eq!(reading.batteries[1].id, "receiver");
-        assert_eq!(reading.batteries[1].percentage, 50);
+        assert_eq!(reading.batteries[1].percentage, 88);
         assert!(reading.batteries[1].charging);
+    }
+
+    #[test]
+    fn protocol_a_receiver_prefers_idle_status_battery() {
+        let outputs = BTreeMap::from([
+            (
+                "receiverIdle".into(),
+                json!({"mouseBattery": 75, "mouseOnline": true, "receiverBattery": 87}),
+            ),
+            (
+                "receiver".into(),
+                json!({"mouseBattery": 75, "mouseOnline": true, "receiverBattery": 50}),
+            ),
+        ]);
+        let reading = standard_reading(outputs, None);
+        assert_eq!(reading.batteries.len(), 2);
+        assert_eq!(reading.batteries[1].id, "receiver");
+        assert_eq!(reading.batteries[1].percentage, 87);
+        assert!(reading.batteries[1].charging);
+    }
+
+    #[test]
+    fn protocol_a_receiver_drops_charging_placeholder_50() {
+        let outputs = BTreeMap::from([(
+            "receiver".into(),
+            json!({"mouseBattery": 75, "mouseOnline": true, "receiverBattery": 50}),
+        )]);
+        let reading = standard_reading(outputs, None);
+        assert_eq!(reading.batteries.len(), 1);
+        assert_eq!(reading.batteries[0].id, "mouse");
     }
 
     #[test]

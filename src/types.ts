@@ -180,6 +180,8 @@ export interface AppSettings {
   trayIncludeReceiverBattery: boolean;
   trayShowConnection: boolean;
   trayIconColor: string;
+  /** 托盘渲染模式：auto | native-macos | dynamic-image | static */
+  trayRenderMode: 'auto' | 'native-macos' | 'dynamic-image' | 'static';
   lowBatteryThreshold: number;
   nightModeEnabled: boolean;
   nightModeStart: string;
