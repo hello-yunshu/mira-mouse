@@ -47,6 +47,7 @@ impl Default for TauriTrayController {
 }
 
 impl TauriTrayController {
+    #[allow(dead_code)]
     pub fn new() -> Self {
         Self::default()
     }
