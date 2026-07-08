@@ -197,7 +197,7 @@ fn merge_samples(disk: Vec<BatterySample>, memory: &[BatterySample]) -> Vec<Batt
     let disk_latest = disk.iter().map(|s| s.at).max();
     let mut merged = disk;
     for s in memory {
-        if disk_latest.map_or(true, |latest| s.at > latest) {
+        if disk_latest.is_none_or(|latest| s.at > latest) {
             merged.push(s.clone());
         }
     }
@@ -324,7 +324,7 @@ pub fn record_samples(
         }
 
         if samples.len() > MAX_SAMPLES {
-            samples.sort_by(|a, b| a.at.cmp(&b.at));
+            samples.sort_by_key(|a| a.at);
             let drop_count = samples.len() - MAX_SAMPLES;
             samples.drain(0..drop_count);
             changed = true;
@@ -1909,7 +1909,7 @@ mod tests {
                 samples.push(make_sample(at, (i % 100) as u8, false));
             }
             if samples.len() > MAX_SAMPLES {
-                samples.sort_by(|a, b| a.at.cmp(&b.at));
+                samples.sort_by_key(|a| a.at);
                 let drop_count = samples.len() - MAX_SAMPLES;
                 samples.drain(0..drop_count);
             }
