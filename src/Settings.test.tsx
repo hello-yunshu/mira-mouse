@@ -14,7 +14,7 @@ vi.mock('./updater', () => ({ startAutomaticAppUpdateCheck: startAutomaticAppUpd
 const settings: AppSettings = {
   theme: 'system', autostart: false, startHidden: true, lowBatteryThreshold: 20,
   trayShowBatteryTitle: true, trayIncludeReceiverBattery: false, trayShowConnection: true,
-  trayIconColor: 'white',
+  trayIconColor: 'auto', trayRenderMode: 'auto',
   nightModeEnabled: false, nightModeStart: '22:00', nightModeEnd: '07:00',
   nightModeTriggerTime: true, nightModeTriggerTheme: false, nightModeThemeDark: true,
   nightModeTriggerCharging: false, nightModeTriggerLowBattery: false,

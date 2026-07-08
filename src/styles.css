@@ -610,48 +610,47 @@ body:has(.platform-fallback:not(.web-preview)) {
   transition: background .12s ease, color .12s ease;
 }
 .battery-state:hover { color: inherit; background: var(--surface-group-bg-hover); }
-.battery-state svg { width: 20px; height: 20px; }
+.battery-state svg:not(.battery-level-svg) { width: 20px; height: 20px; }
 .battery-count { font-size: 9px; font-weight: 600; opacity: .72; }
 .battery-level-icon {
   --battery-icon-color: currentColor;
   flex: 0 0 auto;
-  width: 22px;
-  height: 13px;
+  width: 24px;
+  height: 15px;
   display: inline-flex;
   align-items: center;
-  gap: 2px;
+  justify-content: center;
+  position: relative;
   color: var(--battery-icon-color);
+  line-height: 0;
   opacity: .86;
+  vertical-align: middle;
 }
 .battery-level-icon.low,
 .battery-level-icon.charging { --battery-icon-color: currentColor; }
-.battery-level-body {
-  flex: 1;
+.battery-level-svg {
+  width: 100%;
   height: 100%;
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 1.5px;
-  padding: 2px;
-  border: 1.5px solid currentColor;
-  border-radius: 4px;
-  background: transparent;
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / 18%);
+  display: block;
+  overflow: visible;
 }
-.battery-level-cell {
-  min-width: 0;
-  border-radius: 1.5px;
-  background: transparent;
+.battery-level-body {
+  fill: transparent;
+  stroke: currentColor;
+  stroke-width: 1.5;
 }
-.battery-level-cell.filled {
-  background: currentColor;
-  opacity: .9;
+.battery-level-fill {
+  fill: currentColor;
+  opacity: .88;
 }
 .battery-level-cap {
-  width: 2px;
-  height: 6px;
-  border-radius: 0 2px 2px 0;
-  background: currentColor;
+  fill: currentColor;
   opacity: .9;
+}
+.battery-level-bolt {
+  fill: #fff;
+  opacity: 1;
+  filter: drop-shadow(0 0 .5px rgb(0 0 0 / 28%));
 }
 .battery-popover {
   position: absolute;
