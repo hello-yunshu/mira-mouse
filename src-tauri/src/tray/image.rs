@@ -441,6 +441,7 @@ pub fn render_mouse_icon_rgba(state: &TrayStatusState, style: &TrayVisualStyle) 
     canvas.into_rgba_bytes()
 }
 
+#[allow(dead_code)]
 pub fn encode_rgba_png(
     rgba: &[u8],
     width: u32,

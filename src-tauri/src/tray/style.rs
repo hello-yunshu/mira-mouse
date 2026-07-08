@@ -167,6 +167,7 @@ impl TrayVisualStyle {
         }
     }
 
+    #[allow(dead_code)]
     pub fn with_auto_theme(self, theme: TrayTheme) -> Self {
         if self.icon_color_mode == TrayIconColorMode::Auto {
             Self::from_color_mode(TrayIconColorMode::Auto, theme)
