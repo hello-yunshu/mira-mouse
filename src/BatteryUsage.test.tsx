@@ -63,18 +63,23 @@ describe('BatteryUsageModal', () => {
     });
   });
 
-  it('renders chart and device chips for 24h data', async () => {
+  it('renders chart with follow-up information blocks for 24h data', async () => {
     mockInvoke({ response: MOCK_BATTERY_HISTORY_24H });
     render(<BatteryUsageModal open onClose={() => {}} hasBattery />);
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('battery_history_get', { range: '24h' }));
-    // 标题
     expect(screen.getByRole('heading', { name: '电量使用情况' })).toBeInTheDocument();
-    // 设备 chips（mock 数据有 2 个设备）
-    const tabs = screen.getAllByRole('tab');
-    expect(tabs.length).toBeGreaterThanOrEqual(2);
-    // 24h range toggle 默认激活
+    expect(screen.getByText('本地 AI')).toBeInTheDocument();
+    expect(screen.getByText('由趋势建模、异常掉电检测与充电习惯推断生成')).toBeInTheDocument();
     const range24h = screen.getByRole('tab', { name: '24 小时' });
     expect(range24h).toHaveAttribute('aria-selected', 'true');
+    const chartCard = document.querySelector('.battery-chart-card');
+    const summaryGrid = document.querySelector('.battery-summary-grid');
+    expect(chartCard).not.toBeNull();
+    expect(summaryGrid).not.toBeNull();
+    if (!chartCard || !summaryGrid) throw new Error('battery chart or summary grid missing');
+    expect(chartCard.compareDocumentPosition(summaryGrid) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByText('当前电量')).toBeInTheDocument();
+    expect(screen.getByText('充电习惯')).toBeInTheDocument();
   });
 
   it('switches to 10d range and refetches', async () => {
@@ -95,18 +100,16 @@ describe('BatteryUsageModal', () => {
     expect(invokeMock).toHaveBeenCalledWith('battery_history_get', { range: '10d' });
   });
 
-  it('switches selected device chip', async () => {
+  it('switches selected device from the status strip menu', async () => {
     mockInvoke({ response: MOCK_BATTERY_HISTORY_24H });
     render(<BatteryUsageModal open onClose={() => {}} hasBattery />);
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('battery_history_get', { range: '24h' }));
-    // mock 数据有 mouse 和 receiver 两个设备
-    const tabs = screen.getAllByRole('tab');
-    // 找到非 active 的设备 chip 并点击
-    const inactiveTabs = tabs.filter((tab) => tab.getAttribute('aria-selected') === 'false');
-    if (inactiveTabs.length > 0) {
-      fireEvent.click(inactiveTabs[0]);
-      expect(inactiveTabs[0]).toHaveAttribute('aria-selected', 'true');
-    }
+    const switcher = screen.getByRole('button', { name: '切换设备' });
+    fireEvent.click(switcher);
+    const receiverItem = screen.getByRole('menuitemradio', { name: /接收器/ });
+    expect(receiverItem).toHaveAttribute('aria-checked', 'false');
+    fireEvent.click(receiverItem);
+    await waitFor(() => expect(document.querySelector('.battery-status-metric strong')).toHaveTextContent('96%'));
   });
 
   it('shows unsupported state when device has no battery', async () => {

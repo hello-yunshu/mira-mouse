@@ -444,7 +444,10 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
 
           <section className="card settings-section" id="settings-battery-history-section">
             <div className="card-title">
-              <h2>{t('settings.section.batteryHistory')}</h2>
+              <h2 className="settings-title-with-badge">
+                {t('settings.section.batteryHistory')}
+                <span className="settings-feature-badge">{t('batteryUsage.aiBadge')}</span>
+              </h2>
               <button type="button" className="settings-inline-action" onClick={onOpenBatteryUsage}>
                 <ChartBar weight="regular" />
                 <span>{t('batteryUsage.viewTrend')}</span>
@@ -512,7 +515,7 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
             </SettingRow>
             {settings.nightModeEnabled && (
               <>
-                <p className="settings-subsection-title">{t('settings.nightMode.triggerSection')}</p>
+                <h3 className="settings-subsection-title">{t('settings.nightMode.triggerSection')}</h3>
                 <SettingRow title={t('settings.nightMode.triggerTime')} hint={t('settings.nightMode.triggerTimeHint')}>
                   <Toggle
                     checked={settings.nightModeTriggerTime}
@@ -555,7 +558,7 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
                 <SettingRow title={t('settings.nightMode.triggerLowBattery')} hint={t('settings.nightMode.triggerLowBatteryHint', { value: settings.lowBatteryThreshold })}>
                   <Toggle checked={settings.nightModeTriggerLowBattery} onChange={(v) => update({ nightModeTriggerLowBattery: v })} label={t('settings.nightMode.triggerLowBattery')} />
                 </SettingRow>
-                <p className="settings-subsection-title">{t('settings.nightMode.targetSection')}</p>
+                <h3 className="settings-subsection-title">{t('settings.nightMode.targetSection')}</h3>
                 <SettingRow title={t('settings.nightMode.targetMouse')} hint={t('settings.nightMode.targetMouseHint')}>
                   <Toggle checked={settings.nightModeTargetMouse} onChange={(v) => update({ nightModeTargetMouse: v })} label={t('settings.nightMode.targetMouse')} disabled={!supportsMouseLighting} />
                 </SettingRow>

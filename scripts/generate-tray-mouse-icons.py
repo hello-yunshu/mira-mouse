@@ -16,6 +16,8 @@ OUTLINE_ALPHA = 160  # ~0.63，轮廓再透明一点点
 WHEEL_WIDTH = 7  # 中键粗细 7px
 WHEEL_LENGTH = 14  # 中键长度增加 2px
 WHEEL_GAP = 2  # 中键四周 2px 透明边缘
+BOLT_SCALE = 34 / 43  # 缩小闪电主体，让 macOS 20px 托盘里仍能看出透明边
+BOLT_HALO_WIDTH = 9  # 64px 画布上的透明安全区宽度
 
 ROOT = Path(__file__).resolve().parent.parent
 ICON_DIR = ROOT / "src-tauri" / "icons"
@@ -78,9 +80,9 @@ CHARGING_BOLT_POINTS = load_charging_bolt_points()
 
 def charging_bolt_points(size: int):
     scale = size / 64
-    bolt_scale = (39 / 43) * scale
-    offset_x = 21 * scale
-    offset_y = 11 * scale
+    bolt_scale = BOLT_SCALE * scale
+    offset_x = 23 * scale
+    offset_y = 13 * scale
     return [
         (
             int(round(offset_x + x * bolt_scale)),
@@ -159,7 +161,7 @@ def draw_mouse_icon(size: int, level: int, dark: bool, charging: bool = False):
 
     if charging:
         points = charging_bolt_points(size)
-        gap_width = max(1, int(round(5 * scale)))
+        gap_width = max(1, int(round(BOLT_HALO_WIDTH * scale)))
         draw.line(points + [points[0]], fill=(0, 0, 0, 0), width=gap_width, joint="curve")
         draw.polygon(points, fill=(0, 0, 0, 0))
         draw.polygon(points, fill=(255, 255, 255, 255))

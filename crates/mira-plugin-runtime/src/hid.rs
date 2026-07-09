@@ -7,6 +7,16 @@ use std::ffi::CString;
 use crate::dsl::{Transport, Workflow};
 use crate::package::PackageInspection;
 
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeviceIdentity {
+    pub group: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub aliases: Vec<String>,
+}
+
 /// A device record inside a plugin's `devices.json`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -21,6 +31,8 @@ pub struct DeviceDescriptor {
     #[serde(default)]
     pub topology: Vec<String>,
     pub transport: Option<String>,
+    #[serde(default)]
+    pub identity: Option<DeviceIdentity>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -50,6 +62,7 @@ pub struct MatchedDevice {
     /// 只有一个型号时，设置为该型号名；否则为 None。
     /// 未来可通过 workflow 探测或 VID/PID 查表精确识别多型号场景。
     pub model: Option<String>,
+    pub identity: Option<DeviceIdentity>,
 }
 
 fn connection_label(conn: Option<&str>) -> String {
@@ -101,6 +114,7 @@ pub fn enumerate_matched_devices(
                         usage_page: device.usage_page(),
                         usage: device.usage(),
                         model,
+                        identity: descriptor.identity.clone(),
                     };
                     let key = (
                         candidate.plugin_id.clone(),
@@ -246,6 +260,7 @@ mod tests {
             evidence: None,
             topology: Vec::new(),
             transport: None,
+            identity: None,
         }
     }
 

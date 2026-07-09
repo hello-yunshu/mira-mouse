@@ -3,6 +3,7 @@ export type Evidence = 'source-confirmed' | 'fixture-verified' | 'build-verified
 export type ThemeMode = 'system' | 'light' | 'dark';
 export interface DpiStage { value: number; color: string; active: boolean; enabled: boolean }
 export interface DeviceBattery { id: string; label: string; percentage: number; charging?: boolean }
+export interface DeviceIdentity { group: string; displayName?: string; aliases?: string[] }
 export interface Lighting {
   enabled: boolean;
   mode: string;
@@ -223,6 +224,8 @@ export interface DeviceSnapshot {
   readonly?: boolean;
   /** 匹配该设备的插件 ID，用于 i18n namespace 解析。 */
   pluginId?: string;
+  /** 插件声明的跨连接/跨接口身份，用于历史统计等宿主通用功能做合并。 */
+  historyIdentity?: DeviceIdentity;
 }
 
 export interface DeviceSnapshotEntry {
