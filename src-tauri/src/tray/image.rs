@@ -284,7 +284,7 @@ fn is_inside_rounded_rect(
 //   鼠标外形: 46×60 圆角矩形, radius=16, 居中
 //   中键: 7×14 圆角矩形, 顶部居中
 //   电量填充: 从底部向上的圆角矩形, 绕开中键区域
-//   充电闪电: 7 点多边形, 叠加在中心
+//   充电闪电: 7 点多边形, 叠加在中心，周围保留透明 halo
 
 const ICON_SIZE: u32 = 64;
 const OUTLINE_WIDTH: i32 = 4;
@@ -297,12 +297,13 @@ const SHAPE_RADIUS: i32 = 16;
 const FILL_RADIUS: i32 = SHAPE_RADIUS - OUTLINE_WIDTH - OUTLINE_GAP - FILL_INSET;
 
 /// 充电闪电周围的透明安全区。允许压到鼠标边框视觉范围，
-/// 但安全区和闪电都必须留在 64px 图标画布内。
+/// 但安全区和闪电都必须留在 64px 图标画布内。macOS 菜单栏会把
+/// 64px 图缩到约 20px，因此这里需要比 1:1 预览更夸张的留白。
 const CHARGING_BOLT_GAP: [(i32, i32); 6] =
-    [(44, 5), (34, 28), (46, 28), (26, 58), (32, 38), (20, 38)];
+    [(46, 3), (32, 27), (48, 27), (25, 61), (31, 40), (18, 40)];
 
 /// 充电闪电多边形顶点。参考 macOS 电池充电符号，使用实心白色。
-const CHARGING_BOLT: [(i32, i32); 6] = [(43, 8), (36, 29), (45, 29), (28, 55), (33, 36), (23, 36)];
+const CHARGING_BOLT: [(i32, i32); 6] = [(42, 10), (36, 28), (43, 28), (30, 52), (34, 35), (25, 35)];
 
 /// 鼠标外形边界：宽 46, 高 60, 居中。
 fn mouse_shape_bounds(size: u32) -> (i32, i32, i32, i32) {
@@ -364,7 +365,11 @@ pub fn draw_mouse_icon(canvas: &mut IconCanvas, state: &TrayStatusState, style: 
         );
         let inner_height = fill_area.3 - fill_area.1;
         let fill_height = if percentage >= 100 {
-            inner_height
+            // 视觉补偿：满电时圆角与轮廓同心，径向间隙处处 3px，
+            // 但圆角对角方向的间隙在视觉上比水平/垂直方向显宽，
+            // 导致顶部直线段间隙反衬显窄。少填 1px 使顶部间隙为 4px，
+            // 补偿视差，与侧面 3px 视觉一致（同 99% 整数截断效果）。
+            inner_height - 1
         } else {
             inner_height * percentage as i32 / 100
         };
@@ -516,6 +521,7 @@ mod tests {
             evidence: "hardware-verified".into(),
             readonly: false,
             plugin_id: None,
+            history_identity: None,
         };
         TrayStatusState::from_snapshot(Some(&snapshot), &test_settings())
     }
@@ -647,10 +653,12 @@ mod tests {
         let center_x = (fill_area.0 + fill_area.2) / 2;
         let center_y = (fill_area.1 + fill_area.3) / 2;
 
+        // 满电时顶部视觉补偿少填 1px，所以顶部采样点在 fill_area.1 + 1。
+        // x 偏离中心以避开中键透明清除区（wheel clearing x≈27..38）
         let sample_points = [
             (fill_area.0, center_y),
             (fill_area.2 - 1, center_y),
-            (center_x, fill_area.1),
+            (center_x - 7, fill_area.1 + 1),
             (center_x, fill_area.3 - 1),
         ];
         for (x, y) in sample_points {
@@ -664,7 +672,7 @@ mod tests {
         let gap_points = [
             (fill_area.0 - 1, center_y),
             (fill_area.2, center_y),
-            (center_x, fill_area.1 - 1),
+            (center_x, fill_area.1),
             (center_x, fill_area.3),
         ];
         for (x, y) in gap_points {
@@ -692,6 +700,15 @@ mod tests {
             0,
             "charging bolt should leave transparent spacing around the white shape"
         );
+
+        for (x, y) in [(44, 29), (24, 35), (30, 36), (29, 53)] {
+            let idx = ((y * ICON_SIZE as i32 + x) * 4) as usize;
+            assert_eq!(
+                bytes[idx + 3],
+                0,
+                "charging bolt halo should stay transparent near the white shape at {x},{y}"
+            );
+        }
     }
 
     #[test]
@@ -728,6 +745,7 @@ mod tests {
             evidence: "hardware-verified".into(),
             readonly: false,
             plugin_id: None,
+            history_identity: None,
         };
 
         settings.show_receiver = false;

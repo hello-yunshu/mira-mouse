@@ -3,7 +3,9 @@ use auto_launch::AutoLaunchBuilder;
 use chrono::{Local, NaiveTime, Timelike};
 use ed25519_dalek::VerifyingKey;
 use hidapi::HidApi;
-use mira_core::{DeviceSnapshot, LowBatteryCrossing, PluginCapability, PluginCapabilityPlacement};
+use mira_core::{
+    DeviceIdentity, DeviceSnapshot, LowBatteryCrossing, PluginCapability, PluginCapabilityPlacement,
+};
 
 mod battery_history;
 mod tray;
@@ -2023,6 +2025,7 @@ mod settings_tests {
             evidence: "hardware-verified".into(),
             readonly: false,
             plugin_id: None,
+            history_identity: None,
         };
         let mut settings = AppSettings::default();
         assert_eq!(battery_title(&snapshot, &settings).as_deref(), Some("64%"));
@@ -2088,6 +2091,7 @@ mod settings_tests {
             evidence: evidence.into(),
             readonly,
             plugin_id: None,
+            history_identity: None,
         }
     }
 
@@ -2216,6 +2220,7 @@ mod settings_tests {
             evidence: "hardware-verified".into(),
             readonly: false,
             plugin_id: None,
+            history_identity: None,
         };
         assert_eq!(
             exportable_value(
@@ -2309,6 +2314,7 @@ mod settings_tests {
             evidence: "hardware-verified".into(),
             readonly: false,
             plugin_id: None,
+            history_identity: None,
         };
         let field = ExportableField {
             id: "receiver-lighting".into(),
@@ -2363,6 +2369,7 @@ mod settings_tests {
             evidence: "hardware-verified".into(),
             readonly: false,
             plugin_id: None,
+            history_identity: None,
         };
         let field = ExportableField {
             id: "receiver-lighting".into(),
@@ -2658,6 +2665,7 @@ mod night_mode_tests {
             writable_mutations: Vec::new(),
             plugin_capabilities: Vec::new(),
             plugin_id: None,
+            history_identity: None,
         };
         // 充电中 → Night
         assert_eq!(
@@ -2722,6 +2730,7 @@ mod night_mode_tests {
             writable_mutations: Vec::new(),
             plugin_capabilities: Vec::new(),
             plugin_id: None,
+            history_identity: None,
         };
         // 电量 15% < 阈值 20% → Night
         assert_eq!(
@@ -2789,6 +2798,7 @@ mod night_mode_tests {
             writable_mutations: Vec::new(),
             plugin_capabilities: Vec::new(),
             plugin_id: None,
+            history_identity: None,
         };
         // 白天但充电中 → Night（OR）
         assert_eq!(
@@ -2831,6 +2841,7 @@ mod night_mode_tests {
             writable_mutations: Vec::new(),
             plugin_capabilities: Vec::new(),
             plugin_id: None,
+            history_identity: None,
         };
         let saved = read_receiver_light_state(&snapshot).unwrap();
         assert_eq!(saved.effect, 3);
@@ -2868,6 +2879,7 @@ mod night_mode_tests {
             writable_mutations: Vec::new(),
             plugin_capabilities: Vec::new(),
             plugin_id: None,
+            history_identity: None,
         };
         let saved = read_receiver_light_state(&snapshot).unwrap();
         assert_eq!(saved.option, 2);
@@ -2893,6 +2905,7 @@ mod night_mode_tests {
             writable_mutations: Vec::new(),
             plugin_capabilities: Vec::new(),
             plugin_id: None,
+            history_identity: None,
         };
         assert!(read_receiver_light_state(&snapshot).is_none());
     }
@@ -2942,6 +2955,7 @@ mod night_mode_tests {
             evidence: "hardware-verified".into(),
             readonly: false,
             plugin_id: None,
+            history_identity: None,
         };
         let (is_on, saved) = read_mouse_light_state(&snapshot).unwrap();
         assert!(is_on);
@@ -2970,6 +2984,7 @@ mod night_mode_tests {
             evidence: "hardware-verified".into(),
             readonly: false,
             plugin_id: None,
+            history_identity: None,
         };
         assert!(read_mouse_light_state(&snapshot).is_none());
     }
@@ -2997,6 +3012,7 @@ mod night_mode_tests {
             evidence: "hardware-verified".into(),
             readonly: false,
             plugin_id: None,
+            history_identity: None,
         };
         // enabled=true 但颜色缺失：返回 None，跳过该目标，
         // 避免 fallback #000000 在退出夜间恢复时覆盖设备原色。
@@ -3047,6 +3063,7 @@ mod night_mode_tests {
             evidence: "hardware-verified".into(),
             readonly: false,
             plugin_id: Some("mira.logitech-hidpp".into()),
+            history_identity: None,
         };
 
         let (is_on, saved) = read_mouse_light_state(&snapshot).unwrap();
@@ -3096,6 +3113,7 @@ mod night_mode_tests {
             evidence: "hardware-verified".into(),
             readonly: false,
             plugin_id: Some("mira.logitech-hidpp".into()),
+            history_identity: None,
         };
 
         let (mouse, receiver) = resolve_lighting_mutations(&snapshot);
@@ -3339,6 +3357,7 @@ mod capability_tests {
             usage_page: 3,
             usage: 4,
             model: None,
+            identity: None,
         };
         let reading = DeviceReading {
             connection: Some(ConnectionKind::Usb),
@@ -4755,6 +4774,11 @@ fn build_device_snapshot(
         evidence: device.evidence.clone(),
         readonly,
         plugin_id: Some(inspection.plugin_id.clone()),
+        history_identity: device.identity.as_ref().map(|identity| DeviceIdentity {
+            group: identity.group.clone(),
+            display_name: identity.display_name.clone(),
+            aliases: identity.aliases.clone(),
+        }),
     }
 }
 

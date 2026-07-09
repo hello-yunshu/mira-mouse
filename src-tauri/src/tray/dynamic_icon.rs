@@ -161,6 +161,7 @@ mod tests {
             evidence: "hardware-verified".into(),
             readonly: false,
             plugin_id: None,
+            history_identity: None,
         };
         TrayStatusState::from_snapshot(Some(&snapshot), &test_settings())
     }
@@ -257,6 +258,7 @@ mod tests {
                 evidence: "hardware-verified".into(),
                 readonly: false,
                 plugin_id: None,
+                history_identity: None,
             }),
             &settings,
         );
@@ -294,6 +296,7 @@ mod tests {
                 evidence: "hardware-verified".into(),
                 readonly: false,
                 plugin_id: None,
+                history_identity: None,
             }),
             &settings,
         );

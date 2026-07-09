@@ -212,6 +212,7 @@ mod tests {
             evidence: "hardware-verified".into(),
             readonly: false,
             plugin_id: None,
+            history_identity: None,
         }
     }
 

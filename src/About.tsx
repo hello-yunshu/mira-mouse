@@ -143,7 +143,6 @@ export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0 }:
           <div><dt>{t('about.label.version')}</dt><dd>{info.version}</dd></div>
           <div><dt>{t('about.label.buildDate')}</dt><dd>{info.buildDate}</dd></div>
           <div><dt>{t('about.label.gitCommit')}</dt><dd><code>{info.gitCommit}</code></dd></div>
-          <div><dt>{t('about.label.identifier')}</dt><dd>{info.identifier}</dd></div>
           <div><dt>{t('about.label.platform')}</dt><dd>{info.platform}</dd></div>
           <div><dt>{t('about.label.architecture')}</dt><dd>{info.architecture}</dd></div>
           <div><dt>{t('about.label.rustVersion')}</dt><dd>{info.rustVersion}</dd></div>
