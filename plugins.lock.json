@@ -6,12 +6,12 @@
       "pluginId": "mira.amaster",
       "repository": "hello-yunshu/mira-mouse-plugins",
       "releaseTag": "release/v2026-07-09",
-      "version": "1.3.10",
-      "asset": "mira-amaster-1.3.10.mira-plugin",
-      "sha256": "f44c339f9328b58a50ea65d0460688197882339e57bf78370503868ff278c671",
+      "version": "1.5.0",
+      "asset": "mira-amaster-1.5.0.mira-plugin",
+      "sha256": "33437b716a95dbd2bf97a601d7a16a1b0afc4c68708d404c72d3dec997a45084",
       "publisherKeyId": "mira-plugins-2026-001",
       "pluginApi": ">=1.0.0,<2.0.0",
-      "cachePath": "src-tauri/resources/plugins/mira-amaster-1.3.10.mira-plugin",
+      "cachePath": "src-tauri/resources/plugins/mira-amaster-1.5.0.mira-plugin",
       "bundleByDefault": true
     },
     {

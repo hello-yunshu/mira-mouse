@@ -1097,14 +1097,20 @@ function mouseLightingFieldLabel(field: MouseLightingField): string {
 }
 
 function mouseLightingOnState(device: DeviceState, capability?: PluginCapability): boolean | undefined {
-  // 优先基于 effect 字段判断灯效状态：effect === offValue 视为关闭，
-  // 否则视为开启。这避免了 mutation 只改 effect 字段而不改设备
-  // rgbControl.enabled 时，UI 仍基于 mouseLightEnabled=false 显示"关闭"
-  // 但灯实际已亮起的歧义。
-  const effect = device.lighting?.mouseLightEffect;
-  if (typeof effect === 'number') {
-    const effectOptions = capability?.metadata?.effectOptions as { offValue?: number } | undefined;
-    return effect !== (effectOptions?.offValue ?? 0);
+  // 灯光开关的权威字段由插件 capability metadata.switchSource 声明：
+  //  - "effect"：HID++ 扩展灯效，mutation 改 effect 不改 mouseLightEnabled
+  //  - "enabled"：传统灯光开关，走 settings.mouseLightEnabled
+  // 未声明时按 effectOptions 是否存在推断（向后兼容旧插件）。
+  const metadata = capability?.metadata;
+  const switchSource = metadata?.switchSource as string | undefined;
+  const effectOptions = metadata?.effectOptions as { offValue?: number } | undefined;
+  const useEffect = switchSource === 'effect'
+    || (switchSource === undefined && effectOptions !== undefined);
+  if (useEffect) {
+    const effect = device.lighting?.mouseLightEffect;
+    if (typeof effect === 'number') {
+      return effect !== (effectOptions?.offValue ?? 0);
+    }
   }
   if (device.lighting?.mouseLightEnabled === false) return false;
   return typeof device.lighting?.mouseLightEnabled === 'boolean'
