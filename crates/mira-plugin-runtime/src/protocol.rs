@@ -772,9 +772,9 @@ fn percentage_value(object: &serde_json::Map<String, Value>, key: &str) -> Optio
 }
 
 fn reported_battery_percentage(object: &serde_json::Map<String, Value>, key: &str) -> Option<u8> {
-    if boolean_like(object, "valid") == Some(false)
-        || boolean_like(object, "present") == Some(false)
-    {
+    // 仅根据 present 判断电池是否存在；valid 标志在不同连接模式下语义
+    // 不一致（USB 直连时 offset 2 常为 0），保留它会误伤真实电量数据。
+    if boolean_like(object, "present") == Some(false) {
         return None;
     }
     percentage_value(object, key)
