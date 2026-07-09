@@ -123,6 +123,35 @@ describe('real device snapshot mapping', () => {
     expect(screen.queryByRole('tab', { name: 'Control 7' })).not.toBeInTheDocument();
   });
 
+  it('uses the shared continuous battery icon for plugin-declared dashboard battery status', async () => {
+    const batteryStatusSnapshot: DeviceSnapshot = {
+      displayName: 'Battery Status Mouse', connection: 'wireless', batteryPercent: 67,
+      charging: false, batteries: [{ id: 'mouse', label: '鼠标', percentage: 67, charging: false }],
+      capabilities: {}, writableMutations: [], evidence: 'fixture-verified',
+      pluginCapabilities: [
+        {
+          id: 'battery-status',
+          control: 'ReadOnlyValue',
+          labelKey: 'capability.battery',
+          readOnly: true,
+          placements: [{ region: 'status', order: 10, span: 1, icon: 'battery' }],
+          metadata: { label: '电量', section: 'status', status: true, source: 'battery' },
+        },
+      ],
+    };
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'settings_get') return Promise.resolve(settings);
+      if (command === 'device_snapshots') return Promise.resolve(entries(batteryStatusSnapshot));
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+
+    render(<App />);
+    const status = await screen.findByRole('region', { name: '设备状态' });
+    expect(status.querySelector('.battery-level-icon')).toBeInTheDocument();
+    expect(status.querySelector('.battery-level-fill')).toHaveAttribute('width', String((16 * 67) / 100));
+    expect(status.querySelector('svg:not(.battery-level-svg)')).not.toBeInTheDocument();
+  });
+
   it('renders plugin-declared controls and status without a brand-specific branch', async () => {
     const pluginSnapshot: DeviceSnapshot = {
       displayName: 'Declarative Mouse', connection: 'wireless', batteryPercent: 80,
