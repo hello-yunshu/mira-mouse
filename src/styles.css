@@ -997,6 +997,15 @@ body:has(.platform-fallback:not(.web-preview)) {
   box-shadow: 0 7px 20px color-mix(in oklch, var(--accent), transparent 76%);
 }
 .control-tabs svg { width: 16px; height: 16px; flex: 0 0 auto; }
+.control-tabs .battery-level-icon {
+  width: 18px;
+  height: 11px;
+  color: var(--accent);
+}
+.control-tabs .battery-level-svg {
+  width: 100%;
+  height: 100%;
+}
 
 .control-stage {
   --control-stage-badge-row: 30px;
@@ -1548,6 +1557,15 @@ body:has(.platform-fallback:not(.web-preview)) {
   align-items: center;
 }
 .status-strip svg { width: 16px; height: 16px; flex: 0 0 auto; color: var(--accent); }
+.status-strip .battery-level-icon {
+  width: 19px;
+  height: 12px;
+  color: var(--accent);
+}
+.status-strip .battery-level-svg {
+  width: 100%;
+  height: 100%;
+}
 .status-strip span { min-width: 0; display: flex; flex-direction: column; gap: 1px; font-size: 9px; }
 .status-strip strong { color: inherit; font-size: 12px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .status-strip i {
