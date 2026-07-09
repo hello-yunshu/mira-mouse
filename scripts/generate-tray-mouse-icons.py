@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
+import re
 from pathlib import Path
 
 from PIL import Image, ImageDraw
@@ -14,25 +15,10 @@ OUTLINE_ALPHA = 160  # ~0.63，轮廓再透明一点点
 WHEEL_WIDTH = 7  # 中键粗细 7px
 WHEEL_LENGTH = 14  # 中键长度增加 2px
 WHEEL_GAP = 2  # 中键四周 2px 透明边缘
-CHARGING_BOLT_GAP = [
-    (44, 5),
-    (34, 28),
-    (46, 28),
-    (26, 58),
-    (32, 38),
-    (20, 38),
-]
-CHARGING_BOLT = [
-    (43, 8),
-    (36, 29),
-    (45, 29),
-    (28, 55),
-    (33, 36),
-    (23, 36),
-]
 
 ROOT = Path(__file__).resolve().parent.parent
 ICON_DIR = ROOT / "src-tauri" / "icons"
+LIGHTNING_SVG = ROOT / "src" / "assets" / "lightning_exact_match.svg"
 LEVELS = range(0, 101, 10)
 
 
@@ -62,6 +48,45 @@ def mouse_shape_bounds(size: int):
     left = (size - width) // 2
     top = (size - height) // 2
     return (left, top, left + width, top + height)
+
+
+def load_charging_bolt_points():
+    svg = LIGHTNING_SVG.read_text(encoding="utf-8")
+    match = re.search(r'<path[^>]*\sd="([^"]+)"', svg)
+    if not match:
+        raise ValueError(f"missing path data in {LIGHTNING_SVG}")
+
+    tokens = re.findall(r"[MLZ]|-?\d+(?:\.\d+)?", match.group(1))
+    points = []
+    i = 0
+    while i < len(tokens):
+        command = tokens[i]
+        i += 1
+        if command == "Z":
+            break
+        if command not in {"M", "L"}:
+            raise ValueError(f"unsupported SVG path command: {command}")
+        points.append((float(tokens[i]), float(tokens[i + 1])))
+        i += 2
+
+    return points
+
+
+CHARGING_BOLT_POINTS = load_charging_bolt_points()
+
+
+def charging_bolt_points(size: int):
+    scale = size / 64
+    bolt_scale = (39 / 43) * scale
+    offset_x = 21 * scale
+    offset_y = 11 * scale
+    return [
+        (
+            int(round(offset_x + x * bolt_scale)),
+            int(round(offset_y + y * bolt_scale)),
+        )
+        for x, y in CHARGING_BOLT_POINTS
+    ]
 
 
 def draw_mouse_icon(size: int, level: int, dark: bool, charging: bool = False):
@@ -124,15 +149,10 @@ def draw_mouse_icon(size: int, level: int, dark: bool, charging: bool = False):
     )
 
     if charging:
-        gap_points = [
-            (int(round(x * scale)), int(round(y * scale)))
-            for x, y in CHARGING_BOLT_GAP
-        ]
-        draw.polygon(gap_points, fill=(0, 0, 0, 0))
-        points = [
-            (int(round(x * scale)), int(round(y * scale)))
-            for x, y in CHARGING_BOLT
-        ]
+        points = charging_bolt_points(size)
+        gap_width = max(1, int(round(5 * scale)))
+        draw.line(points + [points[0]], fill=(0, 0, 0, 0), width=gap_width, joint="curve")
+        draw.polygon(points, fill=(0, 0, 0, 0))
         draw.polygon(points, fill=(255, 255, 255, 255))
 
     return image

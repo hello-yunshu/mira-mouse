@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { useId } from 'react';
+import { LIGHTNING_EXACT_MATCH_PATH } from './assets/lightningExactMatchPath';
 
 interface BatteryLevelIconProps {
   percentage?: number;
@@ -11,6 +12,9 @@ function batteryFillPercentage(percentage?: number): number {
   if (percentage === undefined || Number.isNaN(percentage)) return 0;
   return Math.max(0, Math.min(100, percentage));
 }
+
+const CHARGING_BOLT_PATH = LIGHTNING_EXACT_MATCH_PATH;
+const CHARGING_BOLT_TRANSFORM = 'translate(8.6 .3) scale(.358)';
 
 export function BatteryLevelIcon({ percentage, charging = false, className = '' }: BatteryLevelIconProps) {
   const fillPercentage = batteryFillPercentage(percentage);
@@ -35,8 +39,12 @@ export function BatteryLevelIcon({ percentage, charging = false, className = '' 
             {charging && (
               <path
                 className="battery-level-bolt-gap"
-                d="M21.1 .6l-5 6h6.2L9.8 15.5l3.2-6.9H6.4z"
+                d={CHARGING_BOLT_PATH}
+                transform={CHARGING_BOLT_TRANSFORM}
                 fill="black"
+                stroke="black"
+                strokeWidth="3.4"
+                strokeLinejoin="round"
               />
             )}
           </mask>
@@ -57,7 +65,8 @@ export function BatteryLevelIcon({ percentage, charging = false, className = '' 
         {charging && (
           <path
             className="battery-level-bolt"
-            d="M20.1 1.8l-4.2 5.6h5.1l-9.7 6.8l2.8-6.2H8.3z"
+            d={CHARGING_BOLT_PATH}
+            transform={CHARGING_BOLT_TRANSFORM}
           />
         )}
       </svg>

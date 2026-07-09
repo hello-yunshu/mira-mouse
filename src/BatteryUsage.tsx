@@ -157,16 +157,19 @@ function BatteryUsageChart({ points, range }: ChartProps) {
         >
           <defs>
             <linearGradient id="battery-bar-normal" x1="0" y1="1" x2="0" y2="0">
-              <stop offset="0%" stopColor="#34c759" />
-              <stop offset="100%" stopColor="#8ff4a4" />
+              <stop offset="0%" stopColor="#2f9f7a" />
+              <stop offset="56%" stopColor="#5fc58f" />
+              <stop offset="100%" stopColor="#b7e7c8" />
             </linearGradient>
             <linearGradient id="battery-bar-charging" x1="0" y1="1" x2="0" y2="0">
-              <stop offset="0%" stopColor="#0a84ff" />
-              <stop offset="100%" stopColor="#64d2ff" />
+              <stop offset="0%" stopColor="#4d6fd6" />
+              <stop offset="58%" stopColor="#63b7de" />
+              <stop offset="100%" stopColor="#c1eef1" />
             </linearGradient>
             <linearGradient id="battery-bar-low" x1="0" y1="1" x2="0" y2="0">
-              <stop offset="0%" stopColor="#ff453a" />
-              <stop offset="100%" stopColor="#ffd60a" />
+              <stop offset="0%" stopColor="#c85f66" />
+              <stop offset="58%" stopColor="#e69b69" />
+              <stop offset="100%" stopColor="#f3d38c" />
             </linearGradient>
           </defs>
           <rect
