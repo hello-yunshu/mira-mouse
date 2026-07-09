@@ -47,7 +47,7 @@
     ],
     "resources": [
       "resources/plugins/mira-amaster-1.5.0.mira-plugin",
-      "resources/plugins/mira-logitech-hidpp-0.7.2.mira-plugin"
+      "resources/plugins/mira-logitech-hidpp-0.7.3.mira-plugin"
     ],
     "fileAssociations": [
       {
