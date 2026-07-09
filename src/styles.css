@@ -2485,12 +2485,12 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
 }
 .battery-chart-bar {
   transition: opacity .12s ease, filter .12s ease;
-  filter: drop-shadow(0 1px 2px rgb(28 24 38 / 12%));
+  filter: drop-shadow(0 1px 2px rgb(30 42 56 / 10%));
 }
 .battery-chart-hit-area {
   cursor: default;
 }
-.battery-chart-bar:hover { opacity: .86; filter: drop-shadow(0 2px 5px rgb(28 24 38 / 18%)); }
+.battery-chart-bar:hover { opacity: .9; filter: drop-shadow(0 2px 5px rgb(30 42 56 / 15%)); }
 .battery-chart-empty { fill: var(--surface-group-border); }
 
 /* 图表 tooltip */
