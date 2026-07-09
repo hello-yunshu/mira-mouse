@@ -279,7 +279,7 @@ fn is_inside_rounded_rect(
 // ─── 鼠标图标绘制 ───────────────────────────────────────────────────────────
 //
 // 绘图参数与 `scripts/generate-tray-mouse-icons.py` 一致：
-//   SIZE = 64, OUTLINE_WIDTH = 4, GAP = 4, OUTLINE_ALPHA = 160
+//   SIZE = 64, OUTLINE_WIDTH = 4, GAP = 2, FILL_INSET = 1, OUTLINE_ALPHA = 160
 //   WHEEL_WIDTH = 7, WHEEL_LENGTH = 14, WHEEL_GAP = 2
 //   鼠标外形: 46×60 圆角矩形, radius=16, 居中
 //   中键: 7×14 圆角矩形, 顶部居中
@@ -288,13 +288,13 @@ fn is_inside_rounded_rect(
 
 const ICON_SIZE: u32 = 64;
 const OUTLINE_WIDTH: i32 = 4;
-const OUTLINE_GAP: i32 = 4;
-const FILL_INSET: i32 = 2;
+const OUTLINE_GAP: i32 = 2;
+const FILL_INSET: i32 = 1;
 const WHEEL_WIDTH: i32 = 7;
 const WHEEL_LENGTH: i32 = 14;
 const WHEEL_GAP: i32 = 2;
 const SHAPE_RADIUS: i32 = 16;
-const FILL_RADIUS: i32 = 6;
+const FILL_RADIUS: i32 = SHAPE_RADIUS - OUTLINE_WIDTH - OUTLINE_GAP - FILL_INSET;
 
 /// 充电闪电周围的透明安全区。允许压到鼠标边框视觉范围，
 /// 但安全区和闪电都必须留在 64px 图标画布内。
@@ -644,12 +644,14 @@ mod tests {
             inner.2 - FILL_INSET,
             inner.3 - FILL_INSET,
         );
+        let center_x = (fill_area.0 + fill_area.2) / 2;
+        let center_y = (fill_area.1 + fill_area.3) / 2;
 
         let sample_points = [
-            (fill_area.0 + 2, fill_area.1 + SHAPE_RADIUS),
-            (fill_area.2 - 3, fill_area.1 + SHAPE_RADIUS),
-            (fill_area.0 + 2, fill_area.3 - SHAPE_RADIUS - 1),
-            (fill_area.2 - 3, fill_area.3 - SHAPE_RADIUS - 1),
+            (fill_area.0, center_y),
+            (fill_area.2 - 1, center_y),
+            (center_x, fill_area.1),
+            (center_x, fill_area.3 - 1),
         ];
         for (x, y) in sample_points {
             let idx = ((y * ICON_SIZE as i32 + x) * 4) as usize;
@@ -660,10 +662,10 @@ mod tests {
         }
 
         let gap_points = [
-            (inner.0 + 1, inner.1 + SHAPE_RADIUS),
-            (inner.2 - 2, inner.1 + SHAPE_RADIUS),
-            ((inner.0 + inner.2) / 2, inner.1 + 1),
-            ((inner.0 + inner.2) / 2, inner.3 - 2),
+            (fill_area.0 - 1, center_y),
+            (fill_area.2, center_y),
+            (center_x, fill_area.1 - 1),
+            (center_x, fill_area.3),
         ];
         for (x, y) in gap_points {
             let idx = ((y * ICON_SIZE as i32 + x) * 4) as usize;
@@ -757,8 +759,12 @@ mod tests {
         let bytes = render_mouse_icon_rgba(&state, &style);
 
         // 在电量填充区域（底部中心）应能找到红色像素
-        let fill_x = 32;
-        let fill_y = 50; // 接近底部
+        let outer = mouse_shape_bounds(ICON_SIZE);
+        let inset = OUTLINE_WIDTH + OUTLINE_GAP;
+        let inner_bottom = outer.3 - inset;
+        let fill_bottom = inner_bottom - FILL_INSET;
+        let fill_x = (outer.0 + outer.2) / 2;
+        let fill_y = fill_bottom - 2;
         let idx = ((fill_y * 64 + fill_x) * 4) as usize;
         let r = bytes[idx];
         let g = bytes[idx + 1];

@@ -10,7 +10,8 @@ from PIL import Image, ImageDraw
 SIZE = 64
 IDLE_SIZE = 32
 OUTLINE_WIDTH = 4  # 外轮廓 4px
-GAP = 4  # 内留白与外轮廓等粗
+GAP = 2  # 轮廓内侧与填充之间的基础留白
+FILL_INSET = 1  # 电量填充额外留白，让满电时边距更均匀且更紧凑
 OUTLINE_ALPHA = 160  # ~0.63，轮廓再透明一点点
 WHEEL_WIDTH = 7  # 中键粗细 7px
 WHEEL_LENGTH = 14  # 中键长度增加 2px
@@ -99,6 +100,7 @@ def draw_mouse_icon(size: int, level: int, dark: bool, charging: bool = False):
     scale = size / 64
     outline_width = max(1, int(round(OUTLINE_WIDTH * scale)))
     gap = max(1, int(round(GAP * scale)))
+    fill_inset = max(1, int(round(FILL_INSET * scale)))
 
     outer = mouse_shape_bounds(size)
     radius = int(round(16 * scale))
@@ -111,6 +113,12 @@ def draw_mouse_icon(size: int, level: int, dark: bool, charging: bool = False):
         outer[2] - inset,
         outer[3] - inset,
     )
+    fill_area = (
+        inner[0] + fill_inset,
+        inner[1] + fill_inset,
+        inner[2] - fill_inset,
+        inner[3] - fill_inset,
+    )
 
     center_x = size // 2
     wheel_top = inner[1] + max(2, int(round(4 * scale)))
@@ -120,17 +128,18 @@ def draw_mouse_icon(size: int, level: int, dark: bool, charging: bool = False):
     wheel_left = center_x - wheel_width // 2
     wheel_right = wheel_left + wheel_width - 1
 
-    fill_height = int((inner[3] - inner[1]) * level / 100)
+    fill_height = int((fill_area[3] - fill_area[1]) * level / 100)
     if fill_height > 0:
-        fill_box = (inner[0], inner[3] - fill_height, inner[2], inner[3])
+        fill_top = fill_area[3] - fill_height
+        fill_box = (fill_area[0], fill_top, fill_area[2], fill_area[3])
         draw.rounded_rectangle(
             fill_box,
-            radius=max(1, int(round(6 * scale))),
+            radius=max(1, int(round((16 - OUTLINE_WIDTH - GAP - FILL_INSET) * scale))),
             fill=fill,
         )
         # 电量填充绕过中键，四周都留出 2px 纯透明边缘。
-        if wheel_bottom + wheel_gap >= inner[3] - fill_height:
-            clear_top = max(inner[3] - fill_height, wheel_top - wheel_gap)
+        if wheel_bottom + wheel_gap >= fill_top:
+            clear_top = max(fill_top, wheel_top - wheel_gap)
             draw.rounded_rectangle(
                 (
                     wheel_left - wheel_gap,

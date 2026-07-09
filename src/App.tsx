@@ -4,7 +4,6 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import {
-  BatteryHigh,
   CaretDown,
   ChartBar,
   Gauge,
@@ -461,21 +460,41 @@ function pluginValueLabel(capability: PluginCapability, value: unknown): string 
 }
 
 type PluginRegion = 'hero' | 'control' | 'status' | 'details';
-type PluginIcon = typeof Gauge;
 
-const PLUGIN_ICON_REGISTRY: Record<string, PluginIcon> = {
-  battery: BatteryHigh,
-  gauge: Gauge,
-  info: Info,
-  lightbulb: Lightbulb,
-  profile: UserCircle,
-  settings: Gear,
-  timer: Timer,
-  wave: WaveSine,
-};
-
-function pluginIcon(name: string | undefined): PluginIcon {
-  return (name && PLUGIN_ICON_REGISTRY[name]) || Info;
+function PluginIconView({
+  name,
+  device,
+}: {
+  name: string | undefined;
+  device: DeviceState;
+}) {
+  if (name === 'battery') {
+    const primaryBattery = device.batteries[0];
+    return (
+      <BatteryLevelIcon
+        className="plugin-battery-icon"
+        percentage={primaryBattery?.percentage ?? device.battery}
+        charging={primaryBattery?.charging ?? device.charging}
+      />
+    );
+  }
+  switch (name) {
+    case 'gauge':
+      return <Gauge weight="regular" />;
+    case 'lightbulb':
+      return <Lightbulb weight="regular" />;
+    case 'profile':
+      return <UserCircle weight="regular" />;
+    case 'settings':
+      return <Gear weight="regular" />;
+    case 'timer':
+      return <Timer weight="regular" />;
+    case 'wave':
+      return <WaveSine weight="regular" />;
+    case 'info':
+    default:
+      return <Info weight="regular" />;
+  }
 }
 
 function legacyPlacements(capability: PluginCapability): NonNullable<PluginCapability['placements']> {
@@ -1304,12 +1323,12 @@ function Dashboard({
       .flatMap((capability) => placementsFor(capability, 'control').map((placement) => ({ capability, placement })))
       .filter(({ capability }) => capabilityVisible(capability, device))
       .sort((a, b) => a.placement.order - b.placement.order);
-    const controlGroups = new Map<string, { id: string; label: string; icon: PluginIcon; capabilities: PluginCapability[] }>();
+    const controlGroups = new Map<string, { id: string; label: string; icon: string | undefined; capabilities: PluginCapability[] }>();
     for (const { capability, placement } of controlPlacements) {
       const id = placement.group || capability.id;
       const existing = controlGroups.get(id);
       if (existing) existing.capabilities.push(capability);
-      else controlGroups.set(id, { id, label: pluginLabel(capability, device.pluginId), icon: pluginIcon(placement.icon), capabilities: [capability] });
+      else controlGroups.set(id, { id, label: pluginLabel(capability, device.pluginId), icon: placement.icon, capabilities: [capability] });
     }
     const controls = [...controlGroups.values()].slice(0, MAX_CONTROL_GROUPS);
     const activeMode = controls.some((control) => control.id === mode) ? mode : controls[0]?.id;
@@ -1396,7 +1415,7 @@ function Dashboard({
       id: string;
       label: string;
       value: string;
-      icon: typeof Gauge;
+      icon: string | undefined;
       disabled?: boolean;
       color?: string;
       onClick?: () => void;
@@ -1409,7 +1428,7 @@ function Dashboard({
         if (!Number.isFinite(seconds) || !binding.mutation) continue;
         const sleepRange = pluginRange(capability);
         items.push({
-          id: capability.id, label: binding.label, value: formatSleepTime(seconds), icon: pluginIcon(placement.icon),
+          id: capability.id, label: binding.label, value: formatSleepTime(seconds), icon: placement.icon,
           disabled: !writable(binding.mutation),
           onClick: () => {
             setSleepSetting({ label: binding.label, seconds, mutation: binding.mutation!, param: binding.param, range: sleepRange });
@@ -1424,14 +1443,14 @@ function Dashboard({
           value: typeof statusMouseLightOn === 'boolean'
             ? (statusMouseLightOn ? i18n.t('lighting.on') : i18n.t('lighting.off'))
             : device.lighting?.mouseLightColor ?? i18n.t('common.notReported'),
-          icon: pluginIcon(placement.icon), color: device.lighting?.mouseLightColor,
+          icon: placement.icon, color: device.lighting?.mouseLightColor,
           disabled: !mutation || !writable(mutation), onClick: () => setEditingMouseLightColor(true),
         });
       } else if (binding.value !== undefined) {
         const target = controlPlacement?.group || (controlPlacement ? capability.id : undefined);
         items.push({
           id: capability.id, label: binding.label, value: pluginValueLabel(capability, binding.value),
-          icon: pluginIcon(placement.icon),
+          icon: placement.icon,
           disabled: !target, onClick: target ? () => setMode(target) : undefined,
         });
       }
@@ -1561,7 +1580,7 @@ function Dashboard({
           width: `min(92%, ${Math.max(220, controls.length * 104)}px)`,
         }}
       >
-        {controls.map(({ id, label, icon: ControlIcon }) => (
+        {controls.map(({ id, label, icon }) => (
           <button
             key={id}
             role="tab"
@@ -1569,7 +1588,7 @@ function Dashboard({
             className={activeMode === id ? 'active' : ''}
             onClick={() => { setMode(id); setPreviewMessage(''); }}
           >
-            <ControlIcon weight="regular" />
+            <PluginIconView name={icon} device={device} />
             <span>{label}</span>
           </button>
         ))}
@@ -1973,8 +1992,8 @@ function Dashboard({
         data-status-count={statusItems.length}
         style={{ gridTemplateColumns: `repeat(${statusItems.length}, minmax(0, 1fr))` }}
       >
-        {statusItems.map(({ id, label, value, icon: StatusIcon, disabled, color, onClick }) => {
-          const content = <><StatusIcon weight="regular" /><span>{label}<strong>{value}</strong></span>{color && <i style={{ '--light-color': color } as React.CSSProperties} />}</>;
+        {statusItems.map(({ id, label, value, icon, disabled, color, onClick }) => {
+          const content = <><PluginIconView name={icon} device={device} /><span>{label}<strong>{value}</strong></span>{color && <i style={{ '--light-color': color } as React.CSSProperties} />}</>;
           return onClick
             ? <button key={id} type="button" disabled={disabled} onClick={onClick}>{content}</button>
             : <div key={id}>{content}</div>;
