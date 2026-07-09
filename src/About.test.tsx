@@ -22,6 +22,7 @@ describe('AboutPage', () => {
     expect(screen.getByRole('heading', { name: '关于' })).toBeInTheDocument();
     expect(screen.getByText('0.1.0-preview')).toBeInTheDocument();
     expect(screen.getByText('Web Preview')).toBeInTheDocument();
+    expect(screen.queryByText('Bundle Identifier')).not.toBeInTheDocument();
     expect(screen.queryByText(/加载关于信息失败/)).not.toBeInTheDocument();
   });
 
@@ -33,6 +34,7 @@ describe('AboutPage', () => {
     render(<AboutPage onBack={vi.fn()} />);
     expect(await screen.findByRole('button', { name: '下载并安装 v0.2.0' })).toBeInTheDocument();
     expect(screen.getByText('更新说明')).toBeInTheDocument();
+    expect(screen.queryByText('Bundle Identifier')).not.toBeInTheDocument();
   });
 
   it('opens donate link through the native browser bridge in Tauri', async () => {

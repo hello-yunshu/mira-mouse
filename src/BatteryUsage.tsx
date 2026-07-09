@@ -478,17 +478,23 @@ function BatteryInsightCards({ insights }: { insights: BatteryInsight[] }) {
   const visible = deduped.slice(0, visibleCount);
 
   return (
-    <div className="battery-insight-cards">
-      {visible.map((insight, i) => (
-        <div key={i} className={`battery-insight-card severity-${insight.severity}`}>
-          <span className="insight-icon">{iconFor(insight.type)}</span>
-          <div className="insight-body">
-            <OverflowTip className="insight-title" text={t(`batteryUsage.${insight.title}`)} />
-            <OverflowTip className="insight-text" text={formatInsightMessage(insight, t)} multiline />
+    <section className="battery-insight-section">
+      <div className="battery-insight-section-head">
+        <span className="battery-insight-section-title">{t('batteryUsage.insightSectionTitle')}</span>
+        <span className="battery-insight-section-hint">{t('batteryUsage.insightSectionHint')}</span>
+      </div>
+      <div className="battery-insight-cards">
+        {visible.map((insight, i) => (
+          <div key={i} className={`battery-insight-card severity-${insight.severity}`}>
+            <span className="insight-icon">{iconFor(insight.type)}</span>
+            <div className="insight-body">
+              <OverflowTip className="insight-title" text={t(`batteryUsage.${insight.title}`)} />
+              <OverflowTip className="insight-text" text={formatInsightMessage(insight, t)} multiline />
+            </div>
           </div>
-        </div>
-      ))}
-    </div>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -709,8 +715,9 @@ export function BatteryUsageModal({ open, onClose, hasBattery }: BatteryUsageMod
       <div className="battery-usage-modal" onClick={(e) => e.stopPropagation()}>
         {/* 标题区 */}
         <div className="battery-usage-header">
-          <div>
+          <div className="battery-usage-title-wrap">
             <h2>{t('batteryUsage.title')}</h2>
+            <span className="battery-ai-badge">{t('batteryUsage.aiBadgeShort')}</span>
           </div>
           <button className="battery-usage-close-icon" onClick={onClose} aria-label={t('batteryUsage.close')}>
             <X weight="regular" />
@@ -751,16 +758,16 @@ export function BatteryUsageModal({ open, onClose, hasBattery }: BatteryUsageMod
               insights={selectedInsights}
               onSelectDevice={setSelectedDeviceKey}
             />
+            {/* 图表 */}
+            {selectedSeries && (
+              <BatteryUsageChart points={selectedSeries.points} range={range} />
+            )}
+
             <BatteryUsageSummary
               device={selectedDevice}
               insights={selectedInsights}
               range={range}
             />
-
-            {/* 图表 */}
-            {selectedSeries && (
-              <BatteryUsageChart points={selectedSeries.points} range={range} />
-            )}
 
             {/* 洞察 */}
             <BatteryInsightCards insights={selectedInsights} />

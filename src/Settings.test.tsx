@@ -60,6 +60,8 @@ describe('SettingsPage', () => {
     })));
 
     fireEvent.click(screen.getByRole('button', { name: '设备' }));
+    expect(screen.getByText('本地 AI 分析')).toBeInTheDocument();
+    expect(screen.getByText('用于生成 24 小时和 10 天电量图表，并在本地进行 AI 原理分析。')).toBeInTheDocument();
     const nightModeToggle = screen.getByRole('switch', { name: '启用安静灯光' });
     expect(nightModeToggle).not.toBeDisabled();
     expect(nightModeToggle).not.toBeChecked();
@@ -68,6 +70,8 @@ describe('SettingsPage', () => {
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('settings_set', expect.objectContaining({
       settings: expect.objectContaining({ nightModeEnabled: true }),
     })));
+    expect(await screen.findByRole('heading', { name: '触发场景（任一满足即关闭灯光）' })).toHaveClass('settings-subsection-title');
+    expect(screen.getByRole('heading', { name: '灯光对象' })).toHaveClass('settings-subsection-title');
     const startInput = await screen.findByLabelText('开始时间');
     fireEvent.change(startInput, { target: { value: '23:00' } });
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('settings_set', expect.objectContaining({

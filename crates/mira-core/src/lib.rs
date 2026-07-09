@@ -39,6 +39,16 @@ pub struct DeviceBattery {
     pub charging: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceIdentity {
+    pub group: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub aliases: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginCapability {
@@ -108,6 +118,9 @@ pub struct DeviceSnapshot {
     /// 匹配该设备的插件 ID（如 "mira.amaster"），用于前端 i18n namespace 解析。
     #[serde(default)]
     pub plugin_id: Option<String>,
+    /// 插件声明的跨连接/跨接口身份，用于历史统计等宿主通用功能做合并。
+    #[serde(default)]
+    pub history_identity: Option<DeviceIdentity>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

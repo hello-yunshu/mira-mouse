@@ -31,6 +31,10 @@ pub struct BatterySample {
     pub at: DateTime<Utc>,
     pub device_id: String,
     pub device_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity_group: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub identity_aliases: Vec<String>,
     pub connection: String,
     pub component_id: String,
     pub component_label: String,
@@ -226,15 +230,25 @@ fn normalize_history_device_name(value: &str) -> String {
         .to_lowercase()
 }
 
+fn normalized_history_identity_group(value: &str) -> Option<String> {
+    let normalized = normalize_history_device_name(value);
+    (!normalized.is_empty()).then_some(normalized)
+}
+
 fn stable_device_id_for_entry(entry: &DeviceSnapshotEntry) -> String {
     let snapshot = &entry.snapshot;
     let plugin = snapshot.plugin_id.as_deref().unwrap_or("unknown-plugin");
+    let identity_group = snapshot
+        .history_identity
+        .as_ref()
+        .and_then(|identity| normalized_history_identity_group(&identity.group));
     let normalized_name = normalize_history_device_name(&snapshot.display_name);
-    let source = if normalized_name.is_empty() {
-        format!("path:{}", entry.device_key)
-    } else {
-        format!("plugin:{plugin}|name:{normalized_name}")
-    };
+    let source = identity_group
+        .map(|group| format!("plugin:{plugin}|identity:{group}"))
+        .or_else(|| {
+            (!normalized_name.is_empty()).then(|| format!("plugin:{plugin}|name:{normalized_name}"))
+        })
+        .unwrap_or_else(|| format!("path:{}", entry.device_key));
     anonymize_device_key(&source)
 }
 
@@ -247,6 +261,18 @@ fn history_device_group_id(device_id: &str, device_name: &str) -> String {
     }
 }
 
+fn sample_history_device_group_id(sample: &BatterySample) -> String {
+    if let Some(identity_group) = sample
+        .identity_group
+        .as_deref()
+        .and_then(normalized_history_identity_group)
+    {
+        anonymize_device_key(&format!("device-identity:{identity_group}"))
+    } else {
+        history_device_group_id(&sample.device_id, &sample.device_name)
+    }
+}
+
 fn history_key(device_id: &str, device_name: &str, component_id: &str) -> String {
     format!(
         "{}:{}",
@@ -256,7 +282,11 @@ fn history_key(device_id: &str, device_name: &str, component_id: &str) -> String
 }
 
 fn sample_device_key(sample: &BatterySample) -> String {
-    history_key(&sample.device_id, &sample.device_name, &sample.component_id)
+    format!(
+        "{}:{}",
+        sample_history_device_group_id(sample),
+        sample.component_id
+    )
 }
 
 fn sample_legacy_key(sample: &BatterySample) -> String {
@@ -268,6 +298,7 @@ struct SampleGroup {
     key: String,
     component_id: String,
     device_ids: BTreeSet<String>,
+    identity_groups: BTreeSet<String>,
     names: BTreeSet<String>,
     aliases: BTreeSet<String>,
 }
@@ -278,6 +309,7 @@ impl SampleGroup {
             key: sample_device_key(sample),
             component_id: sample.component_id.clone(),
             device_ids: BTreeSet::new(),
+            identity_groups: BTreeSet::new(),
             names: BTreeSet::new(),
             aliases: BTreeSet::new(),
         };
@@ -287,9 +319,22 @@ impl SampleGroup {
 
     fn add_sample(&mut self, sample: &BatterySample) {
         self.device_ids.insert(sample.device_id.clone());
+        if let Some(identity_group) = sample
+            .identity_group
+            .as_deref()
+            .and_then(normalized_history_identity_group)
+        {
+            self.identity_groups.insert(identity_group);
+        }
         let name = normalize_history_device_name(&sample.device_name);
         if !name.is_empty() {
             self.names.insert(name);
+        }
+        for alias in &sample.identity_aliases {
+            let alias = normalize_history_device_name(alias);
+            if !alias.is_empty() {
+                self.names.insert(alias);
+            }
         }
         self.aliases.insert(sample_device_key(sample));
         self.aliases.insert(sample_legacy_key(sample));
@@ -297,6 +342,7 @@ impl SampleGroup {
 
     fn absorb(&mut self, other: SampleGroup) {
         self.device_ids.extend(other.device_ids);
+        self.identity_groups.extend(other.identity_groups);
         self.names.extend(other.names);
         self.aliases.extend(other.aliases);
     }
@@ -308,8 +354,22 @@ impl SampleGroup {
         if self.device_ids.contains(&sample.device_id) {
             return true;
         }
+        if sample
+            .identity_group
+            .as_deref()
+            .and_then(normalized_history_identity_group)
+            .is_some_and(|identity_group| self.identity_groups.contains(&identity_group))
+        {
+            return true;
+        }
         let name = normalize_history_device_name(&sample.device_name);
-        !name.is_empty() && self.names.contains(&name)
+        if !name.is_empty() && self.names.contains(&name) {
+            return true;
+        }
+        sample.identity_aliases.iter().any(|alias| {
+            let alias = normalize_history_device_name(alias);
+            !alias.is_empty() && self.names.contains(&alias)
+        })
     }
 
     fn matches_key(&self, key: &str) -> bool {
@@ -390,7 +450,29 @@ pub fn record_samples(
             let device_id = stable_device_id_for_entry(entry);
             let snapshot = &entry.snapshot;
             let connection = connection_str(&snapshot.connection);
-            let device_name = &snapshot.display_name;
+            let history_identity = snapshot.history_identity.as_ref();
+            let identity_group = history_identity
+                .and_then(|identity| normalized_history_identity_group(&identity.group));
+            let mut identity_aliases = history_identity
+                .map(|identity| identity.aliases.clone())
+                .unwrap_or_default();
+            let device_name = history_identity
+                .and_then(|identity| identity.display_name.as_deref())
+                .filter(|name| !normalize_history_device_name(name).is_empty())
+                .unwrap_or(&snapshot.display_name)
+                .to_string();
+            if !snapshot.display_name.is_empty() {
+                identity_aliases.push(snapshot.display_name.clone());
+            }
+            if let Some(identity_name) =
+                history_identity.and_then(|identity| identity.display_name.clone())
+            {
+                identity_aliases.push(identity_name);
+            }
+            identity_aliases.sort_by_key(|alias| normalize_history_device_name(alias));
+            identity_aliases.dedup_by(|a, b| {
+                normalize_history_device_name(a) == normalize_history_device_name(b)
+            });
 
             let batteries: Vec<(String, String, u8, bool)> = if !snapshot.batteries.is_empty() {
                 snapshot
@@ -418,7 +500,15 @@ pub fn record_samples(
             };
 
             for (component_id, component_label, percentage, charging) in batteries {
-                let key = history_key(&device_id, device_name, &component_id);
+                let key = if let Some(identity_group) = &identity_group {
+                    format!(
+                        "{}:{}",
+                        anonymize_device_key(&format!("device-identity:{identity_group}")),
+                        component_id
+                    )
+                } else {
+                    history_key(&device_id, &device_name, &component_id)
+                };
                 let low_power = !charging && percentage < low_battery_threshold;
                 let should_record = match last_record.get(&key) {
                     Some((prev, last_instant)) => {
@@ -441,6 +531,8 @@ pub fn record_samples(
                         at: now,
                         device_id: device_id.clone(),
                         device_name: device_name.clone(),
+                        identity_group: identity_group.clone(),
+                        identity_aliases: identity_aliases.clone(),
                         connection: connection.clone(),
                         component_id,
                         component_label,
@@ -1498,6 +1590,8 @@ mod tests {
             at,
             device_id: "abc123".into(),
             device_name: "Test Mouse".into(),
+            identity_group: None,
+            identity_aliases: Vec::new(),
             connection: "wireless".into(),
             component_id: "mouse".into(),
             component_label: "mock.mouseLabel".into(),
@@ -1603,6 +1697,44 @@ mod tests {
             .filter(|point| point.low_battery == Some(true))
             .count();
         assert_eq!(low_points, 1);
+    }
+
+    #[test]
+    fn plugin_identity_merges_alias_history_across_connections() {
+        let state = BatteryHistoryState::new();
+        let now = Utc::now();
+        let mut usb = make_sample(now - Duration::minutes(5), 82, false);
+        usb.device_id = "usb-device".into();
+        usb.device_name = "amaster protocol-a-direct".into();
+        usb.connection = "usb".into();
+
+        let mut wireless = make_sample(now, 81, false);
+        wireless.device_id = "wireless-device".into();
+        wireless.device_name = "AM INFINITY 8K MOUSE".into();
+        wireless.identity_group = Some("am-infinity-8k-mouse".into());
+        wireless.identity_aliases = vec![
+            "amaster protocol-a-direct".into(),
+            "amaster protocol-a-receiver".into(),
+            "AM INFINITY 8K MOUSE".into(),
+        ];
+        wireless.connection = "wireless".into();
+
+        state.samples.lock().unwrap().extend([usb, wireless]);
+        let response = build_response(&state, 20, "24h");
+
+        assert_eq!(response.devices.len(), 1);
+        assert_eq!(response.devices[0].device_name, "AM INFINITY 8K MOUSE");
+        assert_eq!(response.devices[0].connection, "wireless");
+        assert_eq!(response.devices[0].latest_percentage, Some(81));
+        assert_eq!(response.series.len(), 1);
+        assert_eq!(
+            response.series[0]
+                .points
+                .iter()
+                .map(|point| point.sample_count)
+                .sum::<u32>(),
+            2
+        );
     }
 
     #[test]
