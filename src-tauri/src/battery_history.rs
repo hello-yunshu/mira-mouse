@@ -5,7 +5,7 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use chrono::{DateTime, Duration, Local, Utc};
-use mira_core::Connection;
+use mira_core::{Connection, PluginCapability};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager};
@@ -16,7 +16,7 @@ const DEDUP_INTERVAL_MINUTES: i64 = 5;
 #[allow(dead_code)]
 const DEFAULT_RETENTION_DAYS: i64 = 30;
 const RETENTION_BUFFER_DAYS: i64 = 1;
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
 const SESSION_GAP_THRESHOLD_MINUTES: i64 = 10;
 const MAX_SAMPLES: usize = 20000;
 const BOUNCE_THRESHOLD_PERCENT: f64 = 1.0;
@@ -24,6 +24,29 @@ const REPLACEMENT_RISE_THRESHOLD_PERCENT: u8 = 5;
 const POST_CHARGE_SKIP_MINUTES: i64 = 10;
 const VERY_SLOW_DRAIN_HOURS: f64 = 9999.0;
 const PERSIST_INTERVAL_SECS: u64 = 300;
+
+/// 每个插件自行声明哪些连接方式的电量读数可用于历史分析。
+/// 未声明时 fail-closed，避免宿主猜测某个协议或厂商的电量语义。
+fn battery_history_allowed(capabilities: &[PluginCapability], connection: &Connection) -> bool {
+    let connection = connection_str(connection);
+    capabilities
+        .iter()
+        .find(|capability| capability.id == "battery" && capability.available)
+        .and_then(|capability| capability.metadata.get("batteryHistory"))
+        .and_then(|policy| policy.get("validConnections"))
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|connections| {
+            connections
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .any(|allowed| allowed == connection)
+        })
+}
+
+/// 只有经插件策略确认的样本能参与曲线、预测和耗电告警。
+fn is_usable_history_sample(sample: &BatterySample) -> bool {
+    sample.eligible_for_prediction
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -41,6 +64,8 @@ pub struct BatterySample {
     pub percentage: u8,
     pub charging: bool,
     pub low_power: bool,
+    #[serde(default)]
+    pub eligible_for_prediction: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -191,9 +216,12 @@ fn save_history(app: &AppHandle, file: &BatteryHistoryFile) -> Result<(), String
 }
 
 fn migrate_schema(mut file: BatteryHistoryFile) -> BatteryHistoryFile {
-    if file.schema_version < SCHEMA_VERSION {
-        file.schema_version = SCHEMA_VERSION;
+    if file.schema_version < 2 {
+        // v1 未记录样本是否符合插件的电量遥测策略，无法在不猜测协议语义的前提下
+        // 安全复用。清空后由带策略的插件重新建立可信基线。
+        file.samples.clear();
     }
+    file.schema_version = SCHEMA_VERSION;
     file
 }
 
@@ -447,8 +475,11 @@ pub fn record_samples(
         let mut changed = false;
 
         for entry in entries {
-            let device_id = stable_device_id_for_entry(entry);
             let snapshot = &entry.snapshot;
+            if !battery_history_allowed(&snapshot.plugin_capabilities, &snapshot.connection) {
+                continue;
+            }
+            let device_id = stable_device_id_for_entry(entry);
             let connection = connection_str(&snapshot.connection);
             let history_identity = snapshot.history_identity.as_ref();
             let identity_group = history_identity
@@ -539,6 +570,7 @@ pub fn record_samples(
                         percentage,
                         charging,
                         low_power,
+                        eligible_for_prediction: true,
                     };
                     last_record.insert(key, (sample.clone(), Instant::now()));
                     samples.push(sample);
@@ -594,7 +626,11 @@ pub fn build_response(
 ) -> BatteryHistoryResponse {
     let samples: Vec<BatterySample> = {
         let guard = state.samples.lock().unwrap_or_else(|e| e.into_inner());
-        guard.clone()
+        guard
+            .iter()
+            .filter(|sample| is_usable_history_sample(sample))
+            .cloned()
+            .collect()
     };
     let samples_ref: &[BatterySample] = &samples;
     let now = Utc::now();
@@ -1162,7 +1198,11 @@ pub fn check_abnormal_drain(
 ) -> Vec<(String, String)> {
     let samples: Vec<BatterySample> = {
         let guard = state.samples.lock().unwrap_or_else(|e| e.into_inner());
-        guard.clone()
+        guard
+            .iter()
+            .filter(|sample| is_usable_history_sample(sample))
+            .cloned()
+            .collect()
     };
     let sample_groups = build_sample_groups(&samples);
     let mut result = Vec::new();
@@ -1598,6 +1638,7 @@ mod tests {
             percentage: pct,
             charging,
             low_power: !charging && pct < 20,
+            eligible_for_prediction: true,
         }
     }
 
@@ -1700,13 +1741,14 @@ mod tests {
     }
 
     #[test]
-    fn plugin_identity_merges_alias_history_across_connections() {
+    fn plugin_identity_keeps_policy_approved_history_when_direct_alias_is_present() {
         let state = BatteryHistoryState::new();
         let now = Utc::now();
         let mut usb = make_sample(now - Duration::minutes(5), 82, false);
         usb.device_id = "usb-device".into();
         usb.device_name = "amaster protocol-a-direct".into();
         usb.connection = "usb".into();
+        usb.eligible_for_prediction = false;
 
         let mut wireless = make_sample(now, 81, false);
         wireless.device_id = "wireless-device".into();
@@ -1733,8 +1775,71 @@ mod tests {
                 .iter()
                 .map(|point| point.sample_count)
                 .sum::<u32>(),
+            1
+        );
+    }
+
+    #[test]
+    fn usb_powered_samples_are_excluded_from_battery_analysis() {
+        let state = BatteryHistoryState::new();
+        let now = Utc::now();
+        let wireless_start = make_sample(now - Duration::minutes(55), 72, false);
+        let wireless_latest = make_sample(now - Duration::minutes(5), 70, false);
+        let mut usb_placeholder = make_sample(now, 100, false);
+        usb_placeholder.connection = "usb".into();
+        usb_placeholder.eligible_for_prediction = false;
+        state
+            .samples
+            .lock()
+            .unwrap()
+            .extend([wireless_start, wireless_latest, usb_placeholder]);
+
+        let response = build_response(&state, 20, "24h");
+
+        assert_eq!(response.devices.len(), 1);
+        assert_eq!(response.devices[0].connection, "wireless");
+        assert_eq!(response.devices[0].latest_percentage, Some(70));
+        assert_eq!(
+            response.series[0]
+                .points
+                .iter()
+                .map(|point| point.sample_count)
+                .sum::<u32>(),
             2
         );
+        assert!(response
+            .insights
+            .iter()
+            .any(|insight| insight.insight_type == "estimatedRemaining"));
+    }
+
+    #[test]
+    fn battery_history_follows_plugin_declared_connections() {
+        let battery = PluginCapability {
+            id: "battery".into(),
+            control: "ReadOnlyValue".into(),
+            label_key: "capability.battery".into(),
+            read_only: true,
+            placements: Vec::new(),
+            metadata: BTreeMap::from([(
+                "batteryHistory".into(),
+                serde_json::json!({ "validConnections": ["wireless", "bluetooth"] }),
+            )]),
+            available: true,
+            connections: None,
+            min_firmware: None,
+        };
+
+        assert!(!battery_history_allowed(
+            &[battery.clone()],
+            &Connection::Usb
+        ));
+        assert!(battery_history_allowed(
+            &[battery.clone()],
+            &Connection::Wireless
+        ));
+        assert!(battery_history_allowed(&[battery], &Connection::Bluetooth));
+        assert!(!battery_history_allowed(&[], &Connection::Wireless));
     }
 
     #[test]
@@ -2198,7 +2303,7 @@ mod tests {
         };
         let migrated = migrate_schema(file);
         assert_eq!(migrated.schema_version, SCHEMA_VERSION);
-        assert_eq!(migrated.samples.len(), 1);
+        assert!(migrated.samples.is_empty());
     }
 
     #[test]

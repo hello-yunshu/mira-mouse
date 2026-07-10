@@ -2,7 +2,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SettingsPage } from './Settings';
-import type { AppSettings } from './types';
+import type { AppSettings, PluginCapability } from './types';
 
 const { invokeMock, startAutomaticAppUpdateCheckMock } = vi.hoisted(() => ({
   invokeMock: vi.fn(),
@@ -25,6 +25,29 @@ const settings: AppSettings = {
   language: 'auto',
 };
 
+// 声明式灯光 capability：仅 mouse 区域可写，receiver 不可写，
+// 使 SettingsPage 内部计算的 supportsAnyLighting=true、supportsReceiverLighting=false。
+const pluginCapabilities: PluginCapability[] = [
+  {
+    id: 'lighting',
+    control: 'LightingZone',
+    labelKey: 'capability.lighting',
+    readOnly: false,
+    metadata: {
+      zones: [
+        {
+          id: 'mouse',
+          labelKey: 'lighting.mouse',
+          fields: [
+            { id: 'effect', source: 'state.mouseLightEffect', mutation: 'set-mouse-lighting', param: 'effect', editor: 'modal-select', labelKey: 'receiverLighting.field.effect' },
+          ],
+        },
+      ],
+    },
+  },
+];
+const writableMutations = ['set-mouse-lighting'];
+
 describe('SettingsPage', () => {
   beforeEach(() => {
     invokeMock.mockReset();
@@ -41,7 +64,7 @@ describe('SettingsPage', () => {
       return Promise.resolve(undefined);
     });
     const onThemeChange = vi.fn();
-    render(<SettingsPage onNavigateAbout={vi.fn()} onThemeChange={onThemeChange} supportsAnyLighting supportsReceiverLighting={false} />);
+    render(<SettingsPage onNavigateAbout={vi.fn()} onThemeChange={onThemeChange} pluginCapabilities={pluginCapabilities} writableMutations={writableMutations} />);
 
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('settings_get'));
     fireEvent.change(screen.getByRole('combobox', { name: '主题模式' }), { target: { value: 'dark' } });

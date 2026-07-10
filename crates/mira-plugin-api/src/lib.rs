@@ -209,6 +209,23 @@ fn valid_options(value: &serde_json::Value, max_items: usize) -> bool {
 
 fn valid_presentation_contract(capability: &Capability) -> bool {
     let metadata = &capability.metadata;
+    // schema v1 的 UI 契约是声明式 fields/zones/stageLayout；新包不得再依赖
+    // host 专用的扁平 metadata。保留旧分支仅用于读取历史已签名包，发布校验
+    // 已在插件仓库拒绝旧写法。
+    if metadata.keys().any(|key| {
+        matches!(
+            key.as_str(),
+            "fields"
+                | "zones"
+                | "stageLayout"
+                | "statusDisplay"
+                | "stateMapping"
+                | "visibleWhen"
+                | "batteryHistory"
+        )
+    }) {
+        return valid_declarative_presentation(capability);
+    }
     if !valid_optional_ui_text(metadata.get("label"), MAX_UI_LABEL_CHARS)
         || !valid_optional_ui_text(metadata.get("actionLabel"), MAX_UI_ACTION_LABEL_CHARS)
         || !valid_binding_labels(metadata.get("bindings"))
@@ -254,6 +271,169 @@ fn valid_presentation_contract(capability: &Capability) -> bool {
         }
         _ => true,
     }
+}
+
+fn valid_declarative_presentation(capability: &Capability) -> bool {
+    let metadata = &capability.metadata;
+    let valid_path = |value: Option<&serde_json::Value>| {
+        value
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|path| !path.is_empty() && path.len() <= 160)
+    };
+    let valid_range = |value: Option<&serde_json::Value>| {
+        value
+            .and_then(serde_json::Value::as_object)
+            .is_some_and(|range| {
+                let min = range.get("min").and_then(serde_json::Value::as_f64);
+                let max = range.get("max").and_then(serde_json::Value::as_f64);
+                min.zip(max).is_some_and(|(min, max)| min <= max)
+                    && range
+                        .get("step")
+                        .is_none_or(|step| step.as_f64().is_some_and(|step| step > 0.0))
+            })
+    };
+    let valid_field = |field: &serde_json::Value| {
+        field.as_object().is_some_and(|field| {
+            valid_path(field.get("id"))
+                && valid_path(field.get("source"))
+                && field
+                    .get("editor")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|editor| {
+                        matches!(
+                            editor,
+                            "inline-toggle"
+                                | "inline-segmented"
+                                | "inline-value"
+                                | "inline-action"
+                                | "modal-select"
+                                | "modal-color"
+                                | "modal-range"
+                                | "modal-number"
+                                | "modal-dpi-stage"
+                                | "modal-gradient"
+                                | "static-readonly"
+                        )
+                    })
+                && field
+                    .get("mutation")
+                    .is_none_or(|mutation| valid_mutation_ref(Some(mutation)))
+                && field
+                    .get("options")
+                    .is_none_or(|options| valid_declarative_options(options))
+                && field
+                    .get("range")
+                    .is_none_or(|range| valid_range(Some(range)))
+        })
+    };
+    let fields_valid = metadata.get("fields").is_none_or(|fields| {
+        fields
+            .as_array()
+            .is_some_and(|fields| fields.len() <= 32 && fields.iter().all(valid_field))
+    });
+    let zones_valid = metadata.get("zones").is_none_or(|zones| {
+        zones.as_array().is_some_and(|zones| {
+            zones.len() <= 8
+                && zones.iter().all(|zone| {
+                    zone.as_object().is_some_and(|zone| {
+                        valid_path(zone.get("id"))
+                            && zone
+                                .get("labelKey")
+                                .and_then(serde_json::Value::as_str)
+                                .is_some_and(|key| !key.is_empty())
+                            && zone
+                                .get("fields")
+                                .and_then(serde_json::Value::as_array)
+                                .is_some_and(|fields| {
+                                    fields.len() <= 32 && fields.iter().all(valid_field)
+                                })
+                    })
+                })
+        })
+    });
+    let battery_history_valid = metadata
+        .get("batteryHistory")
+        .is_none_or(valid_battery_history_policy)
+        && (!metadata.contains_key("batteryHistory") || capability.id == "battery");
+    if !fields_valid || !zones_valid || !battery_history_valid {
+        return false;
+    }
+    match capability.control {
+        Control::DpiStages if !capability.read_only => metadata
+            .get("stageLayout")
+            .and_then(serde_json::Value::as_object)
+            .is_some_and(|layout| {
+                valid_path(layout.get("dotsSource"))
+                    && valid_path(layout.get("valueSource"))
+                    && valid_mutation_ref(layout.get("selectMutation"))
+                    && valid_mutation_ref(layout.get("setMutation"))
+                    && valid_range(layout.get("range"))
+            }),
+        Control::LightingZone if !capability.read_only => metadata
+            .get("zones")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|zones| {
+                zones.iter().any(|zone| {
+                    zone.get("fields")
+                        .and_then(serde_json::Value::as_array)
+                        .is_some_and(|fields| {
+                            fields.iter().any(|field| field.get("mutation").is_some())
+                        })
+                })
+            }),
+        _ if !capability.read_only => metadata
+            .get("fields")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|fields| {
+                fields.iter().any(|field| {
+                    field
+                        .get("mutation")
+                        .is_some_and(|mutation| valid_mutation_ref(Some(mutation)))
+                })
+            }),
+        _ => true,
+    }
+}
+
+/// 电量历史属于设备语义而非宿主猜测：由 battery capability 显式声明可信连接方式。
+fn valid_battery_history_policy(value: &serde_json::Value) -> bool {
+    let Some(policy) = value.as_object() else {
+        return false;
+    };
+    if policy.len() != 1 {
+        return false;
+    }
+    let Some(connections) = policy
+        .get("validConnections")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return false;
+    };
+    if connections.is_empty() || connections.len() > 4 {
+        return false;
+    }
+    let mut unique = BTreeSet::new();
+    connections.iter().all(|connection| {
+        connection.as_str().is_some_and(|connection| {
+            valid_binding_connection(connection) && unique.insert(connection)
+        })
+    })
+}
+
+fn valid_declarative_options(value: &serde_json::Value) -> bool {
+    value.as_array().is_some_and(|options| {
+        options.len() <= 32
+            && options.iter().all(|option| {
+                option.as_object().is_some_and(|option| {
+                    option.get("value").is_some_and(|value| {
+                        value.is_string() || value.is_number() || value.is_boolean()
+                    }) && option
+                        .get("labelKey")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|key| !key.is_empty())
+                })
+            })
+    })
 }
 
 fn valid_optional_ui_text(value: Option<&serde_json::Value>, max_chars: usize) -> bool {
@@ -484,9 +664,37 @@ impl Capability {
     /// 从 metadata 反序列化灯光 mutation 角色映射（lightingRole 强类型字段）。
     /// 供后端夜间模式动态发现 mutation 名。
     pub fn lighting_role(&self) -> Option<LightingRole> {
-        self.metadata
+        let legacy = self
+            .metadata
             .get("lightingRole")
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .and_then(|v| serde_json::from_value(v.clone()).ok());
+        if legacy.is_some() {
+            return legacy;
+        }
+        let zones = self.metadata.get("zones")?.as_array()?;
+        let mut role = LightingRole {
+            mouse: None,
+            receiver: None,
+        };
+        for zone in zones {
+            let Some(zone) = zone.as_object() else {
+                continue;
+            };
+            let Some(id) = zone.get("id").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            let mutation = zone
+                .get("fields")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|fields| fields.iter().find_map(|field| field.get("mutation")))
+                .and_then(|mutation| serde_json::from_value::<MutationDecl>(mutation.clone()).ok());
+            match id {
+                "mouse" => role.mouse = mutation,
+                "receiver" => role.receiver = mutation,
+                _ => {}
+            }
+        }
+        (role.mouse.is_some() || role.receiver.is_some()).then_some(role)
     }
 }
 
@@ -907,6 +1115,19 @@ mod tests {
     }
 
     #[test]
+    fn validates_battery_history_connections_as_plugin_semantics() {
+        assert!(valid_battery_history_policy(&serde_json::json!({
+            "validConnections": ["wireless", "bluetooth"]
+        })));
+        assert!(!valid_battery_history_policy(&serde_json::json!({
+            "validConnections": ["receiver"]
+        })));
+        assert!(!valid_battery_history_policy(&serde_json::json!({
+            "validConnections": ["wireless", "wireless"]
+        })));
+    }
+
+    #[test]
     fn rejects_unknown_value_formats() {
         let capability = Capability {
             id: "profile-color".into(),
@@ -970,6 +1191,48 @@ mod tests {
             manifest.validate(),
             Err(ApiError::CapabilityPresentation("lighting".into()))
         );
+    }
+
+    #[test]
+    fn accepts_declarative_lighting_and_derives_its_mutation_roles() {
+        let capability = Capability {
+            id: "lighting".into(),
+            control: Control::LightingZone,
+            label_key: "capability.lighting".into(),
+            read_only: false,
+            placements: vec![],
+            metadata: BTreeMap::from([(
+                "zones".into(),
+                serde_json::json!([
+                    {"id": "mouse", "labelKey": "lighting.mouse", "fields": [{"id": "enabled", "source": "capabilities.mouse.enabled", "editor": "inline-toggle", "mutation": ["set-mouse", "set-mouse-legacy"]}]},
+                    {"id": "receiver", "labelKey": "lighting.receiver", "fields": [{"id": "effect", "source": "capabilities.receiver.effect", "editor": "modal-select", "mutation": "set-receiver", "options": [{"value": 0, "labelKey": "lighting.off"}]}]}
+                ]),
+            )]),
+            probe: None,
+            connections: None,
+            min_firmware: None,
+        };
+        let manifest = PluginManifest {
+            schema_version: 1,
+            plugin_id: "mira.example".into(),
+            name: "Example".into(),
+            version: "1.0.0".into(),
+            plugin_api: ">=1.0.0, <2.0.0".parse().unwrap(),
+            publisher_key_id: None,
+            evidence: EvidenceLevel::FixtureVerified,
+            permissions: vec![],
+            capabilities: vec![capability.clone()],
+            writes_enabled: false,
+            exportable_fields: vec![],
+            depends_on: vec![],
+        };
+        assert_eq!(manifest.validate(), Ok(()));
+        let roles = capability.lighting_role().expect("roles from zones");
+        assert_eq!(
+            roles.mouse.unwrap().candidates(),
+            vec!["set-mouse", "set-mouse-legacy"]
+        );
+        assert_eq!(roles.receiver.unwrap().candidates(), vec!["set-receiver"]);
     }
 
     #[test]
