@@ -4,38 +4,6 @@ export type ThemeMode = 'system' | 'light' | 'dark';
 export interface DpiStage { value: number; color: string; active: boolean; enabled: boolean }
 export interface DeviceBattery { id: string; label: string; percentage: number; charging?: boolean }
 export interface DeviceIdentity { group: string; displayName?: string; aliases?: string[] }
-export interface Lighting {
-  enabled: boolean;
-  mode: string;
-  color?: string;
-  supportsSpeed: boolean;
-  supportsBrightness: boolean;
-  receiverLinked: boolean;
-  /** 鼠标主灯效颜色，必须来自转发到鼠标的灯光读取。 */
-  mouseLightEnabled?: boolean;
-  mouseLightColor?: string;
-  mouseLightEndColor?: string;
-  /** 鼠标灯效数值，语义由插件 effectOptions 声明（offValue/requiresExtraColor）。 */
-  mouseLightEffect?: number;
-  /** 灯效速度（0-255） */
-  mouseLightSpeed?: number;
-  /** 亮度百分比（0-100） */
-  mouseLightBrightness?: number;
-  /** 第二色（#RRGGBB），由插件 effectOptions.effect[].requiresExtraColor 声明是否需要。 */
-  mouseLightExtraColor?: string;
-  receiverLightEnabled?: boolean;
-  receiverLightMode?: string;
-  receiverLightColor?: string;
-}
-
-/** 灯效选项条目（强类型化，替代隐式 metadata 约定）。 */
-export interface EffectOption {
-  value: number;
-  /** 指向插件 locale 的 i18n key。 */
-  labelKey: string;
-  /** 该灯效是否需要第二色。 */
-  requiresExtraColor?: boolean;
-}
 
 /** 灯效范围声明（speed/brightness）。 */
 export interface RangeSpec {
@@ -44,52 +12,98 @@ export interface RangeSpec {
   step?: number;
 }
 
-/** 灯效选项集（effectOptions 强类型字段）。 */
-export interface EffectOptions {
-  /** 声明哪个数值表示"关闭"。 */
-  offValue?: number;
-  effect: EffectOption[];
-  speed?: RangeSpec;
-  brightness?: RangeSpec;
+// ─── 声明式插件 UI 类型 ─────────────────────────────────────────────────────
+
+/** 字段编辑器类型，决定 UI 渲染方式。 */
+export type PluginEditor = 'inline-toggle' | 'inline-segmented' | 'inline-value' | 'inline-action' | 'modal-select' | 'modal-color' | 'modal-range' | 'modal-number' | 'modal-dpi-stage' | 'modal-gradient' | 'static-readonly';
+
+/** 字段值格式化方式。 */
+export type PluginFieldFormat = 'sleep' | 'percent' | 'hertz' | 'connection' | 'color' | 'default';
+
+/** 字段可见性条件：当 snapshot 中 path 的值满足 eq/ne 时显示。 */
+export interface PluginVisibleWhen { path: string; eq?: unknown; ne?: unknown }
+
+/** 一个 mutation 或按声明优先级排列的候选 mutation。 */
+export type PluginMutation = string | string[];
+
+/** 开关切换声明：从 source 读取开关状态，关闭时写入 offValue，恢复时读取 restoreField。 */
+export interface PluginSwitch { source: string; offValue: unknown; restoreField?: string }
+
+/** 选项条目（用于 select/segmented 等编辑器）。 */
+export interface PluginFieldOption { value: string | number | boolean; labelKey: string }
+
+/** 声明式字段定义，描述一个可编辑的设备状态项。 */
+export interface PluginField {
+  id: string;
+  source: string;
+  mutation?: PluginMutation;
+  param?: string;
+  params?: Record<string, unknown>;
+  editor: PluginEditor;
+  labelKey?: string;
+  labelSource?: string;
+  options?: PluginFieldOption[];
+  optionSource?: string;
+  range?: RangeSpec;
+  format?: PluginFieldFormat;
+  visibleWhen?: PluginVisibleWhen;
+  switch?: PluginSwitch;
 }
 
-/** 接收器灯效选项条目。 */
-export interface ReceiverLightingOption {
-  value: number;
-  labelKey: string;
+/** 灯光区域声明：一组相关字段的集合。 */
+export interface PluginZone { id: string; labelKey: string; fields: PluginField[]; visibleWhen?: PluginVisibleWhen }
+
+/** DPI 分档布局声明。 */
+export interface PluginStageLayout {
+  dotsSource: string;
+  selectMutation: PluginMutation;
+  setMutation: PluginMutation;
+  valueSource: string;
+  colorSource?: string;
+  range: RangeSpec;
+  /** 切换分档时的 mutation 参数名，默认 value。 */
+  selectParam?: string;
+  /** 修改分档时的档位参数名，默认 stage。 */
+  stageParam?: string;
+  /** 修改分档时的数值参数名，默认 value。 */
+  valueParam?: string;
 }
 
-/** 接收器灯效选项集（receiverLightingOptions 强类型字段）。 */
-export interface ReceiverLightingOptions {
-  effect?: ReceiverLightingOption[];
-  speed?: ReceiverLightingOption[];
-  brightness?: ReceiverLightingOption[];
-  option?: ReceiverLightingOption[];
+/** 状态栏显示声明。 */
+export interface PluginStatusDisplay {
+  valueSource: string;
+  valueFormat?: PluginFieldFormat;
+  valueOptions?: PluginFieldOption[];
+  onClickField?: string;
 }
 
-/** 灯光 mutation 角色映射（lightingRole 强类型字段）。 */
-/// mouse/receiver 可声明为单个 mutation 或按优先级排序的候选数组；
-/// Host 按数组顺序选取第一个被设备 writableMutations 支持的 mutation。
-export interface LightingRole {
-  mouse?: string | string[];
-  receiver?: string | string[];
-}
-export type PluginValueFormat = 'sleep' | 'color';
+/** 字段名 → snapshot source 路径映射。 */
+export interface PluginStateMapping { [field: string]: string }
+
 export type DeviceCapabilities = Record<string, Record<string, unknown>>;
-export type PluginControl = 'Toggle' | 'Segmented' | 'Select' | 'Slider' | 'Number' | 'Color' | 'GradientStops' | 'DpiStages' | 'LightingZone' | 'ReadOnlyValue' | 'Action' | 'Info';
+export type PluginControl = 'Toggle' | 'Segmented' | 'Select' | 'Slider' | 'Number' | 'Color' | 'GradientStops' | 'DpiStages' | 'LightingZone' | 'ReadOnlyValue' | 'Action';
 export interface PluginCapability {
   id: string;
   control: PluginControl;
   labelKey: string;
   readOnly: boolean;
   placements?: PluginCapabilityPlacement[];
-  metadata: Record<string, unknown>;
+  metadata: PluginCapabilityMetadata;
   /** 设备实际是否支持该能力（运行时探测结果）。默认 true（向后兼容）。 */
   available?: boolean;
   /** 连接类型能力分支（#3）：声明该能力仅在指定连接类型下可见。 */
   connections?: string[];
   /** 固件版本门槛（#4）：声明该能力所需的最低固件版本。 */
   minFirmware?: string;
+}
+export interface PluginCapabilityMetadata {
+  fields?: PluginField[];
+  zones?: PluginZone[];
+  stageLayout?: PluginStageLayout;
+  statusDisplay?: PluginStatusDisplay;
+  stateMapping?: PluginStateMapping;
+  visibleWhen?: PluginVisibleWhen;
+  [key: string]: unknown;
 }
 export interface PluginCapabilityPlacement {
   region: 'hero' | 'control' | 'status' | 'details';
@@ -104,11 +118,7 @@ export interface DeviceState {
   battery?: number;
   charging?: boolean;
   batteries: DeviceBattery[];
-  pollingRate?: number;
-  supportedPollingRates?: number[];
-  profile?: string;
-  dpiStages: DpiStage[];
-  lighting?: Lighting;
+  state: Record<string, unknown>;
   capabilities: DeviceCapabilities;
   pluginCapabilities: PluginCapability[];
   writableMutations: string[];

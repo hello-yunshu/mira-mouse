@@ -3,10 +3,11 @@ import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useTranslation } from 'react-i18next';
 import { ChartBar } from '@phosphor-icons/react';
-import type { AppSettings, BundledPluginInfo, AboutInfo, DiscoveredDevice, PluginInstallResult, PluginUpdateInfo, ThemeMode } from './types';
+import type { AppSettings, BundledPluginInfo, AboutInfo, DiscoveredDevice, PluginCapability, PluginInstallResult, PluginUpdateInfo, ThemeMode } from './types';
 import { Tooltip } from './Tooltip';
 import { notifyError, notifyInfo } from './notify';
 import { extractChannel, exportDiagnostics } from './plugin-utils';
+import { resolveLightingMutations } from './pluginAdapter';
 import { applyLanguage, type AppLanguage } from './i18n';
 import { save, open } from '@tauri-apps/plugin-dialog';
 import { ExternalLink } from './ExternalLink';
@@ -81,7 +82,7 @@ function isWindowsPlatform(): boolean {
   return previewPlatform === 'windows' || navigator.userAgent.includes('Windows');
 }
 
-export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, onThemeChange, previewMode = false, supportsAnyLighting = false, supportsMouseLighting = false, supportsReceiverLighting = false, focusPluginUpdateToken = 0 }: { onNavigateAbout: () => void; onOpenBatteryUsage?: () => void; onThemeChange: (theme: ThemeMode) => void; previewMode?: boolean; supportsAnyLighting?: boolean; supportsMouseLighting?: boolean; supportsReceiverLighting?: boolean; focusPluginUpdateToken?: number }) {
+export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, onThemeChange, previewMode = false, pluginCapabilities = [], writableMutations = [], focusPluginUpdateToken = 0 }: { onNavigateAbout: () => void; onOpenBatteryUsage?: () => void; onThemeChange: (theme: ThemeMode) => void; previewMode?: boolean; pluginCapabilities?: PluginCapability[]; writableMutations?: string[]; focusPluginUpdateToken?: number }) {
   const { t } = useTranslation();
   const windowsPlatform = isWindowsPlatform();
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
@@ -100,6 +101,13 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
   }));
   const pendingPluginFocus = useRef(false);
   const tab = focusPluginUpdateToken > tabState.focusToken ? 'plugins' : tabState.tab;
+
+  // 通过 resolveLightingMutations 从插件 capability 与可写 mutation 计算灯光支持情况，
+  // 替代已移除的 supportsAnyLighting/supportsLightingMutation 旧导出。
+  const lightingMutations = resolveLightingMutations(pluginCapabilities, writableMutations);
+  const supportsAnyLighting = lightingMutations.length > 0;
+  const supportsMouseLighting = lightingMutations.includes('set-mouse-lighting');
+  const supportsReceiverLighting = lightingMutations.includes('set-receiver-lighting');
 
   // 点击「插件更新可用」通知后，先切到 plugins 标签，待渲染后再滚动聚焦。
   useEffect(() => {
