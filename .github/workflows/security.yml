@@ -21,9 +21,12 @@ jobs:
       - uses: actions/checkout@v7
       - name: Install cargo-audit
         uses: taiki-e/install-action@cargo-audit
-      - run: cargo audit --ignore RUSTSEC-2026-0194 --ignore RUSTSEC-2026-0195
+      - run: cargo audit --ignore RUSTSEC-2026-0194 --ignore RUSTSEC-2026-0195 --ignore RUSTSEC-2024-0429
         # quick-xml advisories (RUSTSEC-2026-0194/0195) ignored: both versions pinned by upstream —
         # 0.39.x by plist 1.9.0 (^0.39.2) via tauri 2.11.x, 0.37.x by tauri-winrt-notification 0.7.2 (^0.37) via notify-rust 4.18.
         # Cannot upgrade to fixed 0.41.0 until plist and tauri-winrt-notification release compatible versions.
         # Re-evaluate periodically; remove --ignore flags once upstream bumps quick-xml.
+        # glib advisory (RUSTSEC-2024-0429) ignored: glib 0.18.5 is a transitive Linux-only dependency via
+        # tauri 2.11.5 -> gtk 0.18 -> atk 0.18. Cannot bump to fixed 0.20.0 (semver-incompatible with gtk 0.18).
+        # Will be resolved when tauri bumps gtk-rs to 0.20+.
       - run: node scripts/check-boundaries.mjs
