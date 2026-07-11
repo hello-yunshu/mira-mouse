@@ -74,7 +74,6 @@
     "setPollingRateTitle": "Set polling rate",
     "pollingRateOptions": "Polling rate options",
     "pollingWriteHint": "Pick a rate, Mira syncs it to the mouse and double-checks",
-    "pollingReadonlyHint": "What the mouse just reported—can't change it right now.",
     "writeUnavailableHint": "This one can't be changed right now",
     "readonlyReport": "Device readout",
     "allReadInfo": "Full readout",

@@ -248,4 +248,22 @@ export function resolveLightingMutations(capabilities: PluginCapability[], writa
   return result;
 }
 
+/// 解析灯光角色可用性：基于 zones 中 id 为 'mouse'/'receiver' 的区域是否
+/// 存在可写 mutation 判断。与后端 Capability::lighting_role() 的 zone id
+/// 约定一致，UI 不再硬编码具体 mutation 名。
+export function resolveLightingRoles(capabilities: PluginCapability[], writableMutations: string[]): { mouse: boolean; receiver: boolean } {
+  const roles = { mouse: false, receiver: false };
+  for (const capability of capabilities) {
+    if (capability.control !== 'LightingZone') continue;
+    const zones = capability.metadata.zones;
+    if (!zones) continue;
+    for (const zone of zones) {
+      if (zone.id !== 'mouse' && zone.id !== 'receiver') continue;
+      const hasWritable = zone.fields.some((field) => resolveMutation(field.mutation, writableMutations) !== undefined);
+      if (hasWritable) roles[zone.id] = true;
+    }
+  }
+  return roles;
+}
+
 export type { DeviceState };
