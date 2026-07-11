@@ -7,7 +7,7 @@ import type { AppSettings, BundledPluginInfo, AboutInfo, DiscoveredDevice, Plugi
 import { Tooltip } from './Tooltip';
 import { notifyError, notifyInfo } from './notify';
 import { extractChannel, exportDiagnostics } from './plugin-utils';
-import { resolveLightingMutations } from './pluginAdapter';
+import { resolveLightingMutations, resolveLightingRoles } from './pluginAdapter';
 import { applyLanguage, type AppLanguage } from './i18n';
 import { save, open } from '@tauri-apps/plugin-dialog';
 import { ExternalLink } from './ExternalLink';
@@ -108,8 +108,8 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
   // 替代已移除的 supportsAnyLighting/supportsLightingMutation 旧导出。
   const lightingMutations = resolveLightingMutations(pluginCapabilities, writableMutations);
   const supportsAnyLighting = lightingMutations.length > 0;
-  const supportsMouseLighting = lightingMutations.includes('set-mouse-lighting');
-  const supportsReceiverLighting = lightingMutations.includes('set-receiver-lighting');
+  // 灯光角色可用性由插件 zone 声明驱动，UI 不再硬编码 mutation 名。
+  const { mouse: supportsMouseLighting, receiver: supportsReceiverLighting } = resolveLightingRoles(pluginCapabilities, writableMutations);
 
   // 点击「插件更新可用」通知后，先切到 plugins 标签，待渲染后再滚动聚焦。
   useEffect(() => {

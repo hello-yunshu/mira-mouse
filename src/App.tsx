@@ -821,7 +821,6 @@ function MetricField({ capability, field, device, writeBusy, runMutation }: {
         {hasHertzValue && <em>Hz</em>}
       </button>
       <CapabilitySummary capability={capability} device={device} />
-      {!writable && <p className="setting-hint">{i18n.t('dashboard.pollingReadonlyHint')}</p>}
       {editing && (
         <FieldEditModal
           field={field}

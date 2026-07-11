@@ -74,7 +74,6 @@
     "setPollingRateTitle": "设置回报率",
     "pollingRateOptions": "回报率选项",
     "pollingWriteHint": "选好就同步到鼠标，还会自动核对一下",
-    "pollingReadonlyHint": "鼠标当前报告的状态，暂无法修改。",
     "writeUnavailableHint": "此项当前无法修改",
     "readonlyReport": "设备读数",
     "allReadInfo": "全部读数",

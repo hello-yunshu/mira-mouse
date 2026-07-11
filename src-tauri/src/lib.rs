@@ -3125,6 +3125,115 @@ mod night_mode_tests {
     }
 
     #[test]
+    fn resolve_lighting_mutations_falls_back_to_zones() {
+        // 插件只声明 zones（声明式），没有 lightingRole：后端应从 zones 提取 mutation。
+        let snapshot = DeviceSnapshot {
+            display_name: "Test".into(),
+            connection: mira_core::Connection::Usb,
+            battery_percent: None,
+            charging: false,
+            batteries: Vec::new(),
+            dpi: None,
+            dpi_stages: None,
+            polling_rate_hz: None,
+            supported_polling_rates_hz: None,
+            profile: None,
+            confirmed_light_color: None,
+            capabilities: BTreeMap::new(),
+            plugin_capabilities: vec![PluginCapability {
+                id: "lighting".into(),
+                control: "LightingZone".into(),
+                label_key: "capability.lighting".into(),
+                read_only: false,
+                placements: Vec::new(),
+                metadata: BTreeMap::from([(
+                    "zones".into(),
+                    serde_json::json!([
+                        {
+                            "id": "mouse",
+                            "labelKey": "lighting.mouse",
+                            "fields": [
+                                {"id": "enabled", "mutation": "set-mouse-lighting"},
+                                {"id": "color", "mutation": "set-mouse-lighting"}
+                            ]
+                        },
+                        {
+                            "id": "receiver",
+                            "labelKey": "lighting.receiver",
+                            "fields": [
+                                {"id": "effect", "mutation": "set-receiver-lighting"}
+                            ]
+                        }
+                    ]),
+                )]),
+                available: true,
+                connections: None,
+                min_firmware: None,
+            }],
+            writable_mutations: vec!["set-mouse-lighting".into(), "set-receiver-lighting".into()],
+            evidence: "hardware-verified".into(),
+            readonly: false,
+            plugin_id: Some("mira.test".into()),
+            history_identity: None,
+        };
+
+        let (mouse, receiver) = resolve_lighting_mutations(&snapshot);
+        assert_eq!(mouse.as_deref(), Some("set-mouse-lighting"));
+        assert_eq!(receiver.as_deref(), Some("set-receiver-lighting"));
+    }
+
+    #[test]
+    fn resolve_lighting_mutations_zones_picks_supported_candidate() {
+        // zone 中多个 fields 声明了不同 mutation，应选取第一个被 writable 支持的。
+        let snapshot = DeviceSnapshot {
+            display_name: "Test".into(),
+            connection: mira_core::Connection::Usb,
+            battery_percent: None,
+            charging: false,
+            batteries: Vec::new(),
+            dpi: None,
+            dpi_stages: None,
+            polling_rate_hz: None,
+            supported_polling_rates_hz: None,
+            profile: None,
+            confirmed_light_color: None,
+            capabilities: BTreeMap::new(),
+            plugin_capabilities: vec![PluginCapability {
+                id: "lighting".into(),
+                control: "LightingZone".into(),
+                label_key: "capability.lighting".into(),
+                read_only: false,
+                placements: Vec::new(),
+                metadata: BTreeMap::from([(
+                    "zones".into(),
+                    serde_json::json!([
+                        {
+                            "id": "mouse",
+                            "fields": [
+                                {"id": "onboard", "mutation": "set-mouse-lighting-onboard"},
+                                {"id": "runtime", "mutation": "set-mouse-lighting"}
+                            ]
+                        }
+                    ]),
+                )]),
+                available: true,
+                connections: None,
+                min_firmware: None,
+            }],
+            // 设备只支持 runtime mutation，不支持 onboard
+            writable_mutations: vec!["set-mouse-lighting".into()],
+            evidence: "hardware-verified".into(),
+            readonly: false,
+            plugin_id: Some("mira.test".into()),
+            history_identity: None,
+        };
+
+        let (mouse, receiver) = resolve_lighting_mutations(&snapshot);
+        assert_eq!(mouse.as_deref(), Some("set-mouse-lighting"));
+        assert!(receiver.is_none());
+    }
+
+    #[test]
     fn night_mode_runtime_default_is_day_with_no_saved_state() {
         let runtime = NightModeRuntime::default();
         assert_eq!(runtime.phase, NightPhase::Day);
@@ -4613,7 +4722,9 @@ fn snapshot_supports_mutation(snapshot: &DeviceSnapshot, mutation: &str) -> bool
 }
 
 /// 从设备快照的 plugin_capabilities 中查询灯光 mutation 名。
-/// 只读取 LightingZone capability 的 metadata.lightingRole（强类型字段）。
+/// 优先读 metadata.lightingRole（旧版强类型字段），回退到 metadata.zones
+/// （声明式 zones 中 id 为 'mouse'/'receiver' 的 fields[].mutation）。
+/// 与 Capability::lighting_role() 的回退逻辑一致。
 /// 返回 (mouse_mutation, receiver_mutation)，未声明则为 None。
 fn pick_supported_lighting_mutation(
     value: Option<&serde_json::Value>,
@@ -4638,11 +4749,54 @@ fn pick_supported_lighting_mutation(
     })
 }
 
+/// 从 zones 声明式字段提取灯光 mutation 角色映射。
+/// 遍历 zone id 为 'mouse'/'receiver' 的 fields[].mutation，
+/// 收集候选 mutation 名并选取第一个被设备支持的。
+fn zone_lighting_mutations(
+    zones: &[serde_json::Value],
+    snapshot: &DeviceSnapshot,
+) -> (Option<String>, Option<String>) {
+    let mut mouse = Vec::new();
+    let mut receiver = Vec::new();
+    for zone in zones {
+        let Some(zone) = zone.as_object() else {
+            continue;
+        };
+        let Some(id) = zone.get("id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(fields) = zone.get("fields").and_then(|v| v.as_array()) else {
+            continue;
+        };
+        let mutations: Vec<serde_json::Value> = fields
+            .iter()
+            .filter_map(|f| f.get("mutation").cloned())
+            .collect();
+        match id {
+            "mouse" => mouse.extend(mutations),
+            "receiver" => receiver.extend(mutations),
+            _ => {}
+        }
+    }
+    let mouse = if mouse.is_empty() {
+        None
+    } else {
+        pick_supported_lighting_mutation(Some(&serde_json::Value::Array(mouse)), snapshot)
+    };
+    let receiver = if receiver.is_empty() {
+        None
+    } else {
+        pick_supported_lighting_mutation(Some(&serde_json::Value::Array(receiver)), snapshot)
+    };
+    (mouse, receiver)
+}
+
 fn resolve_lighting_mutations(snapshot: &DeviceSnapshot) -> (Option<String>, Option<String>) {
     for cap in &snapshot.plugin_capabilities {
         if cap.control != "LightingZone" {
             continue;
         }
+        // 优先读 lightingRole 强类型字段（旧版兼容）
         let role = cap
             .metadata
             .get("lightingRole")
@@ -4655,6 +4809,14 @@ fn resolve_lighting_mutations(snapshot: &DeviceSnapshot) -> (Option<String>, Opt
         );
         if role_mouse.is_some() || role_receiver.is_some() {
             return (role_mouse, role_receiver);
+        }
+        // 回退到 zones 声明式字段：从 zone id 为 'mouse'/'receiver' 的
+        // fields[].mutation 提取 mutation 名。与 Capability::lighting_role() 一致。
+        if let Some(zones) = cap.metadata.get("zones").and_then(|v| v.as_array()) {
+            let (mouse, receiver) = zone_lighting_mutations(zones, snapshot);
+            if mouse.is_some() || receiver.is_some() {
+                return (mouse, receiver);
+            }
         }
     }
     (None, None)
@@ -7332,6 +7494,8 @@ pub fn run() {
             refresh_autostart_entry_if_enabled(app.handle());
 
             // macOS native Vibrancy backdrop.
+            // Sidebar 材质提供类似 Finder/Mail 侧边栏的明显毛玻璃效果；
+            // UnderWindowBackground 过于微妙，在纯色壁纸下几乎不可见。
             #[cfg(target_os = "macos")]
             if let Some(window) = app.get_webview_window("main") {
                 use window_vibrancy::{
@@ -7339,7 +7503,7 @@ pub fn run() {
                 };
                 let _ = apply_vibrancy(
                     &window,
-                    NSVisualEffectMaterial::UnderWindowBackground,
+                    NSVisualEffectMaterial::Sidebar,
                     Some(NSVisualEffectState::Active),
                     None,
                 );
