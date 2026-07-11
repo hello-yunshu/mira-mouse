@@ -165,16 +165,22 @@ impl PluginManifest {
                     items.len() <= MAX_SUMMARY_ITEMS
                         && items.iter().all(|item| {
                             item.as_object().is_some_and(|item| {
-                                item.get("label")
+                                (item
+                                    .get("label")
                                     .and_then(serde_json::Value::as_str)
                                     .is_some_and(|label| valid_ui_text(label, MAX_UI_LABEL_CHARS))
+                                    || item
+                                        .get("labelKey")
+                                        .and_then(serde_json::Value::as_str)
+                                        .is_some_and(valid_i18n_key))
                                     && item
                                         .get("source")
                                         .and_then(serde_json::Value::as_str)
                                         .is_some_and(|source| !source.is_empty())
-                                    && item
-                                        .get("options")
-                                        .is_none_or(|options| valid_options(options, 32))
+                                    && item.get("options").is_none_or(|options| {
+                                        valid_options(options, 32)
+                                            || valid_declarative_options(options)
+                                    })
                                     && item.get("format").is_none_or(valid_value_format)
                             })
                         })
@@ -220,8 +226,10 @@ fn valid_presentation_contract(capability: &Capability) -> bool {
                 | "stageLayout"
                 | "statusDisplay"
                 | "stateMapping"
+                | "accentSource"
                 | "visibleWhen"
                 | "batteryHistory"
+                | "summary"
         )
     }) {
         return valid_declarative_presentation(capability);
@@ -318,12 +326,18 @@ fn valid_declarative_presentation(capability: &Capability) -> bool {
                 && field
                     .get("mutation")
                     .is_none_or(|mutation| valid_mutation_ref(Some(mutation)))
-                && field
-                    .get("options")
-                    .is_none_or(|options| valid_declarative_options(options))
+                && field.get("options").is_none_or(valid_declarative_options)
                 && field
                     .get("range")
                     .is_none_or(|range| valid_range(Some(range)))
+                && field.get("paramSources").is_none_or(|sources| {
+                    sources.as_object().is_some_and(|sources| {
+                        !sources.is_empty()
+                            && sources.iter().all(|(param, source)| {
+                                !param.is_empty() && valid_path(Some(source))
+                            })
+                    })
+                })
         })
     };
     let fields_valid = metadata.get("fields").is_none_or(|fields| {
@@ -355,7 +369,10 @@ fn valid_declarative_presentation(capability: &Capability) -> bool {
         .get("batteryHistory")
         .is_none_or(valid_battery_history_policy)
         && (!metadata.contains_key("batteryHistory") || capability.id == "battery");
-    if !fields_valid || !zones_valid || !battery_history_valid {
+    let accent_source_valid = metadata
+        .get("accentSource")
+        .is_none_or(|source| valid_path(Some(source)));
+    if !fields_valid || !zones_valid || !battery_history_valid || !accent_source_valid {
         return false;
     }
     match capability.control {
@@ -449,6 +466,10 @@ fn valid_ui_text(value: &str, max_chars: usize) -> bool {
         && value.trim() == value
         && value.chars().all(|c| c != '\n' && c != '\r')
         && value.chars().count() <= max_chars
+}
+
+fn valid_i18n_key(value: &str) -> bool {
+    valid_ui_text(value, 160)
 }
 
 fn valid_binding_labels(value: Option<&serde_json::Value>) -> bool {
@@ -1032,6 +1053,13 @@ mod tests {
             manifest.validate(),
             Err(ApiError::CapabilitySummary("polling-rate".into()))
         );
+    }
+
+    #[test]
+    fn accepts_namespaced_summary_label_keys() {
+        assert!(valid_i18n_key("summary.motionSync"));
+        assert!(valid_i18n_key("receiverLighting.field.option"));
+        assert!(!valid_i18n_key(""));
     }
 
     #[test]

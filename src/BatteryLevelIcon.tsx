@@ -67,6 +67,7 @@ export function BatteryLevelIcon({ percentage, charging = false, className = '' 
             className="battery-level-bolt"
             d={CHARGING_BOLT_PATH}
             transform={CHARGING_BOLT_TRANSFORM}
+            fill="currentColor"
           />
         )}
       </svg>

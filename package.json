@@ -15,6 +15,7 @@
     "prepare": "simple-git-hooks || true",
     "check:quick": "bash scripts/quick-check.sh",
     "check:ci": "bash scripts/local-ci.sh",
+    "check:plugin-contract": "node scripts/check-bundled-plugin-contract.mjs",
     "check:boundaries": "node scripts/check-boundaries.mjs",
     "check:structured": "node scripts/check-structured.mjs && node scripts/check-version-sources.mjs"
   },
