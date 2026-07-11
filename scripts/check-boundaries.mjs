@@ -3,7 +3,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 
 const root = new URL('..', import.meta.url).pathname;
-const ignored = new Set(['.git', 'node_modules', 'dist', 'target', 'AMasterDriver_v1.0.6_unpacked_reverse_bundle', 'src-tauri/resources/plugins']);
+const ignored = new Set(['.git', '.trae', 'node_modules', 'dist', 'target', 'AMasterDriver_v1.0.6_unpacked_reverse_bundle', 'src-tauri/resources/plugins']);
 const allowed = new Set(['README.md', 'scripts/check-boundaries.mjs']);
 const forbidden = [/0x3151/i, /0x0e8d/i, /0x402a/i, /0x5007/i, /AM Mouse Tool/i, /Velora/i, /mira\.amaster\s*\)/i];
 const violations = [];

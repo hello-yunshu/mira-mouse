@@ -539,9 +539,21 @@ export interface BatteryUsageModalProps {
   open: boolean;
   onClose: () => void;
   hasBattery: boolean;
+  preferredDeviceName?: string;
+  preferredComponentId?: string;
 }
 
-export function BatteryUsageModal({ open, onClose, hasBattery }: BatteryUsageModalProps) {
+function normalizedDeviceName(value: string | undefined): string {
+  return value?.trim().replace(/\s+/g, ' ').toLocaleLowerCase() ?? '';
+}
+
+export function BatteryUsageModal({
+  open,
+  onClose,
+  hasBattery,
+  preferredDeviceName,
+  preferredComponentId,
+}: BatteryUsageModalProps) {
   const { t } = useTranslation();
   const [range, setRange] = useState<BatteryHistoryRange>('24h');
   const [selectedDeviceKey, setSelectedDeviceKey] = useState<string>('');
@@ -592,8 +604,20 @@ export function BatteryUsageModal({ open, onClose, hasBattery }: BatteryUsageMod
   // 手动刷新（清除后调用）
   const loadData = useCallback(() => setReloadNonce((n) => n + 1), []);
 
-  // 派生默认选中设备：未显式选择时取第一个
-  const effectiveDeviceKey = selectedDeviceKey || response?.devices[0]?.key || '';
+  // 每次打开时，优先定位 Dashboard 当前鼠标的历史记录；手动切换仍保持优先。
+  const preferredDeviceKey = useMemo(() => {
+    const deviceName = normalizedDeviceName(preferredDeviceName);
+    if (!deviceName) return '';
+    const matchingDevices = response?.devices.filter(
+      (device) => normalizedDeviceName(device.deviceName) === deviceName,
+    ) ?? [];
+    return matchingDevices.find((device) => device.componentId === preferredComponentId)?.key
+      ?? matchingDevices[0]?.key
+      ?? '';
+  }, [response, preferredDeviceName, preferredComponentId]);
+
+  // 未显式选择时，定位当前鼠标；没有匹配的旧记录时才回退到第一个。
+  const effectiveDeviceKey = selectedDeviceKey || preferredDeviceKey || response?.devices[0]?.key || '';
 
   const selectedDevice = useMemo(
     () => response?.devices.find((d) => d.key === effectiveDeviceKey),

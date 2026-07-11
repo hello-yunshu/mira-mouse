@@ -1,17 +1,17 @@
 {
   "schemaVersion": 1,
-  "releaseReady": true,
+  "releaseReady": false,
   "plugins": [
     {
       "pluginId": "mira.amaster",
-      "repository": "hello-yunshu/mira-mouse-plugins",
-      "releaseTag": "release/v2026-07-09",
-      "version": "1.5.0",
-      "asset": "mira-amaster-1.5.0.mira-plugin",
-      "sha256": "87ce134b84c8c9fba20024dec6bb6af916edeca441e0ee24b1d1fd0c14ada2ac",
-      "publisherKeyId": "mira-plugins-2026-001",
-      "pluginApi": ">=1.0.0,<2.0.0",
-      "cachePath": "src-tauri/resources/plugins/mira-amaster-1.5.0.mira-plugin",
+      "repository": "local/mira-mouse-plugins",
+      "releaseTag": "local/test-2026-07-11",
+      "version": "1.6.1",
+      "asset": "mira-amaster-1.6.1.mira-plugin",
+      "sha256": "8770bcad3f63c7b157e6ba5f154c59f1d3c1ef860c1f2e1fb63c730689249f74",
+      "publisherKeyId": "TEST-ONLY-mira-plugins",
+      "pluginApi": ">=1.0.0, <2.0.0",
+      "cachePath": "src-tauri/resources/plugins/mira-amaster-1.6.1.mira-plugin",
       "bundleByDefault": true
     },
     {
@@ -28,14 +28,14 @@
     },
     {
       "pluginId": "mira.logitech-hidpp",
-      "repository": "hello-yunshu/mira-mouse-plugins",
-      "releaseTag": "release/v2026-07-09",
-      "version": "0.7.3",
-      "asset": "mira-logitech-hidpp-0.7.3.mira-plugin",
-      "sha256": "36befe1195c483e0c477211802bc071cab5a961e109e2754b9f2b6dd016f9f06",
-      "publisherKeyId": "mira-plugins-2026-001",
+      "repository": "local/mira-mouse-plugins",
+      "releaseTag": "local/test-2026-07-11",
+      "version": "0.8.1",
+      "asset": "mira-logitech-hidpp-0.8.1.mira-plugin",
+      "sha256": "8fd61172f90e7bb86b1142a912bdb337b25df714d43bc9eb813dd98be3000341",
+      "publisherKeyId": "TEST-ONLY-mira-plugins",
       "pluginApi": ">=1.0.0, <2.0.0",
-      "cachePath": "src-tauri/resources/plugins/mira-logitech-hidpp-0.7.3.mira-plugin",
+      "cachePath": "src-tauri/resources/plugins/mira-logitech-hidpp-0.8.1.mira-plugin",
       "bundleByDefault": true
     }
   ]

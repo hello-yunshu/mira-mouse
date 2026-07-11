@@ -46,7 +46,7 @@ const snapshot: DeviceSnapshot = {
     { value: 1600, color: '#AABBCC', active: true, enabled: true },
   ],
   capabilities: {
-    settings: { pollingRate: 1000, motionSync: true, angleSnap: false, liftCutOff: 2, wirelessSleepValue: 60, bluetoothSleepValue: 600, mouseLightStartColor: '#112233', mouseLightEndColor: '#112233', mouseLightEnabled: true },
+    settings: { pollingRate: 1000, motionSync: true, angleSnap: false, liftCutOff: 1, wirelessSleepValue: 60, bluetoothSleepValue: 600, mouseLightStartColor: '#112233', mouseLightEndColor: '#112233', mouseLightEnabled: true },
     mouseLighting: { effect: 1, effectName: '常亮', speed: 3, brightness: 70, color: '#112233', extraColor: '#112233', enabled: true },
     receiverLighting: { effect: 3, effectName: '霓虹', speed: 3, brightness: 1, option: 7, optionName: '自定义', color: '#AABBCC', enabled: true },
     firmwareUsb: { versionRaw: 258 },
@@ -74,6 +74,11 @@ const snapshot: DeviceSnapshot = {
           labelKey: 'plugin.label.capability.polling-rate',
         }],
         stateMapping: { pollingRate: 'pollingRateHz', supportedPollingRates: 'supportedPollingRatesHz' },
+        summary: [
+          { labelKey: 'mock.motionSync', source: 'capabilities.settings.motionSync' },
+          { labelKey: 'mock.angleSnap', source: 'capabilities.settings.angleSnap' },
+          { labelKey: 'mock.liftCutOff', source: 'capabilities.settings.liftCutOff' },
+        ],
       },
     },
     {
@@ -106,6 +111,7 @@ const snapshot: DeviceSnapshot = {
         { region: 'status', order: 40, span: 1, icon: 'lightbulb' },
       ],
       metadata: {
+        accentSource: 'state.mouseLightColor',
         zones: [
           {
             id: 'mouse', labelKey: 'dashboard.mouseLighting',
@@ -147,6 +153,24 @@ function entries(...snapshots: DeviceSnapshot[]) {
 }
 
 describe('real device snapshot mapping', () => {
+  it('renders plugin-declared readback summary inside the polling-rate block', async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'settings_get') return Promise.resolve(settings);
+      if (command === 'device_snapshots') return Promise.resolve(entries(snapshot));
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+
+    render(<App />);
+    await screen.findByRole('heading', { name: 'AM INFINITY 8K MOUSE' });
+    expect(screen.queryByLabelText('设备摘要')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('tab', { name: '回报率' }));
+    const summary = screen.getByLabelText('设备摘要');
+    expect(summary).toHaveTextContent('运动同步开启');
+    expect(summary).toHaveTextContent('角度吸附关闭');
+    expect(summary).toHaveTextContent('抬升高度1');
+    expect(summary.closest('.metric-reading')).toBeInTheDocument();
+  });
+
   it('switches between multiple connected mouse snapshots from the dashboard title', async () => {
     const firstSnapshot: DeviceSnapshot = {
       displayName: 'First Mouse', connection: 'wireless', charging: false, batteries: [],
@@ -295,7 +319,7 @@ describe('real device snapshot mapping', () => {
     expect(screen.getByRole('region', { name: '设备状态' })).toHaveTextContent('灯光软件');
   });
 
-  it('does not use receiver lighting as the app accent or mouse lighting color', async () => {
+  it('uses the plugin-declared mouse lighting color instead of receiver or DPI colors', async () => {
     const receiverOnlySnapshot: DeviceSnapshot = {
       displayName: 'Receiver-lit Mouse',
       connection: 'wireless',
@@ -304,11 +328,22 @@ describe('real device snapshot mapping', () => {
       batteries: [{ id: 'mouse', label: '鼠标', percentage: 80, charging: false }],
       dpi: 1600,
       dpiStages: [{ value: 1600, color: '#9a8bd0', active: true, enabled: true }],
-      confirmedLightColor: '#00FF00',
+      confirmedLightColor: '#CC2244',
       capabilities: {
+        mouseLighting: { effect: 1, color: '#CC2244', enabled: true },
         receiverLighting: { effect: 1, effectName: '常亮', speed: 2, brightness: 3, option: 7, color: '#00FF00', enabled: true },
       },
       pluginCapabilities: [
+        {
+          id: 'dpi', control: 'DpiStages', labelKey: 'plugin.label.capability.dpi', readOnly: false,
+          metadata: {
+            stageLayout: {
+              dotsSource: 'state.dpiStages', selectMutation: 'set-dpi-stage', setMutation: 'set-dpi-value',
+              valueSource: 'state.dpiStages', colorSource: 'state.dpiStages', range: { min: 100, max: 32000, step: 50 },
+            },
+            stateMapping: { dpiStages: 'dpiStages' },
+          },
+        },
         {
           id: 'lighting', control: 'LightingZone', labelKey: 'plugin.label.capability.lighting', readOnly: false,
           placements: [
@@ -316,11 +351,13 @@ describe('real device snapshot mapping', () => {
             { region: 'status', order: 30, span: 1, icon: 'lightbulb' },
           ],
           metadata: {
+            accentSource: 'state.mouseLightColor',
             zones: [
               {
                 id: 'mouse', labelKey: 'dashboard.mouseLighting',
                 fields: [
                   { id: 'status', source: 'state.mouseLightEffect', mutation: 'set-mouse-lighting', param: 'effect', editor: 'inline-toggle', switch: { source: 'state.mouseLightEffect', offValue: 0, restoreField: 'effect' }, labelKey: 'dashboard.status' },
+                  { id: 'color', source: 'state.mouseLightColor', mutation: 'set-mouse-lighting', param: 'color', editor: 'modal-color', format: 'color', labelKey: 'dashboard.mouseLightColor' },
                 ],
               },
               {
@@ -353,8 +390,10 @@ describe('real device snapshot mapping', () => {
 
     render(<App />);
     await screen.findByRole('heading', { name: 'Receiver-lit Mouse' });
-    // 主题色不因接收器灯光改变（mouseLightColor 从 confirmedLightColor 读取）
-    expect(document.documentElement.style.getPropertyValue('--theme-accent') || themeAccent).not.toBe('#00FF00');
+    const accent = document.documentElement.style.getPropertyValue('--accent');
+    expect(accent).toBe(themeAccent('#CC2244'));
+    expect(accent).not.toBe(themeAccent('#00FF00'));
+    expect(accent).not.toBe(themeAccent('#9a8bd0'));
   });
 
   it('uses receiver lighting options to label the off effect', async () => {
@@ -429,8 +468,9 @@ describe('real device snapshot mapping', () => {
     render(<App />);
     await screen.findByRole('heading', { name: 'Pointer Mouse' });
     fireEvent.click(screen.getByRole('tab', { name: '固件' }));
-    // 点击 lighting-row 打开编辑弹窗
+    // 普通设置沿用旧版的大号可编辑读数样式，而不是灯光卡片。
     const editButton = screen.getByRole('button', { name: /传感器索引/ });
+    expect(editButton).toHaveClass('plugin-value-button');
     fireEvent.click(editButton);
     expect(screen.getByRole('dialog')).toBeInTheDocument();
     expect(screen.getByRole('slider')).toBeInTheDocument();
@@ -664,6 +704,55 @@ describe('real device snapshot mapping', () => {
     // 无 receiverLighting capability 数据，receiver 区域不渲染
     expect(screen.queryByRole('tablist', { name: '灯光对象' })).not.toBeInTheDocument();
     expect(screen.getByText('状态')).toBeInTheDocument();
+    expect(document.querySelector('.lighting-group-title')).toHaveTextContent('鼠标灯光');
+  });
+
+  it('keeps a five-field secondary lighting zone in the legacy compact grid', async () => {
+    const compactLightingSnapshot: DeviceSnapshot = {
+      ...snapshot,
+      displayName: 'Compact Receiver Mouse',
+      pluginCapabilities: (snapshot.pluginCapabilities ?? []).map((capability) => capability.id === 'lighting'
+        ? {
+            ...capability,
+            metadata: {
+              ...capability.metadata,
+              zones: [
+                {
+                  id: 'mouse', labelKey: 'dashboard.mouseLighting',
+                  fields: [{
+                    id: 'status', source: 'capabilities.mouseLighting.enabled', mutation: 'set-mouse-lighting', param: 'enabled',
+                    editor: 'inline-toggle', switch: { source: 'capabilities.mouseLighting.enabled', offValue: false }, labelKey: 'dashboard.status',
+                  }],
+                },
+                {
+                  id: 'receiver', labelKey: 'dashboard.receiverLighting', visibleWhen: { path: 'capabilities.receiverLighting' },
+                  fields: [
+                    { id: 'effect', source: 'capabilities.receiverLighting.effect', mutation: 'set-receiver-lighting', param: 'effect', editor: 'modal-select', labelKey: 'receiverLighting.field.effect', options: LIGHTING_EFFECT_OPTIONS },
+                    { id: 'option', source: 'capabilities.receiverLighting.option', mutation: 'set-receiver-lighting', param: 'option', editor: 'modal-select', labelKey: 'receiverLighting.field.option', options: LIGHTING_EFFECT_OPTIONS },
+                    { id: 'speed', source: 'capabilities.receiverLighting.speed', mutation: 'set-receiver-lighting', param: 'speed', editor: 'modal-select', labelKey: 'receiverLighting.field.speed', options: LIGHTING_EFFECT_OPTIONS },
+                    { id: 'brightness', source: 'capabilities.receiverLighting.brightness', mutation: 'set-receiver-lighting', param: 'brightness', editor: 'modal-select', labelKey: 'receiverLighting.field.brightness', options: LIGHTING_EFFECT_OPTIONS },
+                    { id: 'color', source: 'capabilities.receiverLighting.color', mutation: 'set-receiver-lighting', param: 'color', editor: 'modal-color', format: 'color', labelKey: 'receiverLighting.field.color' },
+                  ],
+                },
+              ],
+            },
+          }
+        : capability),
+      writableMutations: [...(snapshot.writableMutations ?? []), 'set-receiver-lighting'],
+    };
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'settings_get') return Promise.resolve(settings);
+      if (command === 'device_snapshots') return Promise.resolve(entries(compactLightingSnapshot));
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Compact Receiver Mouse' });
+    fireEvent.click(screen.getByRole('tab', { name: '灯光' }));
+    fireEvent.click(screen.getByRole('tab', { name: '接收器灯光' }));
+    const receiverGroup = document.querySelector('.lighting-group-receiver');
+    expect(receiverGroup).toHaveClass('is-compact');
+    expect(receiverGroup?.querySelectorAll('.lighting-row')).toHaveLength(5);
   });
 
   it('shows polling placeholder when rate not reported', async () => {
@@ -695,6 +784,8 @@ describe('real device snapshot mapping', () => {
     fireEvent.click(screen.getByRole('tab', { name: '回报率' }));
     // 未报告时显示"未报告"
     expect(screen.getByText('未报告')).toBeInTheDocument();
+    expect(document.querySelector('.metric-reading')).toBeInTheDocument();
+    expect(screen.getByText('当前回报率')).toBeInTheDocument();
   });
 
   it('uses plugin locale labels when available', async () => {

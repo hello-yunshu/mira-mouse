@@ -37,6 +37,17 @@ describe('AboutPage', () => {
     expect(screen.queryByText('Bundle Identifier')).not.toBeInTheDocument();
   });
 
+  it('explains when the current build is not release-ready for automatic updates', async () => {
+    invokeMock.mockResolvedValue({
+      name: 'Mira', version: '0.1.0', identifier: 'run.hey.mira', platform: 'macos', architecture: 'aarch64',
+      rustVersion: '1.82', buildDate: '2026-06-23', gitCommit: 'test', bundledPlugins: [], contact: {}, updaterActive: false,
+    });
+    render(<AboutPage onBack={vi.fn()} />);
+
+    expect(await screen.findByText(/releaseReady: false/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '检查更新' })).not.toBeInTheDocument();
+  });
+
   it('opens donate link through the native browser bridge in Tauri', async () => {
     Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
     invokeMock.mockImplementation((command: string) => {

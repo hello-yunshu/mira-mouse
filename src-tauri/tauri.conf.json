@@ -46,8 +46,8 @@
       "icons/icon.ico"
     ],
     "resources": [
-      "resources/plugins/mira-amaster-1.5.0.mira-plugin",
-      "resources/plugins/mira-logitech-hidpp-0.7.3.mira-plugin"
+      "resources/plugins/mira-amaster-1.6.1.mira-plugin",
+      "resources/plugins/mira-logitech-hidpp-0.8.1.mira-plugin"
     ],
     "fileAssociations": [
       {

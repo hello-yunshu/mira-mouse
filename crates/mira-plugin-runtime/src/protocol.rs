@@ -1036,6 +1036,16 @@ mod tests {
     }
 
     #[test]
+    fn normalizes_plugin_reported_usb_connection() {
+        let outputs = BTreeMap::from([(
+            "device".into(),
+            json!({"deviceIndex": 255, "connection": "usb"}),
+        )]);
+        let reading = standard_reading(outputs, None);
+        assert_eq!(reading.connection, Some(ConnectionKind::Usb));
+    }
+
+    #[test]
     fn limits_plugin_reported_device_name_for_host_layout() {
         let outputs = BTreeMap::from([(
             "deviceName".into(),

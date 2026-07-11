@@ -46,6 +46,7 @@
             "type": "object",
             "additionalProperties": false,
             "properties": {
+              "accentSource": { "type": "string", "minLength": 1, "maxLength": 160 },
               "fields": {
                 "type": "array",
                 "maxItems": 32,
@@ -58,6 +59,11 @@
               },
               "stageLayout": { "$ref": "#/$defs/stageLayout" },
               "statusDisplay": { "$ref": "#/$defs/statusDisplay" },
+              "summary": {
+                "type": "array",
+                "maxItems": 4,
+                "items": { "$ref": "#/$defs/summaryItem" }
+              },
               "stateMapping": {
                 "type": "object",
                 "additionalProperties": { "type": "string", "minLength": 1, "maxLength": 160 },
@@ -165,9 +171,17 @@
         "mutation": { "$ref": "#/$defs/mutationDecl" },
         "param": { "type": "string", "minLength": 1, "maxLength": 32 },
         "params": { "type": "object" },
+        "paramSources": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": { "type": "string", "minLength": 1, "maxLength": 32 },
+          "additionalProperties": { "type": "string", "minLength": 1, "maxLength": 160 }
+        },
         "editor": { "enum": ["inline-toggle", "inline-segmented", "inline-value", "inline-action", "modal-select", "modal-color", "modal-range", "modal-number", "modal-dpi-stage", "modal-gradient", "static-readonly"] },
         "labelKey": { "type": "string", "minLength": 1 },
         "labelSource": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "editTitleKey": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "editLabelKey": { "type": "string", "minLength": 1, "maxLength": 160 },
         "options": {
           "type": "array",
           "maxItems": 32,
@@ -224,6 +238,7 @@
       "additionalProperties": false,
       "required": ["valueSource"],
       "properties": {
+        "labelKey": { "type": "string", "minLength": 1, "maxLength": 160 },
         "valueSource": { "type": "string", "minLength": 1, "maxLength": 160 },
         "valueFormat": { "enum": ["sleep", "percent", "hertz", "connection", "color", "default"] },
         "valueOptions": {
@@ -240,6 +255,35 @@
           }
         },
         "onClickField": { "type": "string", "minLength": 1, "maxLength": 64 }
+      }
+    },
+    "summaryItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source"],
+      "anyOf": [
+        { "required": ["labelKey"] },
+        { "required": ["label"] }
+      ],
+      "properties": {
+        "labelKey": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "label": { "type": "string", "minLength": 1, "maxLength": 24 },
+        "source": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "unit": { "type": "string", "maxLength": 12 },
+        "format": { "enum": ["sleep", "percent", "hertz", "connection", "color", "default"] },
+        "options": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["value", "labelKey"],
+            "properties": {
+              "value": { "type": ["string", "number", "boolean"] },
+              "labelKey": { "type": "string", "minLength": 1, "maxLength": 128 }
+            }
+          }
+        }
       }
     },
     "visibleWhen": {

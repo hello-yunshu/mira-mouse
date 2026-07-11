@@ -51,6 +51,34 @@ export function readPath(device: DeviceState, path: string): unknown {
   return current;
 }
 
+/**
+ * 解析插件声明的组合写入参数。
+ *
+ * 某些设备 mutation 必须一次写入完整结构（例如灯效、速度、亮度、颜色），
+ * 即使用户只修改其中一项。插件用 paramSources 声明其余参数的快照路径，Host
+ * 仅负责读取、合并，并让本次编辑值覆盖同名参数。
+ */
+export function resolveFieldParams(field: PluginField, device: DeviceState): Record<string, unknown> {
+  const resolved: Record<string, unknown> = {};
+  for (const [param, source] of Object.entries(field.paramSources ?? {})) {
+    const value = readPath(device, source);
+    if (value !== undefined) resolved[param] = value;
+  }
+  // params 提供插件声明的兜底值；快照中真实存在的读数应优先覆盖兜底。
+  return { ...field.params, ...resolved };
+}
+
+export function resolveFieldMutationParams(
+  field: PluginField,
+  device: DeviceState,
+  nextValue: unknown,
+): Record<string, unknown> {
+  return {
+    ...resolveFieldParams(field, device),
+    [field.param ?? 'value']: nextValue,
+  };
+}
+
 /// 对 {path, eq?, ne?} 条件求值。
 /// 无 condition 时返回 true；有 eq 时返回 value === eq；有 ne 时返回 value !== ne；
 /// 都没有时返回 value != null。
@@ -71,12 +99,15 @@ export function resolveSwitchState(field: PluginField, device: DeviceState): boo
   return value !== sw.offValue;
 }
 
-/// 标签解析：labelSource 优先 → options 匹配 → labelKey i18n 回退。
-/// - 有 labelSource 时用 readPath 读取，若非空则返回 String(value)
-/// - 有 options 时用 readPath 读取 field.source 的值，在 options 中匹配，返回 resolveLabelKey(matched.labelKey)
-/// - 有 labelKey 时返回 resolveLabelKey(field.labelKey, pluginId)
-/// - 都没有时返回空字符串
+/// 字段标题只来自插件声明的 labelKey；运行时 labelSource 和 options 描述的是值。
 export function resolveFieldLabel(field: PluginField, device: DeviceState, pluginId?: string): string {
+  void device;
+  if (field.labelKey) return resolveLabelKey(field.labelKey, pluginId);
+  return '';
+}
+
+/// 解析字段当前值的友好名称：优先采用插件运行时提供的名称，再匹配声明选项。
+export function resolveFieldValueLabel(field: PluginField, device: DeviceState, pluginId?: string): string | undefined {
   if (field.labelSource) {
     const value = readPath(device, field.labelSource);
     if (value != null && value !== '') return String(value);
@@ -86,8 +117,7 @@ export function resolveFieldLabel(field: PluginField, device: DeviceState, plugi
     const match = field.options.find((option) => option.value === value);
     if (match) return resolveLabelKey(match.labelKey, pluginId);
   }
-  if (field.labelKey) return resolveLabelKey(field.labelKey, pluginId);
-  return '';
+  return undefined;
 }
 
 /// 选项解析：合并 field.options 和 field.optionSource。
@@ -151,6 +181,35 @@ export function resolveZones(capability: PluginCapability, device: DeviceState):
 /// 读 capability.metadata.statusDisplay。
 export function resolveStatusDisplay(capability: PluginCapability): PluginStatusDisplay | undefined {
   return capability.metadata.statusDisplay;
+}
+
+/**
+ * 返回状态栏当前应操作的字段。
+ *
+ * 某些声明会按连接方式提供同一设置的多个字段，例如蓝牙与 2.4G 的休眠
+ * 时间。状态栏的首选字段在当前连接不可见时，选择具有相同编辑契约的可见
+ * 同级字段；这个选择完全基于声明，不依赖厂商或协议名称。
+ */
+export function resolveStatusField(
+  capability: PluginCapability,
+  fieldId: string | undefined,
+  device: DeviceState,
+): PluginField | undefined {
+  if (!fieldId) return undefined;
+  const fields = [
+    ...(capability.metadata.fields ?? []),
+    ...(capability.metadata.zones ?? []).flatMap((zone) => zone.fields),
+  ];
+  const preferred = fields.find((field) => field.id === fieldId);
+  if (!preferred) return undefined;
+  if (resolveVisibleWhen(preferred.visibleWhen, device)) return preferred;
+  return fields.find((field) => (
+    field.id !== preferred.id
+    && resolveVisibleWhen(field.visibleWhen, device)
+    && field.editor === preferred.editor
+    && field.format === preferred.format
+    && field.param === preferred.param
+  ));
 }
 
 /// 聚合所有 capability 的 metadata.stateMapping，返回合并的字段→source 路径映射。
