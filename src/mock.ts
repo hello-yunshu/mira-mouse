@@ -298,17 +298,24 @@ export const MOCK_DEVICE_ENTRIES: DeviceSnapshotEntry[] = [
 
 function mockBatteryHistoryResponse(range: BatteryHistoryRange): BatteryHistoryResponse {
   const now = new Date();
-  const bucketCount = range === '24h' ? 48 : 10;
+  const bucketCount = range === '24h' ? 48 : 30;
 
-  // 鼠标：24h 从 90% 降到 82%，中间有充电段；10d 从 100% 降到 82%。
+  // 鼠标：24h 从 90% 降到 82%，9-7 小时前有充电段；10d 从 100% 降到 82%，第 5 天有充电段。
   const mousePoints = Array.from({ length: bucketCount }, (_, i) => {
     if (range === '24h') {
       // 48 个 30 分钟 bucket，halfHourAgo 表示该 bucket 距今的半小时数
       const halfHourAgo = bucketCount - 1 - i;
       const hourAgo = halfHourAgo * 0.5;
-      const startPct = 90 - (hourAgo < 12 ? hourAgo * 1.0 : 12 + (hourAgo - 12) * 0.5);
-      const charging = hourAgo >= 4 && hourAgo <= 5; // 2 小时充电段
-      const pct = charging ? Math.min(100, startPct + 15) : Math.max(15, startPct);
+      // 分三段：24h→9h 线性下降 90→78；9-7h 充电 78→92；7h→now 下降 92→82
+      let pct: number;
+      const charging = hourAgo >= 7 && hourAgo <= 9;
+      if (charging) {
+        pct = 78 + ((9 - hourAgo) / 2) * 14;
+      } else if (hourAgo > 9) {
+        pct = 90 - (24 - hourAgo) * (12 / 15);
+      } else {
+        pct = 92 - (7 - hourAgo) * (10 / 7);
+      }
       const lowBattery = !charging && pct < 20;
       const dt = new Date(now.getTime() - halfHourAgo * 1800_000);
       return {
@@ -322,36 +329,52 @@ function mockBatteryHistoryResponse(range: BatteryHistoryRange): BatteryHistoryR
         sampleCount: 3 + (i % 4),
       };
     }
-    // 10d
-    const dayAgo = bucketCount - 1 - i;
-    const pct = Math.max(20, 100 - dayAgo * 2 - 5);
-    const charging = dayAgo === 5;
+    // 10d：每天 3 个 8 小时时段，共 30 个 bucket。
+    const slotAgo = bucketCount - 1 - i;
+    const dayAgo = Math.floor(slotAgo / 3);
+    const slotInDay = slotAgo % 3; // 2=当天最早, 1=中间, 0=当天最晚
+    // 分三段：day9→5前 100→86；day5中间充电 86→97；day5后→now 97→82
+    const isChargingSlot = dayAgo === 5 && slotInDay === 1;
+    let pct: number;
+    if (isChargingSlot) {
+      pct = 97;
+    } else if (dayAgo > 5 || (dayAgo === 5 && slotInDay === 2)) {
+      pct = 100 - (9 - dayAgo) * 3.5;
+    } else {
+      pct = 97 - (5 - dayAgo) * 3;
+    }
+    const charging = isChargingSlot;
     const lowBattery = !charging && pct < 20;
-    const day = new Date(now.getTime() - dayAgo * 86400_000);
+    const day = new Date(now.getTime() - slotAgo * 8 * 3600_000);
+    const startHour = Math.floor(day.getHours() / 8) * 8;
+    const label = `${String(day.getMonth() + 1).padStart(2, '0')}-${String(day.getDate()).padStart(2, '0')} ${String(startHour).padStart(2, '0')}:00–${String(startHour + 8).padStart(2, '0')}:00`;
     return {
       bucketStart: day.toISOString(),
-      bucketLabel: `${String(day.getMonth() + 1).padStart(2, '0')}-${String(day.getDate()).padStart(2, '0')}`,
-      percentage: pct,
-      minPercentage: Math.max(0, pct - 5),
-      maxPercentage: Math.min(100, pct + 3),
+      bucketLabel: label,
+      percentage: Math.round(pct),
+      minPercentage: Math.max(0, Math.round(pct - 5)),
+      maxPercentage: Math.min(100, Math.round(pct + 3)),
       charging,
       lowBattery,
       sampleCount: 8 + (i % 5),
     };
   });
 
-  // 接收器：电量稳定在 95-100%。
+  // 接收器：电量稳定在 96-100%。
   const receiverPoints = Array.from({ length: bucketCount }, (_, i) => {
-    const ago = range === '24h' ? bucketCount - 1 - i : bucketCount - 1 - i;
-    const interval = range === '24h' ? 1800_000 : 86400_000;
+    const ago = bucketCount - 1 - i;
+    const interval = range === '24h' ? 1800_000 : 8 * 3600_000;
     const dt = new Date(now.getTime() - ago * interval);
     const hourAgo = range === '24h' ? ago * 0.5 : ago;
-    const pct = 100 - (range === '24h' ? hourAgo * 0.1 : ago * 0.5);
+    // 接收器从满电缓慢下降至 96%
+    const pct = range === '24h'
+      ? 96 + hourAgo * (4 / 24)
+      : 96 + Math.floor(ago / 3) * (4 / 9);
     return {
       bucketStart: dt.toISOString(),
       bucketLabel: range === '24h'
         ? `${String(dt.getHours()).padStart(2, '0')}:${String(dt.getMinutes()).padStart(2, '0')}`
-        : `${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`,
+        : `${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')} ${String(Math.floor(dt.getHours() / 8) * 8).padStart(2, '0')}:00–${String(Math.floor(dt.getHours() / 8) * 8 + 8).padStart(2, '0')}:00`,
       percentage: Math.round(pct),
       minPercentage: Math.round(pct - 1),
       maxPercentage: 100,

@@ -2238,6 +2238,7 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
 .battery-range-toggle button {
   padding: 5px 12px;
   border: none;
+  border-radius: 9px;
   background: transparent;
   color: var(--muted);
   font-size: 11px;
@@ -2451,7 +2452,7 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 6px;
-  padding: 8px 0 2px;
+  padding: 0 0 4px;
 }
 .battery-summary-item {
   min-width: 0;
@@ -2556,6 +2557,30 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
 .battery-chart-hit-area {
   cursor: default;
 }
+.battery-chart-x-grid,
+.battery-chart-x-extension {
+  stroke: var(--muted);
+  stroke-width: 1;
+  stroke-opacity: .22;
+  stroke-dasharray: 3 3;
+}
+.battery-chart-x-grid.major,
+.battery-chart-x-extension.major {
+  stroke: var(--muted);
+  stroke-width: 1;
+  stroke-opacity: .34;
+  stroke-dasharray: none;
+}
+.battery-chart-x-label,
+.battery-chart-x-date {
+  fill: var(--muted);
+  font-size: 9px;
+  font-weight: 650;
+}
+.battery-chart-x-date {
+  font-size: 8.5px;
+  opacity: .82;
+}
 .battery-chart-bar:hover { opacity: .9; filter: drop-shadow(0 2px 5px rgb(30 42 56 / 15%)); }
 .battery-chart-empty { fill: var(--surface-group-border); }
 
@@ -2649,7 +2674,7 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
 
 /* 洞察区说明头：标题 + 原理小字，贴在它解释的卡片旁 */
 .battery-insight-section {
-  padding: 6px 0 2px;
+  padding: 8px 0 2px;
 }
 .battery-insight-section-head {
   display: flex;

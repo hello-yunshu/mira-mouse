@@ -121,19 +121,19 @@ interface ChartProps {
 }
 
 function BatteryUsageChart({ points, range }: ChartProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
   const [focusIndex, setFocusIndex] = useState<number | null>(null);
 
   const width = 520;
-  const height = 136;
-  const padding = { top: 8, right: 8, bottom: 20, left: 28 };
+  const height = range === '10d' ? 146 : 136;
+  const padding = { top: 8, right: 8, bottom: range === '10d' ? 30 : 20, left: 28 };
   const chartWidth = width - padding.left - padding.right;
   const chartHeight = height - padding.top - padding.bottom;
   const pointCount = Math.max(points.length, 1);
   const slotWidth = chartWidth / pointCount;
-  // 24h 采用更高密度聚合（最多 96 个点），柱体保持细窄，交互命中区仍覆盖整个 slot。
-  const visualBarWidth = Math.max(1.5, Math.min(range === '24h' ? slotWidth * 0.58 : slotWidth * 0.46, slotWidth - 1));
+  // 24h 最多 48 点、10d 固定 30 点；统一克制柱宽，命中区仍覆盖整个 slot。
+  const visualBarWidth = Math.max(2, Math.min(slotWidth * 0.52, slotWidth - 2));
 
   const activeIndex = hoverIndex ?? focusIndex;
   const activePoint = activeIndex !== null ? points[activeIndex] : null;
@@ -141,7 +141,73 @@ function BatteryUsageChart({ points, range }: ChartProps) {
     ? ({ '--tooltip-x': `${((padding.left + activeIndex * slotWidth + slotWidth / 2) / width) * 100}%` } as CSSProperties)
     : undefined;
 
+  // 背景网格仅上方两角圆角、底部平直，圆角克制。
+  const plotCornerR = 5;
+  const plotPath = `M ${padding.left},${padding.top + chartHeight} L ${padding.left},${padding.top + plotCornerR} Q ${padding.left},${padding.top} ${padding.left + plotCornerR},${padding.top} L ${padding.left + chartWidth - plotCornerR},${padding.top} Q ${padding.left + chartWidth},${padding.top} ${padding.left + chartWidth},${padding.top + plotCornerR} L ${padding.left + chartWidth},${padding.top + chartHeight} Z`;
+
   const yTicks = [0, 25, 50, 75, 100];
+  const xTicks = useMemo(() => {
+    const locale = i18n.resolvedLanguage ?? i18n.language;
+    if (range === '24h') {
+      const timestamps = points
+        .map((point) => new Date(point.bucketStart).getTime())
+        .filter((timestamp) => Number.isFinite(timestamp));
+      const startMs = timestamps[0] ?? 0;
+      const sampledEndMs = timestamps[timestamps.length - 1] ?? startMs + 24 * 60 * 60 * 1000;
+      const slotDuration = timestamps.length > 1
+        ? Math.max(1, (sampledEndMs - startMs) / (timestamps.length - 1))
+        : 30 * 60 * 1000;
+      const endMs = sampledEndMs + slotDuration;
+      const spanMs = Math.max(1, endMs - startMs);
+      const firstTick = new Date(startMs);
+      firstTick.setMinutes(0, 0, 0);
+      const hoursToNextTick = (3 - (firstTick.getHours() % 3)) % 3;
+      firstTick.setHours(firstTick.getHours() + hoursToNextTick);
+      if (firstTick.getTime() < startMs) firstTick.setHours(firstTick.getHours() + 3);
+
+      const ticks = [];
+      for (let cursor = firstTick; cursor.getTime() < endMs; cursor = new Date(cursor.getTime() + 3 * 60 * 60 * 1000)) {
+        const hour = cursor.getHours();
+        const hour12 = hour % 12 || 12;
+        const isChinese = locale.toLowerCase().startsWith('zh');
+        const label = hour === 0
+          ? (isChinese ? `上午${hour12}时` : `${hour12} AM`)
+          : hour === 12
+            ? (isChinese ? `下午${hour12}时` : `${hour12} PM`)
+            : String(hour12);
+        const x = padding.left + ((cursor.getTime() - startMs) / spanMs) * chartWidth;
+        ticks.push({
+          key: `time-${cursor.getTime()}`,
+          lineX: x,
+          labelX: x,
+          label,
+          dateLabel: '',
+          major: false,
+        });
+      }
+      return ticks;
+    }
+
+    return Array.from({ length: Math.ceil(pointCount / 3) }, (_, dayIndex) => {
+      const pointIndex = dayIndex * 3;
+      const point = points[pointIndex];
+      const date = point ? new Date(point.bucketStart) : null;
+      const validDate = date && !Number.isNaN(date.getTime()) ? date : null;
+      const showDate = dayIndex === 0 || validDate?.getDay() === 1;
+      return {
+        key: `day-${pointIndex}`,
+        lineX: padding.left + pointIndex * slotWidth,
+        labelX: padding.left + (pointIndex + 1.5) * slotWidth,
+        label: validDate
+          ? new Intl.DateTimeFormat(locale, { weekday: 'narrow' }).format(validDate)
+          : point?.bucketLabel.slice(0, 5) ?? '',
+        dateLabel: showDate && validDate
+          ? new Intl.DateTimeFormat(locale, { month: 'numeric', day: 'numeric' }).format(validDate)
+          : '',
+        major: Boolean(showDate),
+      };
+    }).filter((tick) => tick.label);
+  }, [chartWidth, i18n.language, i18n.resolvedLanguage, padding.left, pointCount, points, range, slotWidth]);
 
   return (
     <div className="battery-chart-card">
@@ -156,6 +222,9 @@ function BatteryUsageChart({ points, range }: ChartProps) {
           aria-label={t('batteryUsage.title')}
         >
           <defs>
+            <clipPath id="battery-chart-plot-clip">
+              <path d={plotPath} />
+            </clipPath>
             <linearGradient id="battery-bar-normal" x1="0" y1="1" x2="0" y2="0">
               <stop offset="0%" stopColor="#2f9f7a" />
               <stop offset="56%" stopColor="#5fc58f" />
@@ -172,13 +241,9 @@ function BatteryUsageChart({ points, range }: ChartProps) {
               <stop offset="100%" stopColor="#f3d38c" />
             </linearGradient>
           </defs>
-          <rect
+          <path
             className="battery-chart-plot"
-            x={padding.left}
-            y={padding.top}
-            width={chartWidth}
-            height={chartHeight}
-            rx={10}
+            d={plotPath}
           />
           {/* Y 轴参考线 */}
           {yTicks.map((tick) => {
@@ -193,6 +258,7 @@ function BatteryUsageChart({ points, range }: ChartProps) {
                   stroke="var(--muted)"
                   strokeOpacity={0.12}
                   strokeWidth={1}
+                  clipPath="url(#battery-chart-plot-clip)"
                 />
                 <text
                   x={padding.left - 6}
@@ -203,6 +269,33 @@ function BatteryUsageChart({ points, range }: ChartProps) {
                 >
                   {tick}
                 </text>
+              </g>
+            );
+          })}
+
+          {/* X 轴刻度线与文字共享同一坐标，像系统电量图一样严格对齐。 */}
+          {xTicks.map((tick) => {
+            const plotBottom = padding.top + chartHeight;
+            const extensionBottom = range === '10d'
+              ? (tick.major ? height - 2 : plotBottom + 13)
+              : height - 2;
+            return (
+              <g key={`${tick.key}-line`}>
+                <line
+                  className={`battery-chart-x-grid${tick.major ? ' major' : ''}`}
+                  x1={tick.lineX}
+                  y1={padding.top}
+                  x2={tick.lineX}
+                  y2={plotBottom}
+                  clipPath="url(#battery-chart-plot-clip)"
+                />
+                <line
+                  className={`battery-chart-x-extension${tick.major ? ' major' : ''}`}
+                  x1={tick.lineX}
+                  y1={plotBottom}
+                  x2={tick.lineX}
+                  y2={extensionBottom}
+                />
               </g>
             );
           })}
@@ -256,27 +349,38 @@ function BatteryUsageChart({ points, range }: ChartProps) {
                   className={barClass}
                   fill={isEmpty ? undefined : `url(#${fillId})`}
                 />
-                {/* X 轴标签：稀疏显示累计使用时长，断连/长空闲间隔已在后端压缩。 */}
-                {(range === '24h' ? i % 12 === 0 : i % 8 === 0) && (
-                  <text
-                    x={slotX + slotWidth / 2}
-                    y={height - 8}
-                    textAnchor="middle"
-                    fontSize={9}
-                    fill="var(--muted)"
-                  >
-                    {point.bucketLabel}
-                  </text>
-                )}
               </g>
             );
           })}
+
+          {xTicks.map((tick, index) => (
+            <g key={`${tick.key}-label`} className="battery-chart-x-tick">
+              <text
+                className="battery-chart-x-label"
+                x={tick.labelX}
+                y={padding.top + chartHeight + 13}
+                textAnchor={range === '24h' && index === 0 && tick.labelX - padding.left < 14 ? 'start' : 'middle'}
+              >
+                {tick.label}
+              </text>
+              {tick.dateLabel && (
+                <text
+                  className="battery-chart-x-date"
+                  x={tick.lineX + 4}
+                  y={padding.top + chartHeight + 26}
+                  textAnchor="start"
+                >
+                  {tick.dateLabel}
+                </text>
+              )}
+            </g>
+          ))}
         </svg>
 
         {/* Tooltip */}
         {activePoint && activePoint.percentage !== undefined && (
           <div className="battery-chart-tooltip" style={tooltipStyle} role="tooltip">
-            <div className="tooltip-row"><strong>{t('batteryUsage.tooltipTime')}: </strong><span>{activePoint.bucketLabel}</span></div>
+            <div className="tooltip-row"><strong>{t(range === '24h' ? 'batteryUsage.tooltipTime' : 'batteryUsage.tooltipDate')}: </strong><span>{activePoint.bucketLabel}</span></div>
             <div className="tooltip-row"><strong>{t('batteryUsage.tooltipPercentage')}: </strong><span>{activePoint.percentage}%</span></div>
             {activePoint.minPercentage !== undefined && activePoint.maxPercentage !== undefined && (
               <div className="tooltip-row"><strong>{t('batteryUsage.tooltipMin')}/{t('batteryUsage.tooltipMax')}: </strong><span>{activePoint.minPercentage}%-{activePoint.maxPercentage}%</span></div>
@@ -782,16 +886,16 @@ export function BatteryUsageModal({
               insights={selectedInsights}
               onSelectDevice={setSelectedDeviceKey}
             />
-            {/* 图表 */}
-            {selectedSeries && (
-              <BatteryUsageChart points={selectedSeries.points} range={range} />
-            )}
-
             <BatteryUsageSummary
               device={selectedDevice}
               insights={selectedInsights}
               range={range}
             />
+
+            {/* 图表 */}
+            {selectedSeries && (
+              <BatteryUsageChart points={selectedSeries.points} range={range} />
+            )}
 
             {/* 洞察 */}
             <BatteryInsightCards insights={selectedInsights} />
