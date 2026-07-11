@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { BatteryUsageModal } from './BatteryUsage';
 import type { BatteryHistoryResponse } from './types';
 import { MOCK_BATTERY_HISTORY_24H, MOCK_BATTERY_HISTORY_10D } from './mock';
+import i18n from './i18n';
 
 const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }));
@@ -41,8 +42,9 @@ function mockInvoke(opts: {
 }
 
 describe('BatteryUsageModal', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     invokeMock.mockReset();
+    await i18n.changeLanguage('zh-CN');
   });
 
   it('shows disabled state when history is disabled', async () => {
@@ -63,7 +65,7 @@ describe('BatteryUsageModal', () => {
     });
   });
 
-  it('renders chart with follow-up information blocks for 24h data', async () => {
+  it('renders the four summary blocks in one row above the 24h chart', async () => {
     mockInvoke({ response: MOCK_BATTERY_HISTORY_24H });
     render(<BatteryUsageModal open onClose={() => {}} hasBattery />);
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('battery_history_get', { range: '24h' }));
@@ -77,7 +79,23 @@ describe('BatteryUsageModal', () => {
     expect(chartCard).not.toBeNull();
     expect(summaryGrid).not.toBeNull();
     if (!chartCard || !summaryGrid) throw new Error('battery chart or summary grid missing');
-    expect(chartCard.compareDocumentPosition(summaryGrid) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(document.querySelectorAll('.battery-chart g[role="button"]')).toHaveLength(48);
+    const usageGridLines = Array.from(document.querySelectorAll<SVGLineElement>('.battery-chart-x-grid'));
+    const usageExtensions = Array.from(document.querySelectorAll<SVGLineElement>('.battery-chart-x-extension'));
+    const usageLabels = Array.from(document.querySelectorAll<SVGTextElement>('.battery-chart-x-label'));
+    expect(usageGridLines).toHaveLength(8);
+    expect(usageExtensions).toHaveLength(8);
+    expect(usageLabels).toHaveLength(8);
+    expect(usageGridLines.every((line, index) => line.getAttribute('x1') === usageLabels[index].getAttribute('x'))).toBe(true);
+    expect(usageGridLines.every((line) => line.getAttribute('clip-path') === 'url(#battery-chart-plot-clip)')).toBe(true);
+    expect(usageExtensions.every((line) => line.getAttribute('y1') === '116' && line.getAttribute('y2') === '134')).toBe(true);
+    const usageLabelText = usageLabels.map((label) => label.textContent);
+    expect(usageLabelText).toContain('上午12时');
+    expect(usageLabelText).toContain('下午12时');
+    expect(usageLabelText.every((label) => /^(上午12时|下午12时|3|6|9)$/.test(label ?? ''))).toBe(true);
+    expect(document.querySelectorAll('.battery-chart-x-boundary')).toHaveLength(0);
+    expect(summaryGrid.compareDocumentPosition(chartCard) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(summaryGrid.children).toHaveLength(4);
     expect(screen.getByText('当前电量')).toBeInTheDocument();
     expect(screen.getByText('充电习惯')).toBeInTheDocument();
   });
@@ -98,6 +116,56 @@ describe('BatteryUsageModal', () => {
     fireEvent.click(range10d);
     await waitFor(() => expect(callCount).toBe(2));
     expect(invokeMock).toHaveBeenCalledWith('battery_history_get', { range: '10d' });
+    const tenDayBars = Array.from(document.querySelectorAll<SVGGElement>('.battery-chart g[role="button"]'));
+    expect(tenDayBars).toHaveLength(30);
+    expect(document.querySelectorAll('.battery-chart-x-grid')).toHaveLength(10);
+    expect(document.querySelectorAll('.battery-chart-x-label')).toHaveLength(10);
+    expect(document.querySelectorAll('.battery-chart-x-date').length).toBeGreaterThanOrEqual(2);
+    const dateDividers = Array.from(document.querySelectorAll<SVGLineElement>('.battery-chart-x-grid.major'));
+    const dateExtensions = Array.from(document.querySelectorAll<SVGLineElement>('.battery-chart-x-extension.major'));
+    const weekdayExtensions = Array.from(document.querySelectorAll<SVGLineElement>('.battery-chart-x-extension:not(.major)'));
+    const dateLabels = Array.from(document.querySelectorAll<SVGTextElement>('.battery-chart-x-date'));
+    expect(dateDividers).toHaveLength(dateLabels.length);
+    expect(dateExtensions).toHaveLength(dateLabels.length);
+    expect(dateExtensions.every((line) => line.getAttribute('y1') === '116' && line.getAttribute('y2') === '144')).toBe(true);
+    expect(weekdayExtensions.every((line) => line.getAttribute('y1') === '116' && line.getAttribute('y2') === '129')).toBe(true);
+    expect(Number(dateLabels[0].getAttribute('x'))).toBe(Number(dateDividers[0].getAttribute('x1')) + 4);
+    const datedBar = tenDayBars.find((button) => /\d{2}-\d{2} \d{2}:00–\d{2}:00:/.test(button.getAttribute('aria-label') ?? ''));
+    expect(datedBar).toBeDefined();
+    if (!datedBar) throw new Error('10-day chart has no dated bar');
+    fireEvent.mouseEnter(datedBar);
+    expect(document.querySelector('.battery-chart-tooltip strong')).toHaveTextContent('日期');
+  });
+
+  it('formats English hour, weekday, and date labels compactly', async () => {
+    await i18n.changeLanguage('en');
+    let callCount = 0;
+    invokeMock.mockImplementation((command: string, payload?: { range?: string }) => {
+      if (command === 'settings_get') return Promise.resolve(settingsEnabled);
+      if (command === 'battery_history_get') {
+        callCount += 1;
+        return Promise.resolve(payload?.range === '10d' ? MOCK_BATTERY_HISTORY_10D : MOCK_BATTERY_HISTORY_24H);
+      }
+      return Promise.resolve(undefined);
+    });
+
+    render(<BatteryUsageModal open onClose={() => {}} hasBattery />);
+    await waitFor(() => expect(callCount).toBe(1));
+    const hourLabels = Array.from(document.querySelectorAll<SVGTextElement>('.battery-chart-x-label'))
+      .map((label) => label.textContent);
+    expect(hourLabels).toContain('12 AM');
+    expect(hourLabels).toContain('12 PM');
+    expect(hourLabels.every((label) => /^(12 AM|12 PM|3|6|9)$/.test(label ?? ''))).toBe(true);
+
+    fireEvent.click(screen.getByRole('tab', { name: '10 days' }));
+    await waitFor(() => expect(callCount).toBe(2));
+    const weekdayLabels = Array.from(document.querySelectorAll<SVGTextElement>('.battery-chart-x-label'))
+      .map((label) => label.textContent ?? '');
+    const dateLabels = Array.from(document.querySelectorAll<SVGTextElement>('.battery-chart-x-date'))
+      .map((label) => label.textContent ?? '');
+    expect(weekdayLabels).toHaveLength(10);
+    expect(weekdayLabels.every((label) => /^[A-Z]$/.test(label))).toBe(true);
+    expect(dateLabels.every((label) => /^\d{1,2}\/\d{1,2}$/.test(label))).toBe(true);
   });
 
   it('switches selected device from the status strip menu', async () => {
