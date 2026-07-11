@@ -226,6 +226,10 @@ function BatteryUsageChart({ points, range }: ChartProps) {
             else if (isCharging) barClass += ' battery-chart-charging';
             else if (isLow) barClass += ' battery-chart-low';
 
+            // 顶部克制圆角、底部平直：用 path 绘制仅上方两角圆角的柱体
+            const cornerR = Math.min(visualBarWidth / 2, renderedBarH / 2, 4.5);
+            const barPath = `M ${x},${y + renderedBarH} L ${x},${y + cornerR} Q ${x},${y} ${x + cornerR},${y} L ${x + visualBarWidth - cornerR},${y} Q ${x + visualBarWidth},${y} ${x + visualBarWidth},${y + cornerR} L ${x + visualBarWidth},${y + renderedBarH} Z`;
+
             return (
               <g
                 key={i}
@@ -247,12 +251,8 @@ function BatteryUsageChart({ points, range }: ChartProps) {
                   height={chartHeight}
                   fill="transparent"
                 />
-                <rect
-                  x={x}
-                  y={y}
-                  width={visualBarWidth}
-                  height={renderedBarH}
-                  rx={visualBarWidth / 2}
+                <path
+                  d={barPath}
                   className={barClass}
                   fill={isEmpty ? undefined : `url(#${fillId})`}
                 />
