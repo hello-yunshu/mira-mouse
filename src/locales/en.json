@@ -560,6 +560,7 @@
     "unusualDrainAlertsHint": "Notify using the existing alert system when a device drains faster than usual.",
     "close": "Close",
     "tooltipTime": "Usage elapsed",
+    "tooltipDate": "Date",
     "tooltipPercentage": "Battery",
     "tooltipMin": "Min",
     "tooltipMax": "Max",

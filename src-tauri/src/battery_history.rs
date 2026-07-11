@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Instant;
 
-use chrono::{DateTime, Duration, Local, Utc};
+use chrono::{DateTime, Duration, Local, Timelike, Utc};
 use mira_core::{Connection, PluginCapability};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -24,6 +24,13 @@ const REPLACEMENT_RISE_THRESHOLD_PERCENT: u8 = 5;
 const POST_CHARGE_SKIP_MINUTES: i64 = 10;
 const VERY_SLOW_DRAIN_HOURS: f64 = 9999.0;
 const PERSIST_INTERVAL_SECS: u64 = 300;
+/// EWMA 时间衰减常数：段结束时间距今每 48h，权重衰减到 e^-1 ≈ 37%。
+/// 让剩余时间预估更关注近期使用模式，而非 10 天平均。
+const RATE_DECAY_TAU_HOURS: f64 = 48.0;
+/// z-score 异常检测的阈值：超过均值 +2σ（95% 置信）视为异常。
+/// 历史段不足 5 段时回退到固定 2.0 倍阈值。
+const ABNORMAL_ZSCORE_THRESHOLD: f64 = 2.0;
+const ABNORMAL_MIN_HIST_SEGMENTS: usize = 5;
 
 /// 每个插件自行声明哪些连接方式的电量读数可用于历史分析。
 /// 未声明时 fail-closed，避免宿主猜测某个协议或厂商的电量语义。
@@ -217,9 +224,11 @@ fn save_history(app: &AppHandle, file: &BatteryHistoryFile) -> Result<(), String
 
 fn migrate_schema(mut file: BatteryHistoryFile) -> BatteryHistoryFile {
     if file.schema_version < 2 {
-        // v1 未记录样本是否符合插件的电量遥测策略，无法在不猜测协议语义的前提下
-        // 安全复用。清空后由带策略的插件重新建立可信基线。
-        file.samples.clear();
+        // v1 未记录样本是否符合插件的电量遥测策略。先保留为待确认样本，
+        // 等当前插件明确批准同一设备、部件和连接后再纳入统计，避免升级丢历史。
+        for sample in &mut file.samples {
+            sample.eligible_for_prediction = false;
+        }
     }
     file.schema_version = SCHEMA_VERSION;
     file
@@ -445,6 +454,31 @@ fn samples_for_group<'a>(
     }
 }
 
+/// 当前插件批准某一连接后，恢复同一设备/部件在旧 schema 中留下的样本。
+/// 这让升级前后的曲线连续，同时不由宿主猜测协议或厂商的电量语义。
+fn promote_policy_approved_legacy_samples(
+    samples: &mut [BatterySample],
+    approved_sample: &BatterySample,
+) -> usize {
+    if !approved_sample.eligible_for_prediction {
+        return 0;
+    }
+
+    let approved_group = SampleGroup::new(approved_sample);
+    let mut promoted = 0;
+    for sample in samples {
+        if !sample.eligible_for_prediction
+            && sample.connection == approved_sample.connection
+            && sample.component_id == approved_sample.component_id
+            && approved_group.matches_sample(sample)
+        {
+            sample.eligible_for_prediction = true;
+            promoted += 1;
+        }
+    }
+    promoted
+}
+
 fn normalize_percentage(raw: u8) -> Option<u8> {
     if raw == 0xFF {
         return None;
@@ -541,6 +575,23 @@ pub fn record_samples(
                     history_key(&device_id, &device_name, &component_id)
                 };
                 let low_power = !charging && percentage < low_battery_threshold;
+                let candidate = BatterySample {
+                    at: now,
+                    device_id: device_id.clone(),
+                    device_name: device_name.clone(),
+                    identity_group: identity_group.clone(),
+                    identity_aliases: identity_aliases.clone(),
+                    connection: connection.clone(),
+                    component_id: component_id.clone(),
+                    component_label: component_label.clone(),
+                    percentage,
+                    charging,
+                    low_power,
+                    eligible_for_prediction: true,
+                };
+                if promote_policy_approved_legacy_samples(&mut samples, &candidate) > 0 {
+                    changed = true;
+                }
                 let should_record = match last_record.get(&key) {
                     Some((prev, last_instant)) => {
                         let changed = prev.percentage != percentage || prev.charging != charging;
@@ -558,22 +609,8 @@ pub fn record_samples(
                 };
 
                 if should_record {
-                    let sample = BatterySample {
-                        at: now,
-                        device_id: device_id.clone(),
-                        device_name: device_name.clone(),
-                        identity_group: identity_group.clone(),
-                        identity_aliases: identity_aliases.clone(),
-                        connection: connection.clone(),
-                        component_id,
-                        component_label,
-                        percentage,
-                        charging,
-                        low_power,
-                        eligible_for_prediction: true,
-                    };
-                    last_record.insert(key, (sample.clone(), Instant::now()));
-                    samples.push(sample);
+                    last_record.insert(key, (candidate.clone(), Instant::now()));
+                    samples.push(candidate);
                     changed = true;
                 }
             }
@@ -703,7 +740,11 @@ pub fn build_response(
         .map(|d| {
             let key = &d.key;
             let device_samples = samples_for_group(samples_ref, &groups, key);
-            let points = aggregate_active_usage(&device_samples, now, range, low_battery_threshold);
+            let points = if range == "24h" {
+                aggregate_active_usage(&device_samples, now, low_battery_threshold)
+            } else {
+                aggregate_ten_day_history(&device_samples, now, low_battery_threshold)
+            };
             BatteryHistorySeries {
                 key: key.clone(),
                 points,
@@ -722,11 +763,10 @@ pub fn build_response(
     }
 }
 
-/// 按累计使用时长聚合图表点。
+/// 过去 24 小时按累计使用时长聚合图表点。
 ///
 /// 鼠标会断续连接和使用，真实时钟 X 轴会把大量空闲/断连时间画成空洞。
-/// 这里仍用 24h / 10d 作为筛选范围，但横坐标只累计相邻采样间隔较短的在线时间，
-/// 将长间隔压缩掉，让趋势尽量连续。
+/// 横坐标只累计相邻采样间隔较短的在线时间，将长间隔压缩掉，让趋势尽量连续。
 #[derive(Clone, Copy)]
 struct ActiveSample<'a> {
     sample: &'a BatterySample,
@@ -736,13 +776,9 @@ struct ActiveSample<'a> {
 fn aggregate_active_usage(
     samples: &[&BatterySample],
     now: DateTime<Utc>,
-    range: &str,
     low_battery_threshold: u8,
 ) -> Vec<BatteryHistoryPoint> {
-    let cutoff = match range {
-        "24h" => now - Duration::hours(24),
-        _ => now - Duration::days(10),
-    };
+    let cutoff = now - Duration::hours(24);
 
     let mut sorted: Vec<&BatterySample> = samples
         .iter()
@@ -771,12 +807,66 @@ fn aggregate_active_usage(
         prev = Some(sample);
     }
 
-    let max_points = if range == "24h" { 96usize } else { 80usize };
+    let max_points = 48usize;
     let chunk_size = active_samples.len().div_ceil(max_points).max(1);
     active_samples
         .chunks(chunk_size)
         .map(|chunk| build_active_usage_point(chunk, low_battery_threshold))
         .collect()
+}
+
+/// 过去 10 天按本地自然日的 8 小时时段聚合，共 30 个固定槽位。
+/// 日期轴保留真实日历间隔；三段/天兼顾趋势细节和图表密度。
+fn aggregate_ten_day_history(
+    samples: &[&BatterySample],
+    now: DateTime<Utc>,
+    low_battery_threshold: u8,
+) -> Vec<BatteryHistoryPoint> {
+    let today = now.with_timezone(&Local).date_naive();
+    let first_day = today - Duration::days(9);
+    let mut by_slot: BTreeMap<_, Vec<&BatterySample>> = BTreeMap::new();
+
+    for sample in samples {
+        let local = sample.at.with_timezone(&Local);
+        let day = local.date_naive();
+        if day >= first_day && day <= today {
+            let slot = local.hour() / 8;
+            by_slot.entry((day, slot)).or_default().push(*sample);
+        }
+    }
+
+    let mut points = Vec::with_capacity(30);
+    for offset in 0..10 {
+        let day = first_day + Duration::days(offset);
+        for slot in 0..3 {
+            let mut slot_samples = by_slot.remove(&(day, slot)).unwrap_or_default();
+            slot_samples.sort_by_key(|sample| sample.at);
+            let last = slot_samples.last().copied();
+            let min = slot_samples.iter().map(|sample| sample.percentage).min();
+            let max = slot_samples.iter().map(|sample| sample.percentage).max();
+            let charging = slot_samples.iter().any(|sample| sample.charging);
+            let low_battery = slot_samples
+                .iter()
+                .any(|sample| !sample.charging && sample.percentage < low_battery_threshold);
+            let start_hour = slot * 8;
+            let end_hour = start_hour + 8;
+
+            points.push(BatteryHistoryPoint {
+                bucket_start: format!("{day}T{start_hour:02}:00"),
+                bucket_label: format!(
+                    "{} {start_hour:02}:00–{end_hour:02}:00",
+                    day.format("%m-%d")
+                ),
+                percentage: last.map(|sample| sample.percentage),
+                min_percentage: min,
+                max_percentage: max,
+                charging: last.map(|_| charging),
+                low_battery: last.map(|_| low_battery),
+                sample_count: slot_samples.len() as u32,
+            });
+        }
+    }
+    points
 }
 
 fn build_active_usage_point(
@@ -998,7 +1088,8 @@ fn estimate_remaining(samples: &[&BatterySample], range: &str, now: DateTime<Utc
         segments.push(current_seg);
     }
 
-    let mut total_drop: f64 = 0.0;
+    let mut weighted_rate: f64 = 0.0;
+    let mut total_weight: f64 = 0.0;
     let mut total_hours: f64 = 0.0;
     for seg in &segments {
         if seg.len() < 2 {
@@ -1018,15 +1109,19 @@ fn estimate_remaining(samples: &[&BatterySample], range: &str, now: DateTime<Utc
         if rate > 50.0 {
             continue;
         }
-        total_drop += drop;
+        // 时间衰减加权：段结束时间越近，权重越高
+        let hours_ago = (now - last.at).num_minutes() as f64 / 60.0;
+        let weight = (-hours_ago / RATE_DECAY_TAU_HOURS).exp();
+        weighted_rate += rate * weight;
+        total_weight += weight;
         total_hours += hours;
     }
 
-    if total_hours < 0.5 {
+    if total_hours < 0.5 || total_weight <= 0.0 {
         return None;
     }
 
-    let drain_per_hour = total_drop / total_hours;
+    let drain_per_hour = weighted_rate / total_weight;
     if drain_per_hour <= 0.0 {
         return Some(VERY_SLOW_DRAIN_HOURS);
     }
@@ -1179,12 +1274,29 @@ fn detect_abnormal_drain(samples: &[&BatterySample], now: DateTime<Utc>) -> Opti
         .filter(|s| s.at >= ten_days_ago && s.at < two_hours_ago)
         .cloned()
         .collect();
-    let hist_rate = drain_rate(&historical, ten_days_ago, two_hours_ago)?;
-    if hist_rate <= 0.0 {
-        return None;
-    }
+    let hist_rates = collect_segment_rates(&historical, ten_days_ago, two_hours_ago);
 
-    if recent_rate > hist_rate * 2.0 && recent_drop > 5.0 {
+    let is_abnormal = if hist_rates.len() >= ABNORMAL_MIN_HIST_SEGMENTS {
+        // z-score 检测：recent_rate 超过历史均值 +2σ 视为异常
+        let mean = hist_rates.iter().sum::<f64>() / hist_rates.len() as f64;
+        let variance: f64 =
+            hist_rates.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / hist_rates.len() as f64;
+        let std = variance.sqrt();
+        if std > 1e-9 {
+            (recent_rate - mean) / std > ABNORMAL_ZSCORE_THRESHOLD
+        } else {
+            recent_rate > mean * 2.0
+        }
+    } else {
+        // 历史段不足，回退到固定 2.0 倍阈值
+        let hist_rate = drain_rate(&historical, ten_days_ago, two_hours_ago)?;
+        if hist_rate <= 0.0 {
+            return None;
+        }
+        recent_rate > hist_rate * 2.0
+    };
+
+    if is_abnormal && recent_drop > 5.0 {
         Some(recent_drop)
     } else {
         None
@@ -1260,6 +1372,71 @@ fn compute_consistency(
         message: format!("consistency{}", capitalize_first(&message)),
         device_key: None,
     })
+}
+
+/// 收集指定时间范围内所有有效放电段的速率列表（%/h），用于 z-score 异常检测。
+fn collect_segment_rates(
+    samples: &[&BatterySample],
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+) -> Vec<f64> {
+    let filtered: Vec<&&BatterySample> = samples
+        .iter()
+        .filter(|s| s.at >= start && s.at < end)
+        .collect();
+    if filtered.len() < 2 {
+        return Vec::new();
+    }
+    let mut sorted = filtered.clone();
+    sorted.sort_by_key(|s| s.at);
+
+    let mut segments: Vec<Vec<&&BatterySample>> = Vec::new();
+    let mut current_seg: Vec<&&BatterySample> = Vec::new();
+    let mut prev: Option<&&BatterySample> = None;
+    for s in &sorted {
+        let split = match prev {
+            None => false,
+            Some(p) => {
+                p.charging
+                    || s.charging
+                    || is_session_gap(p.at, s.at)
+                    || is_battery_replacement(p, s)
+            }
+        };
+        if split && !current_seg.is_empty() {
+            segments.push(std::mem::take(&mut current_seg));
+        }
+        if !s.charging {
+            current_seg.push(s);
+        }
+        prev = Some(s);
+    }
+    if !current_seg.is_empty() {
+        segments.push(current_seg);
+    }
+
+    let mut rates = Vec::new();
+    for seg in &segments {
+        if seg.len() < 2 {
+            continue;
+        }
+        let first = seg[0];
+        let last = seg[seg.len() - 1];
+        let drop = first.percentage as f64 - last.percentage as f64;
+        if drop < BOUNCE_THRESHOLD_PERCENT {
+            continue;
+        }
+        let hours = (last.at - first.at).num_minutes() as f64 / 60.0;
+        if hours <= 0.0 {
+            continue;
+        }
+        let rate = drop / hours;
+        if rate > 50.0 {
+            continue;
+        }
+        rates.push(rate);
+    }
+    rates
 }
 
 fn drain_rate(samples: &[&BatterySample], start: DateTime<Utc>, end: DateTime<Utc>) -> Option<f64> {
@@ -1678,7 +1855,7 @@ mod tests {
             make_sample(now, 80, false),
         ];
         let refs: Vec<&BatterySample> = samples.iter().collect();
-        let points = aggregate_active_usage(&refs, now, "24h", 20);
+        let points = aggregate_active_usage(&refs, now, 20);
         assert_eq!(points.len(), 3);
         assert_eq!(points[0].bucket_label, "0m");
         assert_eq!(points[1].bucket_label, "5m");
@@ -1694,7 +1871,7 @@ mod tests {
             make_sample(now, 70, false),
         ];
         let refs: Vec<&BatterySample> = samples.iter().collect();
-        let points = aggregate_active_usage(&refs, now, "10d", 20);
+        let points = aggregate_active_usage(&refs, now, 20);
         assert_eq!(points.len(), 3);
         assert_eq!(points[0].bucket_label, "0m");
         assert_eq!(points[1].bucket_label, "0m");
@@ -1708,9 +1885,34 @@ mod tests {
             .map(|i| make_sample(now - Duration::minutes((191 - i) * 5), 90, false))
             .collect();
         let refs: Vec<&BatterySample> = samples.iter().collect();
-        let points = aggregate_active_usage(&refs, now, "24h", 20);
-        assert_eq!(points.len(), 96);
-        assert!(points.iter().all(|point| point.sample_count == 2));
+        let points = aggregate_active_usage(&refs, now, 20);
+        assert_eq!(points.len(), 48);
+        assert!(points.iter().all(|point| point.sample_count == 4));
+    }
+
+    #[test]
+    fn aggregate_ten_day_history_uses_thirty_calendar_slots_and_keeps_gaps() {
+        let now = Utc::now();
+        let samples = [
+            make_sample(now - Duration::days(2), 84, false),
+            make_sample(now - Duration::days(1), 81, false),
+            make_sample(now, 79, false),
+        ];
+        let refs: Vec<&BatterySample> = samples.iter().collect();
+
+        let points = aggregate_ten_day_history(&refs, now, 20);
+
+        assert_eq!(points.len(), 30);
+        assert_eq!(points[0].sample_count, 0);
+        assert_eq!(
+            points.iter().map(|point| point.sample_count).sum::<u32>(),
+            3
+        );
+        let current_slot = 27 + (now.with_timezone(&Local).hour() / 8) as usize;
+        assert_eq!(points[current_slot].percentage, Some(79));
+        assert!(points[current_slot]
+            .bucket_label
+            .starts_with(&now.with_timezone(&Local).format("%m-%d").to_string()));
     }
 
     #[test]
@@ -2297,13 +2499,37 @@ mod tests {
 
     #[test]
     fn migrate_schema_upgrades_old_version() {
+        let mut old_sample = make_sample(Utc::now(), 80, false);
+        old_sample.eligible_for_prediction = true;
         let file = BatteryHistoryFile {
             schema_version: 0,
-            samples: vec![make_sample(Utc::now(), 80, false)],
+            samples: vec![old_sample],
         };
         let migrated = migrate_schema(file);
         assert_eq!(migrated.schema_version, SCHEMA_VERSION);
-        assert!(migrated.samples.is_empty());
+        assert_eq!(migrated.samples.len(), 1);
+        assert!(!migrated.samples[0].eligible_for_prediction);
+    }
+
+    #[test]
+    fn current_plugin_policy_restores_matching_legacy_history_only() {
+        let now = Utc::now();
+        let mut matching = make_sample(now - Duration::hours(1), 82, false);
+        matching.eligible_for_prediction = false;
+        let mut wrong_connection = matching.clone();
+        wrong_connection.connection = "usb".into();
+        let mut wrong_device = matching.clone();
+        wrong_device.device_name = "Another Mouse".into();
+        wrong_device.device_id = "another-device".into();
+        let mut samples = vec![matching, wrong_connection, wrong_device];
+        let approved = make_sample(now, 80, false);
+
+        let promoted = promote_policy_approved_legacy_samples(&mut samples, &approved);
+
+        assert_eq!(promoted, 1);
+        assert!(samples[0].eligible_for_prediction);
+        assert!(!samples[1].eligible_for_prediction);
+        assert!(!samples[2].eligible_for_prediction);
     }
 
     #[test]

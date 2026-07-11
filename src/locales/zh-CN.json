@@ -560,6 +560,7 @@
     "unusualDrainAlertsHint": "当设备掉电速度明显高于平时，通过现有通知方式提醒。",
     "close": "关闭",
     "tooltipTime": "累计使用",
+    "tooltipDate": "日期",
     "tooltipPercentage": "电量",
     "tooltipMin": "最低",
     "tooltipMax": "最高",
