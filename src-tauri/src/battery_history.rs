@@ -1823,19 +1823,19 @@ mod tests {
             placements: Vec::new(),
             metadata: BTreeMap::from([(
                 "batteryHistory".into(),
-                serde_json::json!({ "validConnections": ["wireless", "bluetooth"] }),
+                serde_json::json!({ "validConnections": ["wireless", "bluetooth", "usb"] }),
             )]),
             available: true,
             connections: None,
             min_firmware: None,
         };
 
-        assert!(!battery_history_allowed(
-            &[battery.clone()],
+        assert!(battery_history_allowed(
+            std::slice::from_ref(&battery),
             &Connection::Usb
         ));
         assert!(battery_history_allowed(
-            &[battery.clone()],
+            std::slice::from_ref(&battery),
             &Connection::Wireless
         ));
         assert!(battery_history_allowed(&[battery], &Connection::Bluetooth));

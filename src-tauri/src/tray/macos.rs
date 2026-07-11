@@ -489,14 +489,13 @@ impl MacNativeTrayController {
                 .render_image(state, &resolved_style)
                 .ok_or("render native tray image failed")?;
             if let Some(view) = &self.status_view {
-                view.set_image(Some(image.clone()));
+                view.set_image(Some(image));
             }
-            // Keep the standard NSStatusBarButton image path alive as the
-            // visible-system fallback. The custom view still draws via
-            // drawRect, but the button image prevents a blank menu bar item if
-            // AppKit decides not to composite the subview.
             if let Some(button) = item.button(mtm) {
-                button.setImage(Some(&*image));
+                // MiraStatusView is the single dynamic drawing surface. Leaving
+                // the same image on NSStatusBarButton doubles its translucent
+                // pixels and makes the charging bolt/halo look heavier.
+                button.setImage(None);
             }
             self.last_cache_key = Some(cache_key);
         }

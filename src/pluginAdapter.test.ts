@@ -2,9 +2,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   resolveFieldLabel,
+  resolveFieldValueLabel,
+  resolveFieldMutationParams,
   resolveFieldOptions,
+  resolveFieldParams,
   resolveLightingMutations,
   resolveMutation,
+  resolveStatusField,
   resolveStateMapping,
   resolveSwitchState,
   resolveVisibleWhen,
@@ -33,6 +37,69 @@ describe('resolveMutation', () => {
     expect(resolveMutation(['legacy-write', 'preferred-write'], ['preferred-write'])).toBe('preferred-write');
     expect(resolveMutation('preferred-write', ['preferred-write'])).toBe('preferred-write');
     expect(resolveMutation(['legacy-write'], ['preferred-write'])).toBeUndefined();
+  });
+});
+
+describe('resolveFieldParams', () => {
+  it('hydrates a grouped mutation from plugin-declared snapshot paths', () => {
+    const field: PluginField = {
+      id: 'brightness',
+      source: 'capabilities.receiverLighting.brightness',
+      editor: 'modal-select',
+      param: 'brightness',
+      params: { target: 'receiver' },
+      paramSources: {
+        effect: 'capabilities.receiverLighting.effect',
+        speed: 'capabilities.receiverLighting.speed',
+        brightness: 'capabilities.receiverLighting.brightness',
+        option: 'capabilities.receiverLighting.option',
+        color: 'capabilities.receiverLighting.color',
+      },
+    };
+    const device = makeDevice({}, {
+      capabilities: {
+        receiverLighting: { effect: 3, speed: 2, brightness: 1, option: 7, color: '#AABBCC' },
+      },
+    });
+
+    expect(resolveFieldParams(field, device)).toEqual({
+      effect: 3, speed: 2, brightness: 1, option: 7, color: '#AABBCC', target: 'receiver',
+    });
+    expect(resolveFieldMutationParams(field, device, 4)).toEqual({
+      effect: 3, speed: 2, brightness: 4, option: 7, color: '#AABBCC', target: 'receiver',
+    });
+  });
+
+  it('omits unavailable source values instead of inventing defaults', () => {
+    const field: PluginField = {
+      id: 'color',
+      source: 'state.color',
+      editor: 'modal-color',
+      param: 'color',
+      paramSources: { enabled: 'state.enabled', speed: 'state.speed' },
+    };
+    expect(resolveFieldMutationParams(field, makeDevice({ enabled: true }), '#112233')).toEqual({
+      enabled: true,
+      color: '#112233',
+    });
+  });
+
+  it('uses declared defaults only when the live snapshot omits a grouped parameter', () => {
+    const field: PluginField = {
+      id: 'effect',
+      source: 'state.effect',
+      editor: 'modal-select',
+      param: 'effect',
+      params: { extraColor: '#000000', brightness: 100 },
+      paramSources: {
+        extraColor: 'state.extraColor',
+        brightness: 'state.brightness',
+      },
+    };
+    const device = makeDevice({ brightness: 70 });
+    expect(resolveFieldMutationParams(field, device, 3)).toEqual({
+      extraColor: '#000000', brightness: 70, effect: 3,
+    });
   });
 });
 
@@ -131,18 +198,20 @@ describe('resolveSwitchState', () => {
 });
 
 describe('resolveFieldLabel', () => {
-  it('returns labelSource value when non-empty', () => {
+  it('keeps the field title separate from its runtime value label', () => {
     const field: PluginField = {
       id: 'effect',
       source: 'state.effect',
       editor: 'modal-select',
+      labelKey: 'receiverLighting.field.effect',
       labelSource: 'capabilities.lighting.effectName',
     };
     const device = makeDevice({}, { capabilities: { lighting: { effectName: '霓虹' } } });
-    expect(resolveFieldLabel(field, device)).toBe('霓虹');
+    expect(resolveFieldLabel(field, device)).toBe('灯效');
+    expect(resolveFieldValueLabel(field, device)).toBe('霓虹');
   });
 
-  it('falls through to options when labelSource is empty', () => {
+  it('falls through to options when the runtime value label is empty', () => {
     const field: PluginField = {
       id: 'effect',
       source: 'state.effect',
@@ -153,7 +222,7 @@ describe('resolveFieldLabel', () => {
       ],
     };
     const device = makeDevice({ effect: 3 }, { capabilities: { lighting: { effectName: '' } } });
-    expect(resolveFieldLabel(field, device)).toBe('霓虹');
+    expect(resolveFieldValueLabel(field, device)).toBe('霓虹');
   });
 
   it('falls through to options when labelSource is null', () => {
@@ -167,7 +236,7 @@ describe('resolveFieldLabel', () => {
       ],
     };
     const device = makeDevice({ effect: 1 }, { capabilities: { lighting: { effectName: null } } });
-    expect(resolveFieldLabel(field, device)).toBe('常亮');
+    expect(resolveFieldValueLabel(field, device)).toBe('常亮');
   });
 
   it('returns labelKey when no labelSource and no options match', () => {
@@ -180,12 +249,12 @@ describe('resolveFieldLabel', () => {
     expect(resolveFieldLabel(field, makeDevice({ pollingRate: 1000 }))).toBe('custom.untranslated.key');
   });
 
-  it('returns empty string when no labelSource, no options, and no labelKey', () => {
+  it('returns empty title when labelKey is absent', () => {
     const field: PluginField = { id: 'x', source: 'state.x', editor: 'modal-select' };
     expect(resolveFieldLabel(field, makeDevice())).toBe('');
   });
 
-  it('matches options by field.source value', () => {
+  it('matches value labels by field.source value', () => {
     const field: PluginField = {
       id: 'mode',
       source: 'state.mode',
@@ -195,7 +264,7 @@ describe('resolveFieldLabel', () => {
         { value: 2, labelKey: '软件' },
       ],
     };
-    expect(resolveFieldLabel(field, makeDevice({ mode: 2 }))).toBe('软件');
+    expect(resolveFieldValueLabel(field, makeDevice({ mode: 2 }))).toBe('软件');
   });
 });
 
@@ -279,6 +348,34 @@ describe('resolveZones', () => {
     ]);
     expect(resolveZones(cap, makeDevice({ hasReceiver: true }))).toHaveLength(2);
     expect(resolveZones(cap, makeDevice({ hasReceiver: false }))).toHaveLength(1);
+  });
+});
+
+describe('resolveStatusField', () => {
+  it('uses a visible sibling when the declared status field is hidden by the connection', () => {
+    const capability: PluginCapability = {
+      id: 'sleep-time',
+      control: 'Number',
+      labelKey: 'capability.sleep-time',
+      readOnly: false,
+      metadata: {
+        fields: [
+          {
+            id: 'bluetooth', source: 'capabilities.settings.bluetoothSleepValue', mutation: 'set-bluetooth-sleep-time',
+            param: 'seconds', editor: 'modal-range', format: 'sleep', visibleWhen: { path: 'connection', eq: 'bluetooth' },
+          },
+          {
+            id: 'wireless', source: 'capabilities.settings.wirelessSleepValue', mutation: 'set-wireless-sleep-time',
+            param: 'seconds', editor: 'modal-range', format: 'sleep', visibleWhen: { path: 'connection', ne: 'bluetooth' },
+          },
+        ],
+      },
+    };
+
+    const bluetooth = makeDevice({}, { connection: 'bluetooth' });
+    const wireless = makeDevice({}, { connection: 'wireless' });
+    expect(resolveStatusField(capability, 'wireless', bluetooth)?.id).toBe('bluetooth');
+    expect(resolveStatusField(capability, 'wireless', wireless)?.id).toBe('wireless');
   });
 });
 

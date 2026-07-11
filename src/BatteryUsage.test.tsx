@@ -112,6 +112,25 @@ describe('BatteryUsageModal', () => {
     await waitFor(() => expect(document.querySelector('.battery-status-metric strong')).toHaveTextContent('96%'));
   });
 
+  it('defaults to the current mouse instead of the first historical device', async () => {
+    const response = {
+      ...MOCK_BATTERY_HISTORY_24H,
+      devices: [...MOCK_BATTERY_HISTORY_24H.devices].reverse(),
+    };
+    mockInvoke({ response });
+    render(
+      <BatteryUsageModal
+        open
+        onClose={() => {}}
+        hasBattery
+        preferredDeviceName="Mira Example Wireless Mouse"
+        preferredComponentId="mouse"
+      />,
+    );
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('battery_history_get', { range: '24h' }));
+    expect(document.querySelector('.battery-status-metric strong')).toHaveTextContent('82%');
+  });
+
   it('shows unsupported state when device has no battery', async () => {
     mockInvoke();
     render(<BatteryUsageModal open onClose={() => {}} hasBattery={false} />);

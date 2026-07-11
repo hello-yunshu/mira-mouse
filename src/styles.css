@@ -648,9 +648,8 @@ body:has(.platform-fallback:not(.web-preview)) {
   opacity: .9;
 }
 .battery-level-bolt {
-  fill: #fff;
+  fill: currentColor;
   opacity: 1;
-  filter: drop-shadow(0 0 .5px rgb(0 0 0 / 28%));
 }
 .battery-popover {
   position: absolute;
@@ -1166,10 +1165,14 @@ body:has(.platform-fallback:not(.web-preview)) {
 }
 .mode-reading > svg { width: 28px; height: 28px; color: var(--accent); margin-bottom: 2px; }
 .mode-reading > span { color: var(--muted); font-size: 12px; }
-.polling-reading { grid-template-columns: 1fr; gap: 10px; }
-.polling-rate { display: inline-grid; position: relative; color: inherit; }
-.polling-rate strong { font-size: 28px; line-height: .98; letter-spacing: -.035em; font-weight: 720; }
-.polling-rate em { position: absolute; left: 100%; bottom: 4px; margin-left: -6px; color: var(--muted); font-size: 13px; font-style: normal; font-weight: 650; padding-bottom: 3px; white-space: nowrap; }
+.polling-reading,
+.metric-reading { grid-template-columns: 1fr; gap: 10px; }
+.polling-rate,
+.metric-reading-value { display: inline-grid; position: relative; color: inherit; }
+.polling-rate strong,
+.metric-reading-value strong { font-size: 28px; line-height: .98; letter-spacing: -.035em; font-weight: 720; }
+.polling-rate em,
+.metric-reading-value em { position: absolute; left: 100%; bottom: 4px; margin-left: -6px; color: var(--muted); font-size: 13px; font-style: normal; font-weight: 650; padding-bottom: 3px; white-space: nowrap; }
 .mode-reading > p { max-width: 100%; margin: 4px 0 0; color: var(--muted); font-size: 11px; line-height: 1.45; }
 .plugin-control-reading { justify-content: center; }
 .plugin-segmented {
@@ -1386,6 +1389,16 @@ body:has(.platform-fallback:not(.web-preview)) {
   text-align: center;
 }
 .lighting-group-dongle .lighting-row strong { font-size: 10px; }
+.lighting-group.is-compact .lighting-rows { gap: 4px; }
+.lighting-group.is-compact .lighting-row {
+  min-height: 46px;
+  padding: 6px;
+  align-items: center;
+  gap: 2px;
+  font-size: 9px;
+  text-align: center;
+}
+.lighting-group.is-compact .lighting-row strong { font-size: 10px; }
 
 /* Compact edit popovers use the same glass treatment as the battery popover. */
 .edit-modal-backdrop {
