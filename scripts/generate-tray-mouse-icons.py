@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-import re
 from pathlib import Path
 
 from PIL import Image, ImageDraw
@@ -16,13 +15,12 @@ OUTLINE_ALPHA = 160  # ~0.63，轮廓再透明一点点
 WHEEL_WIDTH = 7  # 中键粗细 7px
 WHEEL_LENGTH = 14  # 中键长度增加 2px
 WHEEL_GAP = 2  # 中键四周 2px 透明边缘
-BOLT_SCALE = 34 / 43  # 缩小闪电主体，让 macOS 20px 托盘里仍能看出透明边
 BOLT_HALO_WIDTH = 9  # 64px 画布上的透明安全区宽度
 
 ROOT = Path(__file__).resolve().parent.parent
 ICON_DIR = ROOT / "src-tauri" / "icons"
-LIGHTNING_SVG = ROOT / "src" / "assets" / "lightning_exact_match.svg"
 LEVELS = range(0, 101, 10)
+CHARGING_BOLT = [(38, 13), (32, 28), (46, 28), (29, 47), (35, 32), (23, 32)]
 
 
 def outline_color(dark: bool):
@@ -53,42 +51,14 @@ def mouse_shape_bounds(size: int):
     return (left, top, left + width, top + height)
 
 
-def load_charging_bolt_points():
-    svg = LIGHTNING_SVG.read_text(encoding="utf-8")
-    match = re.search(r'<path[^>]*\sd="([^"]+)"', svg)
-    if not match:
-        raise ValueError(f"missing path data in {LIGHTNING_SVG}")
-
-    tokens = re.findall(r"[MLZ]|-?\d+(?:\.\d+)?", match.group(1))
-    points = []
-    i = 0
-    while i < len(tokens):
-        command = tokens[i]
-        i += 1
-        if command == "Z":
-            break
-        if command not in {"M", "L"}:
-            raise ValueError(f"unsupported SVG path command: {command}")
-        points.append((float(tokens[i]), float(tokens[i + 1])))
-        i += 2
-
-    return points
-
-
-CHARGING_BOLT_POINTS = load_charging_bolt_points()
-
-
 def charging_bolt_points(size: int):
     scale = size / 64
-    bolt_scale = BOLT_SCALE * scale
-    offset_x = 23 * scale
-    offset_y = 13 * scale
     return [
         (
-            int(round(offset_x + x * bolt_scale)),
-            int(round(offset_y + y * bolt_scale)),
+            int(round(x * scale)),
+            int(round(y * scale)),
         )
-        for x, y in CHARGING_BOLT_POINTS
+        for x, y in CHARGING_BOLT
     ]
 
 
@@ -162,9 +132,15 @@ def draw_mouse_icon(size: int, level: int, dark: bool, charging: bool = False):
     if charging:
         points = charging_bolt_points(size)
         gap_width = max(1, int(round(BOLT_HALO_WIDTH * scale)))
-        draw.line(points + [points[0]], fill=(0, 0, 0, 0), width=gap_width, joint="curve")
-        draw.polygon(points, fill=(0, 0, 0, 0))
-        draw.polygon(points, fill=(255, 255, 255, 255))
+        halo = Image.new("L", (size, size), 0)
+        halo_draw = ImageDraw.Draw(halo)
+        halo_draw.line(points + [points[0]], fill=255, width=gap_width, joint="curve")
+        halo_draw.polygon(points, fill=255)
+        alpha = image.getchannel("A")
+        alpha.paste(0, mask=halo)
+        image.putalpha(alpha)
+        draw = ImageDraw.Draw(image)
+        draw.polygon(points, fill=(*wheel[:3], 255))
 
     return image
 

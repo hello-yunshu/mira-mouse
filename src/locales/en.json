@@ -45,6 +45,11 @@
     "deviceControl": "Device controls",
     "deviceStatus": "Device status",
     "deviceSummary": "Device summary",
+    "motionSync": "Motion sync",
+    "angleSnap": "Angle snap",
+    "liftCutOff": "Lift-off",
+    "bluetoothSleep": "Bluetooth sleep",
+    "wirelessSleep": "2.4G sleep",
     "currentDpiEdit": "Current DPI: {{value}}, click to edit",
     "dpiNotReported": "DPI not reported",
     "dpiStages": "DPI stages",
@@ -93,6 +98,8 @@
     "hardwareSync": "Hardware sync",
     "off": "Off",
     "on": "On",
+    "mouse": "Mouse lighting",
+    "receiver": "Receiver lighting",
     "effectN": "Effect {{value}}",
     "modeN": "Mode {{value}}",
     "extraColor": "Secondary color",
@@ -322,8 +329,8 @@
       "filterName": "Mira config"
     },
     "pluginUpdateCheck": {
-      "label": "Check for plugin updates on launch",
-      "hint": "Only checks signed plugins for new versions"
+      "label": "Automatically check for plugin updates",
+      "hint": "Checks signed installed plugins on launch, every 6 hours, and after returning online or to the foreground"
     },
     "pluginUpdate": {
       "check": "Check for plugin updates",
@@ -399,7 +406,7 @@
     "developer": "Developer: {{name}}",
     "copyright": "Copyright: {{name}}",
     "updateEnabledHint": "Automatic checks are enabled; you can also check manually",
-    "updateDisabledHint": "Auto update is off. Download the latest from the GitHub Release page.",
+    "updateDisabledHint": "This build is not marked release-ready (releaseReady: false), so automatic updates are disabled. Download the latest from the GitHub Release page.",
     "updateCheck": "Check for updates",
     "updateChecking": "Checking…",
     "updateUpToDate": "Up to date",

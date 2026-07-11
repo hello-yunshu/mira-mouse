@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useTranslation } from 'react-i18next';
 import { ChartBar } from '@phosphor-icons/react';
-import type { AppSettings, BundledPluginInfo, AboutInfo, DiscoveredDevice, PluginCapability, PluginInstallResult, PluginUpdateInfo, ThemeMode } from './types';
+import type { AppSettings, BundledPluginInfo, AboutInfo, DiscoveredDevice, PluginCapability, ThemeMode } from './types';
 import { Tooltip } from './Tooltip';
 import { notifyError, notifyInfo } from './notify';
 import { extractChannel, exportDiagnostics } from './plugin-utils';
@@ -12,6 +12,7 @@ import { applyLanguage, type AppLanguage } from './i18n';
 import { save, open } from '@tauri-apps/plugin-dialog';
 import { ExternalLink } from './ExternalLink';
 import { startAutomaticAppUpdateCheck } from './updater';
+import { checkForPluginUpdates, installPluginUpdate, onPluginUpdateState, pluginUpdateState, startAutomaticPluginUpdateCheck, type PluginUpdateState } from './plugin-updater';
 
 const DEFAULT_SETTINGS: AppSettings = {
   language: 'auto',
@@ -88,9 +89,7 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [autostartEnabled, setAutostartEnabled] = useState(false);
   const [plugins, setPlugins] = useState<BundledPluginInfo[]>([]);
-  const [pluginUpdates, setPluginUpdates] = useState<PluginUpdateInfo[]>([]);
-  const [pluginUpdatesChecking, setPluginUpdatesChecking] = useState(false);
-  const [pluginInstalling, setPluginInstalling] = useState<string>();
+  const [pluginUpdate, setPluginUpdate] = useState<PluginUpdateState>(pluginUpdateState());
   const [diagnostics, setDiagnostics] = useState<string>('');
   const [discovered, setDiscovered] = useState<DiscoveredDevice[]>([]);
   const [saved, setSaved] = useState(false);
@@ -101,6 +100,9 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
   }));
   const pendingPluginFocus = useRef(false);
   const tab = focusPluginUpdateToken > tabState.focusToken ? 'plugins' : tabState.tab;
+  const pluginUpdates = pluginUpdate.updates;
+  const pluginUpdatesChecking = pluginUpdate.phase === 'checking';
+  const pluginInstalling = pluginUpdate.installingPluginId;
 
   // 通过 resolveLightingMutations 从插件 capability 与可写 mutation 计算灯光支持情况，
   // 替代已移除的 supportsAnyLighting/supportsLightingMutation 旧导出。
@@ -149,9 +151,12 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
       .catch(() => setPlugins([]));
   }, [onThemeChange, previewMode]);
 
+  useEffect(() => onPluginUpdateState(setPluginUpdate), []);
+
   function update(patch: Partial<AppSettings>) {
     const next = { ...settings, ...patch };
     const automaticUpdateChanged = patch.automaticUpdateChecks !== undefined || patch.automaticUpdateInstall !== undefined;
+    const automaticPluginUpdateChanged = patch.automaticPluginUpdateChecks !== undefined;
     setSettings(next);
     if (patch.theme && onThemeChange) onThemeChange(patch.theme as ThemeMode);
     if (previewMode) {
@@ -164,6 +169,9 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
         setSettings(savedSettings);
         if (automaticUpdateChanged) {
           syncAutomaticAppUpdateChecks(savedSettings);
+        }
+        if (automaticPluginUpdateChanged) {
+          void startAutomaticPluginUpdateCheck(savedSettings.automaticPluginUpdateChecks);
         }
         setSaved(true);
         setTimeout(() => setSaved(false), 1500);
@@ -282,28 +290,21 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
 
   async function checkPluginUpdates() {
     if (previewMode) return;
-    setPluginUpdatesChecking(true);
     try {
-      setPluginUpdates(await invoke<PluginUpdateInfo[]>('plugin_updates_check'));
+      await checkForPluginUpdates();
     } catch (error) {
       notifyError(t('notification.checkPluginUpdateFailed'), String(error));
-    } finally {
-      setPluginUpdatesChecking(false);
     }
   }
 
-  async function installPluginUpdate(pluginId: string) {
-    setPluginInstalling(pluginId);
+  async function handlePluginUpdateInstall(pluginId: string) {
     try {
-      const result = await invoke<PluginInstallResult>('plugin_update_install', { pluginId });
+      const result = await installPluginUpdate(pluginId);
       setPlugins((current) => current.map((plugin) => plugin.pluginId === result.pluginId
         ? { ...plugin, version: result.version, source: 'installed', signatureVerified: true }
         : plugin));
-      await checkPluginUpdates();
     } catch (error) {
       notifyError(t('notification.installPluginUpdateFailed'), String(error));
-    } finally {
-      setPluginInstalling(undefined);
     }
   }
 
@@ -632,7 +633,7 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
                         <button
                           className="primary"
                           disabled={Boolean(pluginInstalling)}
-                          onClick={() => void installPluginUpdate(plugin.pluginId)}
+                          onClick={() => void handlePluginUpdateInstall(plugin.pluginId)}
                         >
                           {pluginInstalling === plugin.pluginId ? t('settings.pluginUpdate.updating') : t('settings.pluginUpdate.update')}
                         </button>

@@ -7,5 +7,6 @@ npm run check:boundaries
 npm run check:structured
 
 cargo run --package xtask -- plugins sync --locked
+npm run check:plugin-contract
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked

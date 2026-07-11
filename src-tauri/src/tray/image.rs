@@ -173,38 +173,29 @@ impl IconCanvas {
         }
     }
 
-    /// 清除多边形区域为透明（扫描线算法，even-odd rule）。
-    pub fn clear_polygon(&mut self, points: &[(i32, i32)]) {
-        if points.len() < 3 {
+    /// 清除闭合多边形描边周围的透明安全区。
+    ///
+    /// 充电闪电会在 64px 图标中缩小到 macOS 约 20px 的菜单栏尺寸；
+    /// 用均匀的描边安全区比手写一枚更大的多边形更稳定。
+    pub fn clear_polygon_halo(&mut self, points: &[(i32, i32)], width: i32) {
+        if points.len() < 2 || width <= 0 {
             return;
         }
-        let min_y = points.iter().map(|p| p.1).min().unwrap();
-        let max_y = points.iter().map(|p| p.1).max().unwrap();
+        let radius = width as f64 / 2.0;
+        let min_x = points.iter().map(|point| point.0).min().unwrap() - width;
+        let max_x = points.iter().map(|point| point.0).max().unwrap() + width;
+        let min_y = points.iter().map(|point| point.1).min().unwrap() - width;
+        let max_y = points.iter().map(|point| point.1).max().unwrap() + width;
         for y in min_y..=max_y {
-            let mut intersections = Vec::new();
-            let n = points.len();
-            for i in 0..n {
-                let (x0, y0) = points[i];
-                let (x1, y1) = points[(i + 1) % n];
-                if (y0 <= y && y < y1) || (y1 <= y && y < y0) {
-                    let dy = (y1 - y0) as f64;
-                    if dy.abs() < f64::EPSILON {
-                        continue;
-                    }
-                    let t = (y - y0) as f64 / dy;
-                    let x = x0 as f64 + t * (x1 - x0) as f64;
-                    intersections.push(x);
-                }
-            }
-            intersections.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-            let mut i = 0;
-            while i + 1 < intersections.len() {
-                let x_start = intersections[i].ceil() as i32;
-                let x_end = intersections[i + 1].floor() as i32;
-                for x in x_start..=x_end {
+            for x in min_x..=max_x {
+                let within_halo = (0..points.len()).any(|index| {
+                    let start = points[index];
+                    let end = points[(index + 1) % points.len()];
+                    squared_distance_to_segment(x as f64, y as f64, start, end) <= radius * radius
+                });
+                if within_halo {
                     self.clear_pixel(x, y);
                 }
-                i += 2;
             }
         }
     }
@@ -225,6 +216,21 @@ impl IconCanvas {
             }
         }
     }
+}
+
+fn squared_distance_to_segment(px: f64, py: f64, start: (i32, i32), end: (i32, i32)) -> f64 {
+    let (x0, y0) = (start.0 as f64, start.1 as f64);
+    let (x1, y1) = (end.0 as f64, end.1 as f64);
+    let dx = x1 - x0;
+    let dy = y1 - y0;
+    let length_squared = dx * dx + dy * dy;
+    if length_squared == 0.0 {
+        return (px - x0).powi(2) + (py - y0).powi(2);
+    }
+    let position = (((px - x0) * dx + (py - y0) * dy) / length_squared).clamp(0.0, 1.0);
+    let nearest_x = x0 + position * dx;
+    let nearest_y = y0 + position * dy;
+    (px - nearest_x).powi(2) + (py - nearest_y).powi(2)
 }
 
 impl RgbaColor {
@@ -296,14 +302,10 @@ const WHEEL_GAP: i32 = 2;
 const SHAPE_RADIUS: i32 = 16;
 const FILL_RADIUS: i32 = SHAPE_RADIUS - OUTLINE_WIDTH - OUTLINE_GAP - FILL_INSET;
 
-/// 充电闪电周围的透明安全区。允许压到鼠标边框视觉范围，
-/// 但安全区和闪电都必须留在 64px 图标画布内。macOS 菜单栏会把
-/// 64px 图缩到约 20px，因此这里需要比 1:1 预览更夸张的留白。
-const CHARGING_BOLT_GAP: [(i32, i32); 6] =
-    [(46, 3), (32, 27), (48, 27), (25, 61), (31, 40), (18, 40)];
-
-/// 充电闪电多边形顶点。参考 macOS 电池充电符号，使用实心白色。
-const CHARGING_BOLT: [(i32, i32); 6] = [(42, 10), (36, 28), (43, 28), (30, 52), (34, 35), (25, 35)];
+/// 充电闪电多边形顶点。轮廓与静态 PNG 生成器保持一致；在 20px
+/// 菜单栏尺寸仍保留清晰的折角，而不会显得又细又长。
+const CHARGING_BOLT: [(i32, i32); 6] = [(38, 13), (32, 28), (46, 28), (29, 47), (35, 32), (23, 32)];
+const CHARGING_BOLT_HALO_WIDTH: i32 = 9;
 
 /// 鼠标外形边界：宽 46, 高 60, 居中。
 fn mouse_shape_bounds(size: u32) -> (i32, i32, i32, i32) {
@@ -421,8 +423,15 @@ pub fn draw_mouse_icon(canvas: &mut IconCanvas, state: &TrayStatusState, style: 
 
     // 4. 充电闪电（多边形，叠加在中心）
     if state.mouse_charging {
-        canvas.clear_polygon(&CHARGING_BOLT_GAP);
-        canvas.fill_polygon(&CHARGING_BOLT, RgbaColor::rgb(255, 255, 255));
+        canvas.clear_polygon_halo(&CHARGING_BOLT, CHARGING_BOLT_HALO_WIDTH);
+        canvas.fill_polygon(
+            &CHARGING_BOLT,
+            RgbaColor::rgb(
+                style.outline_secondary.r,
+                style.outline_secondary.g,
+                style.outline_secondary.b,
+            ),
+        );
     }
 
     // 5. 接收器状态：右下角小标记，按现有 trayIncludeReceiverBattery 设置控制。
@@ -686,22 +695,22 @@ mod tests {
     }
 
     #[test]
-    fn charging_bolt_has_solid_white_core_and_clear_gap() {
+    fn charging_bolt_uses_solid_icon_color_and_clear_gap() {
         let style = make_style();
         let state = make_state(Some(100), true);
         let bytes = render_mouse_icon_rgba(&state, &style);
 
-        let bolt_idx = ((24 * ICON_SIZE as i32 + 36) * 4) as usize;
+        let bolt_idx = ((28 * ICON_SIZE as i32 + 34) * 4) as usize;
         assert_eq!(&bytes[bolt_idx..bolt_idx + 4], &[255, 255, 255, 255]);
 
-        let gap_idx = ((3 * ICON_SIZE as i32 + 50) * 4) as usize;
+        let gap_idx = ((29 * ICON_SIZE as i32 + 47) * 4) as usize;
         assert_eq!(
             bytes[gap_idx + 3],
             0,
-            "charging bolt should leave transparent spacing around the white shape"
+            "charging bolt should leave transparent spacing around the solid shape"
         );
 
-        for (x, y) in [(44, 29), (24, 35), (30, 36), (29, 53)] {
+        for (x, y) in [(40, 12), (22, 31), (47, 29), (28, 48)] {
             let idx = ((y * ICON_SIZE as i32 + x) * 4) as usize;
             assert_eq!(
                 bytes[idx + 3],
@@ -709,6 +718,10 @@ mod tests {
                 "charging bolt halo should stay transparent near the white shape at {x},{y}"
             );
         }
+
+        let light_style = TrayVisualStyle::from_settings(&test_settings(), TrayTheme::Light);
+        let light_bytes = render_mouse_icon_rgba(&state, &light_style);
+        assert_eq!(&light_bytes[bolt_idx..bolt_idx + 4], &[0, 0, 0, 255]);
     }
 
     #[test]

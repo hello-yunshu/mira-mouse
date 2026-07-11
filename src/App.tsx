@@ -26,29 +26,33 @@ import { SettingsPage } from './Settings';
 import { AboutPage } from './About';
 import { BatteryUsageModal } from './BatteryUsage';
 import { BatteryLevelIcon } from './BatteryLevelIcon';
-import type { AboutInfo, AppSettings, DeviceCapabilities, DeviceSnapshot, DeviceSnapshotEntry, DeviceState, DpiStage, PluginCapability, PluginCapabilityPlacement, PluginField, PluginFieldFormat, PluginUpdateInfo, RangeSpec, ThemeMode } from './types';
+import type { AboutInfo, AppSettings, DeviceCapabilities, DeviceSnapshot, DeviceSnapshotEntry, DeviceState, DpiStage, PluginCapability, PluginCapabilityPlacement, PluginField, PluginFieldFormat, RangeSpec, ThemeMode } from './types';
 import {
   MAX_CONTROL_GROUPS,
   MAX_STATUS_ITEMS,
   readPath,
+  resolveFieldMutationParams,
+  resolveFieldParams,
   resolveMutation,
   resolveFieldLabel,
+  resolveFieldValueLabel,
   resolveFieldOptions,
   resolveFieldRange,
   resolveStageLayout,
   resolveStateMapping,
+  resolveStatusField,
   resolveStatusDisplay,
   resolveSwitchState,
   resolveVisibleWhen,
   resolveZones,
 } from './pluginAdapter';
-import { onAppNotification, notifyError, notifyInfo, notifySuccess, type AppNotification } from './notify';
+import { onAppNotification, notifyError, notifySuccess, type AppNotification } from './notify';
 import { relaunchAfterUpdate, startAutomaticAppUpdateCheck } from './updater';
+import { startAutomaticPluginUpdateCheck } from './plugin-updater';
 import './styles.css';
 
 type View = 'dashboard' | 'settings' | 'about';
 type ControlMode = string;
-let automaticPluginCheckStarted = false;
 
 function isWindowsPlatform(): boolean {
   const previewPlatform = new URLSearchParams(window.location.search).get('platform');
@@ -162,6 +166,35 @@ function FormattedValue({ value, format, label, className }: {
     : <strong className={className}>{text}</strong>;
 }
 
+function CapabilitySummary({ capability, device }: { capability: PluginCapability; device: DeviceState }) {
+  const items = capability.metadata.summary ?? [];
+  if (items.length === 0) return null;
+  return (
+    <div
+      className="capability-summary"
+      aria-label={i18n.t('dashboard.deviceSummary')}
+      style={{ gridTemplateColumns: `repeat(${items.length}, minmax(0, 1fr))` }}
+    >
+      {items.map((item) => {
+        const value = readPath(device, item.source);
+        const option = item.options?.find((candidate) => candidate.value === value);
+        const valueLabel = option
+          ? resolveLabelKey(option.labelKey, device.pluginId)
+          : `${formatFieldValue(value, item.format, i18n.t)}${item.unit ? ` ${item.unit}` : ''}`;
+        const label = item.labelKey
+          ? resolveLabelKey(item.labelKey, device.pluginId)
+          : item.label ?? item.source;
+        return (
+          <span key={`${label}:${item.source}`}>
+            {label}
+            <FormattedValue value={value} format={item.format} label={valueLabel} />
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
 function capabilityGroupLabel(group: string): string {
   return i18n.t(`capability.group.${group}`, { defaultValue: group });
 }
@@ -219,6 +252,16 @@ function selectedDeviceEntry(entries: DeviceSnapshotEntry[]): DeviceSnapshotEntr
 
 function entryToState(entry: DeviceSnapshotEntry | undefined): DeviceState | undefined {
   return entry ? snapshotToState(entry.snapshot) : undefined;
+}
+
+function batteryUsageTarget(entry: DeviceSnapshotEntry | undefined) {
+  const snapshot = entry?.snapshot;
+  if (!snapshot) return undefined;
+  const battery = snapshot.batteries?.find((item) => item.id === 'mouse') ?? snapshot.batteries?.[0];
+  return {
+    name: snapshot.historyIdentity?.displayName ?? snapshot.displayName,
+    componentId: battery?.id,
+  };
 }
 
 function DeviceAura({ color }: { color?: string }) {
@@ -285,6 +328,15 @@ function placementsFor(capability: PluginCapability, region: PluginRegion): NonN
 
 /** 从插件声明中取得用于宿主装饰的颜色，不依赖任何厂商状态字段名。 */
 function declaredAccentColor(device: DeviceState): string | undefined {
+  // 主题色是插件明确声明的展示契约。鼠标与接收器同时存在时，插件可稳定
+  // 指向鼠标灯光，不受 capability/zone 排列顺序影响。
+  for (const capability of device.pluginCapabilities) {
+    const source = capability.metadata.accentSource;
+    if (!source) continue;
+    const value = readPath(device, source);
+    if (typeof value === 'string') return value;
+  }
+  // 兼容尚未声明 accentSource 的旧插件：优先使用灯光颜色，再回退 DPI。
   for (const capability of device.pluginCapabilities) {
     const zones = capability.metadata.zones ?? [];
     for (const zone of zones) {
@@ -294,6 +346,8 @@ function declaredAccentColor(device: DeviceState): string | undefined {
         if (typeof value === 'string') return value;
       }
     }
+  }
+  for (const capability of device.pluginCapabilities) {
     const layout = capability.metadata.stageLayout;
     if (layout) {
       const stages = readPath(device, layout.colorSource ?? layout.dotsSource) as DpiStage[] | undefined;
@@ -390,7 +444,18 @@ function FieldEditModal({ field, device, writeBusy, onClose, onApply, title, cur
   title?: string;
   currentValue?: unknown;
 }) {
-  const resolvedTitle = title ?? resolveFieldLabel(field, device, device.pluginId);
+  const fieldLabel = resolveFieldLabel(field, device, device.pluginId);
+  const resolveEditKey = (key: string, params: Record<string, unknown>) => {
+    const namespace = device.pluginId && i18n.exists(key, { ns: device.pluginId })
+      ? device.pluginId
+      : 'translation';
+    return i18n.t(key, { ns: namespace, ...params });
+  };
+  const resolvedTitle = title
+    ?? (field.editTitleKey ? resolveEditKey(field.editTitleKey, { label: fieldLabel, field: fieldLabel }) : fieldLabel);
+  const editorLabel = field.editLabelKey
+    ? resolveEditKey(field.editLabelKey, { label: fieldLabel, field: fieldLabel })
+    : fieldLabel;
   const initialValue = currentValue ?? readPath(device, field.source);
   const range = resolveFieldRange(field);
   const options = resolveFieldOptions(field, device);
@@ -413,8 +478,16 @@ function FieldEditModal({ field, device, writeBusy, onClose, onApply, title, cur
 
   const submitDisabled = useMemo(() => {
     if (writeBusy) return true;
+    if (field.editor === 'modal-select') return String(draft) === String(initialValue ?? '');
     return draft === initialValue;
-  }, [writeBusy, draft, initialValue]);
+  }, [writeBusy, draft, initialValue, field.editor]);
+
+  const optionLabel = (option: ReturnType<typeof resolveFieldOptions>[number]) => {
+    const resolved = resolveLabelKey(option.labelKey, device.pluginId);
+    return resolved === String(option.value)
+      ? formatFieldValue(option.value, field.format, i18n.t)
+      : resolved;
+  };
 
   const handleSubmit = () => {
     if (field.editor === 'modal-select') {
@@ -430,16 +503,16 @@ function FieldEditModal({ field, device, writeBusy, onClose, onApply, title, cur
       case 'modal-select':
         return (
           <label className="edit-field">
-            <span>{resolvedTitle}</span>
+            <span>{editorLabel}</span>
             <select
               autoFocus
-              aria-label={resolvedTitle}
+              aria-label={editorLabel}
               value={String(draft ?? '')}
               disabled={writeBusy}
               onChange={(event) => setDraft(event.target.value)}
             >
               {options.map((option) => (
-                <option key={String(option.value)} value={String(option.value)}>{resolveLabelKey(option.labelKey, device.pluginId)}</option>
+                <option key={String(option.value)} value={String(option.value)}>{optionLabel(option)}</option>
               ))}
             </select>
           </label>
@@ -461,11 +534,11 @@ function FieldEditModal({ field, device, writeBusy, onClose, onApply, title, cur
       case 'modal-range':
         return (
           <label className="edit-field range-field">
-            <span>{resolvedTitle}</span>
+            <span>{editorLabel}</span>
             <input
               type="range"
               autoFocus
-              aria-label={resolvedTitle}
+              aria-label={editorLabel}
               value={typeof draft === 'number' ? draft : Number(draft ?? 0)}
               min={range?.min}
               max={range?.max}
@@ -479,11 +552,11 @@ function FieldEditModal({ field, device, writeBusy, onClose, onApply, title, cur
       case 'modal-number':
         return (
           <label className="edit-field">
-            <span>{resolvedTitle}</span>
+            <span>{editorLabel}</span>
             <input
               type="number"
               autoFocus
-              aria-label={resolvedTitle}
+              aria-label={editorLabel}
               value={typeof draft === 'number' ? draft : Number(draft ?? 0)}
               min={range?.min}
               max={range?.max}
@@ -496,11 +569,11 @@ function FieldEditModal({ field, device, writeBusy, onClose, onApply, title, cur
       case 'modal-gradient':
         return (
           <label className="edit-field">
-            <span>{resolvedTitle}</span>
+            <span>{editorLabel}</span>
             <input
               type="text"
               autoFocus
-              aria-label={resolvedTitle}
+              aria-label={editorLabel}
               value={typeof draft === 'string' ? draft : String(draft ?? '')}
               disabled={writeBusy}
               onChange={(event) => setDraft(event.target.value)}
@@ -550,17 +623,19 @@ function SwitchField({ field, device, writeBusy, runMutation }: {
 
   const handleClick = () => {
     if (!mutation) return;
-    const param = field.param ?? 'value';
     if (isOn) {
-      void runMutation(mutation, { ...field.params, [param]: sw.offValue });
+      void runMutation(mutation, resolveFieldMutationParams(field, device, sw.offValue));
     } else {
       let restoreValue = restoreRef.current;
       if (restoreValue === undefined && field.options) {
         const nonOff = field.options.find((opt) => opt.value !== sw.offValue);
         restoreValue = nonOff?.value;
       }
+      if (restoreValue === undefined && typeof sw.offValue === 'boolean') {
+        restoreValue = !sw.offValue;
+      }
       if (restoreValue !== undefined) {
-        void runMutation(mutation, { ...field.params, [param]: restoreValue });
+        void runMutation(mutation, resolveFieldMutationParams(field, device, restoreValue));
       }
     }
   };
@@ -593,6 +668,7 @@ function FieldRenderer({ field, device, writeBusy, runMutation }: {
   const writable = Boolean(mutation && !writeBusy);
   const label = resolveFieldLabel(field, device, device.pluginId);
   const value = readPath(device, field.source);
+  const valueLabel = resolveFieldValueLabel(field, device, device.pluginId);
 
   const applyMutation = (mutation: string, params: Record<string, unknown>) => {
     void runMutation(mutation, params);
@@ -611,7 +687,7 @@ function FieldRenderer({ field, device, writeBusy, runMutation }: {
             className={`plugin-toggle ${value === true ? 'active' : ''}`}
             aria-pressed={value === true}
             disabled={!writable}
-            onClick={() => mutation && applyMutation(mutation, { ...field.params, [field.param ?? 'value']: value !== true })}
+            onClick={() => mutation && applyMutation(mutation, resolveFieldMutationParams(field, device, value !== true))}
           >{value === true ? i18n.t('common.on') : i18n.t('common.off')}</button>
         </>
       );
@@ -634,7 +710,7 @@ function FieldRenderer({ field, device, writeBusy, runMutation }: {
                 className={value === option.value ? 'active' : ''}
                 aria-pressed={value === option.value}
                 disabled={!writable}
-                onClick={() => mutation && applyMutation(mutation, { ...field.params, [field.param ?? 'value']: option.value })}
+                onClick={() => mutation && applyMutation(mutation, resolveFieldMutationParams(field, device, option.value))}
               >{resolveLabelKey(option.labelKey, device.pluginId)}</button>
             ))}
           </div>
@@ -646,7 +722,7 @@ function FieldRenderer({ field, device, writeBusy, runMutation }: {
       return (
         <>
           <span>{label}</span>
-          <FormattedValue value={value} format={field.format} className="plugin-current-value" />
+          <FormattedValue value={value} format={field.format} label={valueLabel} className="plugin-current-value" />
         </>
       );
 
@@ -656,7 +732,7 @@ function FieldRenderer({ field, device, writeBusy, runMutation }: {
           type="button"
           className="plugin-action"
           disabled={!writable}
-          onClick={() => mutation && applyMutation(mutation, field.params ?? {})}
+          onClick={() => mutation && applyMutation(mutation, resolveFieldParams(field, device))}
         >{label || i18n.t('common.execute')}</button>
       );
 
@@ -674,7 +750,7 @@ function FieldRenderer({ field, device, writeBusy, runMutation }: {
             onClick={() => setEditing(true)}
           >
             <span>{label}</span>
-            <FormattedValue value={value} format={field.format} />
+            <FormattedValue value={value} format={field.format} label={valueLabel} />
           </button>
           {editing && (
             <FieldEditModal
@@ -683,7 +759,7 @@ function FieldRenderer({ field, device, writeBusy, runMutation }: {
               writeBusy={writeBusy}
               onClose={() => setEditing(false)}
               onApply={(v) => {
-                if (mutation) applyMutation(mutation, { ...field.params, [field.param ?? 'value']: v });
+                if (mutation) applyMutation(mutation, resolveFieldMutationParams(field, device, v));
                 setEditing(false);
               }}
             />
@@ -695,7 +771,7 @@ function FieldRenderer({ field, device, writeBusy, runMutation }: {
       return (
         <>
           <span>{label}</span>
-          <FormattedValue value={value} format={field.format} className="plugin-current-value" />
+          <FormattedValue value={value} format={field.format} label={valueLabel} className="plugin-current-value" />
         </>
       );
 
@@ -704,10 +780,219 @@ function FieldRenderer({ field, device, writeBusy, runMutation }: {
       return (
         <>
           <span>{label}</span>
-          <FormattedValue value={value} format={field.format} className="plugin-current-value" />
+          <FormattedValue value={value} format={field.format} label={valueLabel} className="plugin-current-value" />
         </>
       );
   }
+}
+
+/**
+ * 通用数值指标读数。任何以 hertz 声明、且只有一个可编辑字段的能力都会
+ * 使用该布局；视觉层只依据插件提供的格式和 placement，不依赖能力或厂商名。
+ */
+function MetricField({ capability, field, device, writeBusy, runMutation }: {
+  capability: PluginCapability;
+  field: PluginField;
+  device: DeviceState;
+  writeBusy: boolean;
+  runMutation: (mutation: string, params: Record<string, unknown>) => Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const mutation = resolveMutation(field.mutation, device.writableMutations);
+  const writable = Boolean(mutation && !writeBusy);
+  const value = readPath(device, field.source);
+  const hasHertzValue = field.format === 'hertz' && typeof value === 'number';
+  const valueText = hasHertzValue ? String(value) : formatFieldValue(value, field.format, i18n.t);
+
+  return (
+    <div className="control-reading mode-reading metric-reading">
+      <WaveSine weight="regular" />
+      <span>{i18n.t('dashboard.currentPollingRate')}</span>
+      <button
+        type="button"
+        className="metric-reading-value editable-reading"
+        aria-label={hasHertzValue
+          ? i18n.t('dashboard.currentPollingRateEdit', { value: valueText })
+          : i18n.t('dashboard.pollingRateNotReportedEdit')}
+        disabled={!writable}
+        onClick={() => setEditing(true)}
+      >
+        <strong>{valueText}</strong>
+        {hasHertzValue && <em>Hz</em>}
+      </button>
+      <CapabilitySummary capability={capability} device={device} />
+      {!writable && <p className="setting-hint">{i18n.t('dashboard.pollingReadonlyHint')}</p>}
+      {editing && (
+        <FieldEditModal
+          field={field}
+          device={device}
+          writeBusy={writeBusy}
+          title={i18n.t('dashboard.setPollingRateTitle')}
+          onClose={() => setEditing(false)}
+          onApply={(nextValue) => {
+            if (mutation) void runMutation(mutation, resolveFieldMutationParams(field, device, nextValue));
+            setEditing(false);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * 旧版普通设置块的表现壳层。
+ *
+ * 设备的字段、可写 mutation 和选项仍完全来自插件声明；这里仅固定普通设置
+ * 在界面中的图标、标题和可编辑读数样式，避免解耦后被误渲染成灯光卡片。
+ */
+function GenericFieldControl({ field, device, writeBusy, runMutation }: {
+  field: PluginField;
+  device: DeviceState;
+  writeBusy: boolean;
+  runMutation: (mutation: string, params: Record<string, unknown>) => Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const restoreRef = useRef<unknown>(undefined);
+
+  const mutation = resolveMutation(field.mutation, device.writableMutations);
+  const writable = Boolean(mutation && !writeBusy);
+  const value = readPath(device, field.source);
+  const label = resolveFieldLabel(field, device, device.pluginId);
+  const valueLabel = resolveFieldValueLabel(field, device, device.pluginId);
+  const switchValue = field.switch ? readPath(device, field.switch.source) : undefined;
+
+  useEffect(() => {
+    if (field.switch && switchValue !== field.switch.offValue && switchValue != null) {
+      restoreRef.current = switchValue;
+    }
+  }, [field.switch, switchValue]);
+
+  if (!resolveVisibleWhen(field.visibleWhen, device)) return null;
+
+  const apply = (nextValue: unknown) => {
+    if (mutation) void runMutation(mutation, resolveFieldMutationParams(field, device, nextValue));
+  };
+
+  switch (field.editor) {
+    case 'inline-toggle': {
+      const isOn = field.switch ? resolveSwitchState(field, device) : value === true;
+      return (
+        <button
+          type="button"
+          className={`plugin-toggle ${isOn ? 'active' : ''}`}
+          aria-pressed={isOn}
+          disabled={!writable}
+          onClick={() => {
+            if (!field.switch) {
+              apply(!isOn);
+              return;
+            }
+            if (isOn) {
+              apply(field.switch.offValue);
+              return;
+            }
+            const restored = restoreRef.current
+              ?? field.options?.find((option) => option.value !== field.switch?.offValue)?.value;
+            if (restored !== undefined) apply(restored);
+          }}
+        >{isOn ? i18n.t('common.on') : i18n.t('common.off')}</button>
+      );
+    }
+
+    case 'inline-segmented': {
+      const options = resolveFieldOptions(field, device);
+      return (
+        <div
+          className="plugin-segmented"
+          role="group"
+          aria-label={label}
+          style={{ gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))` }}
+        >
+          {options.map((option) => (
+            <button
+              key={String(option.value)}
+              type="button"
+              className={value === option.value ? 'active' : ''}
+              aria-pressed={value === option.value}
+              disabled={!writable}
+              onClick={() => apply(option.value)}
+            >{resolveLabelKey(option.labelKey, device.pluginId)}</button>
+          ))}
+        </div>
+      );
+    }
+
+    case 'inline-action':
+      return (
+        <button type="button" className="plugin-action" disabled={!writable} onClick={() => mutation && void runMutation(mutation, resolveFieldParams(field, device))}>
+          {label || i18n.t('common.execute')}
+        </button>
+      );
+
+    case 'modal-select':
+    case 'modal-color':
+    case 'modal-range':
+    case 'modal-number':
+    case 'modal-gradient':
+      return (
+        <>
+          <button
+            type="button"
+            className="plugin-value-button editable-reading"
+            aria-label={`${label}：${valueLabel ?? formatFieldValue(value, field.format, i18n.t)}，点击编辑`}
+            disabled={!writable}
+            onClick={() => setEditing(true)}
+          >
+            {(field.editor === 'modal-color' || field.format === 'color') && typeof value === 'string' && <i style={{ '--light-color': value } as React.CSSProperties} />}
+            <FormattedValue value={value} format={field.format} label={valueLabel} />
+          </button>
+          {editing && (
+            <FieldEditModal
+              field={field}
+              device={device}
+              writeBusy={writeBusy}
+              onClose={() => setEditing(false)}
+              onApply={(nextValue) => {
+                apply(nextValue);
+                setEditing(false);
+              }}
+            />
+          )}
+        </>
+      );
+
+    case 'inline-value':
+    case 'static-readonly':
+    default:
+      return <FormattedValue value={value} format={field.format} label={valueLabel} className="plugin-current-value" />;
+  }
+}
+
+function GenericCapabilityControl({ capability, device, writeBusy, runMutation }: {
+  capability: PluginCapability;
+  device: DeviceState;
+  writeBusy: boolean;
+  runMutation: (mutation: string, params: Record<string, unknown>) => Promise<void>;
+}) {
+  const fields = (capability.metadata.fields ?? []).filter((field) => resolveVisibleWhen(field.visibleWhen, device));
+  const label = resolveLabelKey(capability.labelKey, device.pluginId);
+
+  return (
+    <div className="control-reading mode-reading plugin-control-reading">
+      <UserCircle weight="regular" />
+      <span>{label}</span>
+      {fields.map((field) => (
+        <GenericFieldControl
+          key={field.id}
+          field={field}
+          device={device}
+          writeBusy={writeBusy}
+          runMutation={runMutation}
+        />
+      ))}
+      <CapabilitySummary capability={capability} device={device} />
+    </div>
+  );
 }
 
 /// DPI 分档布局。读取 stageLayout 声明渲染档位点与值按钮。
@@ -743,6 +1028,7 @@ function StageLayout({ capability, device, writeBusy, runMutation }: {
     editor: 'modal-number',
     range,
     labelKey: 'dashboard.dpiValue',
+    editLabelKey: 'dashboard.dpiValue',
   };
 
   return (
@@ -828,6 +1114,9 @@ function ZoneRenderer({ capability, device, writeBusy, runMutation }: {
   const zoneColor = colorField ? readPath(device, colorField.source) as string | undefined : undefined;
 
   const visibleFields = activeZone.fields.filter((f) => resolveVisibleWhen(f.visibleWhen, device));
+  // 条件显示的次级区域通常是接收器等附属对象；字段较多时使用与旧界面一致
+  // 的紧凑密度。这里仅依赖 zone 的声明形态，不依赖 zone id。
+  const compactDetailGrid = Boolean(activeZone.visibleWhen) && visibleFields.length >= 5;
 
   return (
     <>
@@ -851,10 +1140,10 @@ function ZoneRenderer({ capability, device, writeBusy, runMutation }: {
       )}
       <div className="lighting-swatch" style={{ '--light-color': zoneColor ?? '#b87ab0' } as React.CSSProperties} />
       <div className="lighting-sections" aria-label={i18n.t('dashboard.lightingGroups')}>
-        <div className={`lighting-group lighting-group-${activeZone.id}`}>
-          {multipleZones && <p className="lighting-group-title">{resolveLabelKey(activeZone.labelKey, device.pluginId)}</p>}
+        <div className={`lighting-group lighting-group-${activeZone.id}${compactDetailGrid ? ' is-compact' : ''}`}>
+          <p className="lighting-group-title">{resolveLabelKey(activeZone.labelKey, device.pluginId)}</p>
           <div
-            className="lighting-rows"
+            className={`lighting-rows${compactDetailGrid ? ' is-compact' : ''}`}
             style={{ gridTemplateColumns: `repeat(${Math.max(visibleFields.length, 1)}, minmax(0, 1fr))` }}
           >
             {visibleFields.map((field) => (
@@ -883,8 +1172,20 @@ function StatusItem({ capability, device, placement, onClick }: {
   const display = resolveStatusDisplay(capability);
   if (!display) return null;
 
-  const value = readPath(device, display.valueSource);
-  const label = resolveLabelKey(capability.labelKey, device.pluginId);
+  const requestedField = resolveStatusField(capability, display.onClickField, device);
+  const preferredField = display.onClickField
+    ? ([...(capability.metadata.fields ?? []), ...(capability.metadata.zones ?? []).flatMap((zone) => zone.fields)]
+      .find((field) => field.id === display.onClickField))
+    : undefined;
+  const valueSource = requestedField && requestedField !== preferredField
+    ? requestedField.source
+    : display.valueSource;
+  const value = readPath(device, valueSource);
+  const capabilityLabel = resolveLabelKey(capability.labelKey, device.pluginId);
+  const fieldLabel = requestedField ? resolveFieldLabel(requestedField, device, device.pluginId) : '';
+  const label = display.labelKey
+    ? resolveLabelKey(display.labelKey, device.pluginId)
+    : fieldLabel || capabilityLabel;
 
   let valueText: string;
   if (display.valueOptions) {
@@ -920,6 +1221,7 @@ function CapabilityRouter({ capability, device, writeBusy, runMutation }: {
     return (
       <div className="control-reading dpi-reading">
         <StageLayout capability={capability} device={device} writeBusy={writeBusy} runMutation={runMutation} />
+        <CapabilitySummary capability={capability} device={device} />
       </div>
     );
   }
@@ -927,40 +1229,16 @@ function CapabilityRouter({ capability, device, writeBusy, runMutation }: {
     return (
       <div className="control-reading mode-reading lighting-reading">
         <ZoneRenderer capability={capability} device={device} writeBusy={writeBusy} runMutation={runMutation} />
+        <CapabilitySummary capability={capability} device={device} />
       </div>
     );
   }
   const fields = (capability.metadata.fields ?? []).filter((f) => resolveVisibleWhen(f.visibleWhen, device));
-  return (
-    <div className="control-reading mode-reading plugin-control-reading">
-      {fields.map((field) => (
-        <FieldRenderer
-          key={field.id}
-          field={field}
-          device={device}
-          writeBusy={writeBusy}
-          runMutation={runMutation}
-        />
-      ))}
-    </div>
-  );
-}
-
-/// 在 capability 的 fields 和 zones[].fields 中查找指定 ID 的字段。
-function findField(capability: PluginCapability, fieldId: string): PluginField | undefined {
-  const fields = capability.metadata.fields;
-  if (fields) {
-    const found = fields.find((f) => f.id === fieldId);
-    if (found) return found;
+  const metricField = fields.length === 1 && fields[0].format === 'hertz' ? fields[0] : undefined;
+  if (metricField) {
+    return <MetricField capability={capability} field={metricField} device={device} writeBusy={writeBusy} runMutation={runMutation} />;
   }
-  const zones = capability.metadata.zones;
-  if (zones) {
-    for (const zone of zones) {
-      const found = zone.fields.find((f) => f.id === fieldId);
-      if (found) return found;
-    }
-  }
-  return undefined;
+  return <GenericCapabilityControl capability={capability} device={device} writeBusy={writeBusy} runMutation={runMutation} />;
 }
 
 function DeviceDetails({ capabilities, pluginCapabilities, onClose }: { capabilities: DeviceCapabilities; pluginCapabilities: PluginCapability[]; onClose: () => void }) {
@@ -1118,7 +1396,7 @@ function Dashboard({
       for (const placement of placements) {
         let onClick: (() => void) | undefined;
         if (display.onClickField) {
-          const field = findField(capability, display.onClickField);
+          const field = resolveStatusField(capability, display.onClickField, device);
           if (field) {
             const isWritable = Boolean(resolveMutation(field.mutation, device.writableMutations));
             if (isWritable) {
@@ -1297,7 +1575,7 @@ function Dashboard({
               const field = editingField.field;
               const mutation = resolveMutation(field.mutation, device.writableMutations);
               if (mutation) {
-                void runMutation(mutation, { ...field.params, [field.param ?? 'value']: value });
+                void runMutation(mutation, resolveFieldMutationParams(field, device, value));
               }
               setEditingField(null);
             }}
@@ -1350,6 +1628,7 @@ export default function App() {
   const [refreshNonce, setRefreshNonce] = useState(0);
   const [appNotification, setAppNotification] = useState<AppNotification>();
   const [showBatteryUsage, setShowBatteryUsage] = useState(false);
+  const [batteryUsageSession, setBatteryUsageSession] = useState(0);
   const [pluginLocaleRevision, setPluginLocaleRevision] = useState(0);
   const windowsPlatform = isWindowsPlatform();
   const macPlatform = isMacPlatform();
@@ -1373,7 +1652,13 @@ export default function App() {
     setSettingsPluginFocusToken((value) => value + 1);
   }, []);
   const openBatteryUsage = useCallback(() => {
+    setBatteryUsageSession((value) => value + 1);
     setShowBatteryUsage(true);
+  }, []);
+  const reloadPluginLocales = useCallback(() => {
+    void loadPluginLocales().then((loaded) => {
+      if (loaded) setPluginLocaleRevision((value) => value + 1);
+    });
   }, []);
 
   useEffect(() => onAppNotification(setAppNotification), []);
@@ -1384,11 +1669,19 @@ export default function App() {
     let unlistenResume: (() => void) | undefined;
     let unlistenFocus: (() => void) | undefined;
     let unlistenBatteryUsage: (() => void) | undefined;
+    let unlistenPluginLocales: (() => void) | undefined;
     listen('navigate-about-update', () => openAboutUpdate())
       .then((un) => { unlisten = un; })
       .catch(() => {});
+    let unlistenPluginUpdate: (() => void) | undefined;
+    listen('navigate-plugin-update', () => openSettingsPluginUpdate())
+      .then((un) => { unlistenPluginUpdate = un; })
+      .catch(() => {});
     listen('open-battery-usage', () => openBatteryUsage())
       .then((un) => { unlistenBatteryUsage = un; })
+      .catch(() => {});
+    listen('plugin-locales-updated', () => reloadPluginLocales())
+      .then((un) => { unlistenPluginLocales = un; })
       .catch(() => {});
     listen('window-resumed', () => {
       setRefreshNonce((value) => value + 1);
@@ -1403,6 +1696,7 @@ export default function App() {
         invoke<string | null>('take_pending_notification_action')
           .then((action) => {
             if (action === 'about-update') openAboutUpdate();
+            if (action === 'settings-plugin-update') openSettingsPluginUpdate();
             if (action === 'battery-usage') openBatteryUsage();
           })
           .catch(() => {});
@@ -1412,21 +1706,19 @@ export default function App() {
     }
     return () => {
       if (unlisten) unlisten();
+      if (unlistenPluginUpdate) unlistenPluginUpdate();
       if (unlistenResume) unlistenResume();
       if (unlistenFocus) unlistenFocus();
       if (unlistenBatteryUsage) unlistenBatteryUsage();
+      if (unlistenPluginLocales) unlistenPluginLocales();
     };
-  }, [openAboutUpdate, openBatteryUsage, pureWeb]);
+  }, [openAboutUpdate, openBatteryUsage, openSettingsPluginUpdate, pureWeb, reloadPluginLocales]);
 
   // 加载插件 locale，注册为 i18n namespace（以插件 ID 命名）。
   // 异步加载完成后刷新插件标签 memo，加载前使用 host 回退标签。
   useEffect(() => {
-    let cancelled = false;
-    void loadPluginLocales().then((loaded) => {
-      if (loaded && !cancelled) setPluginLocaleRevision((value) => value + 1);
-    });
-    return () => { cancelled = true; };
-  }, []);
+    reloadPluginLocales();
+  }, [reloadPluginLocales]);
 
   useEffect(() => {
     if (!appNotification) return;
@@ -1448,21 +1740,7 @@ export default function App() {
             })
             .catch(() => { /* Pre-release and offline builds skip automatic application checks. */ });
         }
-        if (settings.automaticPluginUpdateChecks && !automaticPluginCheckStarted) {
-          automaticPluginCheckStarted = true;
-          void invoke<PluginUpdateInfo[]>('plugin_updates_check')
-            .then((updates) => {
-              const available = updates.filter((item) => item.updateAvailable);
-              if (available.length > 0) {
-                notifyInfo(
-                  i18n.t('dashboard.pluginUpdateFound'),
-                  i18n.t('dashboard.pluginUpdateFoundBody', { count: available.length }),
-                  'settings-plugin-update',
-                );
-              }
-            })
-            .catch(() => { /* Automatic checks stay quiet when offline. */ });
-        }
+        void startAutomaticPluginUpdateCheck(settings.automaticPluginUpdateChecks);
       })
       .catch(() => setThemeLoaded(true));
   }, [pureWeb]);
@@ -1554,6 +1832,7 @@ export default function App() {
   }, [demoMode]);
 
   const themeColor = device ? declaredAccentColor(device) : undefined;
+  const selectedBatteryUsageTarget = batteryUsageTarget(selectedDeviceEntry(deviceEntries));
   useEffect(() => {
     if (!themeLoaded) return;
     applyTheme(theme, themeColor);
@@ -1574,9 +1853,12 @@ export default function App() {
     {view === 'settings' && <SettingsPage previewMode={pureWeb} focusPluginUpdateToken={settingsPluginFocusToken} onNavigateAbout={() => setView('about')} onOpenBatteryUsage={openBatteryUsage} onThemeChange={setTheme} pluginCapabilities={device?.pluginCapabilities ?? []} writableMutations={device?.writableMutations ?? []} />}
     {view === 'about' && <AboutPage previewMode={pureWeb} focusUpdateToken={aboutFocusToken} onBack={() => setView('settings')} />}
     <BatteryUsageModal
+      key={batteryUsageSession}
       open={showBatteryUsage}
       onClose={() => setShowBatteryUsage(false)}
       hasBattery={(device?.batteries.length ?? 0) > 0}
+      preferredDeviceName={selectedBatteryUsageTarget?.name}
+      preferredComponentId={selectedBatteryUsageTarget?.componentId}
     />
     {appNotification && (
       <aside

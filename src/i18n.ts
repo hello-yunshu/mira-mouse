@@ -75,7 +75,11 @@ function unflattenKeys(flat: Record<string, string>): Record<string, unknown> {
   return result;
 }
 
-/** 解析 labelKey，优先查找插件 namespace，回退到 host translation namespace。
+/** 解析 labelKey，优先查找插件 namespace，再回退到 host translation namespace。
+ *
+ * 早期插件将通用能力写成 `capability.battery`，而宿主词条保存在
+ * `plugin.label.capability.battery`。声明式迁移后不能让这类已签名插件
+ * 直接把 key 渲染到界面，因此保留这个无厂商知识的通用前缀回退。
  * @param labelKey i18n key（如 "lighting.fixed" 或 "plugin.label.capability.mouse-lighting"）
  * @param pluginId 当前设备匹配的插件 ID（如 "mira.logitech-hidpp"），用于 namespace 查找
  */
@@ -83,7 +87,14 @@ export function resolveLabelKey(labelKey: string, pluginId?: string): string {
   if (pluginId && i18n.exists(labelKey, { ns: pluginId })) {
     return i18n.t(labelKey, { ns: pluginId });
   }
-  return i18n.t(labelKey, { defaultValue: labelKey });
+  if (i18n.exists(labelKey, { ns: 'translation' })) {
+    return i18n.t(labelKey, { ns: 'translation' });
+  }
+  const prefixedHostKey = `plugin.label.${labelKey}`;
+  if (i18n.exists(prefixedHostKey, { ns: 'translation' })) {
+    return i18n.t(prefixedHostKey, { ns: 'translation' });
+  }
+  return labelKey;
 }
 
 /** Apply a settings language value: switch i18n language and update <html lang>. */

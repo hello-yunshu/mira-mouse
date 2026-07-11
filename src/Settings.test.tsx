@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SettingsPage } from './Settings';
 import type { AppSettings, PluginCapability } from './types';
+import { checkForPluginUpdates } from './plugin-updater';
 
 const { invokeMock, startAutomaticAppUpdateCheckMock } = vi.hoisted(() => ({
   invokeMock: vi.fn(),
@@ -134,5 +135,31 @@ describe('SettingsPage', () => {
     fireEvent.click(screen.getByRole('switch', { name: '自动检查 Mira 更新' }));
     fireEvent.click(screen.getByRole('switch', { name: '自动下载并安装' }));
     await waitFor(() => expect(startAutomaticAppUpdateCheckMock).toHaveBeenCalledWith(true, true));
+  });
+
+  it('shows cached plugin update results after opening from an update notification', async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'settings_get') return Promise.resolve(settings);
+      if (command === 'autostart_state') return Promise.resolve(false);
+      if (command === 'about_info') return Promise.resolve({
+        bundledPlugins: [{
+          pluginId: 'mira.example', version: '0.2.0', asset: 'mira.example.mira-plugin',
+          sha256: 'test', publisherKeyId: 'test', releaseTag: 'stable', bundleByDefault: false,
+          signatureVerified: true, evidence: 'test', source: 'installed',
+        }],
+      });
+      if (command === 'plugin_updates_check') return Promise.resolve([{
+        pluginId: 'mira.example', currentVersion: '0.2.0', availableVersion: '0.3.0', updateAvailable: true,
+      }]);
+      return Promise.resolve(undefined);
+    });
+    await checkForPluginUpdates();
+    const pluginUpdateCheckCalls = invokeMock.mock.calls.filter(([command]) => command === 'plugin_updates_check').length;
+
+    render(<SettingsPage onNavigateAbout={vi.fn()} onThemeChange={vi.fn()} focusPluginUpdateToken={1} />);
+
+    expect(await screen.findByText('可更新至 v0.3.0')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '更新插件' })).toBeInTheDocument();
+    expect(invokeMock.mock.calls.filter(([command]) => command === 'plugin_updates_check')).toHaveLength(pluginUpdateCheckCalls);
   });
 });

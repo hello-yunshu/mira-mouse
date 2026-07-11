@@ -39,9 +39,13 @@ export interface PluginField {
   mutation?: PluginMutation;
   param?: string;
   params?: Record<string, unknown>;
+  /** 写入组合参数时，从当前设备快照读取其余参数。当前字段值最后覆盖同名参数。 */
+  paramSources?: Record<string, string>;
   editor: PluginEditor;
   labelKey?: string;
   labelSource?: string;
+  editTitleKey?: string;
+  editLabelKey?: string;
   options?: PluginFieldOption[];
   optionSource?: string;
   range?: RangeSpec;
@@ -71,10 +75,22 @@ export interface PluginStageLayout {
 
 /** 状态栏显示声明。 */
 export interface PluginStatusDisplay {
+  labelKey?: string;
   valueSource: string;
   valueFormat?: PluginFieldFormat;
   valueOptions?: PluginFieldOption[];
   onClickField?: string;
+}
+
+/** 控件下方的只读摘要项；内容与路径均由插件声明。 */
+export interface PluginSummaryItem {
+  labelKey?: string;
+  /** 兼容旧插件的直接标签；新插件应优先使用 labelKey。 */
+  label?: string;
+  source: string;
+  unit?: string;
+  format?: PluginFieldFormat;
+  options?: PluginFieldOption[];
 }
 
 /** 字段名 → snapshot source 路径映射。 */
@@ -97,10 +113,13 @@ export interface PluginCapability {
   minFirmware?: string;
 }
 export interface PluginCapabilityMetadata {
+  /** 宿主主题色的设备状态来源。插件应指向鼠标灯光颜色，而非附属接收器颜色。 */
+  accentSource?: string;
   fields?: PluginField[];
   zones?: PluginZone[];
   stageLayout?: PluginStageLayout;
   statusDisplay?: PluginStatusDisplay;
+  summary?: PluginSummaryItem[];
   stateMapping?: PluginStateMapping;
   visibleWhen?: PluginVisibleWhen;
   [key: string]: unknown;

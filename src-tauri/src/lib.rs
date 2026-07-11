@@ -1082,10 +1082,13 @@ fn get_or_parse_package(
     ))
 }
 
-/// 清空 ProtocolPackage 缓存。在插件集合变化时调用。
+/// 清空插件派生缓存。在插件集合变化时调用。
 fn invalidate_package_cache(state: &SessionState) {
     if let Ok(mut cache) = state.cached_packages.lock() {
         cache.clear();
+    }
+    if let Ok(mut cache) = state.cached_plugin_locales.lock() {
+        *cache = None;
     }
 }
 
@@ -3781,58 +3784,27 @@ fn extract_plugin_locales(
     locales
 }
 
-/// 加载所有插件的 locale 文件（bundled + installed），返回
-/// pluginId → locale code → key → translation 映射。
+/// 从当前真正参与运行的插件集合读取 locale。
+///
+/// 不能先读内置包、再用文件名猜测已安装包：当已安装的新版插件覆盖内置
+/// 版本时，那种顺序会把旧 locale 送给前端，进而让新声明的 labelKey 原样
+/// 显示。`SessionState.plugins` 已是签名校验并按版本解析后的最终集合，直接
+/// 使用其中的文件映射可保证 locale 与设备协议包完全一致。
 fn load_all_plugin_locales(app: &AppHandle) -> PluginLocales {
-    let trust = production_trust_store();
     let mut result: PluginLocales = BTreeMap::new();
-
-    // 内置插件
-    if let Some(plugins_dir) = bundled_plugins_dir(app) {
-        if let Some(lock) = read_lock_file() {
-            for plugin in &lock.plugins {
-                if !plugin.bundle_by_default {
-                    continue;
-                }
-                let asset_path = plugins_dir.join(&plugin.asset);
-                let Ok(bytes) = fs::read(&asset_path) else {
-                    continue;
-                };
-                let Ok((_, files)) = extract_package(Cursor::new(&bytes), &trust, true) else {
-                    continue;
-                };
-                let locales = extract_plugin_locales(&files);
-                if !locales.is_empty() {
-                    result.insert(plugin.plugin_id.clone(), locales);
-                }
-            }
+    let state = app.state::<SessionState>();
+    let Ok(plugins) = state.plugins.lock() else {
+        return result;
+    };
+    let Some(plugins) = plugins.as_ref() else {
+        return result;
+    };
+    for (inspection, _, files) in plugins {
+        let locales = extract_plugin_locales(files);
+        if !locales.is_empty() {
+            result.insert(inspection.plugin_id.clone(), locales);
         }
     }
-
-    // 已安装插件
-    if let Ok(directory) = installed_plugins_dir(app) {
-        if let Ok(versions) = active_plugin_versions(app) {
-            for (plugin_id, _version) in versions {
-                if result.contains_key(&plugin_id) {
-                    continue;
-                }
-                let Some(path) = find_installed_plugin_path(&directory, &plugin_id, &trust) else {
-                    continue;
-                };
-                let Ok(bytes) = fs::read(&path) else {
-                    continue;
-                };
-                let Ok((_, files)) = extract_package(Cursor::new(&bytes), &trust, true) else {
-                    continue;
-                };
-                let locales = extract_plugin_locales(&files);
-                if !locales.is_empty() {
-                    result.insert(plugin_id, locales);
-                }
-            }
-        }
-    }
-
     result
 }
 
@@ -5960,12 +5932,20 @@ fn find_installed_plugin_path(
                     .and_then(|value| value.to_str())
                     .is_some_and(|name| name.contains(".rollback."))
         })
-        .find(|path| {
-            fs::read(path)
+        .filter_map(|path| {
+            let inspection = fs::read(&path)
                 .ok()
-                .and_then(|bytes| inspect_package(Cursor::new(bytes), trust, true).ok())
-                .is_some_and(|inspection| inspection.plugin_id == plugin_id)
+                .and_then(|bytes| inspect_package(Cursor::new(bytes), trust, true).ok())?;
+            (inspection.plugin_id == plugin_id)
+                .then(|| {
+                    semver::Version::parse(&inspection.version)
+                        .ok()
+                        .map(|version| (version, path))
+                })
+                .flatten()
         })
+        .max_by(|(left, _), (right, _)| left.cmp(right))
+        .map(|(_, path)| path)
 }
 
 fn install_plugin_update(app: &AppHandle, plugin_id: &str) -> Result<PluginInstallResult, String> {
@@ -6086,6 +6066,9 @@ fn install_plugin_update(app: &AppHandle, plugin_id: &str) -> Result<PluginInsta
     if backup_path.exists() {
         let _ = fs::remove_file(&backup_path);
     }
+    // 前端需重新装载当前活动插件的 locale；否则设备运行时已切到新包，
+    // 标签仍停留在旧包的 namespace 中。
+    let _ = app.emit("plugin-locales-updated", ());
     Ok(PluginInstallResult {
         plugin_id: plugin_id.to_string(),
         version: entry.version,
@@ -6313,8 +6296,14 @@ fn navigate_about_update(app: &AppHandle) {
     let _ = app.emit("navigate-about-update", ());
 }
 
+#[cfg(any(target_os = "windows", all(unix, not(target_os = "macos"))))]
+fn navigate_plugin_update(app: &AppHandle) {
+    focus_main(app.get_webview_window("main"));
+    let _ = app.emit("navigate-plugin-update", ());
+}
+
 /// 发送原生系统通知，可选地携带点击跳转动作。
-/// `action` 目前支持 `"about-update"` 与 `"battery-usage"`。
+/// `action` 目前支持 `"about-update"`、`"settings-plugin-update"` 与 `"battery-usage"`。
 /// - macOS：`tauri-plugin-notification` 不暴露点击回调，改将 action 写入
 ///   `pending_notification_action`，由前端窗口 focus 时通过
 ///   `take_pending_notification_action` 取走并执行跳转。
@@ -6348,7 +6337,7 @@ fn show_update_notification(
     {
         let _ = &state;
         let identifier = app.config().identifier.clone();
-        let navigate = action.as_deref() == Some("about-update");
+        let navigate = action.clone();
         std::thread::spawn(move || {
             let mut notification = notify_rust::Notification::new();
             notification
@@ -6361,10 +6350,14 @@ fn show_update_notification(
             notification.appname(&identifier);
             match notification.show() {
                 Ok(handle) => {
-                    if navigate {
+                    if let Some(action) = navigate {
                         handle.wait_for_action(|action_kind| {
                             if action_kind != "__closed" {
-                                navigate_about_update(&app);
+                                match action.as_str() {
+                                    "about-update" => navigate_about_update(&app),
+                                    "settings-plugin-update" => navigate_plugin_update(&app),
+                                    _ => {}
+                                }
                             }
                         });
                     }

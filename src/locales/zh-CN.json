@@ -45,6 +45,11 @@
     "deviceControl": "设备控制",
     "deviceStatus": "设备状态",
     "deviceSummary": "设备摘要",
+    "motionSync": "运动同步",
+    "angleSnap": "角度吸附",
+    "liftCutOff": "抬升高度",
+    "bluetoothSleep": "蓝牙休眠",
+    "wirelessSleep": "2.4G 休眠",
     "currentDpiEdit": "当前 DPI：{{value}}，点击编辑",
     "dpiNotReported": "DPI 未报告",
     "dpiStages": "DPI 档位",
@@ -93,6 +98,8 @@
     "hardwareSync": "硬件同步",
     "off": "已关闭",
     "on": "已开启",
+    "mouse": "鼠标灯光",
+    "receiver": "接收器灯光",
     "effectN": "灯效 {{value}}",
     "modeN": "模式 {{value}}",
     "extraColor": "第二色",
@@ -322,8 +329,8 @@
       "filterName": "Mira 配置"
     },
     "pluginUpdateCheck": {
-      "label": "启动时检查插件更新",
-      "hint": "仅检查已签名插件的新版本"
+      "label": "自动检查插件更新",
+      "hint": "启动后每 6 小时，以及网络恢复或回到前台后，检查已安装且已签名插件的新版本"
     },
     "pluginUpdate": {
       "check": "检查插件更新",
@@ -399,7 +406,7 @@
     "developer": "开发者：{{name}}",
     "copyright": "版权：{{name}}",
     "updateEnabledHint": "自动检查已启用，也可手动检查新版本",
-    "updateDisabledHint": "自动更新未启用，请前往 GitHub Release 页面手动下载。",
+    "updateDisabledHint": "当前构建未达到正式发布条件（releaseReady: false），自动更新已关闭。请前往 GitHub Release 页面手动下载。",
     "updateCheck": "检查更新",
     "updateChecking": "检查中…",
     "updateUpToDate": "已是最新",
