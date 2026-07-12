@@ -927,6 +927,10 @@ fn build_insights(
 ) -> Vec<BatteryInsight> {
     let mut insights = Vec::new();
     let groups = build_sample_groups(samples);
+    let window_start = match range {
+        "24h" => now - Duration::hours(24),
+        _ => now - Duration::days(10),
+    };
 
     for device in devices {
         let key = &device.key;
@@ -998,6 +1002,28 @@ fn build_insights(
         if let Some(mut consistency) = compute_consistency(&device_samples, range, now) {
             consistency.device_key = Some(key.clone());
             insights.push(consistency);
+        }
+
+        // 日均耗电：基于窗口内放电段速率换算为每天消耗百分比
+        if let Some(rate) = drain_rate(&device_samples, window_start, now) {
+            insights.push(BatteryInsight {
+                insight_type: "averageDailyDrain".into(),
+                severity: "info".into(),
+                title: "averageDailyDrain".into(),
+                message: format!("averageDailyDrain|{:.1}", rate * 24.0),
+                device_key: Some(key.clone()),
+            });
+        }
+
+        // 充电次数：窗口内充电状态转换 + session_gap 期间推断的充电
+        if let Some(count) = count_charges_in_window(&device_samples, window_start) {
+            insights.push(BatteryInsight {
+                insight_type: "chargingCount".into(),
+                severity: "info".into(),
+                title: "chargingCount".into(),
+                message: format!("chargingCount|{}", count),
+                device_key: Some(key.clone()),
+            });
         }
     }
 
@@ -1202,6 +1228,38 @@ fn analyze_charging_habit(
         message,
         device_key: None,
     })
+}
+
+/// 统计指定时间窗口内的充电次数。
+/// 包含两类：充电状态 false→true 的转换，以及 session_gap 期间推断的充电
+/// （非充电→非充电但电量上升，或电池更换）。
+fn count_charges_in_window(samples: &[&BatterySample], window_start: DateTime<Utc>) -> Option<u32> {
+    let recent: Vec<&&BatterySample> = samples.iter().filter(|s| s.at >= window_start).collect();
+    if recent.len() < 2 {
+        return None;
+    }
+    let mut sorted = recent.clone();
+    sorted.sort_by_key(|s| s.at);
+
+    let mut count = 0u32;
+    let mut prev_charging = sorted[0].charging;
+    for window in sorted.windows(2) {
+        let prev = window[0];
+        let curr = window[1];
+        if !prev_charging && curr.charging {
+            count += 1;
+        }
+        if (is_session_gap(prev.at, curr.at)
+            && !prev.charging
+            && !curr.charging
+            && curr.percentage > prev.percentage)
+            || is_battery_replacement(prev, curr)
+        {
+            count += 1;
+        }
+        prev_charging = curr.charging;
+    }
+    Some(count)
 }
 
 fn capitalize_first(value: &str) -> String {

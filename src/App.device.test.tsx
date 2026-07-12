@@ -19,7 +19,7 @@ const settings: AppSettings = {
   nightModeTriggerTime: true, nightModeTriggerTheme: false, nightModeThemeDark: true,
   nightModeTriggerCharging: false, nightModeTriggerLowBattery: false,
   nightModeTargetMouse: true, nightModeTargetReceiver: false,
-  refreshIntervalSeconds: 5, telemetryDisabled: true,
+  telemetryDisabled: true,
   automaticUpdateChecks: true, automaticUpdateInstall: false, automaticPluginUpdateChecks: true,
   batteryHistoryEnabled: true, batteryHistoryRetentionDays: 30, unusualDrainAlerts: false,
   language: 'auto',
@@ -157,6 +157,7 @@ describe('real device snapshot mapping', () => {
     invokeMock.mockImplementation((command: string) => {
       if (command === 'settings_get') return Promise.resolve(settings);
       if (command === 'device_snapshots') return Promise.resolve(entries(snapshot));
+      if (command === 'device_refresh_quick') return Promise.resolve();
       return Promise.reject(new Error(`unexpected command ${command}`));
     });
 
@@ -164,6 +165,7 @@ describe('real device snapshot mapping', () => {
     await screen.findByRole('heading', { name: 'AM INFINITY 8K MOUSE' });
     expect(screen.queryByLabelText('设备摘要')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('tab', { name: '回报率' }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('device_refresh_quick'));
     const summary = screen.getByLabelText('设备摘要');
     expect(summary).toHaveTextContent('运动同步开启');
     expect(summary).toHaveTextContent('角度吸附关闭');

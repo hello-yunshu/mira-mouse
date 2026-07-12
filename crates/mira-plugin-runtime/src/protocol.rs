@@ -132,9 +132,9 @@ pub enum SemanticField {
 impl SemanticField {
     /// 返回此语义字段对应的标准 output 名称候选列表。
     ///
-    /// 按优先级排列：第一个匹配的 output 会被选中。
-    /// 这些名称基于 `standard_reading` 中的协议输出约定，
-    /// 不是品牌特定名称。
+    /// 这些名称是同一语义的可选规范化来源。映射时会收集当前
+    /// workflow 中实际存在的所有候选项：例如 HID++ 标准/扩展回报率
+    /// 二选一，只能在运行时知道哪一步真正有效。
     pub fn standard_output_names(&self) -> &'static [&'static str] {
         match self {
             // battery output 包含 percentage 和 charging 字段
@@ -143,10 +143,24 @@ impl SemanticField {
             SemanticField::ReceiverBatteryPercent => {
                 &["receiverBattery", "receiver", "receiverIdle"]
             }
-            SemanticField::CurrentDpi => &["dpi", "dpiStages"],
-            SemanticField::PollingRate => &["reportRateList", "reportRateListExtended"],
-            SemanticField::ActiveProfile => &["profile"],
-            SemanticField::LightingState => &["mouseLighting", "lighting"],
+            SemanticField::CurrentDpi => &["dpi", "dpiExtended", "dpiStages"],
+            SemanticField::PollingRate => &["settings", "settingsExtended", "pollingRate"],
+            SemanticField::ActiveProfile => &[
+                "profileMgmtCurrent",
+                "profile",
+                "settings",
+                "dpi",
+                "onboardCurrentProfile",
+            ],
+            SemanticField::LightingState => &[
+                "mouseLighting",
+                "lighting",
+                "settings",
+                "mouseLightMode",
+                "mouseLightColor",
+                "mouseEffect",
+                "rgbControl",
+            ],
         }
     }
 }
@@ -161,19 +175,25 @@ pub fn map_semantic_to_outputs(
     fields: &BTreeSet<SemanticField>,
 ) -> (BTreeSet<String>, BTreeSet<String>) {
     let available = package.available_outputs(workflow_id);
+    map_semantic_fields_to_outputs(&available, fields)
+}
+
+fn map_semantic_fields_to_outputs(
+    available: &BTreeSet<String>,
+    fields: &BTreeSet<SemanticField>,
+) -> (BTreeSet<String>, BTreeSet<String>) {
     let mut targets = BTreeSet::new();
     let mut missing = BTreeSet::new();
 
     for field in fields {
-        let mut found = false;
+        let mut matched = 0_u8;
         for name in field.standard_output_names() {
             if available.contains(*name) {
                 targets.insert(name.to_string());
-                found = true;
-                break;
+                matched = matched.saturating_add(1);
             }
         }
-        if !found {
+        if matched == 0 {
             // 记录缺失的语义字段（用于诊断）
             missing.insert(format!("{field:?}"));
         }
@@ -632,6 +652,7 @@ fn standard_reading(
 
     if let Some(settings) = object(&reading.capabilities, "settings")
         .or_else(|| object(&reading.capabilities, "settingsExtended"))
+        .or_else(|| object(&reading.capabilities, "pollingRate"))
     {
         reading.polling_rate_hz =
             number(settings, "pollingRate").and_then(|value| u16::try_from(value).ok());
@@ -1037,6 +1058,55 @@ fn array<'a>(object: &'a serde_json::Map<String, Value>, key: &str) -> Option<&'
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn semantic_mapping_collects_all_available_runtime_sources() {
+        let available = BTreeSet::from([
+            "settings".to_string(),
+            "settingsExtended".to_string(),
+            "pollingRate".to_string(),
+            "profileMgmtCurrent".to_string(),
+            "profile".to_string(),
+            "mouseLightMode".to_string(),
+            "mouseLightColor".to_string(),
+        ]);
+        let fields = BTreeSet::from([
+            SemanticField::PollingRate,
+            SemanticField::ActiveProfile,
+            SemanticField::LightingState,
+        ]);
+
+        let (targets, missing) = map_semantic_fields_to_outputs(&available, &fields);
+
+        assert!(missing.is_empty());
+        for expected in [
+            "settings",
+            "settingsExtended",
+            "pollingRate",
+            "profileMgmtCurrent",
+            "profile",
+            "mouseLightMode",
+            "mouseLightColor",
+        ] {
+            assert!(targets.contains(expected), "missing target {expected}");
+        }
+    }
+
+    #[test]
+    fn normalizes_am35_quick_polling_profile_and_lighting_outputs() {
+        let outputs = BTreeMap::from([
+            ("pollingRate".into(), json!({"pollingRate": 8000})),
+            ("profile".into(), json!({"profile": 2})),
+            ("mouseLightMode".into(), json!({"mode": 1, "enabled": true})),
+            ("mouseLightColor".into(), json!({"color": "#12ABEF"})),
+        ]);
+
+        let reading = standard_reading(outputs, None);
+
+        assert_eq!(reading.polling_rate_hz, Some(8000));
+        assert_eq!(reading.profile, Some(2));
+        assert_eq!(reading.light_color.as_deref(), Some("#12ABEF"));
+    }
 
     #[test]
     fn maps_standard_capabilities_without_protocol_offsets() {
