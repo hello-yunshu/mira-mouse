@@ -20,8 +20,6 @@ const MAX_OPERATION_TIMEOUT_MS: u64 = 30_000;
 struct CommandsFile {
     schema_version: u32,
     commands: HashMap<String, CommandDefinition>,
-    #[serde(default, rename = "am35")]
-    _am35: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -221,6 +219,10 @@ enum TransportDefinition {
         read_length: usize,
         race_type: u8,
         strip_report_id_on_read: bool,
+        #[serde(default)]
+        read_mode: HidRaceReadMode,
+        #[serde(default)]
+        read_delay_ms: u64,
         #[serde(default = "default_read_timeout_ms")]
         read_timeout_ms: i32,
         #[serde(default = "default_read_retries")]
@@ -228,6 +230,14 @@ enum TransportDefinition {
         #[serde(default)]
         timeout_ms: Option<u64>,
     },
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum HidRaceReadMode {
+    #[default]
+    Interrupt,
+    InputReport,
 }
 
 fn default_read_timeout_ms() -> i32 {
@@ -1503,16 +1513,10 @@ impl ProtocolPackage {
 
     fn parse_response(&self, id: &str, response: &[u8]) -> Result<Value, String> {
         #[cfg(debug_assertions)]
-        if id == "battery"
-            || id == "am35-battery"
-            || id == "am35-receiver-battery"
-            || id == "receiver-status"
-        {
-            eprintln!(
-                "[mira] raw {id}: {:02x?}",
-                &response[..response.len().min(32)]
-            );
-        }
+        eprintln!(
+            "[mira] raw {id}: {:02x?}",
+            &response[..response.len().min(32)]
+        );
         let parser = self
             .parsers
             .parsers
@@ -2107,6 +2111,8 @@ impl Session<'_> {
             read_length,
             race_type,
             strip_report_id_on_read,
+            read_mode,
+            read_delay_ms,
             read_timeout_ms,
             read_retries,
             ..
@@ -2149,17 +2155,29 @@ impl Session<'_> {
             return Ok(Vec::new());
         }
         for _ in 0..*read_retries {
-            let timeout = match deadline_remaining_ms(self.deadline)? {
-                Some(remaining) => {
-                    (*read_timeout_ms).min(i32::try_from(remaining).unwrap_or(i32::MAX))
-                }
-                None => *read_timeout_ms,
-            };
             let mut response = vec![0u8; *read_length];
-            let count = self
-                .device
-                .read_timeout(&mut response, timeout)
-                .map_err(|error| format!("read race input report: {error}"))?;
+            let count = match read_mode {
+                HidRaceReadMode::Interrupt => {
+                    let timeout = match deadline_remaining_ms(self.deadline)? {
+                        Some(remaining) => {
+                            (*read_timeout_ms).min(i32::try_from(remaining).unwrap_or(i32::MAX))
+                        }
+                        None => *read_timeout_ms,
+                    };
+                    self.device
+                        .read_timeout(&mut response, timeout)
+                        .map_err(|error| format!("read race interrupt report: {error}"))?
+                }
+                HidRaceReadMode::InputReport => {
+                    if *read_delay_ms > 0 {
+                        self.delay(*read_delay_ms)?;
+                    }
+                    response[0] = *read_report_id;
+                    self.device
+                        .get_input_report(&mut response)
+                        .map_err(|error| format!("get race input report: {error}"))?
+                }
+            };
             if count == 0 {
                 continue;
             }
@@ -2169,6 +2187,9 @@ impl Session<'_> {
             }
             if *strip_report_id_on_read && !response.is_empty() {
                 response.remove(0);
+            }
+            if !race_response_matches_request(&response, race_payload, *strip_report_id_on_read) {
+                continue;
             }
             return Ok(response);
         }
@@ -2191,6 +2212,20 @@ impl Session<'_> {
         thread::sleep(Duration::from_millis(milliseconds));
         Ok(())
     }
+}
+
+fn race_response_matches_request(
+    response: &[u8],
+    request: &[u8],
+    report_id_stripped: bool,
+) -> bool {
+    let Some(request_id) = request.get(4..6) else {
+        return true;
+    };
+    let response_id_offset = if report_id_stripped { 6 } else { 7 };
+    response
+        .get(response_id_offset..response_id_offset + 2)
+        .is_some_and(|response_id| response_id == request_id)
 }
 
 fn input_payload_from_report(
@@ -2934,6 +2969,22 @@ fn rgb_to_hue_index(r: u8, g: u8, b: u8) -> u16 {
 mod tests {
     use super::*;
     use std::sync::OnceLock;
+
+    #[test]
+    fn race_response_matches_request_command_after_report_id_is_stripped() {
+        let request = [0x05, 0x5a, 0x02, 0x00, 0xcf, 0x30];
+        let matching = [0x3d, 0x00, 0x05, 0x5b, 0x04, 0x00, 0xcf, 0x30, 0x01];
+        let stale = [0x3d, 0x00, 0x05, 0x5b, 0x04, 0x00, 0xc5, 0x30, 0x01];
+        assert!(race_response_matches_request(&matching, &request, true));
+        assert!(!race_response_matches_request(&stale, &request, true));
+    }
+
+    #[test]
+    fn race_response_matches_request_command_with_report_id_present() {
+        let request = [0x05, 0x5a, 0x02, 0x00, 0xcf, 0x30];
+        let response = [0x07, 0x3d, 0x00, 0x05, 0x5b, 0x04, 0x00, 0xcf, 0x30, 0x01];
+        assert!(race_response_matches_request(&response, &request, false));
+    }
 
     #[test]
     fn input_payload_accepts_report_id_or_already_stripped_payload() {
