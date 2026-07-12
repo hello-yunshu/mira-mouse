@@ -107,7 +107,9 @@
     "updater": {
       "active": true,
       "endpoints": [
-        "https://github.com/hello-yunshu/mira-mouse/releases/latest/download/latest.json"
+        "https://github.hey.run/hello-yunshu/mira-mouse/releases/latest/download/latest.json",
+        "https://github.com/hello-yunshu/mira-mouse/releases/latest/download/latest.json",
+        "https://gh-proxy.com/https://github.com/hello-yunshu/mira-mouse/releases/latest/download/latest-cn.json"
       ],
       "dialog": false,
       "windows": {
