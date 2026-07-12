@@ -126,9 +126,10 @@ function BatteryUsageChart({ points, range }: ChartProps) {
   const [focusIndex, setFocusIndex] = useState<number | null>(null);
 
   const width = 520;
-  // 两种范围共用同一画布与绘图区高度，避免切换时图表卡片和柱体上下跳动。
+  // 两种范围共用同一画布高度，避免切换时图表卡片跳动。
+  // 24h 无日期标签，绘图区向下延伸填满底部空隙；10d 保留日期标签空间。
   const height = 146;
-  const padding = { top: 8, right: 8, bottom: 30, left: 28 };
+  const padding = { top: 8, right: 8, bottom: range === '24h' ? 18 : 30, left: 28 };
   const chartWidth = width - padding.left - padding.right;
   const chartHeight = height - padding.top - padding.bottom;
   const pointCount = Math.max(points.length, 1);
@@ -142,9 +143,8 @@ function BatteryUsageChart({ points, range }: ChartProps) {
     ? ({ '--tooltip-x': `${((padding.left + activeIndex * slotWidth + slotWidth / 2) / width) * 100}%` } as CSSProperties)
     : undefined;
 
-  // 背景网格仅上方两角圆角、底部平直，圆角克制。
+  // 绘图区圆角克制；切换 range 时通过 CSS transition 平滑过渡 height。
   const plotCornerR = 5;
-  const plotPath = `M ${padding.left},${padding.top + chartHeight} L ${padding.left},${padding.top + plotCornerR} Q ${padding.left},${padding.top} ${padding.left + plotCornerR},${padding.top} L ${padding.left + chartWidth - plotCornerR},${padding.top} Q ${padding.left + chartWidth},${padding.top} ${padding.left + chartWidth},${padding.top + plotCornerR} L ${padding.left + chartWidth},${padding.top + chartHeight} Z`;
 
   const yTicks = [0, 25, 50, 75, 100];
   const xTicks = useMemo(() => {
@@ -217,7 +217,6 @@ function BatteryUsageChart({ points, range }: ChartProps) {
       </div>
       <div className="battery-chart-stage">
         <svg
-          key={range}
           className="battery-chart"
           viewBox={`0 0 ${width} ${height}`}
           role="img"
@@ -225,7 +224,14 @@ function BatteryUsageChart({ points, range }: ChartProps) {
         >
           <defs>
             <clipPath id="battery-chart-plot-clip">
-              <path d={plotPath} />
+              <rect
+                className="battery-chart-clip-rect"
+                x={padding.left}
+                y={padding.top}
+                width={chartWidth}
+                height={chartHeight}
+                style={{ height: `${chartHeight}px` }}
+              />
             </clipPath>
             <linearGradient id="battery-bar-normal" x1="0" y1="1" x2="0" y2="0">
               <stop offset="0%" stopColor="#2f9f7a" />
@@ -243,9 +249,14 @@ function BatteryUsageChart({ points, range }: ChartProps) {
               <stop offset="100%" stopColor="#f3d38c" />
             </linearGradient>
           </defs>
-          <path
+          <rect
             className="battery-chart-plot"
-            d={plotPath}
+            x={padding.left}
+            y={padding.top}
+            width={chartWidth}
+            height={chartHeight}
+            rx={plotCornerR}
+            style={{ height: `${chartHeight}px` }}
           />
           {/* Y 轴参考线 */}
           {yTicks.map((tick) => {
@@ -280,7 +291,7 @@ function BatteryUsageChart({ points, range }: ChartProps) {
             const plotBottom = padding.top + chartHeight;
             const extensionBottom = range === '10d'
               ? (tick.major ? height - 2 : plotBottom + 13)
-              : plotBottom + 18;
+              : plotBottom + 15;
             return (
               <g key={`${tick.key}-line`}>
                 <line
