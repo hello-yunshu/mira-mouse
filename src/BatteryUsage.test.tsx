@@ -88,7 +88,7 @@ describe('BatteryUsageModal', () => {
     expect(usageLabels).toHaveLength(8);
     expect(usageGridLines.every((line, index) => line.getAttribute('x1') === usageLabels[index].getAttribute('x'))).toBe(true);
     expect(usageGridLines.every((line) => line.getAttribute('clip-path') === 'url(#battery-chart-plot-clip)')).toBe(true);
-    expect(usageExtensions.every((line) => line.getAttribute('y1') === '116' && line.getAttribute('y2') === '134')).toBe(true);
+    expect(usageExtensions.every((line) => line.getAttribute('y1') === '128' && line.getAttribute('y2') === '143')).toBe(true);
     const usageLabelText = usageLabels.map((label) => label.textContent);
     expect(usageLabelText).toContain('上午12时');
     expect(usageLabelText).toContain('下午12时');
