@@ -1065,8 +1065,16 @@ impl ProtocolPackage {
             }
         }
         let Session {
-            device, outputs, ..
+            device,
+            reports,
+            outputs,
+            ..
         } = session;
+        if let Some(stats) = hid_io_stats {
+            if let Ok(mut guard) = stats.lock() {
+                guard.record_reports_executed(reports);
+            }
+        }
         return_device(path, device, cached_handles, hid_io_stats);
         Ok(outputs)
     }
@@ -1669,7 +1677,14 @@ impl ProtocolPackage {
                 .map_err(|error| format!("mutation {mutation_id} verification failed: {error}"))?;
             parsed
         };
-        let Session { device, .. } = session;
+        let Session {
+            device, reports, ..
+        } = session;
+        if let Some(stats) = hid_io_stats {
+            if let Ok(mut guard) = stats.lock() {
+                guard.record_reports_executed(reports);
+            }
+        }
         return_device(path, device, cached_handles, hid_io_stats);
         if let Some((memory, expected)) = expected_memory {
             let (verify_outputs, actual) =
