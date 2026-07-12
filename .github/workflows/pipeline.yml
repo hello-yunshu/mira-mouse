@@ -289,16 +289,37 @@ jobs:
           MAC_URL="$BASE/$(basename "$MAC_FILE")"
           WIN_URL="$BASE/$(basename "$WIN_FILE")"
           LINUX_URL="$BASE/$(basename "$LINUX_FILE")"
+          # 加速策略（endpoints 优先级见 tauri.conf.json）：
+          # 1. latest.json：URL 走 github.hey.run（用户专属加速域名，国内外都快，实测 ~3.4MB/s）
+          # 2. latest-cn.json：URL 走 gh-proxy.com 公共代理（hey.run 不可用时的国内备选）
+          HEY_RUN_BASE="${BASE/github.com/github.hey.run}"
+          MAC_URL_CN="${HEY_RUN_BASE}/$(basename "$MAC_FILE")"
+          WIN_URL_CN="${HEY_RUN_BASE}/$(basename "$WIN_FILE")"
+          LINUX_URL_CN="${HEY_RUN_BASE}/$(basename "$LINUX_FILE")"
+          CN_PROXY="https://gh-proxy.com/"
           cat > latest.json <<EOF
           {
             "version": "$VERSION",
             "notes": "Mira $VERSION. See release notes for details.",
             "pub_date": "$PUB_DATE",
             "platforms": {
-              "darwin-aarch64": { "signature": "$MAC_SIG", "url": "$MAC_URL" },
-              "darwin-x86_64": { "signature": "$MAC_SIG", "url": "$MAC_URL" },
-              "linux-x86_64": { "signature": "$LINUX_SIG", "url": "$LINUX_URL" },
-              "windows-x86_64": { "signature": "$WIN_SIG", "url": "$WIN_URL" }
+              "darwin-aarch64": { "signature": "$MAC_SIG", "url": "$MAC_URL_CN" },
+              "darwin-x86_64": { "signature": "$MAC_SIG", "url": "$MAC_URL_CN" },
+              "linux-x86_64": { "signature": "$LINUX_SIG", "url": "$LINUX_URL_CN" },
+              "windows-x86_64": { "signature": "$WIN_SIG", "url": "$WIN_URL_CN" }
+            }
+          }
+          EOF
+          cat > latest-cn.json <<EOF
+          {
+            "version": "$VERSION",
+            "notes": "Mira $VERSION. See release notes for details.",
+            "pub_date": "$PUB_DATE",
+            "platforms": {
+              "darwin-aarch64": { "signature": "$MAC_SIG", "url": "${CN_PROXY}${MAC_URL}" },
+              "darwin-x86_64": { "signature": "$MAC_SIG", "url": "${CN_PROXY}${MAC_URL}" },
+              "linux-x86_64": { "signature": "$LINUX_SIG", "url": "${CN_PROXY}${LINUX_URL}" },
+              "windows-x86_64": { "signature": "$WIN_SIG", "url": "${CN_PROXY}${WIN_URL}" }
             }
           }
           EOF
@@ -329,10 +350,10 @@ jobs:
           EOF
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "Release $TAG exists; uploading assets."
-            gh release upload "$TAG" publish-assets/* latest.json --repo "$GITHUB_REPOSITORY" --clobber
+            gh release upload "$TAG" publish-assets/* latest.json latest-cn.json --repo "$GITHUB_REPOSITORY" --clobber
             gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file release-notes.md --title "Mira $VERSION"
           else
-            gh release create "$TAG" publish-assets/* latest.json \
+            gh release create "$TAG" publish-assets/* latest.json latest-cn.json \
               --target "$TARGET" \
               --title "Mira $VERSION" \
               --notes-file release-notes.md
