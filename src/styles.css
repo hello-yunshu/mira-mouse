@@ -543,6 +543,9 @@ body:has(.platform-fallback:not(.web-preview)) {
   left: 0;
   width: min(240px, calc(100vw - 48px));
   padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
   border: 1px solid var(--floating-glass-border);
   border-radius: 13px;
   background: var(--floating-glass-bg);
@@ -2010,7 +2013,7 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
     align-items: flex-start;
   }
   .setting-row { flex-direction: column; align-items: flex-start; }
-  .setting-control { width: 100%; }
+  .setting-control { width: 100%; justify-content: flex-end; }
   input[type="range"] { width: 100%; }
   .plugin-item { grid-template-columns: 1fr; }
   .capability-groups { columns: 1; }
@@ -2568,6 +2571,10 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
 .battery-chart-stage {
   position: relative;
 }
+.battery-chart-plot,
+.battery-chart-clip-rect {
+  transition: height var(--motion-slow) var(--motion-ease-out);
+}
 .battery-chart-plot {
   fill: color-mix(in srgb, var(--surface-group-bg), transparent 20%);
   stroke: var(--surface-group-border);
@@ -2915,7 +2922,7 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
 }
 
 @keyframes mira-bar-rise {
-  from { opacity: .28; transform: scaleY(.08); }
+  from { opacity: 0; transform: scaleY(0); }
   to { opacity: 1; transform: scaleY(1); }
 }
 
@@ -3125,7 +3132,7 @@ input[type="color"] {
   transform-box: fill-box;
   transform-origin: center bottom;
   animation: mira-bar-rise var(--motion-deliberate) var(--motion-ease-out) backwards;
-  animation-delay: calc(var(--bar-delay, 0ms) + 80ms);
+  animation-delay: calc(var(--bar-delay, 0ms) + 120ms);
   transition: opacity var(--motion-fast) ease, filter var(--motion-fast) ease;
 }
 .battery-chart g[role="button"]:hover .battery-chart-bar,
