@@ -13,11 +13,13 @@ use std::collections::BTreeMap;
 ///
 /// Priority:
 /// 1. `0x8101` Profile Management `profileMgmtCurrent.profileIndex`
-/// 2. Legacy `settings.profile` (used by AMaster / HID++ report rate output)
-/// 3. Legacy `dpi.profile` (used by AMaster protocol A)
+/// 2. Dedicated `profile.profile` (used by AM35)
+/// 3. Legacy `settings.profile` (used by AMaster / HID++ report rate output)
+/// 4. Legacy `dpi.profile` (used by AMaster protocol A)
 pub fn active_profile_index(outputs: &BTreeMap<String, Value>) -> Option<u8> {
     object(outputs, "profileMgmtCurrent")
         .and_then(|current| number(current, "profileIndex"))
+        .or_else(|| object(outputs, "profile").and_then(|profile| number(profile, "profile")))
         .or_else(|| object(outputs, "settings").and_then(|settings| number(settings, "profile")))
         .or_else(|| object(outputs, "dpi").and_then(|dpi| number(dpi, "profile")))
 }
@@ -78,6 +80,12 @@ mod tests {
             ("dpi".into(), json!({"profile": 0})),
         ]);
         assert_eq!(active_profile_index(&outputs), Some(3));
+    }
+
+    #[test]
+    fn reads_dedicated_profile_output() {
+        let outputs = BTreeMap::from([("profile".into(), json!({"profile": 2}))]);
+        assert_eq!(active_profile_index(&outputs), Some(2));
     }
 
     #[test]

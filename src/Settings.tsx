@@ -35,7 +35,6 @@ const DEFAULT_SETTINGS: AppSettings = {
   nightModeTriggerLowBattery: false,
   nightModeTargetMouse: true,
   nightModeTargetReceiver: false,
-  refreshIntervalSeconds: 5,
   telemetryDisabled: true,
   automaticUpdateChecks: true,
   automaticUpdateInstall: false,
@@ -398,20 +397,6 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
             </SettingRow>
             <SettingRow title={t('settings.trayConnection.label')} hint={t('settings.trayConnection.hint')}>
               <Toggle checked={settings.trayShowConnection} onChange={(v) => update({ trayShowConnection: v })} label={t('settings.trayConnection.label')} />
-            </SettingRow>
-          </section>
-
-          <section className="card settings-section">
-            <div className="card-title"><h2>{t('settings.section.polling')}</h2></div>
-            <SettingRow title={t('settings.refreshInterval.label', { seconds: settings.refreshIntervalSeconds })} hint={t('settings.refreshInterval.hint')}>
-              <input
-                type="range"
-                min={1}
-                max={60}
-                value={settings.refreshIntervalSeconds}
-                onChange={(e) => update({ refreshIntervalSeconds: Number(e.target.value) })}
-                aria-label={t('settings.refreshInterval.label', { seconds: settings.refreshIntervalSeconds })}
-              />
             </SettingRow>
           </section>
 

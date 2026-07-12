@@ -234,7 +234,6 @@
     "section": {
       "theme": "Theme",
       "startup": "Startup & Tray",
-      "polling": "Polling",
       "update": "Software Update",
       "battery": "Battery Alerts",
       "batteryHistory": "Battery Usage",
@@ -278,10 +277,6 @@
     "trayConnection": {
       "label": "Show connection in menu",
       "hint": "Show connection type and device name in the tray menu"
-    },
-    "refreshInterval": {
-      "label": "Refresh interval: {{seconds}} s",
-      "hint": "Mira updates from events in real time; this is just the backup check while visible, slowing to 60 s when hidden"
     },
     "updateCheck": {
       "label": "Check for Mira updates automatically",
