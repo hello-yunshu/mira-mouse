@@ -20,7 +20,7 @@ const settings: AppSettings = {
   nightModeTriggerTime: true, nightModeTriggerTheme: false, nightModeThemeDark: true,
   nightModeTriggerCharging: false, nightModeTriggerLowBattery: false,
   nightModeTargetMouse: true, nightModeTargetReceiver: false,
-  refreshIntervalSeconds: 5, telemetryDisabled: true,
+  telemetryDisabled: true,
   automaticUpdateChecks: true, automaticUpdateInstall: false, automaticPluginUpdateChecks: true,
   batteryHistoryEnabled: true, batteryHistoryRetentionDays: 30, unusualDrainAlerts: false,
   language: 'auto',

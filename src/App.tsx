@@ -459,8 +459,7 @@ function FieldEditModal({ field, device, writeBusy, onClose, onApply, title, cur
   const initialValue = currentValue ?? readPath(device, field.source);
   const range = resolveFieldRange(field);
   const options = resolveFieldOptions(field, device);
-
-  const [draft, setDraft] = useState<unknown>(() => {
+  const initialDraft = useMemo<unknown>(() => {
     switch (field.editor) {
       case 'modal-select':
         return initialValue != null ? String(initialValue) : (options[0] != null ? String(options[0].value) : '');
@@ -474,7 +473,18 @@ function FieldEditModal({ field, device, writeBusy, onClose, onApply, title, cur
       default:
         return initialValue;
     }
-  });
+  }, [field.editor, initialValue, options]);
+  const [draftState, setDraftState] = useState(() => ({
+    baseline: initialDraft,
+    value: initialDraft,
+    touched: false,
+  }));
+  const draft = !draftState.touched && !Object.is(draftState.baseline, initialDraft)
+    ? initialDraft
+    : draftState.value;
+  const updateDraft = (value: unknown) => {
+    setDraftState({ baseline: initialDraft, value, touched: true });
+  };
 
   const submitDisabled = useMemo(() => {
     if (writeBusy) return true;
@@ -509,7 +519,7 @@ function FieldEditModal({ field, device, writeBusy, onClose, onApply, title, cur
               aria-label={editorLabel}
               value={String(draft ?? '')}
               disabled={writeBusy}
-              onChange={(event) => setDraft(event.target.value)}
+              onChange={(event) => updateDraft(event.target.value)}
             >
               {options.map((option) => (
                 <option key={String(option.value)} value={String(option.value)}>{optionLabel(option)}</option>
@@ -527,7 +537,7 @@ function FieldEditModal({ field, device, writeBusy, onClose, onApply, title, cur
               aria-label={i18n.t('common.color')}
               value={typeof draft === 'string' ? draft : '#000000'}
               disabled={writeBusy}
-              onChange={(event) => setDraft(event.target.value)}
+              onChange={(event) => updateDraft(event.target.value)}
             />
           </label>
         );
@@ -544,7 +554,7 @@ function FieldEditModal({ field, device, writeBusy, onClose, onApply, title, cur
               max={range?.max}
               step={range?.step}
               disabled={writeBusy}
-              onChange={(event) => setDraft(Number(event.target.value))}
+              onChange={(event) => updateDraft(Number(event.target.value))}
             />
             <span className="range-value">{typeof draft === 'number' ? draft : Number(draft ?? 0)}</span>
           </label>
@@ -562,7 +572,7 @@ function FieldEditModal({ field, device, writeBusy, onClose, onApply, title, cur
               max={range?.max}
               step={range?.step}
               disabled={writeBusy}
-              onChange={(event) => setDraft(Number(event.target.value))}
+              onChange={(event) => updateDraft(Number(event.target.value))}
             />
           </label>
         );
@@ -576,7 +586,7 @@ function FieldEditModal({ field, device, writeBusy, onClose, onApply, title, cur
               aria-label={editorLabel}
               value={typeof draft === 'string' ? draft : String(draft ?? '')}
               disabled={writeBusy}
-              onChange={(event) => setDraft(event.target.value)}
+              onChange={(event) => updateDraft(event.target.value)}
             />
           </label>
         );
@@ -747,7 +757,10 @@ function FieldRenderer({ field, device, writeBusy, runMutation }: {
             type="button"
             className="lighting-row"
             disabled={!writable}
-            onClick={() => setEditing(true)}
+            onClick={() => {
+              invoke('device_refresh_quick').catch(() => {});
+              setEditing(true);
+            }}
           >
             <span>{label}</span>
             <FormattedValue value={value} format={field.format} label={valueLabel} />
@@ -815,7 +828,10 @@ function MetricField({ capability, field, device, writeBusy, runMutation }: {
           ? i18n.t('dashboard.currentPollingRateEdit', { value: valueText })
           : i18n.t('dashboard.pollingRateNotReportedEdit')}
         disabled={!writable}
-        onClick={() => setEditing(true)}
+        onClick={() => {
+          invoke('device_refresh_quick').catch(() => {});
+          setEditing(true);
+        }}
       >
         <strong>{valueText}</strong>
         {hasHertzValue && <em>Hz</em>}
@@ -940,7 +956,10 @@ function GenericFieldControl({ field, device, writeBusy, runMutation }: {
             className="plugin-value-button editable-reading"
             aria-label={`${label}：${valueLabel ?? formatFieldValue(value, field.format, i18n.t)}，点击编辑`}
             disabled={!writable}
-            onClick={() => setEditing(true)}
+            onClick={() => {
+              invoke('device_refresh_quick').catch(() => {});
+              setEditing(true);
+            }}
           >
             {(field.editor === 'modal-color' || field.format === 'color') && typeof value === 'string' && <i style={{ '--light-color': value } as React.CSSProperties} />}
             <FormattedValue value={value} format={field.format} label={valueLabel} />
@@ -1037,7 +1056,11 @@ function StageLayout({ capability, device, writeBusy, runMutation }: {
         className="primary-reading editable-reading"
         aria-label={activeDpi ? i18n.t('dashboard.currentDpiEdit', { value: activeDpi }) : i18n.t('dashboard.dpiNotReported')}
         disabled={writeBusy || !setWritable || !activeDpi}
-        onClick={() => activeDpi && setEditingStage(currentStageNumber)}
+        onClick={() => {
+          if (!activeDpi) return;
+          invoke('device_refresh_quick').catch(() => {});
+          setEditingStage(currentStageNumber);
+        }}
       >
         <strong>{activeDpi || i18n.t('common.notReported')}</strong><em>DPI</em>
       </button>
@@ -1060,7 +1083,10 @@ function StageLayout({ capability, device, writeBusy, runMutation }: {
                 type="button"
                 className="dpi-stage-value"
                 disabled={writeBusy || !setWritable}
-                onClick={() => setEditingStage(stageNumber)}
+                onClick={() => {
+                  invoke('device_refresh_quick').catch(() => {});
+                  setEditingStage(stageNumber);
+                }}
                 aria-label={i18n.t('dashboard.editStageDpi', { stage: stageNumber })}
               >
                 {stage.value}
@@ -1399,7 +1425,10 @@ function Dashboard({
           if (field) {
             const isWritable = Boolean(resolveMutation(field.mutation, device.writableMutations));
             if (isWritable) {
-              onClick = () => setEditingField({ capability, field });
+              onClick = () => {
+                invoke('device_refresh_quick').catch(() => {});
+                setEditingField({ capability, field });
+              };
             }
           }
         } else {
@@ -1476,7 +1505,10 @@ function Dashboard({
                 className="battery-state"
                 aria-expanded={showBatteries}
                 aria-controls="device-batteries"
-                onClick={() => setShowBatteries((visible) => !visible)}
+                onClick={() => {
+                  if (!showBatteries) invoke('device_refresh_battery').catch(() => {});
+                  setShowBatteries((visible) => !visible);
+                }}
               >
                 <BatteryLevelIcon percentage={device.batteries[0].percentage} charging={device.batteries[0].charging} />
                 {device.batteries[0].percentage}%
@@ -1545,7 +1577,11 @@ function Dashboard({
             role="tab"
             aria-selected={activeMode === id}
             className={activeMode === id ? 'active' : ''}
-            onClick={() => { setMode(id); setPreviewMessage(''); }}
+            onClick={() => {
+              invoke('device_refresh_quick').catch(() => {});
+              setMode(id);
+              setPreviewMessage('');
+            }}
           >
             <PluginIconView name={icon} device={device} />
             <span>{label}</span>
@@ -1602,7 +1638,7 @@ function Dashboard({
       )}
       <div className="dashboard-meta">
         <span>{t('dashboard.lastUpdate', { time: device.updatedAt })}</span>
-        <button className="details-button" onClick={() => setShowDetails(true)}><ReadCvLogo weight="regular" />{t('dashboard.allReadInfo')}</button>
+        <button className="details-button" onClick={() => { invoke('device_refresh').catch(() => {}); setShowDetails(true); }}><ReadCvLogo weight="regular" />{t('dashboard.allReadInfo')}</button>
       </div>
       {showDetails && <DeviceDetails capabilities={device.capabilities} pluginCapabilities={device.pluginCapabilities} onClose={() => setShowDetails(false)} />}
     </main>
@@ -1615,8 +1651,8 @@ export default function App() {
   const [device, setDevice] = useState<DeviceState | undefined>(pureWeb ? MOCK_DEVICE : undefined);
   const [deviceEntries, setDeviceEntries] = useState<DeviceSnapshotEntry[]>(pureWeb ? MOCK_DEVICE_ENTRIES : []);
   const deviceEntriesRef = useRef<DeviceSnapshotEntry[]>(pureWeb ? MOCK_DEVICE_ENTRIES : []);
-  // F11: device-updated 事件高频触发时，用 startTransition 将 Dashboard 渲染标记为低优先级，
-  // 避免 settling polls 期间（6 次 500ms）阻塞主线程。writeBusy 等用户交互状态保持同步。
+  // device-updated 可能由初始化或用户按需读取连续触发；用 startTransition
+  // 将 Dashboard 渲染标记为低优先级。writeBusy 等用户交互状态保持同步。
   const [, startTransition] = useTransition();
   const [theme, setTheme] = useState<ThemeMode>('system');
   const [themeLoaded, setThemeLoaded] = useState(pureWeb);
@@ -1651,6 +1687,7 @@ export default function App() {
     setSettingsPluginFocusToken((value) => value + 1);
   }, []);
   const openBatteryUsage = useCallback(() => {
+    invoke('device_refresh_battery').catch(() => {});
     setBatteryUsageSession((value) => value + 1);
     setShowBatteryUsage(true);
   }, []);
