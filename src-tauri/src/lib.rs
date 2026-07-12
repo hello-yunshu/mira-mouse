@@ -64,6 +64,24 @@ const PLUGIN_REGISTRY_URL: &str =
     "https://raw.githubusercontent.com/hello-yunshu/mira-mouse-plugins/main/registry/index.json";
 const MAX_REGISTRY_BYTES: u64 = 1024 * 1024;
 const MAX_PLUGIN_BYTES: u64 = 32 * 1024 * 1024;
+/// GitHub 资源镜像配置。每项为 `(名称, URL 重写函数)`。
+/// `fetch_bounded` 按顺序尝试，重写函数返回 `Some(url)` 表示该镜像支持此 URL，
+/// 返回 `None` 表示跳过该镜像。
+///
+/// 优先级（基于 2026-07 实测）：
+/// 1. **hey.run**：用户专属加速域名，对所有 `hello-yunshu` 仓库的 release/raw 均支持
+///    （主仓库 release ~3.4MB/s，比 GitHub 原始快 3 倍），国内外都快。
+/// 2. **direct**：GitHub 原始，hey.run 不可用时（如非 hello-yunshu 仓库）的 fallback。
+/// 3. **gh-proxy.com**：公共代理，全类型支持（~2MB/s），hey.run 和 direct 都失败时的最后兜底。
+///
+/// 注意：`github.akams.cn`（返回 HTML）、`ghproxy.net`（超时）经实测不可用，未纳入。
+type MirrorRewriter = fn(&str) -> Option<String>;
+
+const GITHUB_MIRRORS: &[(&str, MirrorRewriter)] = &[
+    ("hey.run", hey_run_mirror),
+    ("direct", direct_mirror),
+    ("gh-proxy.com", gh_proxy_mirror),
+];
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
@@ -2191,6 +2209,99 @@ mod settings_tests {
     }
 
     #[test]
+    fn mirror_candidates_main_repo_release_uses_hey_run_domain_replacement() {
+        // mira-mouse 主仓库 release：hey.run 仅替换域名，3 个镜像全支持
+        let url = "https://github.com/hello-yunshu/mira-mouse/releases/download/app/v0.6.6/Mira_macOS_0.6.6.app.tar.gz";
+        let candidates = mirror_candidates(url);
+        assert_eq!(candidates.len(), GITHUB_MIRRORS.len());
+        // hey.run 优先级最高
+        assert_eq!(candidates[0].0, "hey.run");
+        assert_eq!(
+            candidates[0].1,
+            "https://github.hey.run/hello-yunshu/mira-mouse/releases/download/app/v0.6.6/Mira_macOS_0.6.6.app.tar.gz"
+        );
+        // direct：原始 URL
+        assert_eq!(candidates[1].0, "direct");
+        assert_eq!(candidates[1].1, url);
+        // gh-proxy：前缀拼接
+        assert!(candidates[2].1.starts_with("https://gh-proxy.com/https://github.com/"));
+    }
+
+    #[test]
+    fn mirror_candidates_plugin_release_uses_hey_run_domain_replacement() {
+        // mira-mouse-plugins release：hey.run 仅替换域名，3 个镜像全支持
+        let url = "https://github.com/hello-yunshu/mira-mouse-plugins/releases/download/release/v2026-07-11/mira-amaster-1.6.1.mira-plugin";
+        let candidates = mirror_candidates(url);
+        assert_eq!(candidates.len(), GITHUB_MIRRORS.len());
+        // hey.run 优先级最高
+        assert_eq!(candidates[0].0, "hey.run");
+        assert_eq!(
+            candidates[0].1,
+            "https://github.hey.run/hello-yunshu/mira-mouse-plugins/releases/download/release/v2026-07-11/mira-amaster-1.6.1.mira-plugin"
+        );
+        // direct：原始 URL
+        assert_eq!(candidates[1].0, "direct");
+        assert_eq!(candidates[1].1, url);
+        // gh-proxy：前缀拼接
+        assert!(candidates[2].1.starts_with("https://gh-proxy.com/https://github.com/"));
+    }
+
+    #[test]
+    fn mirror_candidates_plugin_raw_uses_hey_run_raw_rewrite() {
+        // mira-mouse-plugins raw：hey.run 重写为 /raw/ 格式
+        let url = "https://raw.githubusercontent.com/hello-yunshu/mira-mouse-plugins/main/registry/index.json";
+        let candidates = mirror_candidates(url);
+        assert_eq!(candidates.len(), GITHUB_MIRRORS.len());
+        // hey.run 优先级最高
+        assert_eq!(candidates[0].0, "hey.run");
+        assert_eq!(
+            candidates[0].1,
+            "https://github.hey.run/hello-yunshu/mira-mouse-plugins/raw/main/registry/index.json"
+        );
+        // direct：原始 URL
+        assert_eq!(candidates[1].0, "direct");
+        assert_eq!(candidates[1].1, url);
+    }
+
+    #[test]
+    fn mirror_candidates_main_repo_raw_uses_hey_run_raw_rewrite() {
+        // mira-mouse 主仓库 raw：hey.run 重写为 /raw/ 格式
+        let url = "https://raw.githubusercontent.com/hello-yunshu/mira-mouse/main/README.md";
+        let candidates = mirror_candidates(url);
+        assert_eq!(candidates.len(), GITHUB_MIRRORS.len());
+        // hey.run 优先级最高
+        assert_eq!(candidates[0].0, "hey.run");
+        assert_eq!(
+            candidates[0].1,
+            "https://github.hey.run/hello-yunshu/mira-mouse/raw/main/README.md"
+        );
+        // direct：原始 URL
+        assert_eq!(candidates[1].0, "direct");
+        assert_eq!(candidates[1].1, url);
+    }
+
+    #[test]
+    fn mirror_candidates_non_hello_yunshu_repo_skips_hey_run() {
+        // 非 hello-yunshu 仓库：hey.run 不支持，仅 direct + gh-proxy = 2 个镜像
+        let url = "https://github.com/tauri-apps/tauri/releases/download/v2/tauri.tgz";
+        let candidates = mirror_candidates(url);
+        assert_eq!(candidates.len(), 2);
+        assert!(!candidates.iter().any(|(name, _)| *name == "hey.run"));
+        // direct 优先级最高（hey.run 被跳过）
+        assert_eq!(candidates[0].0, "direct");
+        assert_eq!(candidates[1].0, "gh-proxy.com");
+    }
+
+    #[test]
+    fn mirror_candidates_passthrough_non_github_urls() {
+        // 非 GitHub URL 不添加镜像前缀，原样返回单个候选
+        let candidates = mirror_candidates("https://example.com/file.txt");
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].0, "direct");
+        assert_eq!(candidates[0].1, "https://example.com/file.txt");
+    }
+
+    #[test]
     fn exportable_value_reads_capability_source() {
         let snapshot = DeviceSnapshot {
             display_name: "Test Mouse".into(),
@@ -3703,18 +3814,95 @@ struct PluginInstallResult {
     restarted_runtime: bool,
 }
 
+/// 下载资源，自动在多个 GitHub 镜像之间切换。
+/// 国内访问 GitHub 常出现连接失败、超时或下载断流，本函数按镜像列表顺序尝试，
+/// 任意候选成功即返回；所有候选失败时返回汇总错误。
 fn fetch_bounded(url: &str, max_bytes: u64) -> Result<Vec<u8>, String> {
-    let response = reqwest::blocking::Client::builder()
+    let candidates = mirror_candidates(url);
+    let mut errors = Vec::new();
+    for (name, candidate) in &candidates {
+        match try_fetch_bounded(candidate, max_bytes) {
+            Ok(bytes) => return Ok(bytes),
+            Err(error) => errors.push(format!("{name} ({candidate}): {error}")),
+        }
+    }
+    Err(format!(
+        "all {} download source(s) failed: {}",
+        candidates.len(),
+        errors.join("; ")
+    ))
+}
+
+/// 为 GitHub 资源 URL 构造镜像候选列表（原始 + 国内代理）。
+/// 遍历 `GITHUB_MIRRORS` 中的重写函数，返回 `Some(url)` 的镜像按顺序纳入候选。
+/// 非 GitHub URL 仅生成原始 URL 单个候选（不走镜像）。
+fn mirror_candidates(url: &str) -> Vec<(&'static str, String)> {
+    let is_github = url.starts_with("https://github.com/")
+        || url.starts_with("https://raw.githubusercontent.com/")
+        || url.starts_with("https://objects.githubusercontent.com/");
+    if !is_github {
+        return vec![("direct", url.to_string())];
+    }
+    GITHUB_MIRRORS
+        .iter()
+        .filter_map(|(name, rewrite)| rewrite(url).map(|rewritten| (*name, rewritten)))
+        .collect()
+}
+
+/// 原始 GitHub URL，不做任何重写。
+fn direct_mirror(url: &str) -> Option<String> {
+    Some(url.to_string())
+}
+
+/// `github.hey.run` 用户专属加速域名。仅对 `hello-yunshu` 仓库生效：
+/// - 所有 `hello-yunshu` 仓库的 release：替换域名（实测 ~3.4MB/s，比 GitHub 原始快 3 倍）。
+/// - mira-mouse / mira-mouse-plugins 的 raw：替换域名并插入 `/raw/` 段。
+///
+/// 非 hello-yunshu 仓库不支持，返回 `None` 跳过。
+fn hey_run_mirror(url: &str) -> Option<String> {
+    // hello-yunshu 仓库的 release URL：仅替换域名
+    // 覆盖 mira-mouse 和 mira-mouse-plugins（以及未来新增的同组织仓库）
+    if url.starts_with("https://github.com/hello-yunshu/") && url.contains("/releases/") {
+        return Some(url.replacen(
+            "https://github.com/",
+            "https://github.hey.run/",
+            1,
+        ));
+    }
+    // mira-mouse-plugins raw：替换域名 + 插入 /raw/
+    if let Some(rest) = url.strip_prefix("https://raw.githubusercontent.com/hello-yunshu/mira-mouse-plugins/") {
+        return Some(format!(
+            "https://github.hey.run/hello-yunshu/mira-mouse-plugins/raw/{rest}"
+        ));
+    }
+    // mira-mouse 主仓库 raw：替换域名 + 插入 /raw/
+    if let Some(rest) = url.strip_prefix("https://raw.githubusercontent.com/hello-yunshu/mira-mouse/") {
+        return Some(format!("https://github.hey.run/hello-yunshu/mira-mouse/raw/{rest}"));
+    }
+    // 非 hello-yunshu 仓库：hey.run 不支持，跳过
+    None
+}
+
+/// `gh-proxy.com` 公共代理，前缀拼接方式。对所有 GitHub URL 生效。
+fn gh_proxy_mirror(url: &str) -> Option<String> {
+    Some(format!("https://gh-proxy.com/{url}"))
+}
+
+/// 从单个 URL 下载，带速度监控。
+/// 连接超时(10s)、HTTP 错误、下载速度过低(<100KB/s 持续 5s)、总超时(180s)都会返回错误，
+/// 由 `fetch_bounded` 触发到下一个镜像的 fallback。
+fn try_fetch_bounded(url: &str, max_bytes: u64) -> Result<Vec<u8>, String> {
+    let mut response = reqwest::blocking::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(10))
-        .timeout(std::time::Duration::from_secs(60))
+        .timeout(std::time::Duration::from_secs(180))
         .user_agent("Mira-Mouse-Updater")
         .build()
         .map_err(|error| format!("build HTTP client: {error}"))?
         .get(url)
         .send()
-        .map_err(|error| format!("download {url}: {error}"))?
+        .map_err(|error| format!("connect: {error}"))?
         .error_for_status()
-        .map_err(|error| format!("download {url}: {error}"))?;
+        .map_err(|error| format!("HTTP status: {error}"))?;
     if response
         .content_length()
         .is_some_and(|length| length > max_bytes)
@@ -3722,12 +3910,35 @@ fn fetch_bounded(url: &str, max_bytes: u64) -> Result<Vec<u8>, String> {
         return Err(format!("download exceeds {max_bytes} byte limit"));
     }
     let mut bytes = Vec::new();
-    response
-        .take(max_bytes + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|error| format!("read download: {error}"))?;
-    if bytes.len() as u64 > max_bytes {
-        return Err(format!("download exceeds {max_bytes} byte limit"));
+    let mut buffer = [0u8; 16 * 1024];
+    let mut total_read: u64 = 0;
+    let check_interval = std::time::Duration::from_secs(5);
+    let min_speed: u64 = 100 * 1024; // 100 KB/s：正常镜像均 > 500KB/s
+    let mut last_check = std::time::Instant::now();
+    let mut last_total: u64 = 0;
+    loop {
+        let n = response
+            .read(&mut buffer)
+            .map_err(|error| format!("read download: {error}"))?;
+        if n == 0 {
+            break;
+        }
+        total_read += n as u64;
+        if total_read > max_bytes {
+            return Err(format!("download exceeds {max_bytes} byte limit"));
+        }
+        bytes.extend_from_slice(&buffer[..n]);
+        // 速度监控：每隔 5s 检查一次，速度低于阈值则中止当前下载
+        if last_check.elapsed() >= check_interval {
+            let elapsed = last_check.elapsed().as_secs_f64();
+            let bytes_in_interval = total_read - last_total;
+            let speed = bytes_in_interval as f64 / elapsed;
+            if speed < min_speed as f64 {
+                return Err(format!("download too slow: {:.0} B/s", speed));
+            }
+            last_check = std::time::Instant::now();
+            last_total = total_read;
+        }
     }
     Ok(bytes)
 }
