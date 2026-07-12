@@ -2,7 +2,7 @@
 use hidapi::{HidApi, HidDevice};
 use serde::Deserialize;
 use serde_json::{Map, Value};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ffi::CString;
 use std::sync::Mutex;
 use std::thread;
@@ -465,6 +465,95 @@ struct MutationAssertion {
     index_base: i64,
 }
 
+/// 工作流投影：从完整工作流中选取生成目标 output 所需的最小步骤子集。
+///
+/// 投影在宿主运行时内部完成，不修改插件包内容，不影响签名验证。
+/// UI 不直接提供原始 output 名称，而是通过 `SemanticField` 声明语义需求，
+/// 由宿主映射为目标 output 后计算投影。
+#[derive(Debug, Clone)]
+pub struct WorkflowProjection {
+    /// 选中的 step 索引（按原始顺序排列）。
+    selected_steps: Vec<usize>,
+    /// 投影请求的 output 名称集合（内部使用，不暴露给 UI）。
+    requested_outputs: BTreeSet<String>,
+    /// 投影失败时的回退原因。`None` 表示投影成功。
+    fallback_reason: Option<String>,
+}
+
+impl WorkflowProjection {
+    /// 投影是否成功（有选中的步骤且无回退原因）。
+    pub fn is_valid(&self) -> bool {
+        !self.selected_steps.is_empty() && self.fallback_reason.is_none()
+    }
+
+    /// 返回回退原因（如果有）。
+    pub fn fallback_reason(&self) -> Option<&str> {
+        self.fallback_reason.as_deref()
+    }
+
+    /// 返回选中步骤的数量。
+    pub fn selected_step_count(&self) -> usize {
+        self.selected_steps.len()
+    }
+
+    /// 返回请求的 output 名称集合（用于诊断）。
+    pub fn requested_outputs(&self) -> &BTreeSet<String> {
+        &self.requested_outputs
+    }
+
+    /// 返回选中步骤的索引（用于诊断和测试）。
+    pub fn selected_steps(&self) -> &[usize] {
+        &self.selected_steps
+    }
+}
+
+/// 计算单个 workflow step 依赖的所有 output 名称。
+///
+/// 依赖来源：
+/// - `params` 中的 `fromOutput` 引用
+/// - `skip_if_zero` 中的 `OutputReference`
+/// - `param_candidates` 中的 `fromOutput` 引用
+fn step_dependencies(step: &WorkflowStep) -> BTreeSet<String> {
+    let mut deps = BTreeSet::new();
+
+    // params 中的 fromOutput 引用
+    for value in step.params.values() {
+        if let Some(reference) = value.as_object() {
+            if reference
+                .keys()
+                .all(|key| matches!(key.as_str(), "fromOutput" | "field" | "subtract"))
+            {
+                if let Some(output) = reference.get("fromOutput").and_then(Value::as_str) {
+                    deps.insert(output.to_string());
+                }
+            }
+        }
+    }
+
+    // skip_if_zero 中的引用
+    for reference in &step.skip_if_zero {
+        deps.insert(reference.output.clone());
+    }
+
+    // param_candidates 中的引用
+    for candidates in step.param_candidates.values() {
+        for value in candidates {
+            if let Some(reference) = value.as_object() {
+                if reference
+                    .keys()
+                    .all(|key| matches!(key.as_str(), "fromOutput" | "field" | "subtract"))
+                {
+                    if let Some(output) = reference.get("fromOutput").and_then(Value::as_str) {
+                        deps.insert(output.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    deps
+}
+
 pub struct ProtocolPackage {
     commands: CommandsFile,
     parsers: ParsersFile,
@@ -674,6 +763,16 @@ impl ProtocolPackage {
         self.workflows.workflows.contains_key(workflow_id)
     }
 
+    /// 返回指定工作流中所有 step 的 output 名称集合。
+    /// 用于语义字段映射时检查目标 output 是否存在。
+    pub fn available_outputs(&self, workflow_id: &str) -> BTreeSet<String> {
+        self.workflows
+            .workflows
+            .get(workflow_id)
+            .map(|w| w.steps.iter().map(|s| s.output.clone()).collect())
+            .unwrap_or_default()
+    }
+
     pub fn execute(
         &self,
         api: &HidApi,
@@ -685,6 +784,7 @@ impl ProtocolPackage {
             path,
             workflow_id,
             BTreeMap::new(),
+            None,
             None,
             None,
             None,
@@ -716,6 +816,134 @@ impl ProtocolPackage {
             cache,
             cached_handles,
             hid_io_stats,
+            None,
+        )
+    }
+
+    /// 根据目标 output 集合计算工作流投影。
+    ///
+    /// 给定一个 workflow_id 和目标 output 名称集合，返回生成这些 output
+    /// 所需的最小 step 子集（包含递归依赖）。
+    ///
+    /// 投影在宿主运行时内部完成，不修改插件包内容，不影响签名验证。
+    /// UI 不直接调用此方法，而是通过宿主语义字段映射后间接使用。
+    pub fn compute_projection(
+        &self,
+        workflow_id: &str,
+        target_outputs: &BTreeSet<String>,
+    ) -> WorkflowProjection {
+        let workflow = match self.workflows.workflows.get(workflow_id) {
+            Some(w) => w,
+            None => {
+                return WorkflowProjection {
+                    selected_steps: Vec::new(),
+                    requested_outputs: target_outputs.clone(),
+                    fallback_reason: Some(format!("missing workflow {workflow_id}")),
+                }
+            }
+        };
+
+        let steps = &workflow.steps;
+
+        // 收集所有可用的 output 名称
+        let available_outputs: BTreeSet<&String> = steps.iter().map(|s| &s.output).collect();
+
+        // 过滤目标 output：只保留工作流中实际存在的
+        let mut valid_targets: BTreeSet<String> = BTreeSet::new();
+        let mut missing_targets: BTreeSet<String> = BTreeSet::new();
+        for target in target_outputs {
+            if available_outputs.contains(target) {
+                valid_targets.insert(target.clone());
+            } else {
+                missing_targets.insert(target.clone());
+            }
+        }
+
+        if valid_targets.is_empty() {
+            return WorkflowProjection {
+                selected_steps: Vec::new(),
+                requested_outputs: target_outputs.clone(),
+                fallback_reason: Some(format!("no target outputs found in workflow {workflow_id}")),
+            };
+        }
+
+        // 第一步：找到直接产出目标 output 的 step
+        let mut selected: BTreeSet<usize> = BTreeSet::new();
+        for (i, step) in steps.iter().enumerate() {
+            if valid_targets.contains(&step.output) {
+                selected.insert(i);
+            }
+        }
+
+        // 第二步：递归计算依赖闭包
+        // 对于每个已选中的 step，找到它依赖的所有 output，
+        // 然后找到产出这些 output 的 step，加入选中集合。
+        // 重复直到不再变化。
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for (i, step) in steps.iter().enumerate() {
+                if selected.contains(&i) {
+                    let deps = step_dependencies(step);
+                    for dep_output in deps {
+                        for (j, dep_step) in steps.iter().enumerate() {
+                            if dep_step.output == dep_output && !selected.contains(&j) {
+                                selected.insert(j);
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 构建回退原因（如果有目标 output 不存在）
+        let fallback_reason = if missing_targets.is_empty() {
+            None
+        } else {
+            Some(format!(
+                "some target outputs not found in workflow: {}",
+                missing_targets
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))
+        };
+
+        WorkflowProjection {
+            selected_steps: selected.into_iter().collect(),
+            requested_outputs: target_outputs.clone(),
+            fallback_reason,
+        }
+    }
+
+    /// 执行投影后的工作流。
+    ///
+    /// 与 `execute_with_cache` 类似，但只执行 `projection.selected_steps` 中的 step。
+    /// 复用现有的 feature index 缓存、HID 句柄缓存、超时和报告数量限制。
+    #[allow(clippy::too_many_arguments)]
+    pub fn execute_projection_with_cache(
+        &self,
+        api: &HidApi,
+        path: &str,
+        workflow_id: &str,
+        projection: &WorkflowProjection,
+        cache: Option<&Mutex<FeatureIndexCache>>,
+        cached_handles: Option<&Mutex<HidHandleCache>>,
+        hid_io_stats: Option<&Mutex<HidIoStats>>,
+    ) -> Result<BTreeMap<String, Value>, String> {
+        self.execute_with_initial_outputs(
+            api,
+            path,
+            workflow_id,
+            BTreeMap::new(),
+            None,
+            None,
+            cache,
+            cached_handles,
+            hid_io_stats,
+            Some(&projection.selected_steps),
         )
     }
 
@@ -731,6 +959,7 @@ impl ProtocolPackage {
         feature_index_cache: Option<&Mutex<FeatureIndexCache>>,
         cached_handles: Option<&Mutex<HidHandleCache>>,
         hid_io_stats: Option<&Mutex<HidIoStats>>,
+        selected_steps: Option<&[usize]>,
     ) -> Result<BTreeMap<String, Value>, String> {
         let workflow = self
             .workflows
@@ -751,6 +980,13 @@ impl ProtocolPackage {
             deadline: merge_deadline(inherited_deadline, timeout_ms)?,
         };
         for (index, step) in workflow.steps.iter().enumerate() {
+            // 工作流投影：只执行选中的 step，跳过未选中的。
+            // selected_steps 为 None 时执行所有 step（完整工作流）。
+            if let Some(steps) = selected_steps {
+                if !steps.contains(&index) {
+                    continue;
+                }
+            }
             if step.skip_if_zero.iter().any(|reference| {
                 output_value(&session.outputs, reference).and_then(Value::as_u64) == Some(0)
             }) {
@@ -873,6 +1109,7 @@ impl ProtocolPackage {
             None,
             cached_handles,
             hid_io_stats,
+            None,
         )?;
         let size = output_value(&outputs, &definition.size)
             .and_then(Value::as_u64)
@@ -1081,6 +1318,7 @@ impl ProtocolPackage {
                 None,
                 cached_handles,
                 hid_io_stats,
+                None,
             )?
         } else {
             ctx_outputs.clone()
@@ -1111,6 +1349,7 @@ impl ProtocolPackage {
                         None,
                         cached_handles,
                         hid_io_stats,
+                        None,
                     ) {
                         Ok(_) => Err(format!(
                             "写入 {mutation_id} 失败：{error}。事务回滚已执行（回滚工作流：{rollback_workflow}），设备已恢复至写入前状态。"
@@ -3523,6 +3762,183 @@ mod tests {
             package.mutation_ids("protocol-a-receiver", None),
             vec!["set-receiver-lighting"]
         );
+    }
+
+    /// 构建工作流投影测试用的包。
+    ///
+    /// 工作流结构：
+    /// - step 0: root-get-feature → "device" (设备信息，无依赖)
+    /// - step 1: get-battery → "battery" (params 引用 device.deviceIndex)
+    /// - step 2: get-dpi → "dpi" (params 引用 device.deviceIndex)
+    /// - step 3: get-firmware → "firmware" (无依赖)
+    /// - step 4: get-lighting → "lighting" (skip_if_zero 引用 device.supportsLighting)
+    fn build_projection_test_package() -> ProtocolPackage {
+        let workflows = r#"{
+            "schemaVersion": 1,
+            "workflows": {
+                "test-read": {
+                    "transport": "feature",
+                    "steps": [
+                        {
+                            "command": "root-get-feature",
+                            "parser": "device-info",
+                            "output": "device"
+                        },
+                        {
+                            "command": "get-battery",
+                            "parser": "battery",
+                            "output": "battery",
+                            "params": {
+                                "deviceIndex": {"fromOutput": "device", "field": "deviceIndex"}
+                            }
+                        },
+                        {
+                            "command": "get-dpi",
+                            "parser": "dpi",
+                            "output": "dpi",
+                            "params": {
+                                "deviceIndex": {"fromOutput": "device", "field": "deviceIndex"}
+                            }
+                        },
+                        {
+                            "command": "get-firmware",
+                            "parser": "firmware",
+                            "output": "firmware"
+                        },
+                        {
+                            "command": "get-lighting",
+                            "parser": "lighting",
+                            "output": "lighting",
+                            "skipIfZero": [
+                                {"output": "device", "field": "supportsLighting"}
+                            ]
+                        }
+                    ]
+                }
+            },
+            "mutations": {}
+        }"#;
+        build_test_package(
+            r#"{"schemaVersion": 1, "commands": {}}"#,
+            r#"{"schemaVersion": 1, "parsers": {}}"#,
+            r#"{"schemaVersion": 1, "transports": {
+                "feature": {"kind": "hid-feature", "reportId": 16, "writeLength": 20, "readLength": 20, "stripReportIdOnRead": true}
+            }}"#,
+            workflows,
+        )
+    }
+
+    #[test]
+    fn projection_selects_target_and_dependencies() {
+        let package = build_projection_test_package();
+        let mut targets = BTreeSet::new();
+        targets.insert("battery".to_string());
+
+        let projection = package.compute_projection("test-read", &targets);
+        assert!(projection.is_valid());
+        // 应选中 step 0 (device) 和 step 1 (battery)
+        assert_eq!(projection.selected_steps(), &[0, 1]);
+    }
+
+    #[test]
+    fn projection_selects_multiple_targets_with_shared_dependency() {
+        let package = build_projection_test_package();
+        let mut targets = BTreeSet::new();
+        targets.insert("battery".to_string());
+        targets.insert("dpi".to_string());
+
+        let projection = package.compute_projection("test-read", &targets);
+        assert!(projection.is_valid());
+        // 应选中 step 0 (device), step 1 (battery), step 2 (dpi)
+        // device 是 battery 和 dpi 的共享依赖
+        assert_eq!(projection.selected_steps(), &[0, 1, 2]);
+    }
+
+    #[test]
+    fn projection_independent_step_has_no_dependency() {
+        let package = build_projection_test_package();
+        let mut targets = BTreeSet::new();
+        targets.insert("firmware".to_string());
+
+        let projection = package.compute_projection("test-read", &targets);
+        assert!(projection.is_valid());
+        // firmware 无依赖，只选中 step 3
+        assert_eq!(projection.selected_steps(), &[3]);
+    }
+
+    #[test]
+    fn projection_includes_skip_if_zero_dependency() {
+        let package = build_projection_test_package();
+        let mut targets = BTreeSet::new();
+        targets.insert("lighting".to_string());
+
+        let projection = package.compute_projection("test-read", &targets);
+        assert!(projection.is_valid());
+        // lighting 的 skip_if_zero 引用 device.supportsLighting
+        // 所以 device (step 0) 是依赖
+        assert_eq!(projection.selected_steps(), &[0, 4]);
+    }
+
+    #[test]
+    fn projection_all_targets_selects_all_dependent_steps() {
+        let package = build_projection_test_package();
+        let mut targets = BTreeSet::new();
+        targets.insert("battery".to_string());
+        targets.insert("dpi".to_string());
+        targets.insert("lighting".to_string());
+
+        let projection = package.compute_projection("test-read", &targets);
+        assert!(projection.is_valid());
+        // 选中 step 0 (device, 共享依赖), 1 (battery), 2 (dpi), 4 (lighting)
+        // step 3 (firmware) 不在依赖链中
+        assert_eq!(projection.selected_steps(), &[0, 1, 2, 4]);
+    }
+
+    #[test]
+    fn projection_missing_target_returns_fallback_reason() {
+        let package = build_projection_test_package();
+        let mut targets = BTreeSet::new();
+        targets.insert("nonexistent".to_string());
+
+        let projection = package.compute_projection("test-read", &targets);
+        assert!(!projection.is_valid());
+        assert!(projection.fallback_reason().is_some());
+    }
+
+    #[test]
+    fn projection_missing_workflow_returns_fallback_reason() {
+        let package = build_projection_test_package();
+        let targets = BTreeSet::new();
+
+        let projection = package.compute_projection("nonexistent-read", &targets);
+        assert!(!projection.is_valid());
+        assert!(projection.fallback_reason().is_some());
+    }
+
+    #[test]
+    fn projection_preserves_step_order() {
+        let package = build_projection_test_package();
+        let mut targets = BTreeSet::new();
+        // 请求靠后的 output，验证依赖步骤按原始顺序排列
+        targets.insert("lighting".to_string());
+        targets.insert("battery".to_string());
+
+        let projection = package.compute_projection("test-read", &targets);
+        assert!(projection.is_valid());
+        // 选中步骤应按原始顺序：0, 1, 4
+        assert_eq!(projection.selected_steps(), &[0, 1, 4]);
+    }
+
+    #[test]
+    fn available_outputs_returns_all_step_outputs() {
+        let package = build_projection_test_package();
+        let outputs = package.available_outputs("test-read");
+        assert_eq!(outputs.len(), 5);
+        assert!(outputs.contains("device"));
+        assert!(outputs.contains("battery"));
+        assert!(outputs.contains("dpi"));
+        assert!(outputs.contains("firmware"));
+        assert!(outputs.contains("lighting"));
     }
 
     #[test]
