@@ -19,12 +19,20 @@ use ed25519_dalek::VerifyingKey;
 use hidapi::HidApi;
 use mira_plugin_runtime::{
     execute_plugin_workflow, extract_package, hid, inspect_package, mutate_device, read_device,
-    writable_mutations, ConnectionKind, FeatureIndexCache, HidHandleCache, HidIoStats,
-    OnboardMemoryCache, ProtocolContext, TrustStore,
+    read_device_with_projection, writable_mutations, ConnectionKind, FeatureIndexCache,
+    HidHandleCache, HidIoStats, OnboardMemoryCache, ProtocolContext, ProtocolPackage,
+    SemanticField, TrustStore,
 };
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeMap, fs, io::Cursor, path::PathBuf, sync::Mutex};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    io::Cursor,
+    path::PathBuf,
+    sync::Mutex,
+    time::Instant,
+};
 
 const PRODUCTION_KEY_ID: &str = "mira-plugins-2026-001";
 const PRODUCTION_PUBLIC_KEY_HEX: &str =
@@ -260,6 +268,52 @@ fn main() {
     println!("writable mutations: {:?}", allowed);
     print_hid_io_stats(&hid_io_stats);
 
+    // Exercise the host-side read-plan projection against the same unchanged
+    // signed package. This provides real-device evidence that Quick and
+    // BatteryOnly return normalized state with fewer workflow steps.
+    let package = ProtocolPackage::from_files(&files).expect("parse protocol package");
+    for (label, fields) in [
+        (
+            "Quick",
+            BTreeSet::from([
+                SemanticField::BatteryPercent,
+                SemanticField::ReceiverBatteryPercent,
+                SemanticField::Charging,
+                SemanticField::CurrentDpi,
+                SemanticField::PollingRate,
+                SemanticField::ActiveProfile,
+                SemanticField::LightingState,
+            ]),
+        ),
+        (
+            "BatteryOnly",
+            BTreeSet::from([
+                SemanticField::BatteryPercent,
+                SemanticField::ReceiverBatteryPercent,
+                SemanticField::Charging,
+            ]),
+        ),
+    ] {
+        let started = Instant::now();
+        let projected = read_device_with_projection(&package, &context, &fields)
+            .unwrap_or_else(|error| panic!("{label} projection failed: {error}"));
+        println!(
+            "{label}: projection_valid={} steps={} elapsed_ms={} battery={:?} dpi={:?} polling_rate={:?} profile={:?}",
+            projected.projection_valid,
+            projected.projected_step_count,
+            started.elapsed().as_millis(),
+            projected.reading.battery_percent,
+            projected.reading.dpi,
+            projected.reading.polling_rate_hz,
+            projected.reading.profile,
+        );
+        if !projected.projection_valid {
+            eprintln!("{label} fallback: {:?}", projected.fallback_reason);
+            std::process::exit(1);
+        }
+    }
+    print_hid_io_stats(&hid_io_stats);
+
     if let Ok(workflow_id) = std::env::var("MIRA_WORKFLOW") {
         let outputs = match execute_plugin_workflow(&read_context, &workflow_id) {
             Ok(outputs) => outputs,
@@ -473,7 +527,8 @@ fn classified_exit_code(error: &str) -> i32 {
 fn print_hid_io_stats(hid_io_stats: &Mutex<HidIoStats>) {
     if let Ok(stats) = hid_io_stats.lock() {
         println!(
-            "hid io stats: cache_hits={} cache_misses={} open_attempts={} open_failures={} handles_returned={} lock_failures={}",
+            "hid io stats: reports={} cache_hits={} cache_misses={} open_attempts={} open_failures={} handles_returned={} lock_failures={}",
+            stats.reports_executed,
             stats.handle_cache_hits,
             stats.handle_cache_misses,
             stats.open_path_attempts,

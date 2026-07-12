@@ -94,6 +94,7 @@ describe('BatteryUsageModal', () => {
     expect(usageLabelText).toContain('下午12时');
     expect(usageLabelText.every((label) => /^(上午12时|下午12时|3|6|9)$/.test(label ?? ''))).toBe(true);
     expect(document.querySelectorAll('.battery-chart-x-boundary')).toHaveLength(0);
+    expect(document.querySelector('.battery-chart')).toHaveAttribute('viewBox', '0 0 520 146');
     expect(summaryGrid.compareDocumentPosition(chartCard) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(summaryGrid.children).toHaveLength(4);
     expect(screen.getByText('当前电量')).toBeInTheDocument();
@@ -166,6 +167,32 @@ describe('BatteryUsageModal', () => {
     expect(weekdayLabels).toHaveLength(10);
     expect(weekdayLabels.every((label) => /^[A-Z]$/.test(label))).toBe(true);
     expect(dateLabels.every((label) => /^\d{1,2}\/\d{1,2}$/.test(label))).toBe(true);
+  });
+
+  it('keeps the current chart coherent until the next range response arrives', async () => {
+    let resolveTenDay: ((response: BatteryHistoryResponse) => void) | undefined;
+    invokeMock.mockImplementation((command: string, payload?: { range?: string }) => {
+      if (command === 'settings_get') return Promise.resolve(settingsEnabled);
+      if (command === 'battery_history_get' && payload?.range === '10d') {
+        return new Promise<BatteryHistoryResponse>((resolve) => { resolveTenDay = resolve; });
+      }
+      if (command === 'battery_history_get') return Promise.resolve(MOCK_BATTERY_HISTORY_24H);
+      return Promise.resolve(undefined);
+    });
+
+    render(<BatteryUsageModal open onClose={() => {}} hasBattery />);
+    await waitFor(() => expect(document.querySelectorAll('.battery-chart g[role="button"]')).toHaveLength(48));
+    fireEvent.click(screen.getByRole('tab', { name: '10 天' }));
+
+    expect(screen.getByRole('tab', { name: '10 天' })).toHaveAttribute('aria-selected', 'true');
+    expect(document.querySelectorAll('.battery-chart g[role="button"]')).toHaveLength(48);
+    expect(document.querySelectorAll('.battery-chart-x-label')).toHaveLength(8);
+    expect(document.querySelector('.battery-chart')).toHaveAttribute('viewBox', '0 0 520 146');
+
+    resolveTenDay?.(MOCK_BATTERY_HISTORY_10D);
+    await waitFor(() => expect(document.querySelectorAll('.battery-chart g[role="button"]')).toHaveLength(30));
+    expect(document.querySelectorAll('.battery-chart-x-label')).toHaveLength(10);
+    expect(document.querySelector('.battery-chart')).toHaveAttribute('viewBox', '0 0 520 146');
   });
 
   it('switches selected device from the status strip menu', async () => {

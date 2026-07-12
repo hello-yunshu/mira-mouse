@@ -2242,24 +2242,25 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
 .battery-range-toggle {
   display: inline-flex;
   flex: 0 0 auto;
-  gap: 2px;
+  height: 36px;
+  gap: 3px;
   padding: 3px;
   border: 1px solid var(--control-secondary-border);
-  border-radius: 12px;
+  border-radius: 999px;
   background: var(--control-secondary-bg);
-  box-shadow: inset 0 1px 2px rgb(42 35 52 / 7%);
+  box-shadow: none;
 }
 .battery-range-toggle button {
   min-width: 72px;
-  padding: 6px 13px;
+  padding: 0 12px;
   border: none;
-  border-radius: 9px;
+  border-radius: 999px;
   background: transparent;
   color: var(--muted);
-  font-size: 11px;
-  font-weight: 650;
+  font-size: 12px;
+  font-weight: 600;
   cursor: pointer;
-  transition: background .16s ease, color .16s ease, box-shadow .16s ease;
+  transition: background .18s ease, color .18s ease, box-shadow .18s ease;
 }
 .battery-range-toggle button:not(.active):hover {
   color: inherit;
@@ -2268,8 +2269,7 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
 .battery-range-toggle button.active {
   color: #fff;
   background: linear-gradient(115deg, color-mix(in oklch, var(--accent), #8fa8e4 36%), color-mix(in oklch, var(--accent), #d67fb2 28%));
-  box-shadow: 0 4px 12px color-mix(in oklch, var(--accent), transparent 70%), inset 0 1px 0 rgb(255 255 255 / 24%);
-  text-shadow: 0 1px 1px rgb(72 52 82 / 22%);
+  box-shadow: 0 7px 20px color-mix(in oklch, var(--accent), transparent 76%);
 }
 
 @media (max-width: 560px) {
@@ -3001,6 +3001,7 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
 .nav-about::after,
 .nav-exit::after { display: none; }
 .control-tabs button::after { display: none; }
+.battery-range-toggle button::after { display: none; }
 
 /* Frequent controls feel physical without looking springy or playful. */
 button,
