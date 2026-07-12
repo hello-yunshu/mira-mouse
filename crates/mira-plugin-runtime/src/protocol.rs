@@ -100,6 +100,82 @@ pub struct ProtocolContext<'a> {
     pub hid_io_stats: Option<&'a Mutex<HidIoStats>>,
 }
 
+/// 宿主语义字段：品牌无关的设备状态语义。
+///
+/// UI 通过 `DeviceViewRequirement` 声明当前视图需要的语义字段，
+/// 宿主将其映射为目标 output 名称后计算工作流投影。
+/// 这层间接让 UI 不与插件原始 output 名称耦合。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Ord, PartialOrd, Hash)]
+pub enum SemanticField {
+    /// 鼠标电量百分比
+    BatteryPercent,
+    /// 接收器电量百分比
+    ReceiverBatteryPercent,
+    /// 充电状态
+    Charging,
+    /// 当前 DPI
+    CurrentDpi,
+    /// 当前回报率
+    PollingRate,
+    /// 当前活动配置文件
+    ActiveProfile,
+    /// 灯光状态
+    LightingState,
+}
+
+impl SemanticField {
+    /// 返回此语义字段对应的标准 output 名称候选列表。
+    ///
+    /// 按优先级排列：第一个匹配的 output 会被选中。
+    /// 这些名称基于 `standard_reading` 中的协议输出约定，
+    /// 不是品牌特定名称。
+    pub fn standard_output_names(&self) -> &'static [&'static str] {
+        match self {
+            // battery output 包含 percentage 和 charging 字段
+            SemanticField::BatteryPercent => &["battery"],
+            SemanticField::Charging => &["battery"],
+            SemanticField::ReceiverBatteryPercent => {
+                &["receiverBattery", "receiver", "receiverIdle"]
+            }
+            SemanticField::CurrentDpi => &["dpi", "dpiStages"],
+            SemanticField::PollingRate => &["reportRateList", "reportRateListExtended"],
+            SemanticField::ActiveProfile => &["profile"],
+            SemanticField::LightingState => &["mouseLighting", "lighting"],
+        }
+    }
+}
+
+/// 将语义字段集合映射为目标 output 名称集合。
+///
+/// 只选择工作流中实际存在的 output，避免请求不存在的 output 导致投影失败。
+/// 返回 (有效目标, 缺失目标) 元组。
+pub fn map_semantic_to_outputs(
+    package: &ProtocolPackage,
+    workflow_id: &str,
+    fields: &BTreeSet<SemanticField>,
+) -> (BTreeSet<String>, BTreeSet<String>) {
+    let available = package.available_outputs(workflow_id);
+    let mut targets = BTreeSet::new();
+    let mut missing = BTreeSet::new();
+
+    for field in fields {
+        let mut found = false;
+        for name in field.standard_output_names() {
+            if available.contains(*name) {
+                targets.insert(name.to_string());
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            // 记录缺失的语义字段（用于诊断）
+            missing.insert(format!("{field:?}"));
+        }
+    }
+
+    (targets, missing)
+}
+
 pub fn read_device(ctx: &ProtocolContext) -> Result<DeviceReading, String> {
     let package = ProtocolPackage::from_files(ctx.files)?;
     read_device_with_package(&package, ctx)
@@ -133,6 +209,105 @@ pub fn read_device_with_package(
             .join(", ")
     );
     Ok(standard_reading(outputs, capabilities))
+}
+
+/// 投影读取结果：包含读取的 DeviceReading 和投影诊断信息。
+pub struct ProjectedReading {
+    pub reading: DeviceReading,
+    /// 投影是否成功。失败时回退到完整读取。
+    pub projection_valid: bool,
+    /// 投影回退原因（如果有）。
+    pub fallback_reason: Option<String>,
+    /// 投影选中的 step 数量。
+    pub projected_step_count: usize,
+}
+
+/// 使用工作流投影读取设备状态。
+///
+/// 根据语义字段集合计算工作流投影，只执行生成目标 output 所需的最小 step 子集。
+/// 投影失败时自动回退到完整读取（`read_device_with_package`）。
+///
+/// UI 不直接调用此函数，而是由宿主调度器根据 ReadPlan 和视图需求调用。
+pub fn read_device_with_projection(
+    package: &ProtocolPackage,
+    ctx: &ProtocolContext,
+    fields: &BTreeSet<SemanticField>,
+) -> Result<ProjectedReading, String> {
+    let workflow_id = format!("{}-read", ctx.family);
+
+    // 1. 将语义字段映射为目标 output 名称
+    let (target_outputs, missing_fields) = map_semantic_to_outputs(package, &workflow_id, fields);
+
+    // 2. 计算工作流投影
+    let projection = package.compute_projection(&workflow_id, &target_outputs);
+
+    // 3. 如果投影有效，执行投影读取
+    if projection.is_valid() {
+        let outputs = package.execute_projection_with_cache(
+            ctx.api,
+            ctx.path,
+            &workflow_id,
+            &projection,
+            ctx.feature_index_cache,
+            ctx.cached_handles,
+            ctx.hid_io_stats,
+        )?;
+        let capabilities = package.capabilities().cloned();
+        // 投影读取也需要合并 onboard lighting（如果 lighting 是目标 output 的话）
+        let mut outputs = outputs;
+        if target_outputs.iter().any(|o| {
+            matches!(
+                o.as_str(),
+                "mouseLighting" | "lighting" | "mouseLightingOnboard"
+            )
+        }) {
+            maybe_merge_onboard_lighting(package, ctx, capabilities.as_ref(), &mut outputs)?;
+        }
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "[mira] projected workflow {workflow_id}: {}/{} steps, outputs: [{}]",
+            projection.selected_step_count(),
+            package.available_outputs(&workflow_id).len(),
+            outputs
+                .keys()
+                .map(|k| k.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        Ok(ProjectedReading {
+            reading: standard_reading(outputs, capabilities),
+            projection_valid: true,
+            fallback_reason: None,
+            projected_step_count: projection.selected_step_count(),
+        })
+    } else {
+        // 4. 投影失败，回退到完整读取
+        let reason = projection
+            .fallback_reason()
+            .unwrap_or("projection returned no steps")
+            .to_string();
+        let missing_info = if missing_fields.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " (missing semantic fields: {})",
+                missing_fields
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+        #[cfg(debug_assertions)]
+        eprintln!("[mira] projection fallback for {workflow_id}: {reason}{missing_info}");
+        let reading = read_device_with_package(package, ctx)?;
+        Ok(ProjectedReading {
+            reading,
+            projection_valid: false,
+            fallback_reason: Some(format!("{reason}{missing_info}")),
+            projected_step_count: 0,
+        })
+    }
 }
 
 fn maybe_merge_onboard_lighting(

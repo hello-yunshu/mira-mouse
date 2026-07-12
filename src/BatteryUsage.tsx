@@ -126,8 +126,9 @@ function BatteryUsageChart({ points, range }: ChartProps) {
   const [focusIndex, setFocusIndex] = useState<number | null>(null);
 
   const width = 520;
-  const height = range === '10d' ? 146 : 136;
-  const padding = { top: 8, right: 8, bottom: range === '10d' ? 30 : 20, left: 28 };
+  // 两种范围共用同一画布与绘图区高度，避免切换时图表卡片和柱体上下跳动。
+  const height = 146;
+  const padding = { top: 8, right: 8, bottom: 30, left: 28 };
   const chartWidth = width - padding.left - padding.right;
   const chartHeight = height - padding.top - padding.bottom;
   const pointCount = Math.max(points.length, 1);
@@ -216,6 +217,7 @@ function BatteryUsageChart({ points, range }: ChartProps) {
       </div>
       <div className="battery-chart-stage">
         <svg
+          key={range}
           className="battery-chart"
           viewBox={`0 0 ${width} ${height}`}
           role="img"
@@ -278,7 +280,7 @@ function BatteryUsageChart({ points, range }: ChartProps) {
             const plotBottom = padding.top + chartHeight;
             const extensionBottom = range === '10d'
               ? (tick.major ? height - 2 : plotBottom + 13)
-              : height - 2;
+              : plotBottom + 18;
             return (
               <g key={`${tick.key}-line`}>
                 <line
@@ -325,7 +327,7 @@ function BatteryUsageChart({ points, range }: ChartProps) {
 
             return (
               <g
-                key={i}
+                key={`${range}-${point.bucketStart}-${i}`}
                 onMouseEnter={() => setHoverIndex(i)}
                 onMouseLeave={() => setHoverIndex(null)}
                 onPointerEnter={() => setHoverIndex(i)}
@@ -742,6 +744,10 @@ export function BatteryUsageModal({
     [response, effectiveDeviceKey],
   );
 
+  // 请求下一范围时继续按旧响应自己的范围渲染，避免旧数据短暂套入新坐标系。
+  // 新响应到齐后，图表与摘要再作为一个完整状态一次性切换。
+  const displayedRange = response?.range ?? range;
+
   const handleClear = useCallback(async () => {
     if (pureWeb) {
       if (effectiveDeviceKey) {
@@ -862,6 +868,7 @@ export function BatteryUsageModal({
             <div className="battery-usage-controls">
               <div className="battery-range-toggle" role="tablist">
                 <button
+                  type="button"
                   role="tab"
                   aria-selected={range === '24h'}
                   className={range === '24h' ? 'active' : ''}
@@ -870,6 +877,7 @@ export function BatteryUsageModal({
                   {t('batteryUsage.range24h')}
                 </button>
                 <button
+                  type="button"
                   role="tab"
                   aria-selected={range === '10d'}
                   className={range === '10d' ? 'active' : ''}
@@ -890,12 +898,12 @@ export function BatteryUsageModal({
             <BatteryUsageSummary
               device={selectedDevice}
               insights={selectedInsights}
-              range={range}
+              range={displayedRange}
             />
 
             {/* 图表 */}
             {selectedSeries && (
-              <BatteryUsageChart points={selectedSeries.points} range={range} />
+              <BatteryUsageChart points={selectedSeries.points} range={displayedRange} />
             )}
 
             {/* 洞察 */}

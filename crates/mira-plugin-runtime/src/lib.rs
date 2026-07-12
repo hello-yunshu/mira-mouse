@@ -15,13 +15,14 @@ pub use mira_plugin_api::{
 };
 
 pub use dsl::{execute_workflow, DslError, Limits, Operation, Transport, Workflow};
-pub use engine::ProtocolPackage;
+pub use engine::{ProtocolPackage, WorkflowProjection};
 pub use package::{
     canonical_json, extract_package, inspect_package, PackageError, PackageInspection, TrustStore,
 };
 pub use protocol::{
-    execute_plugin_workflow, mutate_device, mutate_device_with_package, read_device,
-    read_device_with_package, writable_mutations, writable_mutations_with_package, ConnectionKind,
-    DeviceReading, FeatureIndexCache, HidHandleCache, HidIoStats, OnboardMemoryCache,
-    ProtocolContext,
+    execute_plugin_workflow, map_semantic_to_outputs, mutate_device, mutate_device_with_package,
+    read_device, read_device_with_package, read_device_with_projection, writable_mutations,
+    writable_mutations_with_package, ConnectionKind, DeviceReading, FeatureIndexCache,
+    HidHandleCache, HidIoStats, OnboardMemoryCache, ProjectedReading, ProtocolContext,
+    SemanticField,
 };
