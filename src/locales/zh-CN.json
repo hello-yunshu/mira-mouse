@@ -234,7 +234,6 @@
     "section": {
       "theme": "主题",
       "startup": "开机与菜单栏",
-      "polling": "轮询",
       "update": "软件更新",
       "battery": "电量提醒",
       "batteryHistory": "电量使用情况",
@@ -278,10 +277,6 @@
     "trayConnection": {
       "label": "菜单显示连接状态",
       "hint": "托盘菜单中展示连接方式和设备名称"
-    },
-    "refreshInterval": {
-      "label": "刷新间隔：{{seconds}} 秒",
-      "hint": "Mira 通过事件实时更新；此间隔仅作为窗口可见时的后备轮询，隐藏后降至 60 秒"
     },
     "updateCheck": {
       "label": "自动检查 Mira 更新",

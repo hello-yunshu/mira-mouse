@@ -580,9 +580,26 @@ function BatteryInsightCards({ insights }: { insights: BatteryInsight[] }) {
     }
   };
 
-  // 固定 2 列布局：奇数时截断最后一个，保证始终是 2 的倍数，避免单块占行。
-  const visibleCount = deduped.length - (deduped.length % 2);
-  const visible = deduped.slice(0, visibleCount);
+  // 特殊洞察（事件驱动）置顶，基础洞察（稳定生成）按优先级补齐，最多 6 个。
+  const specialTypes: BatteryInsight['type'][] = ['abnormalDrain', 'powerSavingTip'];
+  const special = deduped.filter((i) => specialTypes.includes(i.type));
+  const basicPriority: BatteryInsight['type'][] = ['chargingHabit', 'batteryConsistency', 'averageDailyDrain', 'chargingCount'];
+  const basic = deduped
+    .filter((i) => !specialTypes.includes(i.type))
+    .sort((a, b) => {
+      const pa = basicPriority.indexOf(a.type);
+      const pb = basicPriority.indexOf(b.type);
+      return (pa === -1 ? 99 : pa) - (pb === -1 ? 99 : pb);
+    });
+
+  const maxCount = 6;
+  const basicTake = Math.max(0, Math.min(basic.length, maxCount - special.length));
+  let visible: BatteryInsight[] = [...special, ...basic.slice(0, basicTake)];
+
+  // 固定 2 列布局：奇数（且大于 1）时截断最后一个，避免单块占行。
+  if (visible.length > 1 && visible.length % 2 !== 0) {
+    visible = visible.slice(0, visible.length - 1);
+  }
 
   return (
     <section className="battery-insight-section">

@@ -223,7 +223,6 @@ export interface AppSettings {
   nightModeTriggerLowBattery: boolean;
   nightModeTargetMouse: boolean;
   nightModeTargetReceiver: boolean;
-  refreshIntervalSeconds: number;
   telemetryDisabled: boolean;
   automaticUpdateChecks: boolean;
   automaticUpdateInstall: boolean;

@@ -2876,9 +2876,10 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
 /* ─── Mira motion language ────────────────────────────────────────────────
    Linear-like hierarchy, Raycast-like tactility, and material response only
    on transient surfaces. Motion explains state; it never competes with data. */
+/* 仅位移入场：不使用 opacity，避免透明窗口下 vibrancy 透出造成背景闪烁 */
 @keyframes mira-page-enter {
-  from { opacity: 0; transform: translateY(var(--motion-distance)); }
-  to { opacity: 1; transform: translateY(0); }
+  from { transform: translateY(var(--motion-distance)); }
+  to { transform: translateY(0); }
 }
 
 @keyframes mira-section-enter {

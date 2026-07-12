@@ -668,8 +668,6 @@ struct DeviceMetrics {
     full_avoided: u64,
     /// 最近读取耗时（毫秒）
     last_read_ms: Option<u64>,
-    /// 最近触发原因
-    last_reason: Option<String>,
     /// 当前退避连续失败次数
     backoff_failures: u32,
     /// 是否正在退避
@@ -680,7 +678,7 @@ struct DeviceMetrics {
 #[derive(Default, Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct GlobalMetrics {
-    /// 调度请求总数（热插拔、窗口聚焦、用户刷新等）
+    /// 显式调度请求总数（参数编辑、用户刷新、系统恢复等）
     schedule_requests: u64,
     /// 睡眠恢复次数
     sleep_resume_count: u64,
@@ -753,10 +751,6 @@ struct SessionState {
     applied_software_profiles: Mutex<BTreeSet<String>>,
     /// 低电量跨阈值检测：仅在电量从高跨入低时通知一次，避免反复弹窗。
     low_battery: Mutex<LowBatteryCrossing>,
-    /// 状态变化后的快速轮询剩余次数。
-    /// 检测到设备插拔、充电状态变化等事件后，进入短暂的 500ms 快速轮询窗口，
-    /// 在不持续高频轮询的前提下，尽快捕获状态变化的收尾（例如充电结束）。
-    settling_polls: Mutex<u8>,
     /// 缓存应用设置，避免每次轮询都读磁盘。
     /// 由 settings_set 命令和首次加载时更新。
     cached_settings: Mutex<Option<AppSettings>>,
@@ -778,7 +772,7 @@ struct SessionState {
     /// 由插件加载（启动 / install_plugin_update）清空。
     cached_packages: Mutex<HashMap<String, Arc<ProtocolPackage>>>,
     /// #9 防抖式 TTL 缓存：记录每个设备最近一次 HID 读取的时间戳（按 HID 路径索引）。
-    /// 非 settling 状态下，500ms 内的重复读取复用 last_snapshot，跳过 HID 往返。
+    /// 500ms 内的重复读取复用 last_snapshot，跳过 HID 往返。
     /// 写入后（device_mutate_blocking）和设备断开（clear_snapshots）时清除。
     last_read_at: Mutex<HashMap<String, Instant>>,
     /// 每设备指数退避状态，按 HID 路径索引。
@@ -833,9 +827,11 @@ fn hid_io_stats_ref(state: &SessionState) -> Option<&Mutex<HidIoStats>> {
 
 /// Send an immediate-refresh signal to the background reader thread.
 /// No-op if the reader has not been spawned yet.
-/// 用户触发的刷新（窗口聚焦、手动刷新、托盘点击等）：清除所有设备的退避状态。
+///
+/// 退避重置由调用方按需执行，不在本函数中无条件重置：
+/// 避免高频 UI 交互（tab 切换、编辑按钮）反复重置休眠设备退避，
+/// 违背设计文档第 420-427 行的退避重置事件清单。
 fn request_refresh_with_plan(state: &SessionState, plan: ReadPlan) {
-    reset_all_backoff(state);
     // 全局诊断：记录调度请求。
     if let Ok(mut g) = state.global_metrics.lock() {
         g.schedule_requests += 1;
@@ -850,8 +846,18 @@ fn request_refresh_with_plan(state: &SessionState, plan: ReadPlan) {
     }
 }
 
+/// mutation 后请求 Quick 读取验证。
+/// mutation 已在 `device_mutate_blocking` 中单独重置当前设备退避，
+/// 不重置其他设备——一个设备的写入不应影响其他设备的退避状态。
 fn request_refresh(state: &SessionState) {
     request_refresh_with_plan(state, ReadPlan::Quick);
+}
+
+/// 窗口聚焦/托盘点击/Dock 点击等窗口事件触发的 Presence 刷新。
+/// 这些事件属于设计文档定义的退避重置事件（窗口重新打开），需重置所有设备退避。
+fn request_presence_refresh(state: &SessionState) {
+    reset_all_backoff(state);
+    request_refresh_with_plan(state, ReadPlan::PresenceOnly);
 }
 
 /// Send a wake-up signal to the night mode scheduler thread.
@@ -1338,22 +1344,9 @@ fn dependency_transport_files<'a>(
     Ok(transport_files)
 }
 
-/// Number of fast polls performed after a state transition is detected.
-/// At 500 ms per poll this covers a 3-second settling window.
-const SETTLING_POLL_COUNT: u8 = 6;
-
-/// #9 防抖式 TTL：非 settling 状态下，500ms 内的重复读取复用快照。
+/// #9 防抖式 TTL：500ms 内的重复读取复用快照。
 /// 防止窗口聚焦、托盘点击等短时间多次 RefreshNow 信号触发重复 HID 往返。
 const READ_DEBOUNCE_TTL: Duration = Duration::from_millis(500);
-
-/// Mark that the device state just changed, enabling a short burst of fast polls.
-/// This is used for plug/unplug, charging state changes, and after device writes
-/// so the UI catches the tail end of the transition without continuous polling.
-fn note_state_change(state: &SessionState) {
-    if let Ok(mut polls) = state.settling_polls.lock() {
-        *polls = SETTLING_POLL_COUNT;
-    }
-}
 
 /// 从多设备快照 map 中选择 primary 设备。
 /// 优先返回真正开放写入的设备，否则返回第一个。
@@ -1400,8 +1393,8 @@ fn selected_device_path(state: &SessionState) -> Option<String> {
         .and_then(|guard| selected_snapshot_entry(state, &guard).map(|(path, _)| path.clone()))
 }
 
-/// 替换整个快照 map，并在变化时触发 settling burst。
-fn store_snapshots(state: &SessionState, snapshots: &BTreeMap<String, DeviceSnapshot>) {
+/// 替换整个快照 map，并返回内容是否变化。
+fn store_snapshots(state: &SessionState, snapshots: &BTreeMap<String, DeviceSnapshot>) -> bool {
     if let Ok(mut selected) = state.selected_device_path.lock() {
         if selected
             .as_ref()
@@ -1418,11 +1411,11 @@ fn store_snapshots(state: &SessionState, snapshots: &BTreeMap<String, DeviceSnap
     *guard = snapshots.clone();
     drop(guard);
     if changed {
-        note_state_change(state);
         // 设备状态变化（连接/断开/灯光状态变化）时唤醒夜间模式调度器，
         // 确保设备连接后立即关闭/恢复灯光，不必等下一轮 60 秒检查。
         request_night_mode_eval(state);
     }
+    changed
 }
 
 /// 更新单个设备的快照，避免 clone 整个 map 引发的读-改-写竞态。
@@ -1432,15 +1425,11 @@ fn store_snapshot(state: &SessionState, device_path: String, snapshot: DeviceSna
         .last_snapshot
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    let changed = guard.get(&device_path) != Some(&snapshot);
     guard.insert(device_path, snapshot);
     drop(guard);
-    if changed {
-        note_state_change(state);
-    }
 }
 
-/// 清空所有快照，并在变化时触发 settling burst。
+/// 清空所有快照与设备会话缓存。
 fn clear_snapshots(state: &SessionState) {
     if let Ok(mut selected) = state.selected_device_path.lock() {
         *selected = None;
@@ -1449,7 +1438,6 @@ fn clear_snapshots(state: &SessionState) {
         .last_snapshot
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    let changed = !guard.is_empty();
     guard.clear();
     drop(guard);
     // #9 设备断开时清除 TTL 缓存。
@@ -1478,9 +1466,6 @@ fn clear_snapshots(state: &SessionState) {
     }
     if let Ok(mut errors) = state.last_read_errors.lock() {
         errors.clear();
-    }
-    if changed {
-        note_state_change(state);
     }
 }
 
@@ -1654,7 +1639,6 @@ struct AppSettings {
     night_mode_target_mouse: bool,
     /// 安静灯光控制对象：接收器灯光（仅设备支持时可设置）。
     night_mode_target_receiver: bool,
-    refresh_interval_seconds: u16,
     telemetry_disabled: bool,
     automatic_update_checks: bool,
     automatic_update_install: bool,
@@ -1703,7 +1687,6 @@ impl Default for AppSettings {
             night_mode_trigger_low_battery: false,
             night_mode_target_mouse: true,
             night_mode_target_receiver: false,
-            refresh_interval_seconds: 5,
             telemetry_disabled: true,
             automatic_update_checks: true,
             automatic_update_install: false,
@@ -1735,9 +1718,6 @@ impl AppSettings {
         }
         if !(5..=50).contains(&self.low_battery_threshold) {
             self.low_battery_threshold = defaults.low_battery_threshold;
-        }
-        if !(1..=60).contains(&self.refresh_interval_seconds) {
-            self.refresh_interval_seconds = defaults.refresh_interval_seconds;
         }
         if !(1..=90).contains(&self.battery_history_retention_days) {
             self.battery_history_retention_days = defaults.battery_history_retention_days;
@@ -2003,7 +1983,6 @@ mod settings_tests {
         let settings = AppSettings::default();
         assert_eq!(settings.theme, "system");
         assert_eq!(settings.low_battery_threshold, 20);
-        assert_eq!(settings.refresh_interval_seconds, 5);
         assert!(settings.telemetry_disabled);
         assert!(!settings.start_hidden);
         assert!(settings.automatic_update_checks);
@@ -2040,7 +2019,6 @@ mod settings_tests {
             theme: String::new(),
             tray_icon_color: "blue".into(),
             low_battery_threshold: 0,
-            refresh_interval_seconds: 0,
             night_mode_start: "99:99".into(),
             night_mode_end: String::new(),
             telemetry_disabled: false,
@@ -5413,9 +5391,29 @@ fn device_select(
 /// The read result is delivered via the `device-updated` event, so this
 /// command returns immediately. Used by the manual "刷新" button and any
 /// other UI flow that needs a fresh reading without waiting for the fallback poll.
+///
+/// 用户手动刷新属于退避重置事件，清除所有设备退避状态。
 #[tauri::command]
 fn device_refresh(state: tauri::State<'_, SessionState>) -> Result<(), String> {
+    reset_all_backoff(&state);
     request_refresh_with_plan(&state, ReadPlan::Full);
+    Ok(())
+}
+
+/// Refresh only the dynamic fields needed by parameter editors.
+/// UI 交互（tab 切换、编辑按钮点击）触发，不重置退避：
+/// 避免高频交互反复重置休眠设备退避，导致"超时-重置-超时"循环。
+#[tauri::command]
+fn device_refresh_quick(state: tauri::State<'_, SessionState>) -> Result<(), String> {
+    request_refresh_with_plan(&state, ReadPlan::Quick);
+    Ok(())
+}
+
+/// Refresh battery fields without reading the rest of the device protocol.
+/// UI 交互（查看电量）触发，不重置退避。
+#[tauri::command]
+fn device_refresh_battery(state: tauri::State<'_, SessionState>) -> Result<(), String> {
+    request_refresh_with_plan(&state, ReadPlan::BatteryOnly);
     Ok(())
 }
 
@@ -5516,24 +5514,6 @@ fn reapply_software_profile(
     }
 }
 
-/// 刷新触发原因。用于调度器决定读取强度和优先级。
-#[allow(dead_code)] // 阶段 2 热插拔 watcher 使用
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RefreshReason {
-    Startup,
-    Hotplug,
-    HotUnplug,
-    WindowFocus,
-    WindowVisible,
-    TrayOpen,
-    UserRefresh,
-    MutationVerify,
-    Resume,
-    QuickTimer,
-    BatteryTimer,
-    Retry,
-}
-
 /// 读取计划：决定对设备执行多重的读取操作。
 ///
 /// 强度顺序：Full > Quick > BatteryOnly > PresenceOnly
@@ -5552,6 +5532,9 @@ enum ReadPlan {
     /// 用于首次接入后的后台补全、用户手动完整刷新、插件更新等。
     Full,
 }
+
+const CONNECTED_PRESENCE_INTERVAL: Duration = Duration::from_secs(15);
+const BATTERY_READ_INTERVAL: Duration = Duration::from_secs(300);
 
 impl ReadPlan {
     /// 返回此计划对应的语义字段集合（用于工作流投影）。
@@ -5591,8 +5574,7 @@ fn select_read_plan(
     connected: bool,
     initial_plan: Option<ReadPlan>,
     forced_plan: Option<ReadPlan>,
-    visible: bool,
-    settling: bool,
+    battery_due: bool,
 ) -> ReadPlan {
     let requested = match (initial_plan, forced_plan) {
         (Some(initial), Some(forced)) => Some(initial.max(forced)),
@@ -5602,14 +5584,8 @@ fn select_read_plan(
     };
     if let Some(plan) = requested {
         plan
-    } else if !visible {
-        if connected {
-            ReadPlan::BatteryOnly
-        } else {
-            ReadPlan::PresenceOnly
-        }
-    } else if settling || connected {
-        ReadPlan::Quick
+    } else if connected && battery_due {
+        ReadPlan::BatteryOnly
     } else {
         ReadPlan::PresenceOnly
     }
@@ -5936,25 +5912,21 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
                 }
             };
 
-            // #9 防抖式 TTL 缓存：非 settling 状态下，500ms 内复用快照跳过 HID 往返。
-            // settling 期间需要快速轮询捕捉状态变化，不缓存。
-            let settling = state.settling_polls.lock().map(|s| *s > 0).unwrap_or(false);
-            if !settling {
-                let cache_hit = state.last_read_at.lock().ok().is_some_and(|cache| {
-                    cache
-                        .get(&device.path)
-                        .is_some_and(|t| t.elapsed() < READ_DEBOUNCE_TTL)
-                });
-                if cache_hit {
-                    if let Some(snapshot) = state
-                        .last_snapshot
-                        .lock()
-                        .ok()
-                        .and_then(|map| map.get(&device.path).cloned())
-                    {
-                        entries.push((device.path.clone(), snapshot));
-                        continue;
-                    }
+            // #9 防抖式 TTL 缓存：500ms 内复用快照跳过 HID 往返。
+            let cache_hit = state.last_read_at.lock().ok().is_some_and(|cache| {
+                cache
+                    .get(&device.path)
+                    .is_some_and(|t| t.elapsed() < READ_DEBOUNCE_TTL)
+            });
+            if cache_hit {
+                if let Some(snapshot) = state
+                    .last_snapshot
+                    .lock()
+                    .ok()
+                    .and_then(|map| map.get(&device.path).cloned())
+                {
+                    entries.push((device.path.clone(), snapshot));
+                    continue;
                 }
             }
 
@@ -6202,7 +6174,7 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
             //   - 清除 last_snapshot 会让前端显示"未找到设备"
             //   - 清除 feature_index_cache 会让下次 HID++ 读取重新查询所有 feature index
             //     （罗技 42 步工作流最坏情况 14 秒），加剧超时
-            //   - settling 重置后会以 500ms 快速轮询，进一步放大问题
+            //   - 立即重试会放大无线休眠期间的超时问题
             // 只有 matched 为空（设备真正断开）时才触发 Clear。
             Some(DeviceReadOutcome::PreserveLast)
         } else {
@@ -6258,11 +6230,13 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
                     selected: selected_path.as_ref() == Some(device_key),
                 })
                 .collect();
-            store_snapshots(&state, &new_map);
-            let _ = app.emit("device-snapshots-updated", &snapshot_entries);
+            let snapshots_changed = store_snapshots(&state, &new_map);
+            if snapshots_changed {
+                let _ = app.emit("device-snapshots-updated", &snapshot_entries);
+            }
             // 电量使用情况采样：在设备轮询成功后记录电量样本。
             // 记录失败不影响设备功能（record_samples 内部静默处理）。
-            {
+            if plan != ReadPlan::PresenceOnly {
                 let settings = cached_settings(app);
                 battery_history::record_samples(
                     &state.battery_history,
@@ -6299,7 +6273,10 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
                 }
             }
             // 选择当前设备通知前端（向后兼容单设备 API）。
-            if let Some(snapshot) = selected_snapshot(&state) {
+            if snapshots_changed {
+                let Some(snapshot) = selected_snapshot(&state) else {
+                    return;
+                };
                 // 通知前端有新数据，前端通过事件监听更新，无需轮询
                 let _ = app.emit("device-updated", &snapshot);
                 let settings = cached_settings(app);
@@ -6331,21 +6308,20 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
     }
 }
 
-/// Background reader thread: event-driven with an adaptive fallback poll.
+/// Background reader thread: on-demand protocol reads with a lightweight
+/// presence fallback.
 ///
 /// The thread sleeps on `mpsc::recv_timeout` instead of a fixed `sleep`:
-/// - A `RefreshNow` signal (window focus, manual refresh, tray click, etc.)
+/// - An explicit editor, mutation, manual refresh, or wake signal
 ///   wakes it immediately for an on-demand read.
-/// - If no signal arrives within the fallback interval, it reads anyway to
-///   detect disconnects and battery drift.
-/// - The fallback interval adapts to the situation:
-///   * 500 ms for a short settling window right after a state change.
+/// - Connected, stable devices only receive a PresenceOnly enumeration every
+///   15 seconds. No protocol workflow runs merely because the window is visible.
+/// - BatteryOnly runs independently every 5 minutes.
+/// - The fallback interval otherwise adapts to the situation:
+///   * 500 ms only while the initial Presence → Quick → Full sequence completes.
 ///   * 1 s when no device is connected and the window is visible, so plug-in
 ///     is detected quickly without continuous high-frequency polling.
-///   * The user's configured `refresh_interval_seconds` when a device is
-///     connected and the window is visible.
-///   * 5 min when the window is hidden and a device is connected (BatteryOnly).
-///   * 15 s when the window is hidden and no device is connected (PresenceOnly).
+///   * 15 s for a connected stable device or while hidden without a device.
 fn spawn_device_reader(app: AppHandle) {
     let (tx, rx) = std::sync::mpsc::channel::<()>();
     *app.state::<SessionState>()
@@ -6353,6 +6329,7 @@ fn spawn_device_reader(app: AppHandle) {
         .lock()
         .unwrap_or_else(|e| e.into_inner()) = Some(tx);
 
+    let mut last_battery_read_at: Option<Instant> = None;
     std::thread::spawn(move || loop {
         // Determine state before reading to choose the appropriate ReadPlan.
         let state = app.state::<SessionState>();
@@ -6365,7 +6342,7 @@ fn spawn_device_reader(app: AppHandle) {
             .get_webview_window("main")
             .and_then(|window| window.is_visible().ok())
             .unwrap_or(false);
-        let (connected_before, next_initial_plan, settling_active) = {
+        let (connected_before, next_initial_plan) = {
             let snapshots = state
                 .last_snapshot
                 .lock()
@@ -6386,73 +6363,66 @@ fn spawn_device_reader(app: AppHandle) {
                     None
                 }
             });
-            let settling_active = *state
-                .settling_polls
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                > 0;
-            (connected, next_initial_plan, settling_active)
+            (connected, next_initial_plan)
         };
+
+        let battery_due = connected_before
+            && last_battery_read_at.is_none_or(|last| last.elapsed() >= BATTERY_READ_INTERVAL);
 
         // Choose ReadPlan:
         // - Connected but no Full snapshot yet → Full (首次读取需要获取能力)
-        // - Settling → Quick (快速轮询捕捉状态变化)
-        // - Visible + connected → Quick (读取 UI 需要的动态字段)
-        // - Hidden + connected → BatteryOnly (低频电量监控)
-        // - No device → PresenceOnly (检测插入)
+        // - Explicit editor/mutation requests → Quick
+        // - Battery due → BatteryOnly
+        // - Otherwise → PresenceOnly (enumeration only, no protocol reports)
         let plan = select_read_plan(
             connected_before,
             next_initial_plan,
             forced_plan,
-            visible,
-            settling_active,
+            battery_due,
         );
 
         read_device_once(&app, plan);
+        if matches!(
+            plan,
+            ReadPlan::BatteryOnly | ReadPlan::Quick | ReadPlan::Full
+        ) {
+            last_battery_read_at = Some(Instant::now());
+        }
 
-        // Determine the adaptive fallback interval.
-        // Lock order: last_snapshot before settling_polls, matching store_snapshot.
-        // Settings are read outside of any lock so disk I/O cannot block snapshot updates.
-        let (connected, settling_now) = {
+        // Initial Presence → Quick → Full progresses promptly; once initialized,
+        // a connected device returns to lightweight presence checks.
+        let (connected, initializing) = {
             let connected = !state
                 .last_snapshot
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .is_empty();
-            let mut settling = state
-                .settling_polls
+            let initializing = state
+                .snapshot_readiness
                 .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            let settling_now = if *settling > 0 {
-                *settling -= 1;
-                true
-            } else {
-                false
-            };
-            (connected, settling_now)
+                .ok()
+                .is_some_and(|readiness| {
+                    readiness
+                        .values()
+                        .any(|value| *value != SnapshotReadiness::Full)
+                });
+            (connected, initializing)
         };
-        let wait = if !visible {
-            if connected {
-                // 后台电量监控：5 分钟一次 BatteryOnly
-                std::time::Duration::from_secs(300)
-            } else {
-                // 无设备时低频检测插入：15 秒一次 PresenceOnly
-                std::time::Duration::from_secs(15)
-            }
-        } else if settling_now {
+        let wait = if initializing {
             std::time::Duration::from_millis(500)
         } else if connected {
-            std::time::Duration::from_secs(u64::from(
-                cached_settings(&app).refresh_interval_seconds,
-            ))
-        } else {
-            // No device connected: poll faster so plug-in is noticed quickly.
+            // Connected devices are only enumerated; protocol reads are on-demand.
+            CONNECTED_PRESENCE_INTERVAL
+        } else if visible {
+            // No device connected: poll faster while visible so plug-in is noticed quickly.
             std::time::Duration::from_secs(1)
+        } else {
+            std::time::Duration::from_secs(15)
         };
 
         // 将等待分成最多 10s 的块，检测系统睡眠/唤醒。
         // Instant（单调时钟）在系统睡眠期间暂停，recv_timeout 不会在唤醒后立即超时；
-        // 用 SystemTime（墙上时钟）检测跳跃，唤醒后触发 settling_polls 快速轮询重新枚举设备。
+        // 用 SystemTime（墙上时钟）检测跳跃，唤醒后触发一次 Quick 重新枚举设备。
         // 分块保证最多 SLEEP_DETECT_CHUNK 延迟即可检测到唤醒。
         const SLEEP_DETECT_CHUNK: std::time::Duration = std::time::Duration::from_secs(10);
         let mut remaining = wait;
@@ -6489,9 +6459,9 @@ fn spawn_device_reader(app: AppHandle) {
         }
         if woke_from_sleep {
             if let Some(state) = app.try_state::<SessionState>() {
-                note_state_change(&state);
                 // 系统恢复后清除退避，重新检测所有设备。
                 reset_all_backoff(&state);
+                request_refresh_with_plan(&state, ReadPlan::Quick);
                 // 全局诊断：记录睡眠恢复次数。
                 if let Ok(mut g) = state.global_metrics.lock() {
                     g.sleep_resume_count += 1;
@@ -6774,7 +6744,7 @@ fn device_mutate_blocking(
             mutate_device_with_package(&package, &mutate_context, mutation, params)?;
         // The mutation engine already ran its declared verify parser and
         // assertions. Merge that verified object into the cached raw outputs,
-        // normalize locally, and publish immediately; the settling scheduler
+        // normalize locally, and publish immediately; the on-demand scheduler
         // performs one follow-up Quick read for unrelated dynamic state.
         merge_verified_mutation_output(&mut base_outputs, &mutation_result);
         let mut reading = normalize_device_outputs_with_package(&package, base_outputs);
@@ -7515,6 +7485,22 @@ fn apply_windows_backdrop(window: &WebviewWindow, settings: &AppSettings) {
     }
 }
 
+/// macOS Vibrancy 背景：Sidebar 材质 + Active 状态。
+///
+/// `NSVisualEffectState::Active` 期望始终保持活跃外观，但 macOS 在窗口失焦后
+/// 仍可能对 Sidebar 材质应用系统级 dimming（暗色模式下表现为「一段时间后变黑」）。
+/// 因此在 `Focused(true)` 事件中重新调用本函数，强制刷新 vibrancy 状态。
+#[cfg(target_os = "macos")]
+fn apply_macos_vibrancy(window: &WebviewWindow) {
+    use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectState};
+    let _ = apply_vibrancy(
+        window,
+        NSVisualEffectMaterial::Sidebar,
+        Some(NSVisualEffectState::Active),
+        None,
+    );
+}
+
 #[tauri::command]
 fn hide_to_tray(app: tauri::AppHandle) {
     hide_main_window_to_tray(&app);
@@ -7667,7 +7653,7 @@ fn cached_settings_for_state(state: &SessionState) -> AppSettings {
 
 pub(crate) fn focus_main_from_tray(app: &AppHandle) {
     focus_main(app.get_webview_window("main"));
-    request_refresh(&app.state::<SessionState>());
+    request_presence_refresh(&app.state::<SessionState>());
 }
 
 pub(crate) fn open_battery_usage_from_tray(app: &AppHandle) {
@@ -8566,15 +8552,7 @@ pub fn run() {
             // UnderWindowBackground 过于微妙，在纯色壁纸下几乎不可见。
             #[cfg(target_os = "macos")]
             if let Some(window) = app.get_webview_window("main") {
-                use window_vibrancy::{
-                    apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectState,
-                };
-                let _ = apply_vibrancy(
-                    &window,
-                    NSVisualEffectMaterial::Sidebar,
-                    Some(NSVisualEffectState::Active),
-                    None,
-                );
+                apply_macos_vibrancy(&window);
                 // Show after applying Vibrancy to avoid a black startup flash.
                 if !launch_hidden {
                     let _ = window.show();
@@ -8646,7 +8624,8 @@ pub fn run() {
                             hide_main_window_to_tray(&app_handle);
                         }
                         tauri::WindowEvent::Focused(true) => {
-                            // Window gained focus — refresh device state on demand.
+                            // Window focus only rechecks presence; protocol fields are read
+                            // when the user opens a related control.
                             // 同时刷新系统主题缓存：窗口隐藏期间系统主题可能已变化，
                             // 但 ThemeChanged 事件可能未触发（窗口不可见时）。
                             let state = app_handle.state::<SessionState>();
@@ -8655,7 +8634,14 @@ pub fn run() {
                                 *cache = Some(dark);
                             }
                             update_runtime_app_icon(&app_handle, dark);
-                            request_refresh(&app_handle.state::<SessionState>());
+                            // macOS：窗口失焦期间 macOS 可能对 Sidebar 材质应用系统级
+                            // dimming（暗色模式下表现为「一段时间后变黑」），重新应用
+                            // vibrancy 强制刷新回 Active 状态。
+                            #[cfg(target_os = "macos")]
+                            if let Some(window) = app_handle.get_webview_window("main") {
+                                apply_macos_vibrancy(&window);
+                            }
+                            request_presence_refresh(&app_handle.state::<SessionState>());
                         }
                         tauri::WindowEvent::ThemeChanged(_) => {
                             // 窗口可见时系统主题变化会触发此事件。
@@ -8748,6 +8734,8 @@ pub fn run() {
             device_snapshots,
             device_select,
             device_refresh,
+            device_refresh_quick,
+            device_refresh_battery,
             device_mutate,
             discover_devices,
             autostart_state,
@@ -8780,7 +8768,7 @@ pub fn run() {
             {
                 if let tauri::RunEvent::Reopen { .. } = event {
                     focus_main(app_handle.get_webview_window("main"));
-                    request_refresh(&app_handle.state::<SessionState>());
+                    request_presence_refresh(&app_handle.state::<SessionState>());
                 }
             }
             #[cfg(not(target_os = "macos"))]
@@ -8888,23 +8876,31 @@ mod read_plan_tests {
     #[test]
     fn initial_sequence_is_presence_then_quick_then_full() {
         assert_eq!(
-            select_read_plan(false, None, None, true, false),
+            select_read_plan(false, None, None, false),
             ReadPlan::PresenceOnly
         );
         assert_eq!(
-            select_read_plan(true, Some(ReadPlan::Quick), None, true, true),
+            select_read_plan(true, Some(ReadPlan::Quick), None, false),
             ReadPlan::Quick
         );
         assert_eq!(
-            select_read_plan(true, Some(ReadPlan::Full), None, true, true),
+            select_read_plan(true, Some(ReadPlan::Full), None, false),
             ReadPlan::Full
         );
     }
 
     #[test]
-    fn hidden_device_never_uses_settling_quick() {
+    fn stable_connected_device_uses_presence_only() {
         assert_eq!(
-            select_read_plan(true, None, None, false, true),
+            select_read_plan(true, None, None, false),
+            ReadPlan::PresenceOnly
+        );
+    }
+
+    #[test]
+    fn connected_device_uses_battery_only_when_due() {
+        assert_eq!(
+            select_read_plan(true, None, None, true),
             ReadPlan::BatteryOnly
         );
     }
@@ -8912,13 +8908,7 @@ mod read_plan_tests {
     #[test]
     fn manual_full_overrides_pending_quick() {
         assert_eq!(
-            select_read_plan(
-                true,
-                Some(ReadPlan::Quick),
-                Some(ReadPlan::Full),
-                true,
-                false
-            ),
+            select_read_plan(true, Some(ReadPlan::Quick), Some(ReadPlan::Full), false),
             ReadPlan::Full
         );
     }
