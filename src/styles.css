@@ -42,6 +42,18 @@
   --bg-blob-1: oklch(78% .06 290);
   --bg-blob-2: oklch(80% .05 200);
   --bg-blob-3: oklch(75% .04 350);
+  /* Motion language: quiet structure with tactile feedback. */
+  --motion-instant: 90ms;
+  --motion-fast: 140ms;
+  --motion-base: 200ms;
+  --motion-slow: 300ms;
+  --motion-deliberate: 420ms;
+  --motion-ease-out: cubic-bezier(.22, 1, .36, 1);
+  --motion-ease-standard: cubic-bezier(.2, 0, 0, 1);
+  --motion-ease-spring: cubic-bezier(.2, .9, .25, 1.18);
+  --motion-distance: 5px;
+  --motion-lift: -1px;
+  --motion-press-scale: .985;
   color-scheme: light dark;
 }
 :root[data-theme="dark"] {
@@ -2230,25 +2242,34 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
 .battery-range-toggle {
   display: inline-flex;
   flex: 0 0 auto;
-  border: 1px solid var(--surface-group-border);
-  border-radius: 10px;
-  overflow: hidden;
-  background: var(--surface-group-bg);
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--control-secondary-border);
+  border-radius: 12px;
+  background: var(--control-secondary-bg);
+  box-shadow: inset 0 1px 2px rgb(42 35 52 / 7%);
 }
 .battery-range-toggle button {
-  padding: 5px 12px;
+  min-width: 72px;
+  padding: 6px 13px;
   border: none;
   border-radius: 9px;
   background: transparent;
   color: var(--muted);
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 650;
   cursor: pointer;
-  transition: background .12s ease, color .12s ease;
+  transition: background .16s ease, color .16s ease, box-shadow .16s ease;
+}
+.battery-range-toggle button:not(.active):hover {
+  color: inherit;
+  background: var(--control-hover-bg);
 }
 .battery-range-toggle button.active {
-  color: var(--accent);
-  background: color-mix(in oklch, var(--accent), transparent 86%);
+  color: #fff;
+  background: linear-gradient(115deg, color-mix(in oklch, var(--accent), #8fa8e4 36%), color-mix(in oklch, var(--accent), #d67fb2 28%));
+  box-shadow: 0 4px 12px color-mix(in oklch, var(--accent), transparent 70%), inset 0 1px 0 rgb(255 255 255 / 24%);
+  text-shadow: 0 1px 1px rgb(72 52 82 / 22%);
 }
 
 @media (max-width: 560px) {
@@ -2850,4 +2871,344 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
 .battery-usage-empty .battery-usage-close:hover,
 .battery-usage-close:hover {
   background: var(--surface-group-bg-hover);
+}
+
+/* ─── Mira motion language ────────────────────────────────────────────────
+   Linear-like hierarchy, Raycast-like tactility, and material response only
+   on transient surfaces. Motion explains state; it never competes with data. */
+@keyframes mira-page-enter {
+  from { opacity: 0; transform: translateY(var(--motion-distance)); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes mira-section-enter {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes mira-scrim-enter {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes mira-float-enter {
+  from { opacity: 0; transform: translateY(7px) scale(.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes mira-notification-enter {
+  from { opacity: 0; transform: translateY(-7px) scale(.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes mira-chart-tooltip-enter {
+  from { opacity: 0; transform: translateX(-50%) translateY(5px) scale(.985); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+}
+
+@keyframes mira-icon-enter {
+  from { opacity: .2; transform: scale(.82); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes mira-bar-rise {
+  from { opacity: .28; transform: scaleY(.08); }
+  to { opacity: 1; transform: scaleY(1); }
+}
+
+/* Primary view changes stay short and spatially restrained. */
+.dashboard,
+.settings-page,
+.about-page,
+.empty {
+  animation: mira-page-enter var(--motion-slow) var(--motion-ease-out) backwards;
+}
+
+.dashboard > .device-hero,
+.dashboard > .control-tabs,
+.dashboard > .control-stage,
+.dashboard > .status-strip,
+.dashboard > .dashboard-meta {
+  animation: mira-section-enter var(--motion-slow) var(--motion-ease-out) backwards;
+}
+.dashboard > .device-hero {
+  /* Hero-owned transient UI must stay above the controls it overlaps. */
+  position: relative;
+  z-index: 2;
+}
+.dashboard > .device-hero { animation-delay: 20ms; }
+.dashboard > .control-tabs { animation-delay: 45ms; }
+.dashboard > .control-stage { animation-delay: 70ms; }
+.dashboard > .status-strip { animation-delay: 95ms; }
+.dashboard > .dashboard-meta { animation-delay: 120ms; }
+
+.settings-page > header,
+.settings-page > .sub-nav,
+.settings-page > .card,
+.about-page > header,
+.about-page > .card,
+.about-page > section {
+  animation: mira-section-enter var(--motion-slow) var(--motion-ease-out) backwards;
+}
+.settings-page > .sub-nav { animation-delay: 30ms; }
+.settings-page > .card:nth-of-type(1),
+.about-page > .card:nth-of-type(1),
+.about-page > section:nth-of-type(1) { animation-delay: 55ms; }
+.settings-page > .card:nth-of-type(2),
+.about-page > .card:nth-of-type(2),
+.about-page > section:nth-of-type(2) { animation-delay: 75ms; }
+.settings-page > .card:nth-of-type(n+3),
+.about-page > .card:nth-of-type(n+3),
+.about-page > section:nth-of-type(n+3) { animation-delay: 95ms; }
+
+/* Navigation and segmented controls use color/shape continuity, not travel. */
+.nav-link,
+.sub-nav-link,
+.control-tabs button,
+.battery-range-toggle button {
+  transition:
+    color var(--motion-fast) var(--motion-ease-standard),
+    background-color var(--motion-base) var(--motion-ease-standard),
+    border-color var(--motion-base) var(--motion-ease-standard),
+    box-shadow var(--motion-base) var(--motion-ease-out),
+    transform var(--motion-fast) var(--motion-ease-out);
+}
+.nav-link,
+.sub-nav-link,
+.battery-range-toggle button { position: relative; }
+.nav-link::after,
+.sub-nav-link::after,
+.battery-range-toggle button::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: 2px;
+  width: 12px;
+  height: 2px;
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--accent), currentColor 18%);
+  opacity: 0;
+  transform: translateX(-50%) scaleX(.35);
+  transition: opacity var(--motion-fast) ease, transform var(--motion-base) var(--motion-ease-out);
+  pointer-events: none;
+}
+.nav-link.active::after,
+.sub-nav-link.active::after,
+.battery-range-toggle button.active::after {
+  opacity: .7;
+  transform: translateX(-50%) scaleX(1);
+}
+.nav-about::after,
+.nav-exit::after { display: none; }
+.control-tabs button::after { display: none; }
+
+/* Frequent controls feel physical without looking springy or playful. */
+button,
+.battery-status-strip.switchable,
+.battery-chart g[role="button"] {
+  -webkit-tap-highlight-color: transparent;
+}
+button:active:not(:disabled),
+.battery-status-strip.switchable:active {
+  transform: scale(var(--motion-press-scale));
+  transition-duration: var(--motion-instant);
+}
+.status-strip > button:hover:not(:disabled),
+.battery-usage-entry:hover,
+.settings-inline-action:hover,
+.battery-history-actions .action-btn:hover {
+  transform: translateY(var(--motion-lift));
+}
+.status-strip > button,
+.battery-usage-entry,
+.settings-inline-action,
+.battery-history-actions .action-btn,
+.battery-status-strip.switchable {
+  transition:
+    color var(--motion-fast) var(--motion-ease-standard),
+    background-color var(--motion-base) var(--motion-ease-standard),
+    border-color var(--motion-base) var(--motion-ease-standard),
+    box-shadow var(--motion-base) var(--motion-ease-out),
+    transform var(--motion-fast) var(--motion-ease-out);
+}
+
+.toggle {
+  transition:
+    background-color var(--motion-base) var(--motion-ease-standard),
+    box-shadow var(--motion-base) var(--motion-ease-out),
+    transform var(--motion-fast) var(--motion-ease-out);
+}
+.toggle-knob {
+  transition:
+    transform var(--motion-base) var(--motion-ease-spring),
+    box-shadow var(--motion-base) var(--motion-ease-out);
+}
+.toggle:not(:disabled):hover .toggle-knob {
+  box-shadow: 0 3px 8px rgb(0 0 0 / 24%);
+}
+
+input[type="range"] { transition: filter var(--motion-fast) ease; }
+input[type="range"]:hover { filter: saturate(1.08); }
+select,
+input[type="time"],
+input[type="number"],
+input[type="color"] {
+  transition:
+    background-color var(--motion-base) var(--motion-ease-standard),
+    border-color var(--motion-base) var(--motion-ease-standard),
+    box-shadow var(--motion-base) var(--motion-ease-out);
+}
+
+/* Control content changes as one compact unit. */
+.control-stage > :not(.edit-modal-backdrop) {
+  animation: mira-section-enter var(--motion-base) var(--motion-ease-out) backwards;
+}
+.preview-message {
+  animation: mira-float-enter var(--motion-base) var(--motion-ease-out) backwards;
+}
+.dpi-stage-dot i,
+.battery-meter-fill,
+.battery-level-fill {
+  transition:
+    width var(--motion-slow) var(--motion-ease-out),
+    transform var(--motion-base) var(--motion-ease-out),
+    opacity var(--motion-base) ease,
+    fill var(--motion-base) ease,
+    box-shadow var(--motion-base) var(--motion-ease-out);
+}
+
+/* Transient material gets the strongest depth cue, still under 300 ms. */
+.details-backdrop,
+.edit-modal-backdrop,
+.battery-usage-modal-overlay {
+  animation: mira-scrim-enter var(--motion-base) ease-out backwards;
+}
+.device-details,
+.edit-modal,
+.battery-usage-modal {
+  animation: mira-float-enter var(--motion-slow) var(--motion-ease-out) backwards;
+  transform-origin: 50% 42%;
+}
+.app-notification {
+  animation: mira-notification-enter var(--motion-slow) var(--motion-ease-out) backwards;
+}
+.device-switcher-popover,
+.battery-popover,
+.tooltip-content {
+  transition:
+    opacity var(--motion-fast) ease-out,
+    transform var(--motion-base) var(--motion-ease-out),
+    visibility 0s linear var(--motion-base),
+    box-shadow var(--motion-base) var(--motion-ease-out);
+}
+.device-switcher.open .device-switcher-popover,
+.battery-control.open .battery-popover {
+  transition-delay: 0s;
+}
+
+/* Data visualizations reveal their state once, then stay calm. */
+.battery-chart-card,
+.battery-status-strip,
+.battery-summary,
+.battery-insight-section,
+.battery-history-actions {
+  animation: mira-section-enter var(--motion-slow) var(--motion-ease-out) backwards;
+}
+.battery-chart-card { animation-delay: 35ms; }
+.battery-insight-section { animation-delay: 70ms; }
+.battery-history-actions { animation-delay: 95ms; }
+.battery-chart-bar {
+  transform-box: fill-box;
+  transform-origin: center bottom;
+  animation: mira-bar-rise var(--motion-deliberate) var(--motion-ease-out) backwards;
+  animation-delay: calc(var(--bar-delay, 0ms) + 80ms);
+  transition: opacity var(--motion-fast) ease, filter var(--motion-fast) ease;
+}
+.battery-chart g[role="button"]:hover .battery-chart-bar,
+.battery-chart g[role="button"]:focus .battery-chart-bar {
+  filter: saturate(1.08) brightness(1.03);
+}
+.battery-chart-tooltip {
+  animation: mira-chart-tooltip-enter var(--motion-fast) var(--motion-ease-out) backwards;
+  transform-origin: 50% 100%;
+}
+.battery-insight-card {
+  transition:
+    background-color var(--motion-base) var(--motion-ease-standard),
+    border-color var(--motion-base) var(--motion-ease-standard),
+    box-shadow var(--motion-base) var(--motion-ease-out),
+    transform var(--motion-fast) var(--motion-ease-out);
+}
+.battery-insight-card:hover {
+  transform: translateY(var(--motion-lift));
+  box-shadow: 0 8px 20px rgb(47 39 60 / 7%);
+}
+
+/* Battery dialog icons share one restrained entrance vocabulary. */
+.battery-usage-close-icon svg,
+.battery-status-device > .battery-level-icon,
+.battery-status-switch-icon,
+.battery-summary-item .summary-label > .battery-level-icon,
+.battery-chart-header svg,
+.battery-insight-card .insight-icon,
+.battery-history-actions .action-btn svg {
+  animation: mira-icon-enter var(--motion-slow) var(--motion-ease-spring) backwards;
+  transform-origin: center;
+}
+.battery-usage-close-icon svg { animation-delay: 55ms; }
+.battery-status-device > .battery-level-icon,
+.battery-status-switch-icon { animation-delay: 75ms; }
+.battery-summary-item .summary-label > .battery-level-icon { animation-delay: 95ms; }
+.battery-chart-header svg { animation-delay: 115ms; }
+.battery-insight-card .insight-icon { animation-delay: 135ms; }
+.battery-history-actions .action-btn svg { animation-delay: 155ms; }
+
+.battery-usage-close-icon svg,
+.battery-status-switch-icon,
+.battery-insight-card .insight-icon,
+.battery-history-actions .action-btn svg {
+  transition: transform var(--motion-fast) var(--motion-ease-out), opacity var(--motion-fast) ease;
+}
+.battery-usage-close-icon:hover svg { transform: scale(1.06); }
+.battery-status-strip[aria-expanded="true"] .battery-status-switch-icon { transform: rotate(180deg); }
+.battery-insight-card:hover .insight-icon { transform: scale(1.06); }
+.battery-history-actions .action-btn:hover svg { transform: translateY(-1px); }
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-distance: 0px;
+    --motion-lift: 0px;
+    --motion-press-scale: 1;
+  }
+  .dashboard,
+  .settings-page,
+  .about-page,
+  .empty,
+  .dashboard > *,
+  .settings-page > *,
+  .about-page > *,
+  .control-stage > *,
+  .details-backdrop,
+  .edit-modal-backdrop,
+  .battery-usage-modal-overlay,
+  .device-details,
+  .edit-modal,
+  .battery-usage-modal,
+  .app-notification,
+  .battery-chart-card,
+  .battery-status-strip,
+  .battery-summary,
+  .battery-insight-section,
+  .battery-history-actions,
+  .battery-chart-bar,
+  .battery-chart-tooltip,
+  .battery-usage-close-icon svg,
+  .battery-status-device > .battery-level-icon,
+  .battery-status-switch-icon,
+  .battery-summary-item .summary-label > .battery-level-icon,
+  .battery-chart-header svg,
+  .battery-insight-card .insight-icon,
+  .battery-history-actions .action-btn svg {
+    animation: none !important;
+  }
 }

@@ -348,6 +348,7 @@ function BatteryUsageChart({ points, range }: ChartProps) {
                   d={barPath}
                   className={barClass}
                   fill={isEmpty ? undefined : `url(#${fillId})`}
+                  style={{ '--bar-delay': `${Math.min(i, 12) * 12}ms` } as CSSProperties}
                 />
               </g>
             );
