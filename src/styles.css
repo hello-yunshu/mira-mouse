@@ -2268,8 +2268,10 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
 }
 .battery-range-toggle button.active {
   color: #fff;
-  background: linear-gradient(115deg, color-mix(in oklch, var(--accent), #8fa8e4 36%), color-mix(in oklch, var(--accent), #d67fb2 28%));
-  box-shadow: 0 7px 20px color-mix(in oklch, var(--accent), transparent 76%);
+  background: linear-gradient(115deg,
+    color-mix(in oklch, color-mix(in oklch, var(--accent), oklch(72% .13 200) 36%), transparent 18%),
+    color-mix(in oklch, color-mix(in oklch, var(--accent), oklch(74% .14 30) 28%), transparent 18%));
+  box-shadow: 0 6px 18px color-mix(in oklch, var(--accent), transparent 80%);
 }
 
 @media (max-width: 560px) {
