@@ -31,6 +31,7 @@ pub struct HidIoStats {
     pub open_path_failures: u64,
     pub handles_returned: u64,
     pub handle_cache_lock_failures: u64,
+    pub reports_executed: u64,
 }
 
 impl HidIoStats {
@@ -53,6 +54,11 @@ impl HidIoStats {
 
     pub fn record_lock_failure(&mut self) {
         self.handle_cache_lock_failures += 1;
+    }
+
+    /// 累加一次工作流会话中实际发送的 HID report 数量。
+    pub fn record_reports_executed(&mut self, count: usize) {
+        self.reports_executed += count as u64;
     }
 }
 
@@ -179,6 +185,16 @@ pub fn map_semantic_to_outputs(
 pub fn read_device(ctx: &ProtocolContext) -> Result<DeviceReading, String> {
     let package = ProtocolPackage::from_files(ctx.files)?;
     read_device_with_package(&package, ctx)
+}
+
+/// 将已有的工作流 outputs 规范化为 `DeviceReading`，不重新执行工作流。
+/// 用于 mutation 验证后合并字段到缓存 outputs、再就地规范化以发布即时快照。
+pub fn normalize_device_outputs_with_package(
+    package: &ProtocolPackage,
+    outputs: BTreeMap<String, Value>,
+) -> DeviceReading {
+    let capabilities = package.capabilities().cloned();
+    standard_reading(outputs, capabilities)
 }
 
 /// Like `read_device` but reuses a pre-parsed `ProtocolPackage` to avoid
