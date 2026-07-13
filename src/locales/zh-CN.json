@@ -544,7 +544,7 @@
     "deviceComparison": "设备对比",
     "deviceComparisonDrain": "{{fastest}} 耗电速度高于 {{slowest}}（约 {{fastestRate}}%/h vs {{slowestRate}}%/h）。",
     "averageDailyDrain": "日均耗电",
-    "averageDailyDrainMsg": "平均每天消耗 {{percent}}% 电量。",
+    "averageDailyDrainMsg": "按当前记录估算，平均每天消耗约 {{percent}}% 电量。",
     "chargingCount": "充电次数",
     "chargingCountMsg": "周期内共充电 {{count}} 次。",
     "lowestLevel": "最低电量",

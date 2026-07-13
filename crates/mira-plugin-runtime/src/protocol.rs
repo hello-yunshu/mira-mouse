@@ -175,17 +175,32 @@ pub fn map_semantic_to_outputs(
     fields: &BTreeSet<SemanticField>,
 ) -> (BTreeSet<String>, BTreeSet<String>) {
     let available = package.available_outputs(workflow_id);
-    map_semantic_fields_to_outputs(&available, fields)
+    let preferred = package
+        .semantic_output_cache
+        .lock()
+        .ok()
+        .and_then(|cache| cache.get(workflow_id).cloned())
+        .unwrap_or_default();
+    map_semantic_fields_to_outputs(&available, fields, &preferred)
 }
 
 fn map_semantic_fields_to_outputs(
     available: &BTreeSet<String>,
     fields: &BTreeSet<SemanticField>,
+    preferred: &BTreeMap<String, BTreeSet<String>>,
 ) -> (BTreeSet<String>, BTreeSet<String>) {
     let mut targets = BTreeSet::new();
     let mut missing = BTreeSet::new();
 
     for field in fields {
+        let field_key = format!("{field:?}");
+        if let Some(outputs) = preferred
+            .get(&field_key)
+            .filter(|outputs| outputs.iter().all(|output| available.contains(output)))
+        {
+            targets.extend(outputs.iter().cloned());
+            continue;
+        }
         let mut matched = 0_u8;
         for name in field.standard_output_names() {
             if available.contains(*name) {
@@ -200,6 +215,80 @@ fn map_semantic_fields_to_outputs(
     }
 
     (targets, missing)
+}
+
+fn remember_successful_semantic_outputs(
+    package: &ProtocolPackage,
+    workflow_id: &str,
+    outputs: &BTreeMap<String, Value>,
+) {
+    let mut preferred = BTreeMap::new();
+    for field in [
+        SemanticField::BatteryPercent,
+        SemanticField::ReceiverBatteryPercent,
+        SemanticField::Charging,
+        SemanticField::CurrentDpi,
+        SemanticField::PollingRate,
+        SemanticField::ActiveProfile,
+        SemanticField::LightingState,
+    ] {
+        let successful = field
+            .standard_output_names()
+            .iter()
+            .filter(|name| {
+                outputs
+                    .get(**name)
+                    .is_some_and(|value| semantic_output_is_useful(field, name, value))
+            })
+            .map(|name| (*name).to_string())
+            .collect::<BTreeSet<_>>();
+        if !successful.is_empty() {
+            preferred.insert(format!("{field:?}"), successful);
+        }
+    }
+    if let Ok(mut cache) = package.semantic_output_cache.lock() {
+        cache.insert(workflow_id.to_string(), preferred);
+    }
+}
+
+fn semantic_output_is_useful(field: SemanticField, name: &str, value: &Value) -> bool {
+    let Some(object) = value.as_object() else {
+        return !value.is_null();
+    };
+    if object.is_empty() {
+        return false;
+    }
+    let has_any = |keys: &[&str]| keys.iter().any(|key| object.contains_key(*key));
+    match field {
+        SemanticField::BatteryPercent => {
+            has_any(&["percentage", "batteryPercent", "level", "percent"])
+        }
+        SemanticField::ReceiverBatteryPercent => has_any(&[
+            "percentage",
+            "batteryPercent",
+            "receiverBatteryPercent",
+            "level",
+        ]),
+        SemanticField::Charging => has_any(&["charging", "chargeStatus", "status"]),
+        SemanticField::CurrentDpi => {
+            has_any(&["dpiValue", "dpiX", "currentDpi", "currentStage", "value"])
+        }
+        SemanticField::PollingRate => has_any(&["pollingRate", "pollingRateHz", "rate"]),
+        SemanticField::ActiveProfile => {
+            has_any(&["profile", "currentProfile", "activeProfile", "profileIndex"])
+        }
+        SemanticField::LightingState => {
+            if name == "settings" || name == "settingsExtended" {
+                has_any(&[
+                    "mouseLightEnabled",
+                    "mouseLightStartColor",
+                    "mouseLightEndColor",
+                ])
+            } else {
+                has_any(&["enabled", "effect", "mode", "color", "brightness", "speed"])
+            }
+        }
+    }
 }
 
 pub fn read_device(ctx: &ProtocolContext) -> Result<DeviceReading, String> {
@@ -232,6 +321,7 @@ pub fn read_device_with_package(
         ctx.cached_handles,
         ctx.hid_io_stats,
     )?;
+    remember_successful_semantic_outputs(package, &workflow_id, &outputs);
     let capabilities = package.capabilities().cloned();
     maybe_merge_onboard_lighting(package, ctx, capabilities.as_ref(), &mut outputs)?;
     #[cfg(debug_assertions)]
@@ -1076,7 +1166,8 @@ mod tests {
             SemanticField::LightingState,
         ]);
 
-        let (targets, missing) = map_semantic_fields_to_outputs(&available, &fields);
+        let (targets, missing) =
+            map_semantic_fields_to_outputs(&available, &fields, &BTreeMap::new());
 
         assert!(missing.is_empty());
         for expected in [
@@ -1090,6 +1181,61 @@ mod tests {
         ] {
             assert!(targets.contains(expected), "missing target {expected}");
         }
+    }
+
+    #[test]
+    fn semantic_mapping_reuses_full_read_preferred_output() {
+        let available = BTreeSet::from([
+            "settings".to_string(),
+            "settingsExtended".to_string(),
+            "pollingRate".to_string(),
+        ]);
+        let fields = BTreeSet::from([SemanticField::PollingRate]);
+        let preferred = BTreeMap::from([(
+            "PollingRate".to_string(),
+            BTreeSet::from(["pollingRate".to_string()]),
+        )]);
+
+        let (targets, missing) = map_semantic_fields_to_outputs(&available, &fields, &preferred);
+
+        assert!(missing.is_empty());
+        assert_eq!(targets, BTreeSet::from(["pollingRate".to_string()]));
+    }
+
+    #[test]
+    fn semantic_mapping_keeps_composite_lighting_outputs() {
+        let available = BTreeSet::from([
+            "settings".to_string(),
+            "mouseLightMode".to_string(),
+            "mouseLightColor".to_string(),
+        ]);
+        let fields = BTreeSet::from([SemanticField::LightingState]);
+        let preferred = BTreeMap::from([(
+            "LightingState".to_string(),
+            BTreeSet::from(["mouseLightMode".to_string(), "mouseLightColor".to_string()]),
+        )]);
+
+        let (targets, missing) = map_semantic_fields_to_outputs(&available, &fields, &preferred);
+
+        assert!(missing.is_empty());
+        assert_eq!(
+            targets,
+            BTreeSet::from(["mouseLightMode".to_string(), "mouseLightColor".to_string(),])
+        );
+    }
+
+    #[test]
+    fn semantic_output_cache_rejects_unrelated_nonempty_settings() {
+        assert!(!semantic_output_is_useful(
+            SemanticField::LightingState,
+            "settings",
+            &json!({"pollingRate": 1000})
+        ));
+        assert!(semantic_output_is_useful(
+            SemanticField::LightingState,
+            "settings",
+            &json!({"mouseLightEnabled": true})
+        ));
     }
 
     #[test]

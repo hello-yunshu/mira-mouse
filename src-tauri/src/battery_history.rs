@@ -23,6 +23,8 @@ const BOUNCE_THRESHOLD_PERCENT: f64 = 1.0;
 const REPLACEMENT_RISE_THRESHOLD_PERCENT: u8 = 5;
 const POST_CHARGE_SKIP_MINUTES: i64 = 10;
 const VERY_SLOW_DRAIN_HOURS: f64 = 9999.0;
+/// 日均耗电至少覆盖半天自然时间，避免用短时波动外推整天。
+const MIN_DAILY_DRAIN_OBSERVATION_HOURS: f64 = 12.0;
 const PERSIST_INTERVAL_SECS: u64 = 300;
 /// EWMA 时间衰减常数：段结束时间距今每 48h，权重衰减到 e^-1 ≈ 37%。
 /// 让剩余时间预估更关注近期使用模式，而非 10 天平均。
@@ -1004,13 +1006,13 @@ fn build_insights(
             insights.push(consistency);
         }
 
-        // 日均耗电：基于窗口内放电段速率换算为每天消耗百分比
-        if let Some(rate) = drain_rate(&device_samples, window_start, now) {
+        // 日均耗电：按放电周期的自然时间跨度估算，离线间隔仍计入一天。
+        if let Some(daily_drain) = calendar_daily_drain(&device_samples, window_start, now) {
             insights.push(BatteryInsight {
                 insight_type: "averageDailyDrain".into(),
                 severity: "info".into(),
                 title: "averageDailyDrain".into(),
-                message: format!("averageDailyDrain|{:.1}", rate * 24.0),
+                message: format!("averageDailyDrain|{daily_drain:.1}"),
                 device_key: Some(key.clone()),
             });
         }
@@ -1556,6 +1558,63 @@ fn drain_rate(samples: &[&BatterySample], start: DateTime<Utc>, end: DateTime<Ut
         return None;
     }
     Some(total_drop / total_hours)
+}
+
+/// Estimates average drain per natural day. Session gaps remain part of elapsed
+/// time; only charging and battery replacement boundaries start a new episode.
+fn calendar_daily_drain(
+    samples: &[&BatterySample],
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+) -> Option<f64> {
+    let mut sorted: Vec<&&BatterySample> = samples
+        .iter()
+        .filter(|sample| sample.at >= start && sample.at < end)
+        .collect();
+    if sorted.len() < 2 {
+        return None;
+    }
+    sorted.sort_by_key(|sample| sample.at);
+
+    let mut episodes: Vec<Vec<&&BatterySample>> = Vec::new();
+    let mut current_episode: Vec<&&BatterySample> = Vec::new();
+    let mut prev: Option<&&BatterySample> = None;
+    for sample in &sorted {
+        let split = prev.is_some_and(|previous| {
+            previous.charging || sample.charging || is_battery_replacement(previous, sample)
+        });
+        if split && !current_episode.is_empty() {
+            episodes.push(std::mem::take(&mut current_episode));
+        }
+        if !sample.charging {
+            current_episode.push(sample);
+        }
+        prev = Some(sample);
+    }
+    if !current_episode.is_empty() {
+        episodes.push(current_episode);
+    }
+
+    let mut total_drop = 0.0;
+    let mut total_hours = 0.0;
+    for episode in episodes {
+        if episode.len() < 2 {
+            continue;
+        }
+        let first = episode[0];
+        let last = episode[episode.len() - 1];
+        let hours = (last.at - first.at).num_seconds() as f64 / 3600.0;
+        if hours <= 0.0 {
+            continue;
+        }
+        total_drop += (first.percentage as f64 - last.percentage as f64).max(0.0);
+        total_hours += hours;
+    }
+
+    if total_hours < MIN_DAILY_DRAIN_OBSERVATION_HOURS {
+        return None;
+    }
+    Some(total_drop / total_hours * 24.0)
 }
 
 fn compare_devices(
@@ -2641,6 +2700,81 @@ mod tests {
         if let Some(r) = rate {
             assert!(r > 20.0, "should split by charging, got {} %/h", r);
         }
+    }
+
+    #[test]
+    fn calendar_daily_drain_uses_wall_clock_time_across_session_gaps() {
+        let now = Utc::now();
+        let samples = [
+            make_sample(now - Duration::hours(30), 91, false),
+            make_sample(now - Duration::hours(29), 87, false),
+            make_sample(now - Duration::hours(12), 85, false),
+            make_sample(now, 62, false),
+        ];
+        let refs: Vec<&BatterySample> = samples.iter().collect();
+        let daily =
+            calendar_daily_drain(&refs, now - Duration::hours(31), now + Duration::seconds(1))
+                .expect("30 hours of history should be enough");
+
+        assert!(
+            (daily - 23.2).abs() < 0.01,
+            "unexpected daily drain: {daily}"
+        );
+    }
+
+    #[test]
+    fn calendar_daily_drain_requires_half_day_observation() {
+        let now = Utc::now();
+        let samples = [
+            make_sample(now - Duration::minutes(30), 80, false),
+            make_sample(now, 79, false),
+        ];
+        let refs: Vec<&BatterySample> = samples.iter().collect();
+
+        assert!(
+            calendar_daily_drain(&refs, now - Duration::hours(1), now + Duration::seconds(1),)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn calendar_daily_drain_splits_charging_cycles() {
+        let now = Utc::now();
+        let samples = [
+            make_sample(now - Duration::hours(48), 80, false),
+            make_sample(now - Duration::hours(36), 70, false),
+            make_sample(now - Duration::hours(35), 100, true),
+            make_sample(now - Duration::hours(24), 95, false),
+            make_sample(now, 85, false),
+        ];
+        let refs: Vec<&BatterySample> = samples.iter().collect();
+        let daily =
+            calendar_daily_drain(&refs, now - Duration::hours(49), now + Duration::seconds(1))
+                .expect("two discharge episodes should provide enough history");
+
+        assert!(
+            (daily - 13.333_333).abs() < 0.01,
+            "unexpected daily drain: {daily}"
+        );
+    }
+
+    #[test]
+    fn calendar_daily_drain_counts_stable_time() {
+        let now = Utc::now();
+        let samples = [
+            make_sample(now - Duration::hours(24), 80, false),
+            make_sample(now - Duration::hours(12), 80, false),
+            make_sample(now, 79, false),
+        ];
+        let refs: Vec<&BatterySample> = samples.iter().collect();
+        let daily =
+            calendar_daily_drain(&refs, now - Duration::hours(25), now + Duration::seconds(1))
+                .expect("a full day of stable history should be enough");
+
+        assert!(
+            (daily - 1.0).abs() < 0.01,
+            "unexpected daily drain: {daily}"
+        );
     }
 
     #[test]

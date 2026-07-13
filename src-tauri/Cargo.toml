@@ -41,6 +41,8 @@ window-vibrancy = "0.6"
 sys-locale = "0.3.2"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 png = "0.18"
+nusb = "0.2.4"
+futures-lite = "2"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56"
