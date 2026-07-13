@@ -118,9 +118,10 @@ function OverflowTip({ text, className, multiline }: { text: string; className?:
 interface ChartProps {
   points: BatteryHistoryPoint[];
   range: BatteryHistoryRange;
+  generatedAt?: string;
 }
 
-function BatteryUsageChart({ points, range }: ChartProps) {
+function BatteryUsageChart({ points, range, generatedAt }: ChartProps) {
   const { t, i18n } = useTranslation();
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
   const [focusIndex, setFocusIndex] = useState<number | null>(null);
@@ -128,14 +129,42 @@ function BatteryUsageChart({ points, range }: ChartProps) {
   const width = 520;
   // 两种范围共用同一画布高度，避免切换时图表卡片跳动。
   // 24h 无日期标签，绘图区向下延伸填满底部空隙；10d 保留日期标签空间。
-  const height = 146;
-  const padding = { top: 8, right: 8, bottom: range === '24h' ? 18 : 30, left: 28 };
+  const height = 162;
+  // 总画布高度固定：10d 在底部给日期 + 图例留位，24h 没有图例时让绘图区向下延长。
+  const padding = { top: 8, right: 8, bottom: range === '24h' ? 18 : 46, left: 28 };
   const chartWidth = width - padding.left - padding.right;
   const chartHeight = height - padding.top - padding.bottom;
   const pointCount = Math.max(points.length, 1);
   const slotWidth = chartWidth / pointCount;
   // 24h 最多 48 点、10d 固定 30 点；统一克制柱宽，命中区仍覆盖整个 slot。
   const visualBarWidth = Math.max(2, Math.min(slotWidth * 0.52, slotWidth - 2));
+
+  const recordedPercentages = useMemo(
+    () => points.flatMap((point) => point.percentage === undefined ? [] : [point.percentage]),
+    [points],
+  );
+  const averagePercentage = recordedPercentages.length > 0
+    ? recordedPercentages.reduce((sum, percentage) => sum + percentage, 0) / recordedPercentages.length
+    : null;
+  const averageY = averagePercentage === null
+    ? null
+    : padding.top + chartHeight - (averagePercentage / 100) * chartHeight;
+  const averageLabelBelow = averageY !== null && averageY <= padding.top + 12;
+  const averageLabelOffset = averageLabelBelow ? 6 : -6;
+  const latestRecordedIndex = useMemo(() => {
+    for (let index = points.length - 1; index >= 0; index -= 1) {
+      if (points[index]?.percentage !== undefined) return index;
+    }
+    return -1;
+  }, [points]);
+  // 10d 每天三个 8 小时槽。历史日中从“当前尚未结束的时段”开始降低不透明度，
+  // 今天的最新实测值保持高亮；这样全天轨迹与截至现在的轨迹可以直接对照，
+  // 同时不把未来时段伪装成预测数据。
+  const generatedHour = generatedAt && !Number.isNaN(new Date(generatedAt).getTime())
+    ? new Date(generatedAt).getHours()
+    : new Date().getHours();
+  const currentDaySlot = Math.min(2, Math.floor(generatedHour / 8));
+  const currentDayStartIndex = Math.max(0, points.length - 3);
 
   const activeIndex = hoverIndex ?? focusIndex;
   const activePoint = activeIndex !== null ? points[activeIndex] : null;
@@ -249,6 +278,10 @@ function BatteryUsageChart({ points, range }: ChartProps) {
               <stop offset="58%" stopColor="#e69b69" />
               <stop offset="100%" stopColor="#f3d38c" />
             </linearGradient>
+            <linearGradient id="battery-bar-current" x1="0" y1="1" x2="0" y2="0">
+              <stop offset="0%" stopColor="color-mix(in oklch, var(--accent), #6f86dd 30%)" />
+              <stop offset="100%" stopColor="color-mix(in oklch, var(--accent), white 38%)" />
+            </linearGradient>
           </defs>
           <g className={`battery-chart-plot-content range-${range}`}>
             <rect
@@ -302,12 +335,24 @@ function BatteryUsageChart({ points, range }: ChartProps) {
               const isCharging = point.charging ?? false;
               const isLow = point.lowBattery ?? false;
               const isEmpty = !hasData;
-              const fillId = isCharging ? 'battery-bar-charging' : isLow ? 'battery-bar-low' : 'battery-bar-normal';
+              const isCurrent = i === latestRecordedIndex;
+              const isAfterNow = range === '10d'
+                && i < currentDayStartIndex
+                && i % 3 >= currentDaySlot;
+              const fillId = isCharging
+                ? 'battery-bar-charging'
+                : isLow
+                  ? 'battery-bar-low'
+                  : isCurrent
+                    ? 'battery-bar-current'
+                    : 'battery-bar-normal';
 
               let barClass = 'battery-chart-bar';
               if (isEmpty) barClass += ' battery-chart-empty';
               else if (isCharging) barClass += ' battery-chart-charging';
               else if (isLow) barClass += ' battery-chart-low';
+              if (isCurrent) barClass += ' battery-chart-current';
+              if (isAfterNow) barClass += ' battery-chart-after-now';
 
               // 顶部克制圆角、底部平直：用 path 绘制仅上方两角圆角的柱体
               const cornerR = Math.min(visualBarWidth / 2, renderedBarH / 2, 4.5);
@@ -343,13 +388,41 @@ function BatteryUsageChart({ points, range }: ChartProps) {
                 </g>
               );
             })}
+
           </g>
+
+          {/* 均值线独立于会缩放的绘图区，切换范围时沿 Y 轴平顺移动。 */}
+          {averageY !== null && (
+            <g
+              className="battery-chart-average"
+              aria-label={t('batteryUsage.averageLine', { value: Math.round(averagePercentage ?? 0) })}
+              style={{ transform: `translateY(${averageY}px)` }}
+            >
+              <line
+                className="battery-chart-average-line"
+                x1={padding.left}
+                y1={0}
+                x2={width - padding.right}
+                y2={0}
+              />
+              <text
+                key={`${range}-${Math.round(averagePercentage ?? 0)}`}
+                className="battery-chart-average-label"
+                x={width - padding.right}
+                y={averageLabelOffset}
+                textAnchor="end"
+                dominantBaseline={averageLabelBelow ? 'text-before-edge' : 'text-after-edge'}
+              >
+                {t('batteryUsage.averageLine', { value: Math.round(averagePercentage ?? 0) })}
+              </text>
+            </g>
+          )}
 
           {/* 纵轴数字保持原始比例，逐个跟随各自对应的网格线移动。 */}
           <g className={`battery-chart-y-axis range-${range}`}>
             {yTicks.map((tick) => {
               const y = padding.top + chartHeight - (tick / 100) * chartHeight;
-              const shift = (range === '24h' ? -1 : 1) * 12 * (1 - tick / 100);
+              const shift = (range === '24h' ? -1 : 1) * 28 * (1 - tick / 100);
               return (
                 <text
                   key={`${tick}-label`}
@@ -372,7 +445,7 @@ function BatteryUsageChart({ points, range }: ChartProps) {
             {xTicks.map((tick) => {
               const plotBottom = padding.top + chartHeight;
               const extensionBottom = range === '10d'
-                ? (tick.major ? height - 2 : plotBottom + 13)
+                ? (tick.major ? plotBottom + 28 : plotBottom + 13)
                 : plotBottom + 15;
               return (
                 <line
@@ -422,6 +495,12 @@ function BatteryUsageChart({ points, range }: ChartProps) {
             <div className="tooltip-row"><strong>{t('batteryUsage.tooltipCharging')}: </strong><span>{activePoint.charging ? t('common.on') : t('common.off')}</span></div>
             <div className="tooltip-row"><strong>{t('batteryUsage.tooltipLowBattery')}: </strong><span>{activePoint.lowBattery ? t('common.on') : t('common.off')}</span></div>
             <div className="tooltip-row"><strong>{t('batteryUsage.tooltipSamples')}: </strong><span>{activePoint.sampleCount}</span></div>
+          </div>
+        )}
+        {range === '10d' && (
+          <div className="battery-chart-legend" aria-label={t('batteryUsage.comparisonLegend')}>
+            <span><i className="through-now" aria-hidden="true" />{t('batteryUsage.throughNow')}</span>
+            <span><i className="all-day" aria-hidden="true" />{t('batteryUsage.allDay')}</span>
           </div>
         )}
       </div>
@@ -951,7 +1030,11 @@ export function BatteryUsageModal({
 
             {/* 图表 */}
             {selectedSeries && (
-              <BatteryUsageChart points={selectedSeries.points} range={displayedRange} />
+              <BatteryUsageChart
+                points={selectedSeries.points}
+                range={displayedRange}
+                generatedAt={response?.generatedAt}
+              />
             )}
 
             {/* 洞察 */}

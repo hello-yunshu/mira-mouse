@@ -88,16 +88,29 @@ describe('BatteryUsageModal', () => {
     expect(usageLabels).toHaveLength(8);
     expect(usageGridLines.every((line, index) => line.getAttribute('x1') === usageLabels[index].getAttribute('x'))).toBe(true);
     expect(usageGridLines.every((line) => line.getAttribute('clip-path') === 'url(#battery-chart-plot-clip)')).toBe(true);
-    expect(usageExtensions.every((line) => line.getAttribute('y1') === '128' && line.getAttribute('y2') === '143')).toBe(true);
+    expect(usageExtensions.every((line) => line.getAttribute('y1') === '144' && line.getAttribute('y2') === '159')).toBe(true);
     const usageLabelText = usageLabels.map((label) => label.textContent);
     expect(usageLabelText).toContain('上午12时');
     expect(usageLabelText).toContain('下午12时');
     expect(usageLabelText.every((label) => /^(上午12时|下午12时|3|6|9)$/.test(label ?? ''))).toBe(true);
     expect(document.querySelectorAll('.battery-chart-x-boundary')).toHaveLength(0);
-    expect(document.querySelector('.battery-chart')).toHaveAttribute('viewBox', '0 0 520 146');
+    expect(document.querySelector('.battery-chart')).toHaveAttribute('viewBox', '0 0 520 162');
     expect(document.querySelector('.battery-chart-plot-content')).toHaveClass('range-24h');
     expect(document.querySelector('.battery-chart-y-axis')).toHaveClass('range-24h');
     expect(document.querySelector('.battery-chart-x-axis')).toHaveClass('range-24h');
+    const averageLine = document.querySelector<SVGLineElement>('.battery-chart-average-line');
+    const averageLayer = document.querySelector<SVGGElement>('.battery-chart-average');
+    expect(averageLine).not.toBeNull();
+    expect(averageLine).toHaveAttribute('x1', '28');
+    expect(averageLine).toHaveAttribute('x2', '512');
+    expect(averageLine).toHaveAttribute('y1', '0');
+    expect(averageLine).toHaveAttribute('y2', '0');
+    expect(averageLayer?.style.transform).toMatch(/^translateY\(\d+(\.\d+)?px\)$/);
+    expect(document.querySelector('.battery-chart-average-label')).toHaveTextContent(/^平均 \d+%$/);
+    expect(document.querySelector('.battery-chart-average-label')).toHaveAttribute('y', '-6');
+    expect(document.querySelector('.battery-chart-average-label')).toHaveAttribute('dominant-baseline', 'text-after-edge');
+    expect(document.querySelectorAll('.battery-chart-current')).toHaveLength(1);
+    expect(document.querySelector('.battery-chart-legend')).toBeNull();
     expect(summaryGrid.compareDocumentPosition(chartCard) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(summaryGrid.children).toHaveLength(4);
     expect(screen.getByText('当前电量')).toBeInTheDocument();
@@ -128,6 +141,12 @@ describe('BatteryUsageModal', () => {
     expect(document.querySelector('.battery-chart-plot-content')).toHaveClass('range-10d');
     expect(document.querySelector('.battery-chart-y-axis')).toHaveClass('range-10d');
     expect(document.querySelector('.battery-chart-x-axis')).toHaveClass('range-10d');
+    expect(document.querySelector('.battery-chart-legend')).toHaveTextContent('截至现在全天其余时段');
+    expect(document.querySelector('.battery-chart-average-label')).toHaveAttribute('y', '6');
+    expect(document.querySelector('.battery-chart-average-label')).toHaveAttribute('dominant-baseline', 'text-before-edge');
+    expect(document.querySelectorAll('.battery-chart-current')).toHaveLength(1);
+    expect(document.querySelectorAll('.battery-chart-after-now').length).toBeGreaterThan(0);
+    expect(document.querySelector('.battery-chart-current')).not.toHaveClass('battery-chart-after-now');
     const dateDividers = Array.from(document.querySelectorAll<SVGLineElement>('.battery-chart-x-grid.major'));
     const dateExtensions = Array.from(document.querySelectorAll<SVGLineElement>('.battery-chart-x-extension.major'));
     const weekdayExtensions = Array.from(document.querySelectorAll<SVGLineElement>('.battery-chart-x-extension:not(.major)'));
@@ -188,17 +207,21 @@ describe('BatteryUsageModal', () => {
 
     render(<BatteryUsageModal open onClose={() => {}} hasBattery />);
     await waitFor(() => expect(document.querySelectorAll('.battery-chart g[role="button"]')).toHaveLength(48));
+    const averageLayer = document.querySelector<SVGGElement>('.battery-chart-average');
+    const initialAverageTransform = averageLayer?.style.transform;
     fireEvent.click(screen.getByRole('tab', { name: '10 天' }));
 
     expect(screen.getByRole('tab', { name: '10 天' })).toHaveAttribute('aria-selected', 'true');
     expect(document.querySelectorAll('.battery-chart g[role="button"]')).toHaveLength(48);
     expect(document.querySelectorAll('.battery-chart-x-label')).toHaveLength(8);
-    expect(document.querySelector('.battery-chart')).toHaveAttribute('viewBox', '0 0 520 146');
+    expect(document.querySelector('.battery-chart')).toHaveAttribute('viewBox', '0 0 520 162');
 
     resolveTenDay?.(MOCK_BATTERY_HISTORY_10D);
     await waitFor(() => expect(document.querySelectorAll('.battery-chart g[role="button"]')).toHaveLength(30));
+    expect(document.querySelector('.battery-chart-average')).toBe(averageLayer);
+    expect(document.querySelector<SVGGElement>('.battery-chart-average')?.style.transform).not.toBe(initialAverageTransform);
     expect(document.querySelectorAll('.battery-chart-x-label')).toHaveLength(10);
-    expect(document.querySelector('.battery-chart')).toHaveAttribute('viewBox', '0 0 520 146');
+    expect(document.querySelector('.battery-chart')).toHaveAttribute('viewBox', '0 0 520 162');
   });
 
   it('switches selected device from the status strip menu', async () => {
