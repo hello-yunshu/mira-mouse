@@ -568,6 +568,9 @@ pub struct ProtocolPackage {
     /// 仅缓存 RequestBase::Zero 且所有 byte 定义都无 param/indexed_by 的命令。
     /// build_command 时命中缓存直接返回，避免重复构建 + checksum 计算。
     compiled_commands: HashMap<String, Vec<u8>>,
+    /// Full 读取验证过的语义字段最佳 output。随 ProtocolPackage 生命周期
+    /// 自动失效，不写入插件包、不影响签名。
+    pub(crate) semantic_output_cache: Mutex<HashMap<String, BTreeMap<String, BTreeSet<String>>>>,
 }
 
 impl ProtocolPackage {
@@ -606,6 +609,7 @@ impl ProtocolPackage {
             capabilities,
             compiled_lookups: HashMap::new(),
             compiled_commands: HashMap::new(),
+            semantic_output_cache: Mutex::new(HashMap::new()),
         };
         if package.commands.schema_version != 1
             || package.parsers.schema_version != 1

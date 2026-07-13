@@ -748,6 +748,8 @@ struct SessionState {
     /// Strongest explicitly requested plan waiting for the reader. Repeated
     /// focus/tray/manual events coalesce instead of creating redundant reads.
     forced_read_plan: Mutex<Option<ReadPlan>>,
+    /// 用户活跃交互后的短时 Quick 观察窗口。窗口隐藏时不执行协议读取。
+    quick_observe_until: Mutex<Option<Instant>>,
     applied_software_profiles: Mutex<BTreeSet<String>>,
     /// 低电量跨阈值检测：仅在电量从高跨入低时通知一次，避免反复弹窗。
     low_battery: Mutex<LowBatteryCrossing>,
@@ -846,11 +848,34 @@ fn request_refresh_with_plan(state: &SessionState, plan: ReadPlan) {
     }
 }
 
-/// mutation 后请求 Quick 读取验证。
-/// mutation 已在 `device_mutate_blocking` 中单独重置当前设备退避，
-/// 不重置其他设备——一个设备的写入不应影响其他设备的退避状态。
-fn request_refresh(state: &SessionState) {
+const QUICK_OBSERVE_DURATION: Duration = Duration::from_secs(12);
+const QUICK_OBSERVE_INTERVAL: Duration = Duration::from_secs(1);
+
+/// 开启短时状态观察：立即 Quick，随后最多 12 秒每秒 Quick 一次。
+/// 只由 focus / 打开设备编辑 / mutation 等明确交互触发。
+fn start_quick_observation(state: &SessionState) {
+    if let Ok(mut until) = state.quick_observe_until.lock() {
+        *until = Some(Instant::now() + QUICK_OBSERVE_DURATION);
+    }
     request_refresh_with_plan(state, ReadPlan::Quick);
+}
+
+fn quick_observation_active(state: &SessionState, visible: bool, now: Instant) -> bool {
+    let Ok(mut until) = state.quick_observe_until.lock() else {
+        return false;
+    };
+    if !visible {
+        *until = None;
+        return false;
+    }
+    match *until {
+        Some(deadline) if now < deadline => true,
+        Some(_) => {
+            *until = None;
+            false
+        }
+        None => false,
+    }
 }
 
 /// 窗口聚焦/托盘点击/Dock 点击等窗口事件触发的 Presence 刷新。
@@ -860,6 +885,51 @@ fn request_presence_refresh(state: &SessionState) {
     request_refresh_with_plan(state, ReadPlan::PresenceOnly);
 }
 
+const HOTPLUG_DEBOUNCE: Duration = Duration::from_millis(300);
+
+/// 跨平台 USB 热插拔观察器。`nusb` 在 macOS / Windows / Linux 分别使用
+/// IOKit、Windows 设备通知和 Linux usbfs/udev 事件。原生事件只负责唤醒
+/// PresenceOnly，初始 Quick → Full 仍由现有 readiness 状态机推进。
+/// 15 秒定时 Presence 保留作为 fallback。
+fn spawn_hotplug_watcher(app: AppHandle) {
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+
+    std::thread::spawn(move || {
+        let watch = match nusb::watch_devices() {
+            Ok(watch) => watch,
+            Err(error) => {
+                eprintln!("[mira] native hotplug watcher unavailable: {error}");
+                return;
+            }
+        };
+        for _event in futures_lite::stream::block_on(watch) {
+            if tx.send(()).is_err() {
+                break;
+            }
+        }
+    });
+
+    std::thread::spawn(move || {
+        while rx.recv().is_ok() {
+            // USB 接收器通常会为一次插拔发出多个复合接口事件。
+            // 等待短时窗口并合并全部事件，Windows 上也给接口初始化留出时间。
+            while rx.recv_timeout(HOTPLUG_DEBOUNCE).is_ok() {}
+            let state = app.state::<SessionState>();
+            // 原生设备列表已变化，丢弃可能指向旧接口的句柄/枚举缓存。
+            if let Ok(mut api) = state.cached_hidapi.lock() {
+                *api = None;
+            }
+            if let Ok(mut handles) = state.cached_handles.lock() {
+                handles.clear();
+            }
+            if let Ok(mut reads) = state.last_read_at.lock() {
+                reads.clear();
+            }
+            request_presence_refresh(&state);
+        }
+    });
+}
+
 /// Send a wake-up signal to the night mode scheduler thread.
 fn request_night_mode_eval(state: &SessionState) {
     if let Ok(tx) = state.night_mode_tx.lock() {
@@ -867,6 +937,28 @@ fn request_night_mode_eval(state: &SessionState) {
             let _ = sender.send(());
         }
     }
+}
+
+/// 安静灯光必须等待完整快照后才能推进阶段。
+///
+/// Presence/Quick 临时快照没有完整 capability 与 writable mutation 集合；若把它们
+/// 当成“不支持灯光”并直接标记为 Night，后续 Full 快照到达时会因阶段已相等而跳过
+/// 真正的关闭动作。
+fn night_mode_snapshot_is_ready(readiness: Option<SnapshotReadiness>) -> bool {
+    readiness == Some(SnapshotReadiness::Full)
+}
+
+fn selected_full_snapshot(state: &SessionState) -> Option<DeviceSnapshot> {
+    let (path, snapshot) = state.last_snapshot.lock().ok().and_then(|guard| {
+        selected_snapshot_entry(state, &guard)
+            .map(|(path, snapshot)| (path.clone(), snapshot.clone()))
+    })?;
+    let readiness = state
+        .snapshot_readiness
+        .lock()
+        .ok()
+        .and_then(|readiness| readiness.get(&path).copied());
+    night_mode_snapshot_is_ready(readiness).then_some(snapshot)
 }
 
 /// 安静灯光阶段转换：根据目标阶段执行灯光关闭或恢复。
@@ -901,12 +993,11 @@ fn apply_night_mode_transition(app: &AppHandle, target_phase: NightPhase) {
     match target_phase {
         NightPhase::Night => {
             // Day → Night：关闭勾选的灯光对象。
-            let snapshot = state.last_snapshot.lock().ok().and_then(|guard| {
-                selected_snapshot_entry(&state, &guard).map(|(_, snapshot)| snapshot.clone())
-            });
+            let snapshot = selected_full_snapshot(&state);
 
             let Some(snapshot) = snapshot else {
-                // 设备未连接：不更新阶段，保持 Day，下一轮调度会重试。
+                // 设备未连接或快照尚未 Full：不更新阶段，等完整能力与可写
+                // mutation 就绪后由 store_snapshots 唤醒重试。
                 return;
             };
 
@@ -1061,12 +1152,11 @@ fn apply_night_mode_transition(app: &AppHandle, target_phase: NightPhase) {
                 return;
             }
 
-            let snapshot = state.last_snapshot.lock().ok().and_then(|guard| {
-                selected_snapshot_entry(&state, &guard).map(|(_, snapshot)| snapshot.clone())
-            });
+            let snapshot = selected_full_snapshot(&state);
 
             let Some(snapshot) = snapshot else {
-                // 设备未连接：不更新阶段，保持 Night + saved，下一轮重试恢复。
+                // 设备未连接或快照尚未 Full：不更新阶段，保持 Night +
+                // saved，等完整可写快照到达后重试恢复。
                 return;
             };
 
@@ -2693,6 +2783,18 @@ mod night_mode_tests {
     #![allow(clippy::field_reassign_with_default)]
 
     use super::*;
+
+    #[test]
+    fn night_mode_waits_for_full_snapshot_before_transitioning() {
+        assert!(!night_mode_snapshot_is_ready(None));
+        assert!(!night_mode_snapshot_is_ready(Some(
+            SnapshotReadiness::Detected
+        )));
+        assert!(!night_mode_snapshot_is_ready(Some(
+            SnapshotReadiness::Quick
+        )));
+        assert!(night_mode_snapshot_is_ready(Some(SnapshotReadiness::Full)));
+    }
 
     #[test]
     fn parse_clock_time_accepts_valid_values() {
@@ -5405,7 +5507,7 @@ fn device_refresh(state: tauri::State<'_, SessionState>) -> Result<(), String> {
 /// 避免高频交互反复重置休眠设备退避，导致"超时-重置-超时"循环。
 #[tauri::command]
 fn device_refresh_quick(state: tauri::State<'_, SessionState>) -> Result<(), String> {
-    request_refresh_with_plan(&state, ReadPlan::Quick);
+    start_quick_observation(&state);
     Ok(())
 }
 
@@ -5534,7 +5636,6 @@ enum ReadPlan {
 }
 
 const CONNECTED_PRESENCE_INTERVAL: Duration = Duration::from_secs(15);
-const BATTERY_READ_INTERVAL: Duration = Duration::from_secs(300);
 
 impl ReadPlan {
     /// 返回此计划对应的语义字段集合（用于工作流投影）。
@@ -5574,6 +5675,7 @@ fn select_read_plan(
     connected: bool,
     initial_plan: Option<ReadPlan>,
     forced_plan: Option<ReadPlan>,
+    quick_observation: bool,
     battery_due: bool,
 ) -> ReadPlan {
     let requested = match (initial_plan, forced_plan) {
@@ -5584,11 +5686,64 @@ fn select_read_plan(
     };
     if let Some(plan) = requested {
         plan
+    } else if connected && quick_observation {
+        ReadPlan::Quick
     } else if connected && battery_due {
         ReadPlan::BatteryOnly
     } else {
         ReadPlan::PresenceOnly
     }
+}
+
+const BATTERY_CHARGING_INTERVAL: Duration = Duration::from_secs(3 * 60);
+const BATTERY_VISIBLE_INTERVAL: Duration = Duration::from_secs(5 * 60);
+const BATTERY_HIDDEN_INTERVAL: Duration = Duration::from_secs(15 * 60);
+const BATTERY_STABLE_INTERVAL: Duration = Duration::from_secs(30 * 60);
+const BATTERY_LONG_STABLE_AFTER: Duration = Duration::from_secs(60 * 60);
+
+fn adaptive_battery_interval(
+    visible: bool,
+    charging: bool,
+    unchanged_for: Option<Duration>,
+) -> Duration {
+    if charging {
+        BATTERY_CHARGING_INTERVAL
+    } else if visible {
+        BATTERY_VISIBLE_INTERVAL
+    } else if unchanged_for.is_some_and(|duration| duration >= BATTERY_LONG_STABLE_AFTER) {
+        BATTERY_STABLE_INTERVAL
+    } else {
+        BATTERY_HIDDEN_INTERVAL
+    }
+}
+
+fn battery_signature(snapshot: Option<&DeviceSnapshot>) -> Vec<(String, u8, bool)> {
+    let Some(snapshot) = snapshot else {
+        return Vec::new();
+    };
+    let device_key = snapshot
+        .history_identity
+        .as_ref()
+        .map(|identity| identity.group.as_str())
+        .or(snapshot.plugin_id.as_deref())
+        .unwrap_or(snapshot.display_name.as_str());
+    if snapshot.batteries.is_empty() {
+        return snapshot
+            .battery_percent
+            .map(|percentage| vec![(format!("{device_key}:mouse"), percentage, snapshot.charging)])
+            .unwrap_or_default();
+    }
+    snapshot
+        .batteries
+        .iter()
+        .map(|battery| {
+            (
+                format!("{device_key}:{}", battery.id),
+                battery.percentage,
+                battery.charging,
+            )
+        })
+        .collect()
 }
 
 /// 设备快照就绪程度：标识当前快照的完整性。
@@ -5625,6 +5780,8 @@ enum SnapshotPatch {
         polling_rate_hz: Option<u16>,
         profile: Option<String>,
         confirmed_light_color: Option<String>,
+        /// Quick 投影产生的动态 capability 补丁（如灯光状态）。
+        capabilities: BTreeMap<String, serde_json::Value>,
         /// 投影诊断信息
         projection_valid: bool,
         fallback_reason: Option<String>,
@@ -5710,6 +5867,7 @@ fn apply_snapshot_patch(
             polling_rate_hz,
             profile,
             confirmed_light_color,
+            capabilities,
             projection_valid: _,
             fallback_reason: _,
         } => {
@@ -5739,6 +5897,7 @@ fn apply_snapshot_patch(
                 if let Some(lc) = confirmed_light_color {
                     updated.confirmed_light_color = Some(lc);
                 }
+                merge_capability_patch(&mut updated.capabilities, capabilities);
                 updated
             } else {
                 // 没有 existing 快照时，Quick 补丁无法应用
@@ -5785,6 +5944,24 @@ fn apply_snapshot_patch(
                     devices,
                     fallback_connection,
                 )
+            }
+        }
+    }
+}
+
+/// Quick 只包含被投影选中的动态字段，因此对 object 做字段级合并，
+/// 不让部分灯光结果覆盖 Full 快照中的颜色/速度/亮度等其他值。
+fn merge_capability_patch(
+    target: &mut BTreeMap<String, serde_json::Value>,
+    patch: BTreeMap<String, serde_json::Value>,
+) {
+    for (key, value) in patch {
+        match (target.get_mut(&key), value) {
+            (Some(serde_json::Value::Object(existing)), serde_json::Value::Object(patch)) => {
+                existing.extend(patch);
+            }
+            (_, value) => {
+                target.insert(key, value);
             }
         }
     }
@@ -6028,6 +6205,7 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
                                 polling_rate_hz: reading.polling_rate_hz,
                                 profile: reading.profile.map(|p| (p + 1).to_string()),
                                 confirmed_light_color: reading.light_color,
+                                capabilities: reading.capabilities,
                                 projection_valid: true,
                                 fallback_reason: None,
                             }
@@ -6316,7 +6494,8 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
 ///   wakes it immediately for an on-demand read.
 /// - Connected, stable devices only receive a PresenceOnly enumeration every
 ///   15 seconds. No protocol workflow runs merely because the window is visible.
-/// - BatteryOnly runs independently every 5 minutes.
+/// - BatteryOnly uses an adaptive 3/5/15/30-minute cadence based on charging,
+///   visibility, and how long the battery state has remained unchanged.
 /// - The fallback interval otherwise adapts to the situation:
 ///   * 500 ms only while the initial Presence → Quick → Full sequence completes.
 ///   * 1 s when no device is connected and the window is visible, so plug-in
@@ -6330,6 +6509,8 @@ fn spawn_device_reader(app: AppHandle) {
         .unwrap_or_else(|e| e.into_inner()) = Some(tx);
 
     let mut last_battery_read_at: Option<Instant> = None;
+    let mut last_battery_signature: Vec<(String, u8, bool)> = Vec::new();
+    let mut battery_stable_since: Option<Instant> = None;
     std::thread::spawn(move || loop {
         // Determine state before reading to choose the appropriate ReadPlan.
         let state = app.state::<SessionState>();
@@ -6366,8 +6547,16 @@ fn spawn_device_reader(app: AppHandle) {
             (connected, next_initial_plan)
         };
 
+        let now = Instant::now();
+        let snapshot_before = selected_snapshot(&state);
+        let charging = snapshot_before.as_ref().is_some_and(|snapshot| {
+            snapshot.charging || snapshot.batteries.iter().any(|battery| battery.charging)
+        });
+        let unchanged_for = battery_stable_since.map(|since| now.saturating_duration_since(since));
+        let battery_interval = adaptive_battery_interval(visible, charging, unchanged_for);
         let battery_due = connected_before
-            && last_battery_read_at.is_none_or(|last| last.elapsed() >= BATTERY_READ_INTERVAL);
+            && last_battery_read_at.is_none_or(|last| now.duration_since(last) >= battery_interval);
+        let observing_quick = quick_observation_active(&state, visible, now);
 
         // Choose ReadPlan:
         // - Connected but no Full snapshot yet → Full (首次读取需要获取能力)
@@ -6378,6 +6567,7 @@ fn spawn_device_reader(app: AppHandle) {
             connected_before,
             next_initial_plan,
             forced_plan,
+            observing_quick,
             battery_due,
         );
 
@@ -6386,7 +6576,15 @@ fn spawn_device_reader(app: AppHandle) {
             plan,
             ReadPlan::BatteryOnly | ReadPlan::Quick | ReadPlan::Full
         ) {
-            last_battery_read_at = Some(Instant::now());
+            let now = Instant::now();
+            let signature = battery_signature(selected_snapshot(&state).as_ref());
+            if signature != last_battery_signature {
+                last_battery_signature = signature;
+                battery_stable_since = Some(now);
+            } else if battery_stable_since.is_none() {
+                battery_stable_since = Some(now);
+            }
+            last_battery_read_at = Some(now);
         }
 
         // Initial Presence → Quick → Full progresses promptly; once initialized,
@@ -6408,8 +6606,11 @@ fn spawn_device_reader(app: AppHandle) {
                 });
             (connected, initializing)
         };
+        let observing_quick = quick_observation_active(&state, visible, Instant::now());
         let wait = if initializing {
             std::time::Duration::from_millis(500)
+        } else if observing_quick {
+            QUICK_OBSERVE_INTERVAL
         } else if connected {
             // Connected devices are only enumerated; protocol reads are on-demand.
             CONNECTED_PRESENCE_INTERVAL
@@ -6627,7 +6828,11 @@ async fn device_mutate(
         let _ = tx.send(result);
     });
     match rx.recv_timeout(std::time::Duration::from_secs(30)) {
-        Ok(result) => result,
+        Ok(Ok(snapshot)) => {
+            start_quick_observation(&app.state::<SessionState>());
+            Ok(snapshot)
+        }
+        Ok(Err(error)) => Err(error),
         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
             Err("设备写入超时（30 秒）。鼠标可能处于休眠状态，请移动鼠标唤醒后重试。写入可能仍在后台执行，设备状态将在完成后自动刷新。".into())
         }
@@ -6744,8 +6949,9 @@ fn device_mutate_blocking(
             mutate_device_with_package(&package, &mutate_context, mutation, params)?;
         // The mutation engine already ran its declared verify parser and
         // assertions. Merge that verified object into the cached raw outputs,
-        // normalize locally, and publish immediately; the on-demand scheduler
-        // performs one follow-up Quick read for unrelated dynamic state.
+        // normalize locally, and publish immediately. UI-triggered mutations open
+        // a bounded Quick observation window in `device_mutate`; background writes
+        // such as quiet lighting do not start foreground polling.
         merge_verified_mutation_output(&mut base_outputs, &mutation_result);
         let mut reading = normalize_device_outputs_with_package(&package, base_outputs);
         reading.connection = Some(kind);
@@ -6832,7 +7038,6 @@ fn device_mutate_blocking(
     let _ = app.emit("device-updated", &snapshot);
     let _ = app.emit("device-snapshots-updated", device_snapshot_entries(&state));
     let _ = update_tray(app, Some(&snapshot), &cached_settings(app));
-    request_refresh(&state);
     Ok(snapshot)
 }
 
@@ -7653,7 +7858,9 @@ fn cached_settings_for_state(state: &SessionState) -> AppSettings {
 
 pub(crate) fn focus_main_from_tray(app: &AppHandle) {
     focus_main(app.get_webview_window("main"));
-    request_presence_refresh(&app.state::<SessionState>());
+    let state = app.state::<SessionState>();
+    reset_all_backoff(&state);
+    start_quick_observation(&state);
 }
 
 pub(crate) fn open_battery_usage_from_tray(app: &AppHandle) {
@@ -8536,7 +8743,7 @@ pub fn run() {
         .manage(SessionState::default())
         .manage(production_trust_store())
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
-            focus_main(app.get_webview_window("main"))
+            focus_main_from_tray(app)
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
@@ -8624,8 +8831,8 @@ pub fn run() {
                             hide_main_window_to_tray(&app_handle);
                         }
                         tauri::WindowEvent::Focused(true) => {
-                            // Window focus only rechecks presence; protocol fields are read
-                            // when the user opens a related control.
+                            // Window focus opens a bounded Quick observation window so physical
+                            // DPI/light changes become visible without restoring permanent polling.
                             // 同时刷新系统主题缓存：窗口隐藏期间系统主题可能已变化，
                             // 但 ThemeChanged 事件可能未触发（窗口不可见时）。
                             let state = app_handle.state::<SessionState>();
@@ -8641,7 +8848,8 @@ pub fn run() {
                             if let Some(window) = app_handle.get_webview_window("main") {
                                 apply_macos_vibrancy(&window);
                             }
-                            request_presence_refresh(&app_handle.state::<SessionState>());
+                            reset_all_backoff(&state);
+                            start_quick_observation(&state);
                         }
                         tauri::WindowEvent::ThemeChanged(_) => {
                             // 窗口可见时系统主题变化会触发此事件。
@@ -8671,6 +8879,10 @@ pub fn run() {
             // Spawn background thread that reads the device periodically.
             // This keeps `device_snapshot` instant — the UI never blocks on HID I/O.
             spawn_device_reader(app.handle().clone());
+
+            // Native USB hotplug events wake PresenceOnly immediately; periodic
+            // enumeration remains active as a recovery fallback.
+            spawn_hotplug_watcher(app.handle().clone());
 
             // 启动系统主题变化监听器（事件驱动，跨平台）。
             // 窗口隐藏到托盘后仍可接收主题变化事件，无需轮询。
@@ -8767,8 +8979,7 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             {
                 if let tauri::RunEvent::Reopen { .. } = event {
-                    focus_main(app_handle.get_webview_window("main"));
-                    request_presence_refresh(&app_handle.state::<SessionState>());
+                    focus_main_from_tray(app_handle);
                 }
             }
             #[cfg(not(target_os = "macos"))]
@@ -8876,15 +9087,15 @@ mod read_plan_tests {
     #[test]
     fn initial_sequence_is_presence_then_quick_then_full() {
         assert_eq!(
-            select_read_plan(false, None, None, false),
+            select_read_plan(false, None, None, false, false),
             ReadPlan::PresenceOnly
         );
         assert_eq!(
-            select_read_plan(true, Some(ReadPlan::Quick), None, false),
+            select_read_plan(true, Some(ReadPlan::Quick), None, false, false),
             ReadPlan::Quick
         );
         assert_eq!(
-            select_read_plan(true, Some(ReadPlan::Full), None, false),
+            select_read_plan(true, Some(ReadPlan::Full), None, false, false),
             ReadPlan::Full
         );
     }
@@ -8892,7 +9103,7 @@ mod read_plan_tests {
     #[test]
     fn stable_connected_device_uses_presence_only() {
         assert_eq!(
-            select_read_plan(true, None, None, false),
+            select_read_plan(true, None, None, false, false),
             ReadPlan::PresenceOnly
         );
     }
@@ -8900,7 +9111,7 @@ mod read_plan_tests {
     #[test]
     fn connected_device_uses_battery_only_when_due() {
         assert_eq!(
-            select_read_plan(true, None, None, true),
+            select_read_plan(true, None, None, false, true),
             ReadPlan::BatteryOnly
         );
     }
@@ -8908,8 +9119,76 @@ mod read_plan_tests {
     #[test]
     fn manual_full_overrides_pending_quick() {
         assert_eq!(
-            select_read_plan(true, Some(ReadPlan::Quick), Some(ReadPlan::Full), false),
+            select_read_plan(
+                true,
+                Some(ReadPlan::Quick),
+                Some(ReadPlan::Full),
+                true,
+                false
+            ),
             ReadPlan::Full
+        );
+    }
+
+    #[test]
+    fn active_observation_uses_quick_without_overriding_initial_full() {
+        assert_eq!(
+            select_read_plan(true, None, None, true, false),
+            ReadPlan::Quick
+        );
+        assert_eq!(
+            select_read_plan(true, Some(ReadPlan::Full), None, true, false),
+            ReadPlan::Full
+        );
+    }
+
+    #[test]
+    fn battery_interval_is_adaptive_without_starving_background_checks() {
+        assert_eq!(
+            adaptive_battery_interval(false, true, Some(Duration::from_secs(7200))),
+            BATTERY_CHARGING_INTERVAL
+        );
+        assert_eq!(
+            adaptive_battery_interval(true, false, Some(Duration::from_secs(7200))),
+            BATTERY_VISIBLE_INTERVAL
+        );
+        assert_eq!(
+            adaptive_battery_interval(false, false, Some(Duration::from_secs(30 * 60))),
+            BATTERY_HIDDEN_INTERVAL
+        );
+        assert_eq!(
+            adaptive_battery_interval(false, false, Some(Duration::from_secs(60 * 60))),
+            BATTERY_STABLE_INTERVAL
+        );
+    }
+
+    #[test]
+    fn quick_capability_patch_preserves_unread_full_fields() {
+        let mut target = BTreeMap::from([(
+            "mouseLighting".to_string(),
+            serde_json::json!({
+                "enabled": true,
+                "effect": 1,
+                "color": "#123456",
+                "brightness": 80
+            }),
+        )]);
+        merge_capability_patch(
+            &mut target,
+            BTreeMap::from([(
+                "mouseLighting".to_string(),
+                serde_json::json!({"effect": 0, "enabled": false}),
+            )]),
+        );
+
+        assert_eq!(
+            target.get("mouseLighting"),
+            Some(&serde_json::json!({
+                "enabled": false,
+                "effect": 0,
+                "color": "#123456",
+                "brightness": 80
+            }))
         );
     }
 }

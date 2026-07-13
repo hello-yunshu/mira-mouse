@@ -8,6 +8,16 @@ const required = ['README.md', 'LICENSE', 'LICENSES/AGPL-3.0-or-later.txt', 'LIC
 for (const file of required) if ((await stat(file)).size === 0) throw new Error(`${file} is empty`);
 const lock = JSON.parse(await readFile('plugins.lock.json', 'utf8'));
 if (lock.releaseReady && JSON.stringify(lock).includes('BLOCKED_')) throw new Error('release-ready lock contains unresolved metadata');
+const tauriConfig = JSON.parse(await readFile('src-tauri/tauri.conf.json', 'utf8'));
+const updaterEndpoints = tauriConfig.plugins?.updater?.endpoints;
+const expectedUpdaterEndpoints = [
+  'https://gh-proxy.com/https://github.com/hello-yunshu/mira-mouse/releases/latest/download/latest.json',
+  'https://github.com/hello-yunshu/mira-mouse/releases/latest/download/latest.json',
+  'https://github.hey.run/hello-yunshu/mira-mouse/releases/latest/download/latest.json',
+];
+if (JSON.stringify(updaterEndpoints) !== JSON.stringify(expectedUpdaterEndpoints)) {
+  throw new Error('app update check endpoints must stay ordered gh-proxy.com -> direct -> hey.run');
+}
 const yamlFiles = [];
 async function collectYaml(dir) {
   for (const entry of await readdir(dir, { withFileTypes: true })) {
