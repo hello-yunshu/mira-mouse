@@ -2571,10 +2571,6 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
 .battery-chart-stage {
   position: relative;
 }
-.battery-chart-plot,
-.battery-chart-clip-rect {
-  transition: height var(--motion-slow) var(--motion-ease-out);
-}
 .battery-chart-plot {
   fill: color-mix(in srgb, var(--surface-group-bg), transparent 20%);
   stroke: var(--surface-group-border);
@@ -2922,35 +2918,53 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
 }
 
 @keyframes mira-bar-rise {
-  from { opacity: 0; transform: scaleY(0); }
+  from { opacity: .34; transform: scaleY(.3); }
   to { opacity: 1; transform: scaleY(1); }
 }
 
-/* Primary view changes stay short and spatially restrained. */
-.dashboard,
+/* 24h 的绘图区高 120，10d 为日期标签收成 108；切换时从旧高度过渡到新高度。 */
+@keyframes mira-battery-chart-expand {
+  from { opacity: .76; filter: saturate(.9); transform: translateY(2px) scaleY(.9); }
+  to { opacity: 1; filter: saturate(1); transform: translateY(0) scaleY(1); }
+}
+
+@keyframes mira-battery-chart-contract {
+  from { opacity: .76; filter: saturate(.9); transform: translateY(-1px) scaleY(1.111111); }
+  to { opacity: 1; filter: saturate(1); transform: translateY(0) scaleY(1); }
+}
+
+@keyframes mira-battery-y-expand {
+  from { transform: translateY(var(--axis-shift)); }
+  to { transform: translateY(0); }
+}
+
+@keyframes mira-battery-y-contract {
+  from { transform: translateY(var(--axis-shift)); }
+  to { transform: translateY(0); }
+}
+
+@keyframes mira-battery-x-expand {
+  from { opacity: 0; transform: translateY(-2px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes mira-battery-x-contract {
+  from { opacity: 0; transform: translateY(2px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Settings/About may ease into place. The primary dashboard and empty state
+   render immediately so opening the main window never withholds UI. */
 .settings-page,
-.about-page,
-.empty {
+.about-page {
   animation: mira-page-enter var(--motion-slow) var(--motion-ease-out) backwards;
 }
 
-.dashboard > .device-hero,
-.dashboard > .control-tabs,
-.dashboard > .control-stage,
-.dashboard > .status-strip,
-.dashboard > .dashboard-meta {
-  animation: mira-section-enter var(--motion-slow) var(--motion-ease-out) backwards;
-}
 .dashboard > .device-hero {
   /* Hero-owned transient UI must stay above the controls it overlaps. */
   position: relative;
   z-index: 2;
 }
-.dashboard > .device-hero { animation-delay: 20ms; }
-.dashboard > .control-tabs { animation-delay: 45ms; }
-.dashboard > .control-stage { animation-delay: 70ms; }
-.dashboard > .status-strip { animation-delay: 95ms; }
-.dashboard > .dashboard-meta { animation-delay: 120ms; }
 
 .settings-page > header,
 .settings-page > .sub-nav,
@@ -3128,11 +3142,37 @@ input[type="color"] {
 .battery-chart-card { animation-delay: 35ms; }
 .battery-insight-section { animation-delay: 70ms; }
 .battery-history-actions { animation-delay: 95ms; }
+.battery-chart-plot-content {
+  transform-box: view-box;
+  transform-origin: 0 8px;
+}
+.battery-chart-plot-content.range-24h {
+  animation: mira-battery-chart-expand var(--motion-slow) var(--motion-ease-out) backwards;
+}
+.battery-chart-plot-content.range-10d {
+  animation: mira-battery-chart-contract var(--motion-slow) var(--motion-ease-out) backwards;
+}
+.battery-chart-y-label {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+.battery-chart-y-axis.range-24h .battery-chart-y-label {
+  animation: mira-battery-y-expand var(--motion-slow) var(--motion-ease-out) backwards;
+}
+.battery-chart-y-axis.range-10d .battery-chart-y-label {
+  animation: mira-battery-y-contract var(--motion-slow) var(--motion-ease-out) backwards;
+}
+.battery-chart-x-axis.range-24h {
+  animation: mira-battery-x-expand var(--motion-slow) var(--motion-ease-out) 70ms backwards;
+}
+.battery-chart-x-axis.range-10d {
+  animation: mira-battery-x-contract var(--motion-slow) var(--motion-ease-out) 70ms backwards;
+}
 .battery-chart-bar {
   transform-box: fill-box;
   transform-origin: center bottom;
-  animation: mira-bar-rise var(--motion-deliberate) var(--motion-ease-out) backwards;
-  animation-delay: calc(var(--bar-delay, 0ms) + 120ms);
+  animation: mira-bar-rise var(--motion-slow) var(--motion-ease-out) backwards;
+  animation-delay: var(--bar-delay, 0ms);
   transition: opacity var(--motion-fast) ease, filter var(--motion-fast) ease;
 }
 .battery-chart g[role="button"]:hover .battery-chart-bar,
@@ -3211,6 +3251,9 @@ input[type="color"] {
   .battery-summary,
   .battery-insight-section,
   .battery-history-actions,
+  .battery-chart-plot-content,
+  .battery-chart-y-label,
+  .battery-chart-x-axis,
   .battery-chart-bar,
   .battery-chart-tooltip,
   .battery-usage-close-icon svg,

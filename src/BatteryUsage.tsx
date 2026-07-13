@@ -143,7 +143,8 @@ function BatteryUsageChart({ points, range }: ChartProps) {
     ? ({ '--tooltip-x': `${((padding.left + activeIndex * slotWidth + slotWidth / 2) / width) * 100}%` } as CSSProperties)
     : undefined;
 
-  // 绘图区圆角克制；切换 range 时通过 CSS transition 平滑过渡 height。
+  // 绘图区圆角克制；切换 range 时让整个绘图区（背景、网格和柱体）一起伸缩。
+  // 只给背景 rect 做 height transition 会被同步换新的网格/柱体盖过，视觉上近似瞬切。
   const plotCornerR = 5;
 
   const yTicks = [0, 25, 50, 75, 100];
@@ -249,21 +250,21 @@ function BatteryUsageChart({ points, range }: ChartProps) {
               <stop offset="100%" stopColor="#f3d38c" />
             </linearGradient>
           </defs>
-          <rect
-            className="battery-chart-plot"
-            x={padding.left}
-            y={padding.top}
-            width={chartWidth}
-            height={chartHeight}
-            rx={plotCornerR}
-            style={{ height: `${chartHeight}px` }}
-          />
-          {/* Y 轴参考线 */}
-          {yTicks.map((tick) => {
-            const y = padding.top + chartHeight - (tick / 100) * chartHeight;
-            return (
-              <g key={tick}>
+          <g className={`battery-chart-plot-content range-${range}`}>
+            <rect
+              className="battery-chart-plot"
+              x={padding.left}
+              y={padding.top}
+              width={chartWidth}
+              height={chartHeight}
+              rx={plotCornerR}
+            />
+            {/* Y 轴参考线 */}
+            {yTicks.map((tick) => {
+              const y = padding.top + chartHeight - (tick / 100) * chartHeight;
+              return (
                 <line
+                  key={tick}
                   x1={padding.left}
                   y1={y}
                   x2={width - padding.right}
@@ -273,122 +274,141 @@ function BatteryUsageChart({ points, range }: ChartProps) {
                   strokeWidth={1}
                   clipPath="url(#battery-chart-plot-clip)"
                 />
+              );
+            })}
+
+            {/* 绘图区内的 X 轴网格随背景一起伸缩。 */}
+            {xTicks.map((tick) => (
+                <line
+                  key={`${tick.key}-grid`}
+                  className={`battery-chart-x-grid${tick.major ? ' major' : ''}`}
+                  x1={tick.lineX}
+                  y1={padding.top}
+                  x2={tick.lineX}
+                  y2={padding.top + chartHeight}
+                  clipPath="url(#battery-chart-plot-clip)"
+                />
+            ))}
+
+            {/* 电量柱 */}
+            {points.map((point, i) => {
+              const slotX = padding.left + i * slotWidth;
+              const x = slotX + (slotWidth - visualBarWidth) / 2;
+              const hasData = point.percentage !== undefined;
+              const pct = point.percentage ?? 0;
+              const barH = hasData ? (pct / 100) * chartHeight : 0;
+              const renderedBarH = hasData ? Math.max(barH, 3) : 2;
+              const y = padding.top + chartHeight - renderedBarH;
+              const isCharging = point.charging ?? false;
+              const isLow = point.lowBattery ?? false;
+              const isEmpty = !hasData;
+              const fillId = isCharging ? 'battery-bar-charging' : isLow ? 'battery-bar-low' : 'battery-bar-normal';
+
+              let barClass = 'battery-chart-bar';
+              if (isEmpty) barClass += ' battery-chart-empty';
+              else if (isCharging) barClass += ' battery-chart-charging';
+              else if (isLow) barClass += ' battery-chart-low';
+
+              // 顶部克制圆角、底部平直：用 path 绘制仅上方两角圆角的柱体
+              const cornerR = Math.min(visualBarWidth / 2, renderedBarH / 2, 4.5);
+              const barPath = `M ${x},${y + renderedBarH} L ${x},${y + cornerR} Q ${x},${y} ${x + cornerR},${y} L ${x + visualBarWidth - cornerR},${y} Q ${x + visualBarWidth},${y} ${x + visualBarWidth},${y + cornerR} L ${x + visualBarWidth},${y + renderedBarH} Z`;
+
+              return (
+                <g
+                  key={`${range}-${point.bucketStart}-${i}`}
+                  onMouseEnter={() => setHoverIndex(i)}
+                  onMouseLeave={() => setHoverIndex(null)}
+                  onPointerEnter={() => setHoverIndex(i)}
+                  onPointerLeave={() => setHoverIndex(null)}
+                  onFocus={() => setFocusIndex(i)}
+                  onBlur={() => setFocusIndex(null)}
+                  tabIndex={0}
+                  role="button"
+                  aria-label={`${point.bucketLabel}: ${hasData ? `${pct}%` : t('batteryUsage.notEnoughData')}`}
+                >
+                  <rect
+                    className="battery-chart-hit-area"
+                    x={slotX}
+                    y={padding.top}
+                    width={slotWidth}
+                    height={chartHeight}
+                    fill="transparent"
+                  />
+                  <path
+                    d={barPath}
+                    className={barClass}
+                    fill={isEmpty ? undefined : `url(#${fillId})`}
+                    style={{ '--bar-delay': `${Math.min(i, 10) * 6}ms` } as CSSProperties}
+                  />
+                </g>
+              );
+            })}
+          </g>
+
+          {/* 纵轴数字保持原始比例，逐个跟随各自对应的网格线移动。 */}
+          <g className={`battery-chart-y-axis range-${range}`}>
+            {yTicks.map((tick) => {
+              const y = padding.top + chartHeight - (tick / 100) * chartHeight;
+              const shift = (range === '24h' ? -1 : 1) * 12 * (1 - tick / 100);
+              return (
                 <text
+                  key={`${tick}-label`}
+                  className="battery-chart-y-label"
                   x={padding.left - 6}
                   y={y + 3}
                   textAnchor="end"
                   fontSize={9}
                   fill="var(--muted)"
+                  style={{ '--axis-shift': `${shift}px` } as CSSProperties}
                 >
                   {tick}
                 </text>
-              </g>
-            );
-          })}
+              );
+            })}
+          </g>
 
-          {/* X 轴刻度线与文字共享同一坐标，像系统电量图一样严格对齐。 */}
-          {xTicks.map((tick) => {
-            const plotBottom = padding.top + chartHeight;
-            const extensionBottom = range === '10d'
-              ? (tick.major ? height - 2 : plotBottom + 13)
-              : plotBottom + 15;
-            return (
-              <g key={`${tick.key}-line`}>
+          {/* 横轴稍后整体浮现，让视线先读懂绘图区的高度变化。 */}
+          <g className={`battery-chart-x-axis range-${range}`}>
+            {xTicks.map((tick) => {
+              const plotBottom = padding.top + chartHeight;
+              const extensionBottom = range === '10d'
+                ? (tick.major ? height - 2 : plotBottom + 13)
+                : plotBottom + 15;
+              return (
                 <line
-                  className={`battery-chart-x-grid${tick.major ? ' major' : ''}`}
-                  x1={tick.lineX}
-                  y1={padding.top}
-                  x2={tick.lineX}
-                  y2={plotBottom}
-                  clipPath="url(#battery-chart-plot-clip)"
-                />
-                <line
+                  key={`${tick.key}-extension`}
                   className={`battery-chart-x-extension${tick.major ? ' major' : ''}`}
                   x1={tick.lineX}
                   y1={plotBottom}
                   x2={tick.lineX}
                   y2={extensionBottom}
                 />
-              </g>
-            );
-          })}
+              );
+            })}
 
-          {/* 电量柱 */}
-          {points.map((point, i) => {
-            const slotX = padding.left + i * slotWidth;
-            const x = slotX + (slotWidth - visualBarWidth) / 2;
-            const hasData = point.percentage !== undefined;
-            const pct = point.percentage ?? 0;
-            const barH = hasData ? (pct / 100) * chartHeight : 0;
-            const renderedBarH = hasData ? Math.max(barH, 3) : 2;
-            const y = padding.top + chartHeight - renderedBarH;
-            const isCharging = point.charging ?? false;
-            const isLow = point.lowBattery ?? false;
-            const isEmpty = !hasData;
-            const fillId = isCharging ? 'battery-bar-charging' : isLow ? 'battery-bar-low' : 'battery-bar-normal';
-
-            let barClass = 'battery-chart-bar';
-            if (isEmpty) barClass += ' battery-chart-empty';
-            else if (isCharging) barClass += ' battery-chart-charging';
-            else if (isLow) barClass += ' battery-chart-low';
-
-            // 顶部克制圆角、底部平直：用 path 绘制仅上方两角圆角的柱体
-            const cornerR = Math.min(visualBarWidth / 2, renderedBarH / 2, 4.5);
-            const barPath = `M ${x},${y + renderedBarH} L ${x},${y + cornerR} Q ${x},${y} ${x + cornerR},${y} L ${x + visualBarWidth - cornerR},${y} Q ${x + visualBarWidth},${y} ${x + visualBarWidth},${y + cornerR} L ${x + visualBarWidth},${y + renderedBarH} Z`;
-
-            return (
-              <g
-                key={`${range}-${point.bucketStart}-${i}`}
-                onMouseEnter={() => setHoverIndex(i)}
-                onMouseLeave={() => setHoverIndex(null)}
-                onPointerEnter={() => setHoverIndex(i)}
-                onPointerLeave={() => setHoverIndex(null)}
-                onFocus={() => setFocusIndex(i)}
-                onBlur={() => setFocusIndex(null)}
-                tabIndex={0}
-                role="button"
-                aria-label={`${point.bucketLabel}: ${hasData ? `${pct}%` : t('batteryUsage.notEnoughData')}`}
-              >
-                <rect
-                  className="battery-chart-hit-area"
-                  x={slotX}
-                  y={padding.top}
-                  width={slotWidth}
-                  height={chartHeight}
-                  fill="transparent"
-                />
-                <path
-                  d={barPath}
-                  className={barClass}
-                  fill={isEmpty ? undefined : `url(#${fillId})`}
-                  style={{ '--bar-delay': `${Math.min(i, 12) * 12}ms` } as CSSProperties}
-                />
-              </g>
-            );
-          })}
-
-          {xTicks.map((tick, index) => (
-            <g key={`${tick.key}-label`} className="battery-chart-x-tick">
-              <text
-                className="battery-chart-x-label"
-                x={tick.labelX}
-                y={padding.top + chartHeight + 13}
-                textAnchor={range === '24h' && index === 0 && tick.labelX - padding.left < 14 ? 'start' : 'middle'}
-              >
-                {tick.label}
-              </text>
-              {tick.dateLabel && (
+            {xTicks.map((tick, index) => (
+              <g key={`${tick.key}-label`} className="battery-chart-x-tick">
                 <text
-                  className="battery-chart-x-date"
-                  x={tick.lineX + 4}
-                  y={padding.top + chartHeight + 26}
-                  textAnchor="start"
+                  className="battery-chart-x-label"
+                  x={tick.labelX}
+                  y={padding.top + chartHeight + 13}
+                  textAnchor={range === '24h' && index === 0 && tick.labelX - padding.left < 14 ? 'start' : 'middle'}
                 >
-                  {tick.dateLabel}
+                  {tick.label}
                 </text>
-              )}
-            </g>
-          ))}
+                {tick.dateLabel && (
+                  <text
+                    className="battery-chart-x-date"
+                    x={tick.lineX + 4}
+                    y={padding.top + chartHeight + 26}
+                    textAnchor="start"
+                  >
+                    {tick.dateLabel}
+                  </text>
+                )}
+              </g>
+            ))}
+          </g>
         </svg>
 
         {/* Tooltip */}

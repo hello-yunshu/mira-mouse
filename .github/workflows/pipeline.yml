@@ -289,13 +289,13 @@ jobs:
           MAC_URL="$BASE/$(basename "$MAC_FILE")"
           WIN_URL="$BASE/$(basename "$WIN_FILE")"
           LINUX_URL="$BASE/$(basename "$LINUX_FILE")"
-          # 加速策略（endpoints 优先级见 tauri.conf.json）：
-          # 1. latest.json：URL 走 github.hey.run（用户专属加速域名，国内外都快，实测 ~3.4MB/s）
-          # 2. latest-cn.json：URL 走 gh-proxy.com 公共代理（hey.run 不可用时的国内备选）
+          # 检查更新的元数据入口按 gh-proxy.com → direct → hey.run 尝试
+          # （见 tauri.conf.json）；下载安装包则优先使用 latest.json 中的
+          # github.hey.run URL。latest-cn.json 保留为 gh-proxy.com 下载兜底清单。
           HEY_RUN_BASE="${BASE/github.com/github.hey.run}"
-          MAC_URL_CN="${HEY_RUN_BASE}/$(basename "$MAC_FILE")"
-          WIN_URL_CN="${HEY_RUN_BASE}/$(basename "$WIN_FILE")"
-          LINUX_URL_CN="${HEY_RUN_BASE}/$(basename "$LINUX_FILE")"
+          MAC_URL_HEY="${HEY_RUN_BASE}/$(basename "$MAC_FILE")"
+          WIN_URL_HEY="${HEY_RUN_BASE}/$(basename "$WIN_FILE")"
+          LINUX_URL_HEY="${HEY_RUN_BASE}/$(basename "$LINUX_FILE")"
           CN_PROXY="https://gh-proxy.com/"
           cat > latest.json <<EOF
           {
@@ -303,10 +303,10 @@ jobs:
             "notes": "Mira $VERSION. See release notes for details.",
             "pub_date": "$PUB_DATE",
             "platforms": {
-              "darwin-aarch64": { "signature": "$MAC_SIG", "url": "$MAC_URL_CN" },
-              "darwin-x86_64": { "signature": "$MAC_SIG", "url": "$MAC_URL_CN" },
-              "linux-x86_64": { "signature": "$LINUX_SIG", "url": "$LINUX_URL_CN" },
-              "windows-x86_64": { "signature": "$WIN_SIG", "url": "$WIN_URL_CN" }
+              "darwin-aarch64": { "signature": "$MAC_SIG", "url": "$MAC_URL_HEY" },
+              "darwin-x86_64": { "signature": "$MAC_SIG", "url": "$MAC_URL_HEY" },
+              "linux-x86_64": { "signature": "$LINUX_SIG", "url": "$LINUX_URL_HEY" },
+              "windows-x86_64": { "signature": "$WIN_SIG", "url": "$WIN_URL_HEY" }
             }
           }
           EOF
