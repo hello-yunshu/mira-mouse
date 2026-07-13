@@ -2580,6 +2580,44 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   transition: opacity .12s ease, filter .12s ease;
   filter: drop-shadow(0 1px 2px rgb(30 42 56 / 10%));
 }
+.battery-chart-bar.battery-chart-after-now {
+  opacity: .28;
+  filter: none;
+  animation: mira-bar-muted-finish 500ms var(--motion-ease-out) var(--bar-delay, 0ms) backwards;
+}
+.battery-chart-bar.battery-chart-after-now:hover {
+  opacity: .46;
+}
+.battery-chart-bar.battery-chart-current:not(.battery-chart-empty) {
+  filter: drop-shadow(0 2px 5px color-mix(in oklch, var(--accent), transparent 66%));
+}
+.battery-chart-average {
+  pointer-events: none;
+  transform-box: view-box;
+  transform-origin: 0 0;
+  opacity: .78;
+  transition:
+    transform 460ms cubic-bezier(.22, .82, .28, 1),
+    opacity var(--motion-base) ease;
+}
+.battery-chart-average-line {
+  stroke: color-mix(in srgb, var(--muted), var(--text) 28%);
+  stroke-width: 2.2;
+  stroke-opacity: .34;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+.battery-chart-average-label {
+  fill: color-mix(in srgb, var(--muted), var(--text) 18%);
+  stroke: var(--panel);
+  stroke-width: 2.5px;
+  paint-order: stroke fill;
+  opacity: .68;
+  font-size: 10.5px;
+  font-weight: 720;
+  letter-spacing: .01em;
+  animation: mira-average-label-settle 360ms var(--motion-ease-out) backwards;
+}
 .battery-chart-hit-area {
   cursor: default;
 }
@@ -2609,6 +2647,34 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
 }
 .battery-chart-bar:hover { opacity: .9; filter: drop-shadow(0 2px 5px rgb(30 42 56 / 15%)); }
 .battery-chart-empty { fill: var(--surface-group-border); }
+.battery-chart-legend {
+  position: absolute;
+  left: 28px;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 16px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 650;
+  animation: mira-battery-x-contract var(--motion-slow) var(--motion-ease-out) 70ms backwards;
+}
+.battery-chart-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.battery-chart-legend i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--muted), var(--text) 24%);
+}
+.battery-chart-legend i.all-day {
+  opacity: .28;
+}
 
 /* 图表 tooltip */
 .battery-chart-tooltip {
@@ -2922,14 +2988,33 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   to { opacity: 1; transform: scaleY(1); }
 }
 
-/* 24h 的绘图区高 120，10d 为日期标签收成 108；切换时从旧高度过渡到新高度。 */
+@keyframes mira-bar-muted-finish {
+  0% {
+    opacity: .34;
+    filter: drop-shadow(0 1px 2px rgb(30 42 56 / 10%));
+    transform: scaleY(.3);
+  }
+  60% {
+    opacity: 1;
+    filter: drop-shadow(0 1px 2px rgb(30 42 56 / 10%));
+    transform: scaleY(1);
+  }
+  100% { opacity: .28; filter: none; transform: scaleY(1); }
+}
+
+@keyframes mira-average-label-settle {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: .68; transform: translateY(0); }
+}
+
+/* 固定总画布内，24h 绘图区高 136，10d 为日期 + 图例收成 108。 */
 @keyframes mira-battery-chart-expand {
-  from { opacity: .76; filter: saturate(.9); transform: translateY(2px) scaleY(.9); }
+  from { opacity: .76; filter: saturate(.9); transform: translateY(2px) scaleY(.794118); }
   to { opacity: 1; filter: saturate(1); transform: translateY(0) scaleY(1); }
 }
 
 @keyframes mira-battery-chart-contract {
-  from { opacity: .76; filter: saturate(.9); transform: translateY(-1px) scaleY(1.111111); }
+  from { opacity: .76; filter: saturate(.9); transform: translateY(-1px) scaleY(1.259259); }
   to { opacity: 1; filter: saturate(1); transform: translateY(0) scaleY(1); }
 }
 
@@ -3255,6 +3340,8 @@ input[type="color"] {
   .battery-chart-y-label,
   .battery-chart-x-axis,
   .battery-chart-bar,
+  .battery-chart-average-label,
+  .battery-chart-legend,
   .battery-chart-tooltip,
   .battery-usage-close-icon svg,
   .battery-status-device > .battery-level-icon,
@@ -3264,5 +3351,8 @@ input[type="color"] {
   .battery-insight-card .insight-icon,
   .battery-history-actions .action-btn svg {
     animation: none !important;
+  }
+  .battery-chart-average {
+    transition: none !important;
   }
 }
