@@ -544,7 +544,7 @@
     "deviceComparison": "Device comparison",
     "deviceComparisonDrain": "{{fastest}} is draining faster than {{slowest}} (about {{fastestRate}}%/h vs {{slowestRate}}%/h).",
     "averageDailyDrain": "Daily drain",
-    "averageDailyDrainMsg": "Averages {{percent}}% drain per day.",
+    "averageDailyDrainMsg": "Estimated average drain is about {{percent}}% per day.",
     "chargingCount": "Charge cycles",
     "chargingCountMsg": "Charged {{count}} times in this period.",
     "lowestLevel": "Lowest level",
