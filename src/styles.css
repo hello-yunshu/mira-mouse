@@ -56,6 +56,11 @@
   --motion-press-scale: .985;
   color-scheme: light dark;
 }
+@property --device-color {
+  syntax: "<color>";
+  inherits: false;
+  initial-value: #b87ab0;
+}
 :root[data-theme="dark"] {
   --text: #f2eff6;
   color: var(--text);
@@ -871,6 +876,10 @@ body:has(.platform-fallback:not(.web-preview)) {
   justify-self: center;
   isolation: isolate;
   overflow: visible;
+  transition:
+    --device-color var(--motion-deliberate) var(--motion-ease-standard),
+    filter var(--motion-slow) var(--motion-ease-standard),
+    transform var(--motion-slow) var(--motion-ease-out);
 }
 .aura-cloud {
   position: absolute;
@@ -1067,10 +1076,7 @@ body:has(.platform-fallback:not(.web-preview)) {
 .dpi-scale {
   position: relative;
   width: 100%;
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 4px;
+  min-height: 42px;
   margin: 18px 0 22px;
   padding: 0 12px;
 }
@@ -1083,14 +1089,55 @@ body:has(.platform-fallback:not(.web-preview)) {
   height: 1px;
   background: rgb(113 107 128 / 23%);
 }
-.dpi-stage-item {
+.dpi-stage-placeholders,
+.dpi-stage-values {
   position: relative;
   z-index: 1;
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 4px;
+  transition: opacity var(--motion-fast) ease;
+}
+.dpi-stage-placeholders {
+  position: absolute;
+  inset: 0 12px auto;
+  width: auto;
+  height: 42px;
+  pointer-events: none;
+}
+.dpi-scale.is-ready .dpi-stage-placeholders,
+.dpi-scale.is-pending .dpi-stage-values { opacity: 0; }
+.dpi-scale.is-pending .dpi-stage-placeholders,
+.dpi-scale.is-ready .dpi-stage-values { opacity: 1; }
+.dpi-stage-item {
+  position: relative;
   flex: 1 1 0;
   min-width: 0;
   display: grid;
   justify-items: center;
   gap: 6px;
+}
+.dpi-stage-placeholder {
+  position: relative;
+  z-index: 1;
+  flex: 1 1 0;
+  height: 42px;
+}
+.dpi-stage-placeholder::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 50%;
+  width: 20px;
+  height: 20px;
+  border: 4px solid rgb(255 255 255 / 32%);
+  border-radius: 50%;
+  background: color-mix(in oklch, var(--accent), var(--surface-group-bg) 74%);
+  box-shadow: 0 0 0 1px color-mix(in oklch, var(--accent), transparent 82%);
+  transform: translateX(-50%);
+  animation: mira-placeholder-breathe 1.8s ease-in-out infinite alternate;
 }
 .dpi-stage-dot {
   width: 24px;
@@ -1283,7 +1330,7 @@ body:has(.platform-fallback:not(.web-preview)) {
   border-radius: 12px;
   background: var(--surface-group-bg);
 }
-.capability-summary span {
+.capability-summary > span {
   min-width: 0;
   padding: 8px 6px;
   display: flex;
@@ -1293,11 +1340,11 @@ body:has(.platform-fallback:not(.web-preview)) {
   color: var(--muted);
   font-size: 9px;
   text-align: center;
+  border: 1px solid var(--surface-data-border);
   border-radius: 10px;
   background: var(--surface-data-bg);
-  border: 1px solid var(--surface-data-border);
 }
-.capability-summary strong { color: inherit; font-size: 11px; }
+.capability-summary > span > strong { color: inherit; font-size: 11px; }
 .lighting-swatch {
   --light-color: var(--accent);
   width: 100%;
@@ -1535,8 +1582,10 @@ body:has(.platform-fallback:not(.web-preview)) {
 .setting-hint { max-width: 100%; margin: 4px 0 0; color: var(--muted); font-size: 11px; line-height: 1.45; }
 
 .status-strip {
+  --status-card-bg: color-mix(in srgb, var(--surface-bg), transparent 28%);
+  --status-card-border: color-mix(in srgb, var(--surface-border), transparent 20%);
   min-height: 64px;
-  padding: 0 10px;
+  padding: 0 20px;
   margin-bottom: 10px;
   display: grid;
   gap: 6px;
@@ -1558,20 +1607,20 @@ body:has(.platform-fallback:not(.web-preview)) {
   display: flex;
   align-items: center;
   gap: 7px;
-  border: 1px solid var(--surface-border);
+  border: 1px solid var(--status-card-border);
   border-radius: 12px;
   color: var(--muted);
-  background: var(--surface-bg);
-  -webkit-backdrop-filter: none;
-  backdrop-filter: none;
-  box-shadow: none;
+  background: var(--status-card-bg);
+  -webkit-backdrop-filter: blur(12px) saturate(122%);
+  backdrop-filter: blur(12px) saturate(122%);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--surface-highlight), transparent 54%);
   text-align: left;
   transition: transform .12s ease, background .2s ease, box-shadow .2s ease, color .2s ease;
 }
 .status-strip > button:hover:not(:disabled) {
   color: inherit;
-  background: color-mix(in oklch, var(--panel), color-mix(in oklch, var(--accent), transparent 86%) 90%);
-  box-shadow: 0 10px 30px color-mix(in oklch, var(--accent), transparent 80%);
+  background: color-mix(in oklch, var(--status-card-bg), color-mix(in oklch, var(--accent), transparent 88%) 92%);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--surface-highlight), transparent 44%), 0 8px 24px color-mix(in oklch, var(--accent), transparent 86%);
   transform: translateY(-1px);
 }
 .status-strip > button:active:not(:disabled) { transform: scale(.98); }
@@ -1816,7 +1865,7 @@ h2 { margin: 2px 0 0; letter-spacing: -.02em; font-size: 16px; }
 .settings-error { margin: -4px 0 8px; padding: 7px 10px; border-radius: 9px; color: #9b3745; background: rgb(190 75 90 / 10%); font-size: 11px; }
 .settings-section { padding: 12px 16px; box-shadow: none; -webkit-backdrop-filter: none; backdrop-filter: none; }
 .settings-section h2 { font-size: 15px; }
-.settings-title-with-badge {
+.settings-title-group {
   display: inline-flex;
   align-items: center;
   flex-wrap: wrap;
@@ -1829,12 +1878,13 @@ h2 { margin: 2px 0 0; letter-spacing: -.02em; font-size: 16px; }
   align-items: center;
   min-height: 18px;
   padding: 2px 7px;
-  border: 1px solid color-mix(in srgb, var(--accent), transparent 64%);
+  border: 1px solid color-mix(in srgb, var(--accent), var(--text) 18%);
   border-radius: 999px;
-  background: color-mix(in oklch, var(--accent), transparent 88%);
-  color: var(--accent);
+  background: color-mix(in oklch, var(--accent), transparent 80%);
+  color: color-mix(in oklch, var(--accent), var(--text) 38%);
   font-size: 9.5px;
-  font-weight: 760;
+  font-weight: 720;
+  letter-spacing: .01em;
   line-height: 1;
   white-space: nowrap;
 }
@@ -2289,13 +2339,16 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   }
 }
 
-.battery-status-strip {
+.battery-status-strip-shell {
   position: relative;
+  margin-bottom: 6px;
+}
+.battery-status-strip {
+  width: 100%;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 10px;
-  margin-bottom: 6px;
   padding: 7px 9px;
   border: 1px solid color-mix(in srgb, var(--surface-data-border), var(--accent) 18%);
   border-radius: 14px;
@@ -2303,9 +2356,16 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
     linear-gradient(135deg, color-mix(in srgb, var(--surface-data-bg), var(--accent) 10%), transparent 145%),
     var(--surface-data-bg);
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 24%), 0 10px 24px rgb(47 39 60 / 8%);
+  color: inherit;
+  font: inherit;
+  text-align: left;
 }
 .battery-status-strip.switchable {
   cursor: pointer;
+}
+.battery-status-strip:disabled {
+  opacity: 1;
+  cursor: default;
 }
 .battery-status-strip.switchable:focus-visible {
   outline: 2px solid var(--accent);
@@ -2617,6 +2677,36 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   font-weight: 720;
   letter-spacing: .01em;
   animation: mira-average-label-settle 360ms var(--motion-ease-out) backwards;
+}
+:root[data-theme="dark"] .battery-chart-average {
+  opacity: .94;
+}
+:root[data-theme="dark"] .battery-chart-average-line {
+  stroke: color-mix(in srgb, var(--text), var(--accent) 8%);
+  stroke-width: 2.4;
+  stroke-opacity: .62;
+}
+:root[data-theme="dark"] .battery-chart-average-label {
+  fill: color-mix(in srgb, var(--text), var(--accent) 10%);
+  stroke: rgb(24 21 29 / 92%);
+  stroke-width: 3.2px;
+  opacity: .96;
+}
+@media (prefers-color-scheme: dark) {
+  :root[data-theme="system"] .battery-chart-average {
+    opacity: .94;
+  }
+  :root[data-theme="system"] .battery-chart-average-line {
+    stroke: color-mix(in srgb, var(--text), var(--accent) 8%);
+    stroke-width: 2.4;
+    stroke-opacity: .62;
+  }
+  :root[data-theme="system"] .battery-chart-average-label {
+    fill: color-mix(in srgb, var(--text), var(--accent) 10%);
+    stroke: rgb(24 21 29 / 92%);
+    stroke-width: 3.2px;
+    opacity: .96;
+  }
 }
 .battery-chart-hit-area {
   cursor: default;
@@ -2983,6 +3073,11 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   to { opacity: 1; transform: scale(1); }
 }
 
+@keyframes mira-placeholder-breathe {
+  from { opacity: .42; }
+  to { opacity: .58; }
+}
+
 @keyframes mira-bar-rise {
   from { opacity: .34; transform: scaleY(.3); }
   to { opacity: 1; transform: scaleY(1); }
@@ -3038,8 +3133,13 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   to { opacity: 1; transform: translateY(0); }
 }
 
-/* Settings/About may ease into place. The primary dashboard and empty state
-   render immediately so opening the main window never withholds UI. */
+/* Primary content is visible from its first frame and only settles as one
+   surface. Data arrival is handled independently below. */
+.dashboard,
+.empty {
+  animation: mira-page-enter var(--motion-base) var(--motion-ease-out) backwards;
+}
+
 .settings-page,
 .about-page {
   animation: mira-page-enter var(--motion-slow) var(--motion-ease-out) backwards;
@@ -3050,6 +3150,19 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   position: relative;
   z-index: 2;
 }
+
+.live-value {
+  display: inline-grid;
+  vertical-align: baseline;
+}
+.live-value-current,
+.live-value-next {
+  grid-area: 1 / 1;
+  transition: opacity var(--motion-fast) ease, transform var(--motion-fast) var(--motion-ease-out);
+}
+.live-value-next { opacity: 0; transform: translateY(1px); }
+.live-value.is-transitioning .live-value-current { opacity: 0; transform: translateY(-1px); }
+.live-value.is-transitioning .live-value-next { opacity: 1; transform: translateY(0); }
 
 .settings-page > header,
 .settings-page > .sub-nav,
@@ -3351,6 +3464,20 @@ input[type="color"] {
   .battery-insight-card .insight-icon,
   .battery-history-actions .action-btn svg {
     animation: none !important;
+  }
+  .dashboard > .device-hero,
+  .dashboard > .control-tabs,
+  .dashboard > .control-stage,
+  .dashboard > .status-strip,
+  .dashboard > .dashboard-meta,
+  .dpi-stage-placeholder::before {
+    animation: none !important;
+  }
+  .live-value-current,
+  .live-value-next,
+  .dpi-stage-placeholders,
+  .dpi-stage-values {
+    transition: none !important;
   }
   .battery-chart-average {
     transition: none !important;

@@ -3,8 +3,15 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeMap, fs, io::Cursor, path::PathBuf, time::Duration};
-use zip::ZipArchive;
+use std::{
+    collections::BTreeMap,
+    env, fs,
+    io::{Cursor, Write},
+    path::{Path, PathBuf},
+    process::Command as StdCommand,
+    time::Duration,
+};
+use zip::{write::SimpleFileOptions, ZipArchive, ZipWriter};
 
 const MAX_PLUGIN_BYTES: u64 = 32 * 1024 * 1024;
 
@@ -22,6 +29,38 @@ enum Command {
     Plugin {
         #[arg(trailing_var_arg = true)]
         args: Vec<String>,
+    },
+    /// 把 `mira-runtime` 二进制按当前/指定 target 编译并拷到 `src-tauri/binaries/`，
+    /// 供 Tauri `externalBin` sidecar 打包使用。文件名需带 target-triple 后缀。
+    DistSidecar {
+        /// 编译目标，缺省为 host target。
+        #[arg(long)]
+        target: Option<String>,
+        /// 使用 release profile（默认 true；传 --no-release 走 debug）。
+        #[arg(long, default_value_t = true)]
+        release: bool,
+    },
+    /// Build one platform-specific local-AI update bundle from a runtime and
+    /// an already signed model pack.
+    LocalAiBundle {
+        #[arg(long)]
+        runtime: PathBuf,
+        #[arg(long)]
+        model: PathBuf,
+        #[arg(long)]
+        target_os: String,
+        #[arg(long)]
+        target_arch: String,
+        #[arg(long)]
+        bundle_version: String,
+        #[arg(long)]
+        runtime_version: String,
+        #[arg(long, default_value = "mira-battery-model")]
+        model_pack_id: String,
+        #[arg(long)]
+        model_pack_version: String,
+        #[arg(long)]
+        output: PathBuf,
     },
 }
 #[derive(Subcommand)]
@@ -105,7 +144,7 @@ fn main() -> Result<()> {
                 },
         } => update_lock(&repository, &release_tag),
         Command::Plugin { args } => {
-            let status = std::process::Command::new("cargo")
+            let status = StdCommand::new("cargo")
                 .args(["run", "-p", "mira-plugin-cli", "--"])
                 .args(args)
                 .status()?;
@@ -114,7 +153,110 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        Command::DistSidecar { target, release } => dist_sidecar(target.as_deref(), release),
+        Command::LocalAiBundle {
+            runtime,
+            model,
+            target_os,
+            target_arch,
+            bundle_version,
+            runtime_version,
+            model_pack_id,
+            model_pack_version,
+            output,
+        } => build_local_ai_bundle(
+            &runtime,
+            &model,
+            &target_os,
+            &target_arch,
+            &bundle_version,
+            &runtime_version,
+            &model_pack_id,
+            &model_pack_version,
+            &output,
+        ),
     }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalAiBundleManifest {
+    schema_version: u32,
+    bundle_version: String,
+    runtime_version: String,
+    model_pack_id: String,
+    model_pack_version: String,
+    runtimes: Vec<LocalAiRuntimeEntry>,
+    model_sha256: String,
+    model_filename: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalAiRuntimeEntry {
+    target_os: String,
+    target_arch: String,
+    filename: String,
+    sha256: String,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_local_ai_bundle(
+    runtime: &Path,
+    model: &Path,
+    target_os: &str,
+    target_arch: &str,
+    bundle_version: &str,
+    runtime_version: &str,
+    model_pack_id: &str,
+    model_pack_version: &str,
+    output: &Path,
+) -> Result<()> {
+    let runtime_bytes = fs::read(runtime)
+        .with_context(|| format!("read local AI runtime {}", runtime.display()))?;
+    let model_bytes =
+        fs::read(model).with_context(|| format!("read model pack {}", model.display()))?;
+    if runtime_bytes.is_empty() || model_bytes.is_empty() {
+        bail!("local AI runtime and model pack must both be non-empty");
+    }
+    let runtime_filename = if target_os == "windows" {
+        "mira-runtime.exe"
+    } else {
+        "mira-runtime"
+    };
+    let manifest = LocalAiBundleManifest {
+        schema_version: 1,
+        bundle_version: bundle_version.to_string(),
+        runtime_version: runtime_version.to_string(),
+        model_pack_id: model_pack_id.to_string(),
+        model_pack_version: model_pack_version.to_string(),
+        runtimes: vec![LocalAiRuntimeEntry {
+            target_os: target_os.to_string(),
+            target_arch: target_arch.to_string(),
+            filename: runtime_filename.to_string(),
+            sha256: sha256_hex(&runtime_bytes),
+        }],
+        model_sha256: sha256_hex(&model_bytes),
+        model_filename: "model.rillpack".into(),
+    };
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let file = fs::File::create(output)
+        .with_context(|| format!("create local AI bundle {}", output.display()))?;
+    let mut archive = ZipWriter::new(file);
+    let options = SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated)
+        .unix_permissions(0o644);
+    archive.start_file("manifest.json", options)?;
+    archive.write_all(&serde_json::to_vec_pretty(&manifest)?)?;
+    archive.start_file(runtime_filename, options)?;
+    archive.write_all(&runtime_bytes)?;
+    archive.start_file("model.rillpack", options)?;
+    archive.write_all(&model_bytes)?;
+    archive.finish()?;
+    println!("local-ai-bundle: {}", output.display());
+    Ok(())
 }
 
 fn sync(locked: bool, offline: bool) -> Result<()> {
@@ -345,6 +487,16 @@ fn write_lock(lock: &Lock) -> Result<()> {
 fn write_tauri_resources(resources: &[String]) -> Result<()> {
     let path = "src-tauri/tauri.conf.json";
     let text = fs::read_to_string(path)?;
+    let config: serde_json::Value = serde_json::from_str(&text)?;
+    let existing_resources = config
+        .get("bundle")
+        .and_then(|bundle| bundle.get("resources"))
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str);
+    let existing_resources = existing_resources.map(str::to_string).collect::<Vec<_>>();
+    let merged_resources = merge_bundle_resources(resources, &existing_resources);
     let key = "    \"resources\": [";
     let start = text
         .find(key)
@@ -356,8 +508,8 @@ fn write_tauri_resources(resources: &[String]) -> Result<()> {
         .context("tauri.conf.json resources array is not formatted as expected")?;
 
     let mut replacement = String::from(key);
-    for (index, resource) in resources.iter().enumerate() {
-        let comma = if index + 1 == resources.len() {
+    for (index, resource) in merged_resources.iter().enumerate() {
+        let comma = if index + 1 == merged_resources.len() {
             ""
         } else {
             ","
@@ -376,6 +528,18 @@ fn write_tauri_resources(resources: &[String]) -> Result<()> {
     updated.push_str(&text[body_end..]);
     fs::write(path, updated)?;
     Ok(())
+}
+
+fn merge_bundle_resources(plugin_resources: &[String], existing: &[String]) -> Vec<String> {
+    let mut merged = plugin_resources.to_vec();
+    for resource in existing {
+        // Plugin entries are authoritative from plugins.lock.json. Preserve every
+        // other packaged resource, including the signed local-AI model pack.
+        if !resource.starts_with("resources/plugins/") && !merged.contains(resource) {
+            merged.push(resource.clone());
+        }
+    }
+    merged
 }
 
 fn download_published_plugins(repository: &str, release_tag: &str) -> Result<Vec<PublishedPlugin>> {
@@ -461,4 +625,106 @@ fn encode_path_segment(value: &str) -> String {
         }
     }
     encoded
+}
+
+/// 编译 `mira-runtime` 二进制并按 Tauri sidecar 约定拷到 `src-tauri/binaries/`。
+/// Tauri `externalBin` 要求文件名形如 `mira-runtime-<target-triple>[.exe]`，
+/// 其中 target-triple 必须与构建 Tauri 应用时使用的 `--target` 一致。
+fn dist_sidecar(target: Option<&str>, release: bool) -> Result<()> {
+    let target_triple = match target {
+        Some(t) => t.to_string(),
+        None => host_target_triple()?,
+    };
+    let is_windows = target_triple.contains("windows");
+    let binary_name = if is_windows {
+        format!("mira-runtime-{target_triple}.exe")
+    } else {
+        format!("mira-runtime-{target_triple}")
+    };
+
+    let manifest_dir = env::var("CARGO_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .or_else(|_| env::current_dir())?;
+    let workspace_root = manifest_dir
+        .ancestors()
+        .nth(1)
+        .context("xtask must be run from its own crate dir")?
+        .to_path_buf();
+    let dest_dir = workspace_root.join("src-tauri/binaries");
+    fs::create_dir_all(&dest_dir)?;
+
+    let mut cargo = StdCommand::new("cargo");
+    cargo
+        .args(["build", "-p", "mira-runtime"])
+        .arg("--target")
+        .arg(&target_triple);
+    if release {
+        cargo.arg("--release");
+    }
+    let status = cargo
+        .status()
+        .context("invoke cargo build for mira-runtime")?;
+    if !status.success() {
+        bail!("cargo build -p mira-runtime failed");
+    }
+
+    let profile = if release { "release" } else { "debug" };
+    let src = workspace_root
+        .join("target")
+        .join(&target_triple)
+        .join(profile)
+        .join(if is_windows {
+            "mira-runtime.exe"
+        } else {
+            "mira-runtime"
+        });
+    if !src.is_file() {
+        bail!("expected mira-runtime binary at {}", src.display());
+    }
+    let dest = dest_dir.join(&binary_name);
+    fs::copy(&src, &dest)
+        .with_context(|| format!("copy {} -> {}", src.display(), dest.display()))?;
+    println!("dist-sidecar: {}", dest.display());
+    Ok(())
+}
+
+/// 通过 `rustc -vV` 解析 host target triple。
+fn host_target_triple() -> Result<String> {
+    let output = StdCommand::new("rustc")
+        .args(["-vV"])
+        .output()
+        .context("run rustc -vV")?;
+    if !output.status.success() {
+        bail!("rustc -vV failed");
+    }
+    let text = String::from_utf8(output.stdout).context("rustc -vV output")?;
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("host: ") {
+            return Ok(rest.trim().to_string());
+        }
+    }
+    bail!("could not parse host target triple from rustc -vV output");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::merge_bundle_resources;
+
+    #[test]
+    fn plugin_lock_updates_preserve_non_plugin_bundle_resources() {
+        let merged = merge_bundle_resources(
+            &["resources/plugins/new.mira-plugin".into()],
+            &[
+                "resources/plugins/old.mira-plugin".into(),
+                "resources/local-ai/model.rillpack".into(),
+            ],
+        );
+        assert_eq!(
+            merged,
+            vec![
+                "resources/plugins/new.mira-plugin",
+                "resources/local-ai/model.rillpack"
+            ]
+        );
+    }
 }

@@ -4,6 +4,7 @@
 /outputs/
 /target/
 /src-tauri/resources/plugins/
+/src-tauri/binaries/
 /AMasterDriver_v1.0.6_unpacked_reverse_bundle/
 *.key
 *.pem

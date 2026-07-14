@@ -243,6 +243,27 @@
       "privacy": "隐私",
       "about": "关于 Mira"
     },
+    "localAi": {
+      "title": "本地 AI 分析",
+      "toggle": "本地 AI 分析",
+      "hint": "在设备本地运行自适应分析；关闭后，其他页面不再显示 AI 标识，也不会运行学习模型。",
+      "enabled": "已启用",
+      "disabled": "已关闭",
+      "bundle": "本地 AI 引擎",
+      "checkUpdates": "检查更新",
+      "checking": "正在检查…",
+      "runtimeReady": "引擎可用",
+      "runtimeUnavailable": "本地 AI 引擎暂不可用；电量页仍使用原有算法。",
+      "notInstalled": "未安装",
+      "signedBundle": "签名 bundle",
+      "updatable": "可更新至 v{{version}}",
+      "updating": "更新中…",
+      "updateBundle": "更新",
+      "rollbackBundle": "回退",
+      "status": {
+        "runtimeOrModelNotInstalled": "Runtime 或模型尚未安装；电量页仍使用原有算法。"
+      }
+    },
     "theme": {
       "label": "主题模式",
       "hint": "跟随系统自动切换浅色/深色模式",
@@ -266,9 +287,11 @@
     "trayIconColor": {
       "label": "托盘图标颜色",
       "hint": "白色适配深色菜单栏，黑色适配浅色，跟随系统外观自动切换",
+      "hintMac": "根据菜单栏的实际背景自动切换：深色背景用白色轮廓，浅色背景用黑色轮廓",
       "white": "白色",
       "black": "黑色",
-      "auto": "跟随系统外观"
+      "auto": "跟随系统外观",
+      "autoMac": "跟随菜单栏背景"
     },
     "receiverBattery": {
       "label": "标题附带接收器电量",
@@ -452,6 +475,9 @@
     "autostartFailed": "开机启动设置失败",
     "checkPluginUpdateFailed": "检查插件更新失败",
     "installPluginUpdateFailed": "插件更新安装失败",
+    "checkLocalAiUpdateFailed": "检查本地 AI 更新失败",
+    "installLocalAiUpdateFailed": "本地 AI 更新安装失败",
+    "rollbackLocalAiFailed": "本地 AI 版本回退失败",
     "selectDeviceFailed": "切换鼠标失败",
     "loadAboutFailed": "加载关于信息失败",
     "openExternalFailed": "打开网页失败",
@@ -494,6 +520,8 @@
     "aiBadgeShort": "本地 AI",
     "insightSectionTitle": "本地 AI 洞察",
     "insightSectionHint": "由趋势建模、异常掉电检测与充电习惯推断生成",
+    "insightSectionTitleBasic": "用电洞察",
+    "insightSectionHintBasic": "根据本地电量历史生成趋势、耗电与充电习惯摘要",
     "open": "电量使用情况",
     "viewTrend": "查看用电趋势",
     "switchDevice": "切换设备",
@@ -570,7 +598,9 @@
     "consistencyFaster": "掉电速度比之前快",
     "consistencySlower": "掉电速度比之前慢",
     "recordEnabled": "记录电量使用情况",
-    "recordEnabledHint": "用于生成 24 小时和 10 天电量图表，并在本地进行 AI 原理分析。",
+    "recordEnabledHint": "用于生成 24 小时和 10 天电量图表与本地用电摘要。",
+    "aiAnalysisToggle": "开启 AI 分析",
+    "aiAnalysisToggleHint": "仅控制电量使用功能；开启时会同时启用本地 AI 总开关和电量历史，模型只在优于旧预测后接管续航估算。",
     "retentionDays": "保留天数",
     "retentionDaysHint": "超过该天数的记录会自动清理。",
     "clearHistory": "清除电量历史",

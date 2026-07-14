@@ -1,0 +1,16 @@
+{
+  "featureCount": 9,
+  "learningRate": 0.03,
+  "l2": 0.001,
+  "huberDelta": 5.0,
+  "minTrainingSamples": 6,
+  "minValidationSamples": 8,
+  "qualityWindow": 24,
+  "requiredErrorRatio": 0.98,
+  "maxDrainPerHour": 50.0,
+  "maxRemainingHours": 9999.0,
+  "sessionGapMinutes": 10,
+  "replacementRisePercent": 5,
+  "minDropPercent": 1.0,
+  "baselineDecayTauHours": 48.0
+}

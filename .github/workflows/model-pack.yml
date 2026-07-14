@@ -1,0 +1,114 @@
+name: Model Pack
+
+on:
+  workflow_call:
+    inputs:
+      pack-version:
+        description: 'Model pack version (defaults to app version)'
+        required: false
+        type: string
+    secrets:
+      MODEL_PACK_SIGNING_KEY:
+        description: 'Ed25519 private signing seed for production model packs'
+        required: true
+  workflow_dispatch:
+    inputs:
+      pack-version:
+        description: 'Model pack version (e.g. 0.6.10)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: model-pack-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-model-pack:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    outputs:
+      pack-version: ${{ steps.meta.outputs.pack-version }}
+      pack-sha256: ${{ steps.sha.outputs.pack-sha256 }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Cache cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-model-pack-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-model-pack-${{ runner.os }}-
+            cargo-rust-${{ runner.os }}-
+
+      - name: Resolve pack version
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.pack-version }}" ]; then
+            version="${{ inputs.pack-version }}"
+          else
+            version=$(node scripts/app-version.mjs)
+          fi
+          echo "pack-version=$version" >> "$GITHUB_OUTPUT"
+          echo "Pack version: $version" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build signed model pack
+        env:
+          MODEL_PACK_SIGNING_KEY: ${{ secrets.MODEL_PACK_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          cargo run --release -p mira-runtime -- build-pack \
+            --output artifacts/model.rillpack \
+            --config crates/mira-runtime/configs/model.json \
+            --pack-id mira-battery-model \
+            --pack-version "${{ steps.meta.outputs.pack-version }}" \
+            --min-runtime-version 0.5.0 \
+            --key-id mira-rill-2026-001
+
+      - name: Inspect built pack (verify round-trip)
+        run: |
+          set -euo pipefail
+          # The build-pack command already verifies the pack can be loaded.
+          # This step additionally prints the inspection JSON for audit logs.
+          cargo run --release -p mira-runtime -- inspect-pack \
+            --pack artifacts/model.rillpack \
+            --trust-key "mira-rill-2026-001=3d5ada931abc747610850f9e405fee637a3f445c0b4406eb96b41673814fc261"
+
+      - name: Compute SHA-256
+        id: sha
+        run: |
+          sha=$(sha256sum artifacts/model.rillpack | awk '{print $1}')
+          echo "pack-sha256=$sha" >> "$GITHUB_OUTPUT"
+          echo "SHA-256: $sha" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: model-rillpack
+          path: artifacts/model.rillpack
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Job summary
+        run: |
+          size=$(stat -c%s artifacts/model.rillpack)
+          {
+            echo "## Model Pack Build Summary"
+            echo ""
+            echo "- **Version**: ${{ steps.meta.outputs.pack-version }}"
+            echo "- **Size**: ${size} bytes"
+            echo "- **SHA-256**: ${{ steps.sha.outputs.pack-sha256 }}"
+            echo "- **Feature count**: 9 (6 base + 3 context: DPI/polling rate/lighting)"
+          } >> "$GITHUB_STEP_SUMMARY"
