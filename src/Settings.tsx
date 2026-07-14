@@ -704,11 +704,12 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
               <div>
                 <strong>{t('settings.localAi.bundle')}</strong>
                 <span className="setting-hint">
-                  {localAiStatus.bundleVersion ? `v${localAiStatus.bundleVersion}` : t('settings.localAi.notInstalled')}
+                  {localAiStatus.runtimeVersion ? `v${localAiStatus.runtimeVersion}` : t('settings.localAi.notInstalled')}
                 </span>
               </div>
               <div className="plugin-meta">
                 <span className="badge badge-ok">{t('settings.localAi.signedBundle')}</span>
+                {!localAiStatus.rollbackAvailable && <span className="badge">{t('settings.localAi.defaultBundled')}</span>}
               </div>
               {localAiUpdates.find((item) => item.component === 'bundle')?.updateAvailable && (
                 <div className="plugin-update-row">

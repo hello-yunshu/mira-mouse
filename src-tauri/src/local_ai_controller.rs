@@ -14,7 +14,7 @@ use std::{
     process::{Child, ChildStdin, Command, Stdio},
     sync::{
         atomic::{AtomicU64, Ordering},
-        mpsc::{self, Receiver},
+        mpsc::{self, Receiver, Sender},
         Mutex, PoisonError,
     },
     time::{Duration, Instant},
@@ -47,10 +47,29 @@ const MAX_STDERR_BYTES: usize = 64 * 1024;
 /// cadence this is roughly two weeks per battery component.
 const MAX_PREDICTION_SAMPLES: usize = 4_096;
 
+/// 控制器向上层 supervisor 投递的崩溃/成功事件。
+///
+/// supervisor 维护 10 分钟滑动窗口,累积 ≥3 次 Failed 时触发自动回滚;
+/// 收到 Success 即清零窗口。所有事件发送都是 best-effort,supervisor 已
+/// 退出时静默丢弃,不影响 controller 主路径。
+#[derive(Debug, Clone)]
+pub enum CrashEvent {
+    /// spawn/握手/predict 路径上任意失败。`reason` 预留给后续诊断日志,当前不读取。
+    Failed {
+        at: Instant,
+        #[allow(dead_code)]
+        reason: String,
+    },
+    /// predict() 完整跑完所有 batch 且至少返回 1 个结果。
+    Success,
+}
+
 /// 控制器状态。所有字段通过单一 Mutex 串行化访问,避免并发竞争。
 struct ControllerInner {
     running: Option<RunningRuntime>,
     state: ControllerState,
+    /// 由 lib.rs setup 阶段注入的 crash 事件 sender。None 时静默丢弃事件。
+    crash_tx: Option<Sender<CrashEvent>>,
 }
 
 struct RunningRuntime {
@@ -78,11 +97,27 @@ impl Default for ControllerInner {
         Self {
             running: None,
             state: ControllerState::Stopped,
+            crash_tx: None,
         }
     }
 }
 
 impl LocalAiController {
+    /// 在 lib.rs setup 阶段注入 crash 事件 sender,启动 supervisor 监听。
+    pub fn set_crash_sender(&self, tx: Sender<CrashEvent>) {
+        let mut guard = self.lock();
+        guard.crash_tx = Some(tx);
+    }
+
+    /// Best-effort 投递事件:supervisor 已退出或未注入时静默丢弃。
+    /// 不阻塞、不返回错误——crash 监控是 predict 路径的旁路,不能影响主流程。
+    fn emit_crash_event(&self, event: CrashEvent) {
+        let guard = self.lock();
+        if let Some(tx) = guard.crash_tx.as_ref() {
+            let _ = tx.send(event);
+        }
+    }
+
     /// 开关 on 时调用。启动 sidecar 子进程并完成握手;失败时标记 Failed。
     pub fn start(&self, app: &AppHandle) -> Result<(), String> {
         let mut guard = self.lock();
@@ -93,12 +128,20 @@ impl LocalAiController {
             guard.state = ControllerState::Failed {
                 last_attempt: Instant::now(),
             };
+            self.emit_crash_event(CrashEvent::Failed {
+                at: Instant::now(),
+                reason: "runtime or model pack not available".into(),
+            });
             return Err("local AI runtime or model pack not available".to_string());
         };
         if let Err(error) = spawn_and_handshake(&installation, &mut guard) {
             guard.state = ControllerState::Failed {
                 last_attempt: Instant::now(),
             };
+            self.emit_crash_event(CrashEvent::Failed {
+                at: Instant::now(),
+                reason: error.clone(),
+            });
             return Err(error);
         }
         guard.state = ControllerState::Running;
@@ -272,6 +315,13 @@ impl LocalAiController {
                 }
             }
         }
+        // 完整跑完所有 batch 且至少返回 1 个结果 → 通知 supervisor 清零失败窗口。
+        // 必须先 drop guard 再 emit,否则 emit_crash_event 重新 lock 会死锁。
+        let has_results = !results.is_empty();
+        drop(guard);
+        if has_results {
+            self.emit_crash_event(CrashEvent::Success);
+        }
         results
     }
 
@@ -280,7 +330,7 @@ impl LocalAiController {
     }
 }
 
-fn mark_failed(guard: &mut std::sync::MutexGuard<'_, ControllerInner>, _reason: &str) {
+fn mark_failed(guard: &mut std::sync::MutexGuard<'_, ControllerInner>, reason: &str) {
     if let Some(mut runtime) = guard.running.take() {
         let _ = runtime.child.kill();
         let _ = runtime.child.wait();
@@ -288,6 +338,13 @@ fn mark_failed(guard: &mut std::sync::MutexGuard<'_, ControllerInner>, _reason: 
     guard.state = ControllerState::Failed {
         last_attempt: Instant::now(),
     };
+    // 投递 crash 事件给 supervisor。sender 缺失时静默丢弃(测试或未注入场景)。
+    if let Some(tx) = guard.crash_tx.as_ref() {
+        let _ = tx.send(CrashEvent::Failed {
+            at: Instant::now(),
+            reason: reason.to_string(),
+        });
+    }
 }
 
 fn spawn_and_handshake(
