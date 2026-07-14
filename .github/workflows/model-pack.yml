@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
     inputs:
       pack-version:
-        description: 'Model pack version (e.g. 0.6.10)'
+        description: 'Model pack version (e.g. 0.8.0)'
         required: true
         type: string
 
