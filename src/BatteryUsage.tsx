@@ -24,17 +24,17 @@ function isPureWebPreview(): boolean {
   return !('__TAURI_INTERNALS__' in window);
 }
 
-function formatRelativeTime(iso: string, t: (key: string) => string): string {
+function formatRelativeTime(iso: string, t: (key: string, options?: Record<string, unknown>) => string): string {
   const now = Date.now();
   const then = new Date(iso).getTime();
   const diff = now - then;
   if (diff < 60_000) return t('batteryUsage.lastUpdated');
   const minutes = Math.floor(diff / 60_000);
-  if (minutes < 60) return `${minutes} min`;
+  if (minutes < 60) return t('batteryUsage.relativeMinutes', { count: minutes });
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours} h`;
+  if (hours < 24) return t('batteryUsage.relativeHours', { count: hours });
   const days = Math.floor(hours / 24);
-  return `${days} d`;
+  return t('batteryUsage.relativeDays', { count: days });
 }
 
 function formatInsightMessage(insight: BatteryInsight, t: (key: string, options?: Record<string, unknown>) => string): string {
@@ -723,8 +723,8 @@ function BatteryInsightCards({ insights, aiAnalysisEnabled }: { insights: Batter
   const basicTake = Math.max(0, Math.min(basic.length, maxCount - special.length));
   let visible: BatteryInsight[] = [...special, ...basic.slice(0, basicTake)];
 
-  // 固定 2 列布局：奇数（且大于 1）时截断最后一个，避免单块占行。
-  if (visible.length > 1 && visible.length % 2 !== 0) {
+  // 固定 2 列布局：奇数时截断最后一个，避免单块占行。
+  if (visible.length % 2 !== 0) {
     visible = visible.slice(0, visible.length - 1);
   }
 

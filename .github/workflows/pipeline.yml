@@ -110,7 +110,7 @@ jobs:
         include:
           - os: macos-14
             target: aarch64-apple-darwin
-            target_os: darwin
+            target_os: macos
             target_arch: aarch64
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
@@ -192,10 +192,10 @@ jobs:
               RUSTUP_TOOLCHAIN=stable cargo run --package xtask -- local-ai-bundle \
                 --runtime "$runtime" \
                 --model src-tauri/resources/local-ai/model.rillpack \
-                --target-os darwin --target-arch "$arch" \
+                --target-os macos --target-arch "$arch" \
                 --bundle-version "$version" --runtime-version "$runtime_version" \
                 --model-pack-version "$version" \
-                --output "local-ai-assets/local-ai-bundle-darwin-${arch}.zip"
+                --output "local-ai-assets/local-ai-bundle-macos-${arch}.zip"
             done
           else
             runtime="src-tauri/binaries/mira-runtime-${{ matrix.target }}"
@@ -417,13 +417,15 @@ jobs:
           EOF
       - name: Generate and sign local AI stable index
         env:
-          VERSION: ${{ steps.meta.outputs.version }}
           TAG: ${{ steps.meta.outputs.tag }}
+          VERSION: ${{ steps.meta.outputs.version }}
           MODEL_PACK_SIGNING_KEY: ${{ secrets.MODEL_PACK_SIGNING_KEY }}
         run: |
           set -euo pipefail
-          node scripts/build-local-ai-release-index.mjs publish-assets "$VERSION" "$TAG" local-ai-index-payload.json
           rustup toolchain install stable --profile minimal
+          RUNTIME_VERSION=$(RUSTUP_TOOLCHAIN=stable cargo tree -p mira-runtime --depth 1 --prefix none | awk '$1 == "rill-runtime" { sub(/^v/, "", $2); print $2; exit }')
+          test -n "$RUNTIME_VERSION"
+          node scripts/build-local-ai-release-index.mjs publish-assets "$RUNTIME_VERSION" "$VERSION" "$TAG" local-ai-index-payload.json
           RUSTUP_TOOLCHAIN=stable cargo run --release -p mira-runtime -- sign-index \
             --payload local-ai-index-payload.json \
             --output local-ai-stable-index.json
