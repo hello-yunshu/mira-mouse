@@ -49,6 +49,7 @@ import {
 import { onAppNotification, notifyError, notifySuccess, type AppNotification } from './notify';
 import { relaunchAfterUpdate, startAutomaticAppUpdateCheck } from './updater';
 import { startAutomaticPluginUpdateCheck } from './plugin-updater';
+import { LOCAL_AI_FEATURE, localAiFeatureEnabled } from './localAi';
 import './styles.css';
 
 type View = 'dashboard' | 'settings' | 'about';
@@ -146,11 +147,57 @@ function colorValueStyle(value: unknown): React.CSSProperties | undefined {
   return color ? { '--value-color': color } as React.CSSProperties : undefined;
 }
 
+function LiveValue({ text, className, style }: {
+  text: string;
+  className?: string;
+  style?: React.CSSProperties;
+}) {
+  const [currentText, setCurrentText] = useState(text);
+  const [nextText, setNextText] = useState<string>();
+  const [transitioning, setTransitioning] = useState(false);
+
+  useEffect(() => {
+    if (text === currentText) return;
+
+    let transitionFrame = 0;
+    let timeout = 0;
+    const prepareFrame = window.requestAnimationFrame(() => {
+      setNextText(text);
+      setTransitioning(false);
+      transitionFrame = window.requestAnimationFrame(() => {
+        setTransitioning(true);
+        timeout = window.setTimeout(() => {
+          setCurrentText(text);
+          setNextText(undefined);
+          setTransitioning(false);
+        }, 160);
+      });
+    });
+
+    return () => {
+      window.cancelAnimationFrame(prepareFrame);
+      window.cancelAnimationFrame(transitionFrame);
+      window.clearTimeout(timeout);
+    };
+  }, [currentText, text]);
+
+  return (
+    <strong
+      className={[className, 'live-value', transitioning ? 'is-transitioning' : undefined].filter(Boolean).join(' ')}
+      style={style}
+      aria-label={text}
+    >
+      <span className="live-value-current" aria-hidden="true">{currentText}</span>
+      {nextText !== undefined && <span className="live-value-next" aria-hidden="true">{nextText}</span>}
+    </strong>
+  );
+}
+
 function ColorValue({ value, fallback, className }: { value: unknown; fallback?: string; className?: string }) {
   const label = typeof value === 'string' && value ? value : fallback ?? i18n.t('common.notReported');
   const style = colorValueStyle(value);
   const classes = [className, style ? 'color-value' : undefined].filter(Boolean).join(' ') || undefined;
-  return <strong className={classes} style={style}>{label}</strong>;
+  return <LiveValue text={label} className={classes} style={style} />;
 }
 
 function FormattedValue({ value, format, label, className }: {
@@ -163,7 +210,7 @@ function FormattedValue({ value, format, label, className }: {
   const isColor = shouldRenderColorValue(value, format);
   return isColor
     ? <ColorValue className={className} value={value} fallback={text} />
-    : <strong className={className}>{text}</strong>;
+    : <LiveValue text={text} className={className} />;
 }
 
 function CapabilitySummary({ capability, device }: { capability: PluginCapability; device: DeviceState }) {
@@ -326,18 +373,22 @@ function placementsFor(capability: PluginCapability, region: PluginRegion): NonN
   return (capability.placements ?? []).filter((p) => p.region === region);
 }
 
+function capabilityAvailable(capability: PluginCapability): boolean {
+  return capability.available !== false;
+}
+
 /** 从插件声明中取得用于宿主装饰的颜色，不依赖任何厂商状态字段名。 */
 function declaredAccentColor(device: DeviceState): string | undefined {
   // 主题色是插件明确声明的展示契约。鼠标与接收器同时存在时，插件可稳定
   // 指向鼠标灯光，不受 capability/zone 排列顺序影响。
-  for (const capability of device.pluginCapabilities) {
+  for (const capability of device.pluginCapabilities.filter(capabilityAvailable)) {
     const source = capability.metadata.accentSource;
     if (!source) continue;
     const value = readPath(device, source);
     if (typeof value === 'string') return value;
   }
   // 兼容尚未声明 accentSource 的旧插件：优先使用灯光颜色，再回退 DPI。
-  for (const capability of device.pluginCapabilities) {
+  for (const capability of device.pluginCapabilities.filter(capabilityAvailable)) {
     const zones = capability.metadata.zones ?? [];
     for (const zone of zones) {
       const color = zone.fields.find((field) => field.format === 'color' || field.editor === 'modal-color');
@@ -347,7 +398,7 @@ function declaredAccentColor(device: DeviceState): string | undefined {
       }
     }
   }
-  for (const capability of device.pluginCapabilities) {
+  for (const capability of device.pluginCapabilities.filter(capabilityAvailable)) {
     const layout = capability.metadata.stageLayout;
     if (layout) {
       const stages = readPath(device, layout.colorSource ?? layout.dotsSource) as DpiStage[] | undefined;
@@ -356,6 +407,14 @@ function declaredAccentColor(device: DeviceState): string | undefined {
     }
   }
   return undefined;
+}
+
+function capabilityRuntimePending(capability: PluginCapability): boolean {
+  return capability.metadata._miraRuntimePending === true;
+}
+
+function deviceRuntimePending(device: DeviceState): boolean {
+  return device.pluginCapabilities.some(capabilityRuntimePending);
 }
 
 function PluginIconView({
@@ -1022,6 +1081,7 @@ function StageLayout({ capability, device, writeBusy, runMutation }: {
 }) {
   const layout = resolveStageLayout(capability);
   const [editingStage, setEditingStage] = useState<number | null>(null);
+  const runtimePending = capabilityRuntimePending(capability);
 
   if (!layout) return null;
 
@@ -1062,13 +1122,17 @@ function StageLayout({ capability, device, writeBusy, runMutation }: {
           setEditingStage(currentStageNumber);
         }}
       >
-        <strong>{activeDpi || i18n.t('common.notReported')}</strong><em>DPI</em>
+        <LiveValue text={String(activeDpi || (runtimePending ? '—' : i18n.t('common.notReported')))} /><em>DPI</em>
       </button>
-      <div className="dpi-scale" aria-label={i18n.t('dashboard.dpiStages')} style={{ '--stage-count': Math.max(displayedStages.length, 1) } as React.CSSProperties}>
-        {displayedStages.map((stage, index) => {
-          const stageNumber = index + 1;
-          return (
-            <div key={`${index}-${stage.value}`} className="dpi-stage-item">
+      <div className={`dpi-scale ${runtimePending ? 'is-pending' : 'is-ready'}`} aria-label={i18n.t('dashboard.dpiStages')} style={{ '--stage-count': Math.max(displayedStages.length, 1) } as React.CSSProperties}>
+        <div className="dpi-stage-placeholders" aria-hidden="true">
+          {Array.from({ length: 5 }, (_, index) => <span key={index} className="dpi-stage-placeholder" />)}
+        </div>
+        <div className="dpi-stage-values">
+          {displayedStages.map((stage, index) => {
+            const stageNumber = index + 1;
+            return (
+              <div key={`${index}-${stage.value}`} className="dpi-stage-item">
               <button
                 type="button"
                 className={`dpi-stage-dot ${stage.active ? 'active' : ''}`}
@@ -1091,11 +1155,12 @@ function StageLayout({ capability, device, writeBusy, runMutation }: {
               >
                 {stage.value}
               </button>
-            </div>
-          );
-        })}
+              </div>
+            );
+          })}
+        </div>
       </div>
-      {displayedStages.length === 0 && <p className="setting-hint">{i18n.t('dashboard.noDpiStages')}</p>}
+      {!runtimePending && displayedStages.length === 0 && <p className="setting-hint">{i18n.t('dashboard.noDpiStages')}</p>}
       {!setWritable && displayedStages.length > 0 && <p className="setting-hint">{i18n.t('dashboard.dpiWriteUnavailable')}</p>}
       {editingStage !== null && (
         <FieldEditModal
@@ -1219,13 +1284,16 @@ function StatusItem({ capability, device, placement, onClick }: {
   } else {
     valueText = formatFieldValue(value, display.valueFormat, i18n.t);
   }
+  if (capabilityRuntimePending(capability) && (value === null || value === undefined || value === '')) {
+    valueText = '…';
+  }
 
   const isColor = display.valueFormat === 'color' || valueLooksColor(value);
 
   const content = (
     <>
       <PluginIconView name={placement.icon} device={device} />
-      <span>{label}<strong>{valueText}</strong></span>
+      <span>{label}<LiveValue text={valueText} /></span>
       {isColor && typeof value === 'string' && <i style={{ '--light-color': value } as React.CSSProperties} />}
     </>
   );
@@ -1385,6 +1453,7 @@ function Dashboard({
 
   const controls = useMemo(() => {
     const controlPlacements = device.pluginCapabilities
+      .filter(capabilityAvailable)
       .flatMap((capability) => placementsFor(capability, 'control').map((placement) => ({ capability, placement })))
       .filter(({ capability }) => resolveVisibleWhen(capability.metadata.visibleWhen, device))
       .sort((a, b) => a.placement.order - b.placement.order);
@@ -1414,6 +1483,7 @@ function Dashboard({
   const statusItems = useMemo(() => {
     const items: { capability: PluginCapability; placement: PluginCapabilityPlacement; onClick: (() => void) | undefined }[] = [];
     for (const capability of device.pluginCapabilities) {
+      if (!capabilityAvailable(capability)) continue;
       if (!resolveVisibleWhen(capability.metadata.visibleWhen, device)) continue;
       const display = resolveStatusDisplay(capability);
       if (!display) continue;
@@ -1449,9 +1519,10 @@ function Dashboard({
 
   const selectedEntry = selectedDeviceEntry(deviceEntries);
   const multipleDevices = deviceEntries.length > 1;
+  const runtimePending = deviceRuntimePending(device);
 
   return (
-    <main className="dashboard">
+    <main className={`dashboard ${runtimePending ? 'is-initializing' : 'is-ready'}`} aria-busy={runtimePending}>
       <section className="device-hero" aria-label={t('dashboard.connectedDevice')}>
         <div className="device-column">
           <h2 className="app-title">Mira</h2>
@@ -1664,6 +1735,9 @@ export default function App() {
   const [appNotification, setAppNotification] = useState<AppNotification>();
   const [showBatteryUsage, setShowBatteryUsage] = useState(false);
   const [batteryUsageSession, setBatteryUsageSession] = useState(0);
+  const [batteryUsageSettings, setBatteryUsageSettings] = useState<{ batteryHistoryEnabled: boolean; aiAnalysisEnabled: boolean } | undefined>(
+    pureWeb ? { batteryHistoryEnabled: true, aiAnalysisEnabled: false } : undefined,
+  );
   const [pluginLocaleRevision, setPluginLocaleRevision] = useState(0);
   const windowsPlatform = isWindowsPlatform();
   const macPlatform = isMacPlatform();
@@ -1687,9 +1761,11 @@ export default function App() {
     setSettingsPluginFocusToken((value) => value + 1);
   }, []);
   const openBatteryUsage = useCallback(() => {
-    invoke('device_refresh_battery').catch(() => {});
     setBatteryUsageSession((value) => value + 1);
     setShowBatteryUsage(true);
+  }, []);
+  const syncBatteryUsageSettings = useCallback((settings: { batteryHistoryEnabled: boolean; aiAnalysisEnabled: boolean }) => {
+    setBatteryUsageSettings(settings);
   }, []);
   const reloadPluginLocales = useCallback(() => {
     void loadPluginLocales().then((loaded) => {
@@ -1768,6 +1844,10 @@ export default function App() {
       .then((settings) => {
         setTheme(settings.theme as ThemeMode);
         setThemeLoaded(true);
+        syncBatteryUsageSettings({
+          batteryHistoryEnabled: settings.batteryHistoryEnabled ?? true,
+          aiAnalysisEnabled: localAiFeatureEnabled(settings, LOCAL_AI_FEATURE.batteryUsage),
+        });
         applyLanguage(settings.language ?? 'auto');
         if (settings.automaticUpdateChecks) {
           void invoke<AboutInfo>('about_info')
@@ -1779,7 +1859,7 @@ export default function App() {
         void startAutomaticPluginUpdateCheck(settings.automaticPluginUpdateChecks);
       })
       .catch(() => setThemeLoaded(true));
-  }, [pureWeb]);
+  }, [pureWeb, syncBatteryUsageSettings]);
 
   // 周期性从后端读取真实设备状态
   useEffect(() => {
@@ -1886,13 +1966,15 @@ export default function App() {
       {demoMode && <button className="nav-link nav-exit" onClick={exitDemo} aria-label={t('nav.exitDemo')} title={t('nav.exitDemo')}><SignOut weight="regular" /></button>}
     </div>
     {view === 'dashboard' && (device ? <Dashboard device={device} deviceEntries={deviceEntries} onDeviceChange={setDevice} onDeviceSelect={selectDevice} onOpenBatteryUsage={openBatteryUsage} pluginLocaleRevision={pluginLocaleRevision} /> : <EmptyState onRefresh={() => { setDemoMode(false); setDevice(undefined); setDeviceEntries([]); deviceEntriesRef.current = []; setRefreshNonce((value) => value + 1); invoke('device_refresh').catch(() => {}); }} onDemo={() => { setDemoMode(true); setDevice(MOCK_DEVICE); setDeviceEntries(MOCK_DEVICE_ENTRIES); deviceEntriesRef.current = MOCK_DEVICE_ENTRIES; }} onOpenSettings={() => setView('settings')} />)}
-    {view === 'settings' && <SettingsPage previewMode={pureWeb} focusPluginUpdateToken={settingsPluginFocusToken} onNavigateAbout={() => setView('about')} onOpenBatteryUsage={openBatteryUsage} onThemeChange={setTheme} pluginCapabilities={device?.pluginCapabilities ?? []} writableMutations={device?.writableMutations ?? []} />}
+    {view === 'settings' && <SettingsPage previewMode={pureWeb} focusPluginUpdateToken={settingsPluginFocusToken} onNavigateAbout={() => setView('about')} onOpenBatteryUsage={openBatteryUsage} onBatteryUsageSettingsChange={syncBatteryUsageSettings} onThemeChange={setTheme} pluginCapabilities={device?.pluginCapabilities ?? []} writableMutations={device?.writableMutations ?? []} />}
     {view === 'about' && <AboutPage previewMode={pureWeb} focusUpdateToken={aboutFocusToken} onBack={() => setView('settings')} />}
     <BatteryUsageModal
       key={batteryUsageSession}
       open={showBatteryUsage}
       onClose={() => setShowBatteryUsage(false)}
       hasBattery={(device?.batteries.length ?? 0) > 0}
+      batteryHistoryEnabled={batteryUsageSettings?.batteryHistoryEnabled}
+      aiAnalysisEnabled={batteryUsageSettings?.aiAnalysisEnabled}
       preferredDeviceName={selectedBatteryUsageTarget?.name}
       preferredComponentId={selectedBatteryUsageTarget?.componentId}
     />

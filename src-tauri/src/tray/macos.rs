@@ -31,7 +31,7 @@
 //!
 //! 可编译 > 不破坏现有功能 > fallback 稳定 > macOS 原生体验 > 视觉细节
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::sync::{Mutex, OnceLock};
 
 use objc2::rc::Allocated;
@@ -123,10 +123,26 @@ impl MiraStatusItemDelegate {
     );
 }
 
+fn theme_from_appearance(appearance: &NSAppearance) -> Option<TrayTheme> {
+    let appearances = NSArray::from_slice(&[unsafe { NSAppearanceNameAqua }, unsafe {
+        NSAppearanceNameDarkAqua
+    }]);
+    let matched = appearance.bestMatchFromAppearancesWithNames(&appearances)?;
+    if matched.isEqualToString(unsafe { NSAppearanceNameDarkAqua }) {
+        Some(TrayTheme::Dark)
+    } else if matched.isEqualToString(unsafe { NSAppearanceNameAqua }) {
+        Some(TrayTheme::Light)
+    } else {
+        None
+    }
+}
+
 // ─── 自定义 NSView：只负责 drawRect 自绘，点击事件继续交给 NSStatusBarButton ───────
 
 struct MiraStatusViewIvars {
-    image: RefCell<Option<Retained<NSImage>>>,
+    light_background_image: RefCell<Option<Retained<NSImage>>>,
+    dark_background_image: RefCell<Option<Retained<NSImage>>>,
+    follows_background: Cell<bool>,
 }
 
 define_class!(
@@ -138,14 +154,32 @@ define_class!(
         #[unsafe(method_id(initWithFrame:))]
         fn init_with_frame(this: Allocated<Self>, frame: NSRect) -> Option<Retained<Self>> {
             let this = this.set_ivars(MiraStatusViewIvars {
-                image: RefCell::new(None),
+                light_background_image: RefCell::new(None),
+                dark_background_image: RefCell::new(None),
+                follows_background: Cell::new(false),
             });
             unsafe { msg_send![super(this), initWithFrame: frame] }
         }
 
         #[unsafe(method(drawRect:))]
         fn draw_rect(&self, _dirty_rect: NSRect) {
-            let Some(image) = self.ivars().image.borrow().as_ref().cloned() else {
+            let use_dark_background = self.ivars().follows_background.get()
+                && theme_from_appearance(&self.as_super().effectiveAppearance())
+                    == Some(TrayTheme::Dark);
+            let image = if use_dark_background {
+                self.ivars()
+                    .dark_background_image
+                    .borrow()
+                    .as_ref()
+                    .cloned()
+            } else {
+                self.ivars()
+                    .light_background_image
+                    .borrow()
+                    .as_ref()
+                    .cloned()
+            };
+            let Some(image) = image else {
                 return;
             };
             let bounds = self.as_super().bounds();
@@ -160,6 +194,16 @@ define_class!(
             image.drawInRect(rect);
         }
 
+        #[unsafe(method(viewDidChangeEffectiveAppearance))]
+        fn view_did_change_effective_appearance(&self) {
+            unsafe {
+                let _: () = msg_send![super(self), viewDidChangeEffectiveAppearance];
+            }
+            // 菜单栏的实际背景可随壁纸、显示器和全屏空间改变，
+            // 不一定等同于全局浅色/深色主题。
+            self.as_super().setNeedsDisplay(true);
+        }
+
         #[unsafe(method(hitTest:))]
         fn hit_test(&self, _point: NSPoint) -> Option<&NSView> {
             None
@@ -172,8 +216,15 @@ impl MiraStatusView {
         unsafe { msg_send![Self::alloc(mtm), initWithFrame: frame] }
     }
 
-    fn set_image(&self, image: Option<Retained<NSImage>>) {
-        *self.ivars().image.borrow_mut() = image;
+    fn set_images(
+        &self,
+        light_background_image: Option<Retained<NSImage>>,
+        dark_background_image: Option<Retained<NSImage>>,
+        follows_background: bool,
+    ) {
+        *self.ivars().light_background_image.borrow_mut() = light_background_image;
+        *self.ivars().dark_background_image.borrow_mut() = dark_background_image;
+        self.ivars().follows_background.set(follows_background);
         self.as_super().setNeedsDisplay(true);
     }
 }
@@ -330,27 +381,6 @@ impl MacNativeTrayController {
         }
     }
 
-    fn theme_from_appearance(appearance: &NSAppearance) -> Option<TrayTheme> {
-        let appearances = NSArray::from_slice(&[unsafe { NSAppearanceNameAqua }, unsafe {
-            NSAppearanceNameDarkAqua
-        }]);
-        let matched = appearance.bestMatchFromAppearancesWithNames(&appearances)?;
-        if matched.isEqualToString(unsafe { NSAppearanceNameDarkAqua }) {
-            Some(TrayTheme::Dark)
-        } else if matched.isEqualToString(unsafe { NSAppearanceNameAqua }) {
-            Some(TrayTheme::Light)
-        } else {
-            None
-        }
-    }
-
-    fn effective_status_item_theme(&self, mtm: MainThreadMarker) -> Option<TrayTheme> {
-        let item = self.status_item.as_ref()?;
-        let button = item.button(mtm)?;
-        let appearance = button.effectiveAppearance();
-        Self::theme_from_appearance(&appearance)
-    }
-
     /// 构建 NSMenu
     fn build_menu(&self, state: &TrayStatusState, mtm: MainThreadMarker) -> Retained<NSMenu> {
         let lang = current_lang();
@@ -474,22 +504,33 @@ impl MacNativeTrayController {
             return Err("NSStatusItem not initialized".into());
         };
 
-        let resolved_style = if style.icon_color_mode == TrayIconColorMode::Auto {
-            self.effective_status_item_theme(mtm)
-                .map(|theme| style.with_auto_theme(theme))
-                .unwrap_or(*style)
-        } else {
-            *style
-        };
-
         // 1. 图标 diff + 更新
-        let cache_key = TrayIconCacheKey::from_state_and_style(state, &resolved_style);
+        let cache_key = TrayIconCacheKey::from_state_and_style(state, style);
         if self.last_cache_key.as_ref() != Some(&cache_key) {
-            let image = self
-                .render_image(state, &resolved_style)
-                .ok_or("render native tray image failed")?;
             if let Some(view) = &self.status_view {
-                view.set_image(Some(image));
+                if style.icon_color_mode == TrayIconColorMode::Auto {
+                    // 预先渲染两套图像。MiraStatusView 按自身当前
+                    // effectiveAppearance 选择，背景变化时不需要等待 Rust
+                    // 端的系统主题通知或设备轮询。
+                    let light_background_style = style.with_auto_theme(TrayTheme::Light);
+                    let dark_background_style = style.with_auto_theme(TrayTheme::Dark);
+                    let light_background_image = self
+                        .render_image(state, &light_background_style)
+                        .ok_or("render native light-background tray image failed")?;
+                    let dark_background_image = self
+                        .render_image(state, &dark_background_style)
+                        .ok_or("render native dark-background tray image failed")?;
+                    view.set_images(
+                        Some(light_background_image),
+                        Some(dark_background_image),
+                        true,
+                    );
+                } else {
+                    let image = self
+                        .render_image(state, style)
+                        .ok_or("render native tray image failed")?;
+                    view.set_images(Some(image.clone()), Some(image), false);
+                }
             }
             if let Some(button) = item.button(mtm) {
                 // MiraStatusView is the single dynamic drawing surface. Leaving

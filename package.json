@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "assets:windows-installer": "python3 scripts/generate-windows-installer-assets.py",
     "assets:macos-dark-icon": "bash scripts/generate-macos-dark-icon.sh",
+    "sidecar:build": "cargo run --package xtask -- dist-sidecar",
     "build:dmg": "npm exec tauri build -- --bundles app,dmg",
     "version:print": "node scripts/app-version.mjs",
     "typecheck": "tsc -b --pretty false",

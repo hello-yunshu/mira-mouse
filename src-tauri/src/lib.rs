@@ -9,6 +9,9 @@ use mira_core::{
 };
 
 mod battery_history;
+mod local_ai_controller;
+mod local_ai_runtime;
+mod local_ai_update;
 mod tray;
 use battery_history::{AbnormalDrainNotifyState, BatteryHistoryResponse, BatteryHistoryState};
 use mira_plugin_runtime::{
@@ -45,6 +48,11 @@ type CachedPlugins = Vec<(
 )>;
 type PluginLocales = BTreeMap<String, BTreeMap<String, BTreeMap<String, String>>>;
 const AUTOSTART_HIDDEN_ARG: &str = "--hidden";
+const LOCAL_AI_FEATURE_BATTERY_USAGE: &str = "batteryUsage";
+
+fn default_local_ai_features() -> BTreeMap<String, bool> {
+    BTreeMap::from([(LOCAL_AI_FEATURE_BATTERY_USAGE.to_string(), true)])
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -223,6 +231,41 @@ fn plugin_capabilities(
             }
         })
         .collect()
+}
+
+/// Build the stable dashboard layout as soon as a signed plugin matches a
+/// device, without executing any protocol workflow. Runtime-dependent probe
+/// and firmware gates remain provisional until the first Full read replaces
+/// this list with the authoritative capability set.
+fn provisional_plugin_capabilities(
+    inspection: &PackageInspection,
+    connection: &str,
+    package_files: &BTreeMap<String, Vec<u8>>,
+    family: &str,
+) -> Vec<PluginCapability> {
+    let normalized_connection = normalize_connection(connection);
+    let mut capabilities = plugin_capabilities(
+        inspection,
+        &BTreeMap::new(),
+        connection,
+        Some(package_files),
+        Some(family),
+        &[],
+    );
+    for capability in &mut capabilities {
+        // Connection is already known from HID enumeration. Probe and firmware
+        // outputs are not, so keep their layout visible but non-writable until
+        // Full produces the authoritative snapshot.
+        capability.available = capability.connections.as_ref().is_none_or(|allowed| {
+            allowed
+                .iter()
+                .any(|candidate| normalize_connection(candidate) == normalized_connection)
+        });
+        capability
+            .metadata
+            .insert("_miraRuntimePending".into(), serde_json::Value::Bool(true));
+    }
+    capabilities
 }
 
 fn collect_mutation_refs(value: Option<&serde_json::Value>, refs: &mut Vec<String>) {
@@ -821,6 +864,12 @@ struct SessionState {
     battery_history: BatteryHistoryState,
     /// 异常耗电通知节流：同一设备同一部件 24 小时内最多通知一次。
     abnormal_drain_notify: AbnormalDrainNotifyState,
+    /// 已通知不可用能力的设备路径集合，避免同一设备重复通知。
+    /// 设备断开时由 clear_snapshots 清空。
+    notified_unavailable_capabilities: Mutex<BTreeSet<String>>,
+    /// 本地 AI 常驻子进程控制器。开关 on 时持有 mira-runtime 子进程,
+    /// off 时优雅退出。predict_batteries 通过此字段发送请求。
+    local_ai_controller: local_ai_controller::LocalAiController,
 }
 
 fn hid_io_stats_ref(state: &SessionState) -> Option<&Mutex<HidIoStats>> {
@@ -846,6 +895,13 @@ fn request_refresh_with_plan(state: &SessionState, plan: ReadPlan) {
             let _ = sender.send(());
         }
     }
+}
+
+/// mutation 后请求 Quick 读取验证。
+/// mutation 已在 `device_mutate_blocking` 中单独重置当前设备退避，
+/// 不重置其他设备——一个设备的写入不应影响其他设备的退避状态。
+fn request_refresh(state: &SessionState) {
+    request_refresh_with_plan(state, ReadPlan::Quick);
 }
 
 const QUICK_OBSERVE_DURATION: Duration = Duration::from_secs(12);
@@ -1508,6 +1564,64 @@ fn store_snapshots(state: &SessionState, snapshots: &BTreeMap<String, DeviceSnap
     changed
 }
 
+/// 检查快照中是否有不可用能力，如有则发送系统通知（每设备仅通知一次）。
+///
+/// 当插件通过 `CapabilityProbe` 声明了能力探测，但设备实际不支持时，
+/// `plugin_capabilities` 中对应条目的 `available` 为 false。
+/// 此函数收集所有不可用能力的标签，通过 macOS 系统通知告知用户，
+/// 并在 `notified_unavailable_capabilities` 中标记该设备已通知。
+fn notify_unavailable_capabilities(
+    app: &AppHandle,
+    state: &SessionState,
+    snapshots: &BTreeMap<String, DeviceSnapshot>,
+) {
+    let settings = cached_settings(app);
+    let lang = effective_language(&settings.language);
+    let mut to_notify: Vec<(String, Vec<String>)> = Vec::new();
+    {
+        let Ok(mut notified) = state.notified_unavailable_capabilities.lock() else {
+            return;
+        };
+        for (device_path, snapshot) in snapshots {
+            if notified.contains(device_path) {
+                continue;
+            }
+            let unavailable: Vec<String> = snapshot
+                .plugin_capabilities
+                .iter()
+                .filter(|cap| !cap.available)
+                .map(|cap| {
+                    cap.metadata
+                        .get("label")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string)
+                        .unwrap_or_else(|| cap.id.clone())
+                })
+                .collect();
+            if !unavailable.is_empty() {
+                to_notify.push((device_path.clone(), unavailable));
+            }
+        }
+        // 标记已通知，防止重复弹窗
+        for (path, _) in &to_notify {
+            notified.insert(path.clone());
+        }
+    }
+    for (device_path, unavailable) in to_notify {
+        let display_name = snapshots
+            .get(&device_path)
+            .map(|s| s.display_name.clone())
+            .unwrap_or_else(|| device_path.clone());
+        let body = tr_unavailable_capabilities_body(lang, &display_name, &unavailable);
+        let _ = app
+            .notification()
+            .builder()
+            .title(tr_unavailable_capabilities_title(lang))
+            .body(body)
+            .show();
+    }
+}
+
 /// 更新单个设备的快照，避免 clone 整个 map 引发的读-改-写竞态。
 /// 修复 #10：device_mutate_blocking 写入后只更新当前设备，不覆盖其他设备的快照。
 fn store_snapshot(state: &SessionState, device_path: String, snapshot: DeviceSnapshot) {
@@ -1556,6 +1670,10 @@ fn clear_snapshots(state: &SessionState) {
     }
     if let Ok(mut errors) = state.last_read_errors.lock() {
         errors.clear();
+    }
+    // 设备断开时清除不可用能力通知追踪，重连后重新检测。
+    if let Ok(mut notified) = state.notified_unavailable_capabilities.lock() {
+        notified.clear();
     }
 }
 
@@ -1621,8 +1739,17 @@ const PRODUCTION_KEY_ID: &str = "mira-plugins-2026-001";
 const PRODUCTION_PUBLIC_KEY_HEX: &str =
     "eb80fdde2dc7ba507b6c8afbbf5a7de82e6219967edf1914ddb979d5601d39b3";
 
-// Test packages are trusted in all builds until the first production release.
+// Dedicated production key for Mira's Rill model packs and signed bundle index.
+// The private 32-byte seed exists only in GitHub Secrets.
+const RILL_PRODUCTION_KEY_ID: &str = "mira-rill-2026-001";
+const RILL_PRODUCTION_PUBLIC_KEY_HEX: &str =
+    "3d5ada931abc747610850f9e405fee637a3f445c0b4406eb96b41673814fc261";
+
+// Test packages are accepted only by debug/test builds. Release builds trust only
+// the production publisher key above.
+#[cfg(debug_assertions)]
 const TEST_KEY_ID: &str = "TEST-ONLY-mira-plugins";
+#[cfg(debug_assertions)]
 const TEST_PUBLIC_KEY_HEX: &str =
     "00d34dac6e039baada3d3d9aa65390f2887d09d73b396af8434ecb29c233d666";
 
@@ -1638,6 +1765,7 @@ fn production_trust_store() -> TrustStore {
         PRODUCTION_KEY_ID.to_string(),
         decode_key(PRODUCTION_PUBLIC_KEY_HEX),
     );
+    #[cfg(debug_assertions)]
     trust
         .0
         .insert(TEST_KEY_ID.to_string(), decode_key(TEST_PUBLIC_KEY_HEX));
@@ -1733,6 +1861,11 @@ struct AppSettings {
     automatic_update_checks: bool,
     automatic_update_install: bool,
     automatic_plugin_update_checks: bool,
+    /// 本地 AI 引擎总开关。各业务功能仍需通过 local_ai_features 独立选择。
+    local_ai_analysis_enabled: bool,
+    /// 各业务功能是否使用本地 AI。键是稳定的功能 ID，不与插件或页面名称绑定。
+    #[serde(default = "default_local_ai_features")]
+    local_ai_features: BTreeMap<String, bool>,
     /// 电量使用情况：是否记录电量历史。默认开启。
     battery_history_enabled: bool,
     /// 电量历史保留天数。默认 30 天。
@@ -1781,11 +1914,22 @@ impl Default for AppSettings {
             automatic_update_checks: true,
             automatic_update_install: false,
             automatic_plugin_update_checks: true,
+            local_ai_analysis_enabled: false,
+            local_ai_features: default_local_ai_features(),
             battery_history_enabled: true,
             battery_history_retention_days: 30,
             unusual_drain_alerts: false,
         }
     }
+}
+
+fn local_ai_feature_enabled(settings: &AppSettings, feature_id: &str) -> bool {
+    settings.local_ai_analysis_enabled
+        && settings
+            .local_ai_features
+            .get(feature_id)
+            .copied()
+            .unwrap_or(false)
 }
 
 impl AppSettings {
@@ -2078,7 +2222,44 @@ mod settings_tests {
         assert!(settings.automatic_update_checks);
         assert!(!settings.automatic_update_install);
         assert!(settings.automatic_plugin_update_checks);
+        assert!(!settings.local_ai_analysis_enabled);
+        assert_eq!(
+            settings
+                .local_ai_features
+                .get(LOCAL_AI_FEATURE_BATTERY_USAGE),
+            Some(&true)
+        );
         assert_eq!(settings.battery_history_retention_days, 30);
+    }
+
+    #[test]
+    fn local_ai_feature_gate_requires_master_and_feature_scope() {
+        let mut settings = AppSettings {
+            local_ai_analysis_enabled: true,
+            ..Default::default()
+        };
+        assert!(local_ai_feature_enabled(
+            &settings,
+            LOCAL_AI_FEATURE_BATTERY_USAGE
+        ));
+
+        settings
+            .local_ai_features
+            .insert(LOCAL_AI_FEATURE_BATTERY_USAGE.to_string(), false);
+        assert!(!local_ai_feature_enabled(
+            &settings,
+            LOCAL_AI_FEATURE_BATTERY_USAGE
+        ));
+
+        settings
+            .local_ai_features
+            .insert(LOCAL_AI_FEATURE_BATTERY_USAGE.to_string(), true);
+        settings.local_ai_analysis_enabled = false;
+        assert!(!local_ai_feature_enabled(
+            &settings,
+            LOCAL_AI_FEATURE_BATTERY_USAGE
+        ));
+        assert!(!local_ai_feature_enabled(&settings, "futureFeature"));
     }
 
     #[test]
@@ -3980,6 +4161,41 @@ mod capability_tests {
     }
 
     #[test]
+    fn provisional_capabilities_keep_layout_visible_without_runtime_outputs() {
+        let cap = make_capability(
+            "dpi",
+            Some(CapabilityProbe {
+                output: "dpi".into(),
+                field: "value".into(),
+            }),
+            None,
+        );
+        let inspection = make_inspection(vec![cap]);
+        let result =
+            provisional_plugin_capabilities(&inspection, "usb", &BTreeMap::new(), "test-family");
+
+        assert!(result[0].available);
+        assert_eq!(
+            result[0].metadata.get("_miraRuntimePending"),
+            Some(&serde_json::Value::Bool(true))
+        );
+    }
+
+    #[test]
+    fn provisional_capabilities_still_respect_known_connection_branches() {
+        let cap = make_capability("wired-only", None, Some(vec!["usb".into()]));
+        let inspection = make_inspection(vec![cap]);
+        let result = provisional_plugin_capabilities(
+            &inspection,
+            "receiver",
+            &BTreeMap::new(),
+            "test-family",
+        );
+
+        assert!(!result[0].available);
+    }
+
+    #[test]
     fn connections_receiver_alias_matches_wireless() {
         // 修复 #3：声明 ["receiver"] 应匹配 "wireless" 连接
         let cap = make_capability("lighting", None, Some(vec!["receiver".into()]));
@@ -5636,6 +5852,7 @@ enum ReadPlan {
 }
 
 const CONNECTED_PRESENCE_INTERVAL: Duration = Duration::from_secs(15);
+const INITIAL_FULL_START_DELAY: Duration = Duration::from_millis(90);
 
 impl ReadPlan {
     /// 返回此计划对应的语义字段集合（用于工作流投影）。
@@ -5755,6 +5972,25 @@ enum SnapshotReadiness {
     Quick,
     /// 已读取完整状态和能力。
     Full,
+}
+
+fn next_initial_read_plan(readiness: &HashMap<String, SnapshotReadiness>) -> Option<ReadPlan> {
+    readiness
+        .values()
+        .any(|value| *value != SnapshotReadiness::Full)
+        .then_some(ReadPlan::Full)
+}
+
+fn skip_already_complete_initial_read(
+    readiness: &HashMap<String, SnapshotReadiness>,
+    device_path: &str,
+    plan: ReadPlan,
+) -> bool {
+    plan == ReadPlan::Full
+        && readiness
+            .values()
+            .any(|value| *value != SnapshotReadiness::Full)
+        && readiness.get(device_path) == Some(&SnapshotReadiness::Full)
 }
 
 /// 部分快照补丁：用于合并不同读取计划的结果。
@@ -6042,15 +6278,16 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
 
             let (connection, kind) = connection_kind(&device.connection);
 
-            // PresenceOnly：不解析包、不执行工作流，只更新设备存在信息。
-            // 保留旧快照的动态状态（电量、DPI 等），仅刷新 plugin_id 和 connection。
+            // PresenceOnly：不执行协议工作流，只更新设备存在信息。首次识别时从
+            // 已验证插件的静态声明构建稳定 UI 布局；数值和写入能力仍等待 Quick/Full。
+            // 已有快照则保留动态状态（电量、DPI 等），仅刷新 plugin_id 和 connection。
             if plan == ReadPlan::PresenceOnly {
                 let existing = state
                     .last_snapshot
                     .lock()
                     .ok()
                     .and_then(|map| map.get(&device.path).cloned());
-                let snapshot = apply_snapshot_patch(
+                let mut snapshot = apply_snapshot_patch(
                     existing.as_ref(),
                     SnapshotPatch::Presence {
                         plugin_id: Some(inspection.plugin_id.clone()),
@@ -6061,11 +6298,42 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
                     devices,
                     connection,
                 );
+                if snapshot.plugin_capabilities.is_empty() {
+                    snapshot.plugin_capabilities = provisional_plugin_capabilities(
+                        inspection,
+                        capability_connection_label(connection),
+                        plugin_files,
+                        &device.family,
+                    );
+                }
                 entries.push((device.path.clone(), snapshot));
                 if let Ok(mut readiness) = state.snapshot_readiness.lock() {
                     readiness
                         .entry(device.path.clone())
                         .or_insert(SnapshotReadiness::Detected);
+                }
+                continue;
+            }
+
+            // When one of several devices is still completing its initial Full
+            // read, do not repeatedly rerun the expensive Full workflow on peers
+            // that are already complete. A manual Full refresh still reaches all
+            // devices once the initial-readiness set has settled.
+            let already_complete = state
+                .snapshot_readiness
+                .lock()
+                .ok()
+                .is_some_and(|readiness| {
+                    skip_already_complete_initial_read(&readiness, &device.path, plan)
+                });
+            if already_complete {
+                if let Some(snapshot) = state
+                    .last_snapshot
+                    .lock()
+                    .ok()
+                    .and_then(|map| map.get(&device.path).cloned())
+                {
+                    entries.push((device.path.clone(), snapshot));
                 }
                 continue;
             }
@@ -6412,6 +6680,11 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
             if snapshots_changed {
                 let _ = app.emit("device-snapshots-updated", &snapshot_entries);
             }
+            // 参数不可用通知：检查新连接设备是否有 probe 检测为不可用的能力，
+            // 如有则发送系统通知（每设备仅通知一次）。
+            if plan != ReadPlan::PresenceOnly {
+                notify_unavailable_capabilities(app, &state, &new_map);
+            }
             // 电量使用情况采样：在设备轮询成功后记录电量样本。
             // 记录失败不影响设备功能（record_samples 内部静默处理）。
             if plan != ReadPlan::PresenceOnly {
@@ -6497,7 +6770,8 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
 /// - BatteryOnly uses an adaptive 3/5/15/30-minute cadence based on charging,
 ///   visibility, and how long the battery state has remained unchanged.
 /// - The fallback interval otherwise adapts to the situation:
-///   * 500 ms only while the initial Presence → Quick → Full sequence completes.
+///   * 90 ms between initial Presence and the single Full read, so the static
+///     dashboard can paint without adding a visible half-second pause.
 ///   * 1 s when no device is connected and the window is visible, so plug-in
 ///     is detected quickly without continuous high-frequency polling.
 ///   * 15 s for a connected stable device or while hidden without a device.
@@ -6529,21 +6803,11 @@ fn spawn_device_reader(app: AppHandle) {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             let connected = !snapshots.is_empty();
-            let next_initial_plan = state.snapshot_readiness.lock().ok().and_then(|readiness| {
-                if readiness
-                    .values()
-                    .any(|value| *value == SnapshotReadiness::Detected)
-                {
-                    Some(ReadPlan::Quick)
-                } else if readiness
-                    .values()
-                    .any(|value| *value == SnapshotReadiness::Quick)
-                {
-                    Some(ReadPlan::Full)
-                } else {
-                    None
-                }
-            });
+            let next_initial_plan = state
+                .snapshot_readiness
+                .lock()
+                .ok()
+                .and_then(|readiness| next_initial_read_plan(&readiness));
             (connected, next_initial_plan)
         };
 
@@ -6587,8 +6851,8 @@ fn spawn_device_reader(app: AppHandle) {
             last_battery_read_at = Some(now);
         }
 
-        // Initial Presence → Quick → Full progresses promptly; once initialized,
-        // a connected device returns to lightweight presence checks.
+        // Initial Presence → Full progresses as one coherent data arrival; once
+        // initialized, a connected device returns to lightweight presence checks.
         let (connected, initializing) = {
             let connected = !state
                 .last_snapshot
@@ -6607,7 +6871,11 @@ fn spawn_device_reader(app: AppHandle) {
             (connected, initializing)
         };
         let observing_quick = quick_observation_active(&state, visible, Instant::now());
-        let wait = if initializing {
+        let wait = if initializing && plan == ReadPlan::PresenceOnly {
+            INITIAL_FULL_START_DELAY
+        } else if initializing {
+            // A failed or externally interrupted Full read still respects the
+            // existing retry/backoff cadence instead of forming a tight loop.
             std::time::Duration::from_millis(500)
         } else if observing_quick {
             QUICK_OBSERVE_INTERVAL
@@ -6828,11 +7096,7 @@ async fn device_mutate(
         let _ = tx.send(result);
     });
     match rx.recv_timeout(std::time::Duration::from_secs(30)) {
-        Ok(Ok(snapshot)) => {
-            start_quick_observation(&app.state::<SessionState>());
-            Ok(snapshot)
-        }
-        Ok(Err(error)) => Err(error),
+        Ok(result) => result,
         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
             Err("设备写入超时（30 秒）。鼠标可能处于休眠状态，请移动鼠标唤醒后重试。写入可能仍在后台执行，设备状态将在完成后自动刷新。".into())
         }
@@ -6949,9 +7213,8 @@ fn device_mutate_blocking(
             mutate_device_with_package(&package, &mutate_context, mutation, params)?;
         // The mutation engine already ran its declared verify parser and
         // assertions. Merge that verified object into the cached raw outputs,
-        // normalize locally, and publish immediately. UI-triggered mutations open
-        // a bounded Quick observation window in `device_mutate`; background writes
-        // such as quiet lighting do not start foreground polling.
+        // normalize locally, and publish immediately; the on-demand scheduler
+        // performs one follow-up Quick read for unrelated dynamic state.
         merge_verified_mutation_output(&mut base_outputs, &mutation_result);
         let mut reading = normalize_device_outputs_with_package(&package, base_outputs);
         reading.connection = Some(kind);
@@ -7038,6 +7301,7 @@ fn device_mutate_blocking(
     let _ = app.emit("device-updated", &snapshot);
     let _ = app.emit("device-snapshots-updated", device_snapshot_entries(&state));
     let _ = update_tray(app, Some(&snapshot), &cached_settings(app));
+    request_refresh(&state);
     Ok(snapshot)
 }
 
@@ -7471,6 +7735,67 @@ async fn plugin_update_install(
 }
 
 #[tauri::command]
+async fn local_ai_status(app: tauri::AppHandle) -> Result<local_ai_update::LocalAiStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || local_ai_update::status(&app))
+        .await
+        .map_err(|error| format!("local AI status task failed: {error}"))
+}
+
+#[tauri::command]
+async fn local_ai_updates_check(
+    app: tauri::AppHandle,
+) -> Result<Vec<local_ai_update::LocalAiUpdateInfo>, String> {
+    tauri::async_runtime::spawn_blocking(move || local_ai_update::check_updates(&app))
+        .await
+        .map_err(|error| format!("local AI update-check task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn local_ai_update_install(
+    app: tauri::AppHandle,
+    component: String,
+) -> Result<local_ai_update::LocalAiInstallResult, String> {
+    let app_for_restart = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        local_ai_update::install_update(&app, &component)
+    })
+    .await
+    .map_err(|error| format!("local AI install task failed: {error}"))?;
+    // bundle 更新成功后,如果控制器正在运行则重启以加载新版本。
+    if result.is_ok() {
+        let controller = app_for_restart.state::<SessionState>();
+        if cached_settings(&app_for_restart).local_ai_analysis_enabled {
+            let _ = controller.local_ai_controller.restart(&app_for_restart);
+        } else {
+            controller.local_ai_controller.stop();
+        }
+    }
+    result
+}
+
+#[tauri::command]
+async fn local_ai_update_rollback(
+    app: tauri::AppHandle,
+    component: String,
+) -> Result<local_ai_update::LocalAiStatus, String> {
+    let app_for_restart = app.clone();
+    let result =
+        tauri::async_runtime::spawn_blocking(move || local_ai_update::rollback(&app, &component))
+            .await
+            .map_err(|error| format!("local AI rollback task failed: {error}"))?;
+    // 回滚成功后重启控制器以加载旧版本。
+    if result.is_ok() {
+        let controller = app_for_restart.state::<SessionState>();
+        if cached_settings(&app_for_restart).local_ai_analysis_enabled {
+            let _ = controller.local_ai_controller.restart(&app_for_restart);
+        } else {
+            controller.local_ai_controller.stop();
+        }
+    }
+    result
+}
+
+#[tauri::command]
 fn about_info(app: tauri::AppHandle) -> Result<AboutInfo, String> {
     let package = app.package_info();
     let bundled = active_plugins_info(&app);
@@ -7503,6 +7828,9 @@ fn settings_set(app: tauri::AppHandle, settings: AppSettings) -> Result<AppSetti
     let start_hidden_changed = previous_settings.start_hidden != settings.start_hidden;
     let low_battery_threshold_changed =
         previous_settings.low_battery_threshold != settings.low_battery_threshold;
+    // 本地 AI 总开关翻转时,启动或停止常驻 mira-runtime 子进程。
+    let local_ai_toggle =
+        previous_settings.local_ai_analysis_enabled != settings.local_ai_analysis_enabled;
     // 安静灯光设置变更时唤醒调度器立即重新评估阶段。
     let night_mode_changed = previous_settings.night_mode_enabled != settings.night_mode_enabled
         || previous_settings.night_mode_start != settings.night_mode_start
@@ -7549,6 +7877,15 @@ fn settings_set(app: tauri::AppHandle, settings: AppSettings) -> Result<AppSetti
     }
     if night_mode_changed {
         request_night_mode_eval(&app.state::<SessionState>());
+    }
+    if local_ai_toggle {
+        let controller = app.state::<SessionState>();
+        if settings.local_ai_analysis_enabled {
+            // 启动失败不阻塞设置写入:controller 内部标记 Failed,后续 predict 自动重启。
+            let _ = controller.local_ai_controller.start(&app);
+        } else {
+            controller.local_ai_controller.stop();
+        }
     }
     Ok(settings)
 }
@@ -7805,17 +8142,29 @@ fn take_pending_notification_action(state: tauri::State<SessionState>) -> Option
 
 /// 获取电量历史（24 小时或 10 天聚合 + 洞察分析）。
 #[tauri::command]
-fn battery_history_get(
-    state: tauri::State<SessionState>,
+async fn battery_history_get(
+    app: tauri::AppHandle,
     range: String,
 ) -> Result<BatteryHistoryResponse, String> {
-    let settings = cached_settings_for_state(&state);
-    let range_str = if range == "24h" { "24h" } else { "10d" };
-    Ok(battery_history::build_response(
-        &state.battery_history,
-        settings.low_battery_threshold,
-        range_str,
-    ))
+    tauri::async_runtime::spawn_blocking(move || {
+        // Keep the UI response ordered behind the battery read it requested.
+        // `read_device_once` serializes on the existing device I/O lock and records
+        // the resulting sample before returning, so predictions cannot race ahead
+        // with stale history when the battery page opens or changes range.
+        read_device_once(&app, ReadPlan::BatteryOnly);
+        let state = app.state::<SessionState>();
+        let settings = cached_settings_for_state(&state);
+        let range_str = if range == "24h" { "24h" } else { "10d" };
+        Ok(battery_history::build_response_with_analysis(
+            &state.battery_history,
+            settings.low_battery_threshold,
+            range_str,
+            local_ai_feature_enabled(&settings, LOCAL_AI_FEATURE_BATTERY_USAGE),
+            Some(&app),
+        ))
+    })
+    .await
+    .map_err(|error| format!("battery history task failed: {error}"))?
 }
 
 /// 清除电量历史。不影响低电量通知设置。
@@ -7858,9 +8207,7 @@ fn cached_settings_for_state(state: &SessionState) -> AppSettings {
 
 pub(crate) fn focus_main_from_tray(app: &AppHandle) {
     focus_main(app.get_webview_window("main"));
-    let state = app.state::<SessionState>();
-    reset_all_backoff(&state);
-    start_quick_observation(&state);
+    request_presence_refresh(&app.state::<SessionState>());
 }
 
 pub(crate) fn open_battery_usage_from_tray(app: &AppHandle) {
@@ -8015,6 +8362,34 @@ fn tr_abnormal_drain_body(lang: &str, device_name: &str) -> String {
         )
     } else {
         format!("{} 最近掉电速度明显高于平时。", device_name)
+    }
+}
+
+fn tr_unavailable_capabilities_title(lang: &str) -> &'static str {
+    if lang == "en" {
+        "Some controls are unavailable"
+    } else {
+        "部分参数不可用"
+    }
+}
+
+fn tr_unavailable_capabilities_body(
+    lang: &str,
+    device_name: &str,
+    capabilities: &[String],
+) -> String {
+    if lang == "en" {
+        format!(
+            "{} does not support: {}",
+            device_name,
+            capabilities.join(", ")
+        )
+    } else {
+        format!(
+            "{} 不支持以下参数：{}",
+            device_name,
+            capabilities.join("、")
+        )
     }
 }
 
@@ -8753,6 +9128,17 @@ pub fn run() {
             let startup_settings = cached_settings(app.handle());
             let launch_hidden = should_start_hidden(&startup_settings);
             refresh_autostart_entry_if_enabled(app.handle());
+            if startup_settings.local_ai_analysis_enabled {
+                if let Err(error) = app
+                    .state::<SessionState>()
+                    .local_ai_controller
+                    .start(app.handle())
+                {
+                    // AI is an optional accelerator; a missing/invalid bundle must not block
+                    // app startup. The controller records Failed and will retry after cooldown.
+                    eprintln!("[mira] local AI startup unavailable: {error}");
+                }
+            }
 
             // macOS native Vibrancy backdrop.
             // Sidebar 材质提供类似 Finder/Mail 侧边栏的明显毛玻璃效果；
@@ -8831,8 +9217,8 @@ pub fn run() {
                             hide_main_window_to_tray(&app_handle);
                         }
                         tauri::WindowEvent::Focused(true) => {
-                            // Window focus opens a bounded Quick observation window so physical
-                            // DPI/light changes become visible without restoring permanent polling.
+                            // Window focus only rechecks presence; protocol fields are read
+                            // when the user opens a related control.
                             // 同时刷新系统主题缓存：窗口隐藏期间系统主题可能已变化，
                             // 但 ThemeChanged 事件可能未触发（窗口不可见时）。
                             let state = app_handle.state::<SessionState>();
@@ -8848,8 +9234,7 @@ pub fn run() {
                             if let Some(window) = app_handle.get_webview_window("main") {
                                 apply_macos_vibrancy(&window);
                             }
-                            reset_all_backoff(&state);
-                            start_quick_observation(&state);
+                            request_presence_refresh(&app_handle.state::<SessionState>());
                         }
                         tauri::WindowEvent::ThemeChanged(_) => {
                             // 窗口可见时系统主题变化会触发此事件。
@@ -8955,6 +9340,10 @@ pub fn run() {
             open_external_url,
             plugin_updates_check,
             plugin_update_install,
+            local_ai_status,
+            local_ai_updates_check,
+            local_ai_update_install,
+            local_ai_update_rollback,
             device_config_export,
             device_config_import,
             about_info,
@@ -9085,19 +9474,50 @@ mod read_plan_tests {
     }
 
     #[test]
-    fn initial_sequence_is_presence_then_quick_then_full() {
+    fn initial_sequence_is_presence_then_full() {
         assert_eq!(
             select_read_plan(false, None, None, false, false),
             ReadPlan::PresenceOnly
         );
         assert_eq!(
-            select_read_plan(true, Some(ReadPlan::Quick), None, false, false),
-            ReadPlan::Quick
-        );
-        assert_eq!(
             select_read_plan(true, Some(ReadPlan::Full), None, false, false),
             ReadPlan::Full
         );
+    }
+
+    #[test]
+    fn detected_or_partial_snapshot_is_completed_with_one_full_read() {
+        let mut readiness = HashMap::from([("mouse".to_string(), SnapshotReadiness::Detected)]);
+        assert_eq!(next_initial_read_plan(&readiness), Some(ReadPlan::Full));
+
+        readiness.insert("mouse".to_string(), SnapshotReadiness::Quick);
+        assert_eq!(next_initial_read_plan(&readiness), Some(ReadPlan::Full));
+
+        readiness.insert("mouse".to_string(), SnapshotReadiness::Full);
+        assert_eq!(next_initial_read_plan(&readiness), None);
+    }
+
+    #[test]
+    fn multi_device_initialization_does_not_reread_complete_peers() {
+        let readiness = HashMap::from([
+            ("ready".to_string(), SnapshotReadiness::Full),
+            ("sleeping".to_string(), SnapshotReadiness::Detected),
+        ]);
+        assert!(skip_already_complete_initial_read(
+            &readiness,
+            "ready",
+            ReadPlan::Full
+        ));
+        assert!(!skip_already_complete_initial_read(
+            &readiness,
+            "sleeping",
+            ReadPlan::Full
+        ));
+        assert!(!skip_already_complete_initial_read(
+            &readiness,
+            "ready",
+            ReadPlan::Quick
+        ));
     }
 
     #[test]

@@ -15,8 +15,16 @@ vi.mock('./notify', () => ({
   notifySuccess: vi.fn(),
 }));
 
-const settingsEnabled = { batteryHistoryEnabled: true };
-const settingsDisabled = { batteryHistoryEnabled: false };
+const settingsEnabled = {
+  batteryHistoryEnabled: true,
+  localAiAnalysisEnabled: true,
+  localAiFeatures: { batteryUsage: true },
+};
+const settingsDisabled = {
+  batteryHistoryEnabled: false,
+  localAiAnalysisEnabled: false,
+  localAiFeatures: { batteryUsage: true },
+};
 
 const emptyResponse: BatteryHistoryResponse = {
   range: '24h',
@@ -63,6 +71,49 @@ describe('BatteryUsageModal', () => {
     await waitFor(() => {
       expect(screen.getByText('还没有足够的电量记录')).toBeInTheDocument();
     });
+  });
+
+  it('hides AI labels when the battery feature scope is off even if the engine is on', async () => {
+    mockInvoke({
+      settings: {
+        batteryHistoryEnabled: true,
+        localAiAnalysisEnabled: true,
+        localAiFeatures: { batteryUsage: false },
+      },
+      response: MOCK_BATTERY_HISTORY_24H,
+    });
+    render(<BatteryUsageModal open onClose={() => {}} hasBattery />);
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('battery_history_get', { range: '24h' }));
+
+    expect(screen.queryByText('本地 AI')).toBeNull();
+    expect(screen.queryByText('本地 AI 洞察')).toBeNull();
+    expect(screen.getByText('用电洞察')).toBeInTheDocument();
+    expect(screen.getByText('根据本地电量历史生成趋势、耗电与充电习惯摘要')).toBeInTheDocument();
+  });
+
+  it('uses caller-provided settings so an already-open settings page cannot drift from the modal', async () => {
+    mockInvoke({
+      settings: {
+        batteryHistoryEnabled: true,
+        localAiAnalysisEnabled: false,
+        localAiFeatures: { batteryUsage: true },
+      },
+      response: MOCK_BATTERY_HISTORY_24H,
+    });
+    render(
+      <BatteryUsageModal
+        open
+        onClose={() => {}}
+        hasBattery
+        batteryHistoryEnabled
+        aiAnalysisEnabled
+      />,
+    );
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('battery_history_get', { range: '24h' }));
+
+    expect(invokeMock).not.toHaveBeenCalledWith('settings_get');
+    expect(screen.getByText('本地 AI')).toBeInTheDocument();
+    expect(screen.getByText('本地 AI 洞察')).toBeInTheDocument();
   });
 
   it('renders the four summary blocks in one row above the 24h chart', async () => {
@@ -224,16 +275,48 @@ describe('BatteryUsageModal', () => {
     expect(document.querySelector('.battery-chart')).toHaveAttribute('viewBox', '0 0 520 162');
   });
 
-  it('switches selected device from the status strip menu', async () => {
+  it('keeps the native device switcher clickable across repeated selections', async () => {
     mockInvoke({ response: MOCK_BATTERY_HISTORY_24H });
     render(<BatteryUsageModal open onClose={() => {}} hasBattery />);
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('battery_history_get', { range: '24h' }));
     const switcher = screen.getByRole('button', { name: '切换设备' });
-    fireEvent.click(switcher);
-    const receiverItem = screen.getByRole('menuitemradio', { name: /接收器/ });
-    expect(receiverItem).toHaveAttribute('aria-checked', 'false');
-    fireEvent.click(receiverItem);
-    await waitFor(() => expect(document.querySelector('.battery-status-metric strong')).toHaveTextContent('96%'));
+    expect(switcher.tagName).toBe('BUTTON');
+    expect(switcher.querySelector('button')).toBeNull();
+
+    for (let index = 0; index < 12; index += 1) {
+      const selectReceiver = index % 2 === 0;
+      fireEvent.click(switcher);
+      const item = screen.getByRole('menuitemradio', { name: selectReceiver ? /接收器/ : /鼠标/ });
+      fireEvent.click(item);
+      expect(document.querySelector('.battery-status-metric strong'))
+        .toHaveTextContent(selectReceiver ? '96%' : '82%');
+      expect(switcher).toHaveAttribute('aria-expanded', 'false');
+    }
+  });
+
+  it('falls back to an available device when a refreshed range drops the selection', async () => {
+    const tenDayWithoutReceiver: BatteryHistoryResponse = {
+      ...MOCK_BATTERY_HISTORY_10D,
+      devices: MOCK_BATTERY_HISTORY_10D.devices.filter((device) => device.componentId !== 'receiver'),
+      series: MOCK_BATTERY_HISTORY_10D.series.filter((series) => series.key !== 'mouse:abc123:receiver'),
+    };
+    invokeMock.mockImplementation((command: string, payload?: { range?: string }) => {
+      if (command === 'settings_get') return Promise.resolve(settingsEnabled);
+      if (command === 'battery_history_get') {
+        return Promise.resolve(payload?.range === '10d' ? tenDayWithoutReceiver : MOCK_BATTERY_HISTORY_24H);
+      }
+      return Promise.resolve(undefined);
+    });
+
+    render(<BatteryUsageModal open onClose={() => {}} hasBattery />);
+    await waitFor(() => expect(document.querySelector('.battery-status-metric strong')).toHaveTextContent('82%'));
+    fireEvent.click(screen.getByRole('button', { name: '切换设备' }));
+    fireEvent.click(screen.getByRole('menuitemradio', { name: /接收器/ }));
+    expect(document.querySelector('.battery-status-metric strong')).toHaveTextContent('96%');
+
+    fireEvent.click(screen.getByRole('tab', { name: '10 天' }));
+    await waitFor(() => expect(document.querySelector('.battery-status-metric strong')).toHaveTextContent('82%'));
+    expect(document.querySelector('.battery-status-strip')).toBeInTheDocument();
   });
 
   it('defaults to the current mouse instead of the first historical device', async () => {
