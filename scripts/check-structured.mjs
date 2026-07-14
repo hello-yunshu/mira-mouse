@@ -31,6 +31,7 @@ for (const file of [...yamlFiles, 'CITATION.cff']) YAML.parse(await readFile(fil
 for (const file of yamlFiles.filter((file) => file.includes('/workflows/'))) {
   const text = await readFile(file, 'utf8');
   for (const match of text.matchAll(/uses:\s*([^\s#]+)/g)) {
+    if (match[1].startsWith('./.github/workflows/')) continue;
     if (/@[0-9a-f]{40}$/.test(match[1])) throw new Error(`${file} has SHA-pinned action ${match[1]}`);
     if (!/@[^@\s]+$/.test(match[1])) throw new Error(`${file} has action without an explicit ref ${match[1]}`);
   }

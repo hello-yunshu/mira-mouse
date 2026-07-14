@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useTranslation } from 'react-i18next';
 import { ChartBar } from '@phosphor-icons/react';
-import type { AppSettings, BundledPluginInfo, AboutInfo, DiscoveredDevice, PluginCapability, ThemeMode } from './types';
+import type { AppSettings, BundledPluginInfo, AboutInfo, DiscoveredDevice, LocalAiInstallResult, LocalAiStatus, LocalAiUpdateInfo, PluginCapability, ThemeMode } from './types';
 import { Tooltip } from './Tooltip';
 import { notifyError, notifyInfo } from './notify';
 import { extractChannel, exportDiagnostics } from './plugin-utils';
@@ -13,6 +13,7 @@ import { save, open } from '@tauri-apps/plugin-dialog';
 import { ExternalLink } from './ExternalLink';
 import { startAutomaticAppUpdateCheck } from './updater';
 import { checkForPluginUpdates, installPluginUpdate, onPluginUpdateState, pluginUpdateState, startAutomaticPluginUpdateCheck, type PluginUpdateState } from './plugin-updater';
+import { DEFAULT_LOCAL_AI_FEATURES, LOCAL_AI_FEATURE, localAiFeatureEnabled, setLocalAiFeature } from './localAi';
 
 const DEFAULT_SETTINGS: AppSettings = {
   language: 'auto',
@@ -39,9 +40,16 @@ const DEFAULT_SETTINGS: AppSettings = {
   automaticUpdateChecks: true,
   automaticUpdateInstall: false,
   automaticPluginUpdateChecks: true,
+  localAiAnalysisEnabled: false,
+  localAiFeatures: { ...DEFAULT_LOCAL_AI_FEATURES },
   batteryHistoryEnabled: true,
   batteryHistoryRetentionDays: 30,
   unusualDrainAlerts: false,
+};
+
+const EMPTY_LOCAL_AI_STATUS: LocalAiStatus = {
+  ready: false,
+  rollbackAvailable: false,
 };
 
 type SettingsTab = 'general' | 'device' | 'plugins' | 'privacy' | 'about';
@@ -82,13 +90,24 @@ function isWindowsPlatform(): boolean {
   return previewPlatform === 'windows' || navigator.userAgent.includes('Windows');
 }
 
-export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, onThemeChange, previewMode = false, pluginCapabilities = [], writableMutations = [], focusPluginUpdateToken = 0 }: { onNavigateAbout: () => void; onOpenBatteryUsage?: () => void; onThemeChange: (theme: ThemeMode) => void; previewMode?: boolean; pluginCapabilities?: PluginCapability[]; writableMutations?: string[]; focusPluginUpdateToken?: number }) {
+function isMacPlatform(): boolean {
+  const previewPlatform = new URLSearchParams(window.location.search).get('platform');
+  return previewPlatform === 'macos'
+    || (previewPlatform === null && /Macintosh|Mac OS X/.test(navigator.userAgent));
+}
+
+export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, onBatteryUsageSettingsChange, onThemeChange, previewMode = false, pluginCapabilities = [], writableMutations = [], focusPluginUpdateToken = 0 }: { onNavigateAbout: () => void; onOpenBatteryUsage?: () => void; onBatteryUsageSettingsChange?: (settings: { batteryHistoryEnabled: boolean; aiAnalysisEnabled: boolean }) => void; onThemeChange: (theme: ThemeMode) => void; previewMode?: boolean; pluginCapabilities?: PluginCapability[]; writableMutations?: string[]; focusPluginUpdateToken?: number }) {
   const { t } = useTranslation();
   const windowsPlatform = isWindowsPlatform();
+  const macPlatform = isMacPlatform();
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [autostartEnabled, setAutostartEnabled] = useState(false);
   const [plugins, setPlugins] = useState<BundledPluginInfo[]>([]);
   const [pluginUpdate, setPluginUpdate] = useState<PluginUpdateState>(pluginUpdateState());
+  const [localAiStatus, setLocalAiStatus] = useState<LocalAiStatus>(EMPTY_LOCAL_AI_STATUS);
+  const [localAiUpdates, setLocalAiUpdates] = useState<LocalAiUpdateInfo[]>([]);
+  const [localAiChecking, setLocalAiChecking] = useState(false);
+  const [localAiInstalling, setLocalAiInstalling] = useState<'bundle' | null>(null);
   const [diagnostics, setDiagnostics] = useState<string>('');
   const [discovered, setDiscovered] = useState<DiscoveredDevice[]>([]);
   const [saved, setSaved] = useState(false);
@@ -102,13 +121,15 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
   const pluginUpdates = pluginUpdate.updates;
   const pluginUpdatesChecking = pluginUpdate.phase === 'checking';
   const pluginInstalling = pluginUpdate.installingPluginId;
+  const batteryAiAnalysisEnabled = localAiFeatureEnabled(settings, LOCAL_AI_FEATURE.batteryUsage);
 
   // 通过 resolveLightingMutations 从插件 capability 与可写 mutation 计算灯光支持情况，
   // 替代已移除的 supportsAnyLighting/supportsLightingMutation 旧导出。
-  const lightingMutations = resolveLightingMutations(pluginCapabilities, writableMutations);
+  const availablePluginCapabilities = pluginCapabilities.filter((capability) => capability.available !== false);
+  const lightingMutations = resolveLightingMutations(availablePluginCapabilities, writableMutations);
   const supportsAnyLighting = lightingMutations.length > 0;
   // 灯光角色可用性由插件 zone 声明驱动，UI 不再硬编码 mutation 名。
-  const { mouse: supportsMouseLighting, receiver: supportsReceiverLighting } = resolveLightingRoles(pluginCapabilities, writableMutations);
+  const { mouse: supportsMouseLighting, receiver: supportsReceiverLighting } = resolveLightingRoles(availablePluginCapabilities, writableMutations);
 
   // 点击「插件更新可用」通知后，先切到 plugins 标签，待渲染后再滚动聚焦。
   useEffect(() => {
@@ -137,7 +158,11 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
     invoke<AppSettings>('settings_get')
       .then((loaded) => {
         // 与默认值合并，避免后端字段缺失导致受控输入变为 undefined
-        const merged: AppSettings = { ...DEFAULT_SETTINGS, ...loaded };
+        const merged: AppSettings = {
+          ...DEFAULT_SETTINGS,
+          ...loaded,
+          localAiFeatures: { ...DEFAULT_LOCAL_AI_FEATURES, ...loaded.localAiFeatures },
+        };
         setSettings(merged);
         onThemeChange(merged.theme as ThemeMode);
       })
@@ -148,9 +173,19 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
     invoke<AboutInfo>('about_info')
       .then((info) => setPlugins(info.bundledPlugins ?? []))
       .catch(() => setPlugins([]));
+    invoke<LocalAiStatus>('local_ai_status')
+      .then((status) => status && setLocalAiStatus(status))
+      .catch(() => setLocalAiStatus(EMPTY_LOCAL_AI_STATUS));
   }, [onThemeChange, previewMode]);
 
   useEffect(() => onPluginUpdateState(setPluginUpdate), []);
+
+  useEffect(() => {
+    onBatteryUsageSettingsChange?.({
+      batteryHistoryEnabled: settings.batteryHistoryEnabled,
+      aiAnalysisEnabled: batteryAiAnalysisEnabled,
+    });
+  }, [batteryAiAnalysisEnabled, onBatteryUsageSettingsChange, settings.batteryHistoryEnabled]);
 
   function update(patch: Partial<AppSettings>) {
     const next = { ...settings, ...patch };
@@ -307,6 +342,50 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
     }
   }
 
+  async function checkLocalAiUpdates() {
+    if (previewMode) return;
+    setLocalAiChecking(true);
+    try {
+      const updates = await invoke<LocalAiUpdateInfo[]>('local_ai_updates_check');
+      setLocalAiUpdates(updates ?? []);
+    } catch (error) {
+      notifyError(t('notification.checkLocalAiUpdateFailed'), String(error));
+    } finally {
+      setLocalAiChecking(false);
+    }
+  }
+
+  async function installLocalAiUpdate() {
+    if (previewMode) return;
+    setLocalAiInstalling('bundle');
+    try {
+      await invoke<LocalAiInstallResult>('local_ai_update_install', { component: 'bundle' });
+      const nextStatus = await invoke<LocalAiStatus>('local_ai_status');
+      if (nextStatus) setLocalAiStatus(nextStatus);
+      setLocalAiUpdates((updates) => updates.map((updateInfo) => updateInfo.component === 'bundle'
+        ? { ...updateInfo, currentVersion: updateInfo.availableVersion, updateAvailable: false }
+        : updateInfo));
+    } catch (error) {
+      notifyError(t('notification.installLocalAiUpdateFailed'), String(error));
+    } finally {
+      setLocalAiInstalling(null);
+    }
+  }
+
+  async function rollbackLocalAi() {
+    if (previewMode) return;
+    setLocalAiInstalling('bundle');
+    try {
+      const nextStatus = await invoke<LocalAiStatus>('local_ai_update_rollback', { component: 'bundle' });
+      if (nextStatus) setLocalAiStatus(nextStatus);
+      setLocalAiUpdates([]);
+    } catch (error) {
+      notifyError(t('notification.rollbackLocalAiFailed'), String(error));
+    } finally {
+      setLocalAiInstalling(null);
+    }
+  }
+
   return (
     <main className="settings-page">
       <header>
@@ -379,9 +458,9 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
                 <Toggle checked={settings.trayShowBatteryTitle} onChange={(v) => update({ trayShowBatteryTitle: v })} label={t('settings.trayBattery.label')} />
               )}
             </SettingRow>
-            <SettingRow title={t('settings.trayIconColor.label')} hint={t('settings.trayIconColor.hint')}>
+            <SettingRow title={t('settings.trayIconColor.label')} hint={t(macPlatform ? 'settings.trayIconColor.hintMac' : 'settings.trayIconColor.hint')}>
               <select value={settings.trayIconColor} onChange={(e) => update({ trayIconColor: e.target.value })} aria-label={t('settings.trayIconColor.label')}>
-                <option value="auto">{t('settings.trayIconColor.auto')}</option>
+                <option value="auto">{t(macPlatform ? 'settings.trayIconColor.autoMac' : 'settings.trayIconColor.auto')}</option>
                 <option value="white">{t('settings.trayIconColor.white')}</option>
                 <option value="black">{t('settings.trayIconColor.black')}</option>
               </select>
@@ -438,10 +517,12 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
 
           <section className="card settings-section" id="settings-battery-history-section">
             <div className="card-title">
-              <h2 className="settings-title-with-badge">
-                {t('settings.section.batteryHistory')}
-                <span className="settings-feature-badge">{t('batteryUsage.aiBadge')}</span>
-              </h2>
+              <div className="settings-title-group">
+                <h2>{t('settings.section.batteryHistory')}</h2>
+                {batteryAiAnalysisEnabled && (
+                  <span className="settings-feature-badge">{t('batteryUsage.aiBadge')}</span>
+                )}
+              </div>
               <button type="button" className="settings-inline-action" onClick={onOpenBatteryUsage}>
                 <ChartBar weight="regular" />
                 <span>{t('batteryUsage.viewTrend')}</span>
@@ -452,6 +533,17 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
                 checked={settings.batteryHistoryEnabled}
                 onChange={(v) => update({ batteryHistoryEnabled: v })}
                 label={t('batteryUsage.recordEnabled')}
+              />
+            </SettingRow>
+            <SettingRow title={t('batteryUsage.aiAnalysisToggle')} hint={t('batteryUsage.aiAnalysisToggleHint')}>
+              <Toggle
+                checked={batteryAiAnalysisEnabled}
+                onChange={(v) => update({
+                  localAiAnalysisEnabled: v ? true : settings.localAiAnalysisEnabled,
+                  localAiFeatures: setLocalAiFeature(settings.localAiFeatures, LOCAL_AI_FEATURE.batteryUsage, v),
+                  ...(v ? { batteryHistoryEnabled: true } : {}),
+                })}
+                label={t('batteryUsage.aiAnalysisToggle')}
               />
             </SettingRow>
             {settings.batteryHistoryEnabled && (
@@ -582,6 +674,61 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
       )}
 
       {tab === 'plugins' && (
+        <>
+        <section id="settings-local-ai-section" className="card settings-section">
+          <div className="card-title">
+            <h2>{t('settings.localAi.title')}</h2>
+            <span className={`badge ${settings.localAiAnalysisEnabled ? 'badge-ok' : ''}`}>
+              {settings.localAiAnalysisEnabled ? t('settings.localAi.enabled') : t('settings.localAi.disabled')}
+            </span>
+          </div>
+          <SettingRow title={t('settings.localAi.toggle')} hint={t('settings.localAi.hint')}>
+            <Toggle
+              checked={settings.localAiAnalysisEnabled}
+              onChange={(v) => update({ localAiAnalysisEnabled: v })}
+              label={t('settings.localAi.toggle')}
+            />
+          </SettingRow>
+          <div className="contact-links plugin-update-actions">
+            <button
+              className="secondary"
+              onClick={() => void checkLocalAiUpdates()}
+              disabled={previewMode || localAiChecking || Boolean(localAiInstalling)}
+            >
+              {localAiChecking ? t('settings.localAi.checking') : t('settings.localAi.checkUpdates')}
+            </button>
+            {localAiStatus.ready && <span className="save-badge">{t('settings.localAi.runtimeReady')}</span>}
+          </div>
+          <div className="plugin-list">
+            <div className="plugin-item">
+              <div>
+                <strong>{t('settings.localAi.bundle')}</strong>
+                <span className="setting-hint">
+                  {localAiStatus.bundleVersion ? `v${localAiStatus.bundleVersion}` : t('settings.localAi.notInstalled')}
+                </span>
+              </div>
+              <div className="plugin-meta">
+                <span className="badge badge-ok">{t('settings.localAi.signedBundle')}</span>
+              </div>
+              {localAiUpdates.find((item) => item.component === 'bundle')?.updateAvailable && (
+                <div className="plugin-update-row">
+                  <span className="setting-hint">{t('settings.localAi.updatable', { version: localAiUpdates.find((item) => item.component === 'bundle')?.availableVersion })}</span>
+                  <button className="primary" disabled={Boolean(localAiInstalling)} onClick={() => void installLocalAiUpdate()}>
+                    {localAiInstalling === 'bundle' ? t('settings.localAi.updating') : t('settings.localAi.updateBundle')}
+                  </button>
+                </div>
+              )}
+              {localAiStatus.rollbackAvailable && (
+                <button className="secondary" disabled={Boolean(localAiInstalling)} onClick={() => void rollbackLocalAi()}>
+                  {t('settings.localAi.rollbackBundle')}
+                </button>
+              )}
+            </div>
+          </div>
+          {!localAiStatus.ready && localAiStatus.error && (
+            <p className="setting-hint">{t(`settings.localAi.status.${localAiStatus.error}`, { defaultValue: t('settings.localAi.runtimeUnavailable') })}</p>
+          )}
+        </section>
         <section id="settings-plugin-update-section" className="card settings-section" tabIndex={-1}>
           <div className="card-title"><h2>{t('settings.section.plugins')}</h2></div>
           <SettingRow title={t('settings.pluginUpdateCheck.label')} hint={t('settings.pluginUpdateCheck.hint')}>
@@ -630,6 +777,7 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
             </div>
           )}
         </section>
+        </>
       )}
 
       {tab === 'privacy' && (

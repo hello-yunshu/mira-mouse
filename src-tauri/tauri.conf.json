@@ -5,7 +5,7 @@
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "npm run build && node scripts/check-local-ai-assets.mjs",
     "frontendDist": "../dist"
   },
   "app": {
@@ -47,7 +47,11 @@
     ],
     "resources": [
       "resources/plugins/mira-amaster-1.6.3.mira-plugin",
-      "resources/plugins/mira-logitech-hidpp-0.8.1.mira-plugin"
+      "resources/plugins/mira-logitech-hidpp-0.8.1.mira-plugin",
+      "resources/local-ai/model.rillpack"
+    ],
+    "externalBin": [
+      "binaries/mira-runtime"
     ],
     "fileAssociations": [
       {
