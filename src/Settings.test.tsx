@@ -215,7 +215,7 @@ describe('SettingsPage', () => {
     const localAiItem = screen.getByText('本地 AI 引擎').closest('.plugin-item');
     expect(localAiItem).not.toBeNull();
     expect(localAiItem?.querySelector('.setting-hint')).toHaveTextContent('v0.5.0');
-    expect(localAiItem?.querySelector('.plugin-meta .badge')).toHaveTextContent('签名 bundle');
+    expect(localAiItem?.querySelector('.plugin-meta .badge')).toHaveTextContent('签名已验证');
     expect(localAiItem?.querySelector('.plugin-meta .badge')).toHaveClass('badge-ok');
     expect(screen.queryByText('随 Mira 打包的 Runtime 与模型，可整体更新或回退；异常时自动回退到 Mira 原有算法。')).toBeNull();
 

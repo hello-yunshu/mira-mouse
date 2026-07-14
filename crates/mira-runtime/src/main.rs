@@ -71,7 +71,7 @@ enum Command {
         /// Model pack identifier (e.g. "mira-battery-model").
         #[arg(long, default_value = "mira-battery-model")]
         pack_id: String,
-        /// Model pack version (e.g. "0.8.0").
+        /// Model pack version (e.g. "0.8.1").
         #[arg(long)]
         pack_version: String,
         /// Minimum runtime version required to load this pack.

@@ -3,26 +3,26 @@ import { createHash } from 'node:crypto';
 import { readFileSync, statSync, writeFileSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
 
-const [assetsDirArg, version, tag, outputArg] = process.argv.slice(2);
-if (!assetsDirArg || !version || !tag || !outputArg) {
-  throw new Error('usage: build-local-ai-release-index.mjs ASSETS_DIR VERSION TAG OUTPUT');
+const [assetsDirArg, runtimeVersion, modelPackVersion, tag, outputArg] = process.argv.slice(2);
+if (!assetsDirArg || !runtimeVersion || !modelPackVersion || !tag || !outputArg) {
+  throw new Error('usage: build-local-ai-release-index.mjs ASSETS_DIR RUNTIME_VERSION MODEL_PACK_VERSION TAG OUTPUT');
 }
 
 const assetsDir = resolve(assetsDirArg);
 const targets = [
-  ['darwin', 'aarch64'],
-  ['darwin', 'x86_64'],
+  ['macos', 'aarch64'],
+  ['macos', 'x86_64'],
   ['linux', 'x86_64'],
   ['windows', 'x86_64'],
 ];
-const artifacts = targets.map(([targetOs, targetArch]) => {
+const runtimeArtifacts = targets.map(([targetOs, targetArch]) => {
   const path = resolve(assetsDir, `local-ai-bundle-${targetOs}-${targetArch}.zip`);
   const bytes = readFileSync(path);
   if (bytes.length === 0) throw new Error(`empty local AI bundle: ${path}`);
   return {
     kind: 'runtime',
     id: 'local-ai-bundle',
-    version,
+    version: runtimeVersion,
     runtimeApiVersion: 1,
     targetOs,
     targetArch,
@@ -31,6 +31,21 @@ const artifacts = targets.map(([targetOs, targetArch]) => {
     size: statSync(path).size,
   };
 });
+
+// Model artifact is platform-independent and only used for version comparison.
+// The model pack lives inside the same bundle zip, so url/sha256/size reuse the
+// first runtime artifact's values (clients never download the model artifact directly).
+const modelArtifact = {
+  kind: 'model',
+  id: 'local-ai-model-pack',
+  version: modelPackVersion,
+  runtimeApiVersion: 1,
+  url: runtimeArtifacts[0].url,
+  sha256: runtimeArtifacts[0].sha256,
+  size: runtimeArtifacts[0].size,
+};
+
+const artifacts = [...runtimeArtifacts, modelArtifact];
 
 writeFileSync(resolve(outputArg), `${JSON.stringify({
   schemaVersion: 1,

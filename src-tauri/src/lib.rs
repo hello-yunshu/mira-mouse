@@ -9,6 +9,7 @@ use mira_core::{
 };
 
 mod battery_history;
+mod local_ai_auto_rollback;
 mod local_ai_controller;
 mod local_ai_runtime;
 mod local_ai_update;
@@ -870,6 +871,9 @@ struct SessionState {
     /// 本地 AI 常驻子进程控制器。开关 on 时持有 mira-runtime 子进程,
     /// off 时优雅退出。predict_batteries 通过此字段发送请求。
     local_ai_controller: local_ai_controller::LocalAiController,
+    /// 自动回滚 supervisor 写入的状态标识(`autoRolledBack`/`autoDisabled`),
+    /// 由 `local_ai_status` 命令读取,让前端能区分自动操作与手动操作。
+    local_ai_auto_state: local_ai_auto_rollback::AutoState,
 }
 
 fn hid_io_stats_ref(state: &SessionState) -> Option<&Mutex<HidIoStats>> {
@@ -4913,7 +4917,7 @@ fn load_settings(app: &AppHandle) -> AppSettings {
 /// Return cached settings if available, otherwise load from disk and cache.
 /// The cache is populated on first access and updated whenever `settings_set`
 /// is called. This avoids reading `settings.json` from disk on every poll.
-fn cached_settings(app: &AppHandle) -> AppSettings {
+pub(crate) fn cached_settings(app: &AppHandle) -> AppSettings {
     let state = app.state::<SessionState>();
     if let Ok(mut cache) = state.cached_settings.lock() {
         if let Some(settings) = cache.as_ref() {
@@ -4928,13 +4932,13 @@ fn cached_settings(app: &AppHandle) -> AppSettings {
 }
 
 /// Update the cached settings. Called by `settings_set` after a successful save.
-fn update_cached_settings(app: &AppHandle, settings: &AppSettings) {
+pub(crate) fn update_cached_settings(app: &AppHandle, settings: &AppSettings) {
     if let Ok(mut cache) = app.state::<SessionState>().cached_settings.lock() {
         *cache = Some(settings.clone());
     }
 }
 
-fn save_settings(app: &AppHandle, settings: &AppSettings) -> Result<(), String> {
+pub(crate) fn save_settings(app: &AppHandle, settings: &AppSettings) -> Result<(), String> {
     let path = settings_path(app).ok_or_else(|| "config dir unavailable".to_string())?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("create config dir: {e}"))?;
@@ -7736,9 +7740,17 @@ async fn plugin_update_install(
 
 #[tauri::command]
 async fn local_ai_status(app: tauri::AppHandle) -> Result<local_ai_update::LocalAiStatus, String> {
-    tauri::async_runtime::spawn_blocking(move || local_ai_update::status(&app))
-        .await
-        .map_err(|error| format!("local AI status task failed: {error}"))
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut status = local_ai_update::status(&app);
+        // supervisor 写入的自动状态(autoRolledBack/autoDisabled)优先于 status 自身的 error,
+        // 让前端能区分自动操作与普通错误。
+        if let Some(auto_error) = app.state::<SessionState>().local_ai_auto_state.get() {
+            status.error = Some(auto_error);
+        }
+        status
+    })
+    .await
+    .map_err(|error| format!("local AI status task failed: {error}"))
 }
 
 #[tauri::command]
@@ -9128,6 +9140,23 @@ pub fn run() {
             let startup_settings = cached_settings(app.handle());
             let launch_hidden = should_start_hidden(&startup_settings);
             refresh_autostart_entry_if_enabled(app.handle());
+
+            // 启动 local AI 自动回滚 supervisor:监听 controller crash 事件,
+            // 10 分钟内 ≥3 次失败自动回滚 bundle,无 previous 时关开关 + 系统通知。
+            // 必须在 controller.start() 之前启动,否则 start 失败的事件会丢失。
+            {
+                let (crash_tx, crash_rx) =
+                    std::sync::mpsc::channel::<local_ai_controller::CrashEvent>();
+                let session = app.state::<SessionState>();
+                session.local_ai_controller.set_crash_sender(crash_tx);
+                let auto_state = session.local_ai_auto_state.clone();
+                local_ai_auto_rollback::AutoRollbackSupervisor::start(
+                    app.handle().clone(),
+                    crash_rx,
+                    auto_state,
+                );
+            }
+
             if startup_settings.local_ai_analysis_enabled {
                 if let Err(error) = app
                     .state::<SessionState>()
