@@ -3,9 +3,11 @@
 resolver = "2"
 members = [
   "crates/mira-core",
+  "crates/mira-protocol",
   "crates/mira-plugin-api",
   "crates/mira-plugin-runtime",
   "crates/mira-plugin-cli",
+  "crates/mira-runtime",
   "crates/mira-testkit",
   "src-tauri",
   "xtask",
@@ -15,7 +17,7 @@ members = [
 version = "0.6.10"
 edition = "2021"
 license = "AGPL-3.0-or-later"
-rust-version = "1.82"
+rust-version = "1.85"
 
 [workspace.dependencies]
 anyhow = "1.0.95"
@@ -27,6 +29,9 @@ serde = { version = "1.0.217", features = ["derive"] }
 serde_json = "1.0.134"
 sha2 = "0.10.8"
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "rustls"] }
+rill-runtime-protocol = "0.5.1"
+rill-ml = "0.5.1"
+rill-runtime = "0.5.1"
 tempfile = "3.14.0"
 thiserror = "2.0.9"
 walkdir = "2.5.0"

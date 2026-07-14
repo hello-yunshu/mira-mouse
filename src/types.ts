@@ -227,9 +227,35 @@ export interface AppSettings {
   automaticUpdateChecks: boolean;
   automaticUpdateInstall: boolean;
   automaticPluginUpdateChecks: boolean;
+  localAiAnalysisEnabled: boolean;
+  localAiFeatures: Record<string, boolean>;
   batteryHistoryEnabled: boolean;
   batteryHistoryRetentionDays: number;
   unusualDrainAlerts: boolean;
+}
+
+export interface LocalAiStatus {
+  ready: boolean;
+  bundleVersion?: string;
+  runtimeVersion?: string;
+  modelPackId?: string;
+  modelPackVersion?: string;
+  rollbackAvailable: boolean;
+  error?: string;
+}
+
+export interface LocalAiUpdateInfo {
+  component: 'bundle';
+  currentVersion?: string;
+  availableVersion: string;
+  updateAvailable: boolean;
+}
+
+export interface LocalAiInstallResult {
+  component: 'bundle';
+  version: string;
+  previousVersion?: string;
+  ready: boolean;
 }
 
 export interface DeviceSnapshot {

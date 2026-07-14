@@ -6,6 +6,7 @@ use std::time::Instant;
 
 use chrono::{DateTime, Duration, Local, Timelike, Utc};
 use mira_core::{Connection, PluginCapability};
+use mira_protocol::DeviceContextSnapshot;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager};
@@ -16,7 +17,10 @@ const DEDUP_INTERVAL_MINUTES: i64 = 5;
 #[allow(dead_code)]
 const DEFAULT_RETENTION_DAYS: i64 = 30;
 const RETENTION_BUFFER_DAYS: i64 = 1;
-const SCHEMA_VERSION: u32 = 2;
+/// schema v3：`BatterySample` 新增 `context: Option<DeviceContextSnapshot>` 字段，
+/// 携带采样时刻的 DPI/回报率/灯光模式等低频变动参数。
+/// v2 样本经 `migrate_schema` 填充 `context: None`，不丢历史。
+const SCHEMA_VERSION: u32 = 3;
 const SESSION_GAP_THRESHOLD_MINUTES: i64 = 10;
 const MAX_SAMPLES: usize = 20000;
 const BOUNCE_THRESHOLD_PERCENT: f64 = 1.0;
@@ -75,6 +79,11 @@ pub struct BatterySample {
     pub low_power: bool,
     #[serde(default)]
     pub eligible_for_prediction: bool,
+    /// 采样时刻的设备上下文（DPI/回报率/灯光等）。
+    /// 复用宿主 `DeviceSnapshot` 缓存，不触发额外 HID 读取。
+    /// schema v2 升级到 v3 时填充为 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<DeviceContextSnapshot>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -230,6 +239,15 @@ fn migrate_schema(mut file: BatteryHistoryFile) -> BatteryHistoryFile {
         // 等当前插件明确批准同一设备、部件和连接后再纳入统计，避免升级丢历史。
         for sample in &mut file.samples {
             sample.eligible_for_prediction = false;
+        }
+    }
+    if file.schema_version < 3 {
+        // v2 样本无 context 字段。反序列化时 `#[serde(default)]` 已填充为 `None`，
+        // 这里显式标记以表达升级意图，并防御未来字段默认值变更。
+        for sample in &mut file.samples {
+            if sample.context.is_none() {
+                sample.context = None;
+            }
         }
     }
     file.schema_version = SCHEMA_VERSION;
@@ -488,6 +506,60 @@ fn normalize_percentage(raw: u8) -> Option<u8> {
     Some(raw.min(100))
 }
 
+fn should_record_candidate(
+    previous: &BatterySample,
+    candidate: &BatterySample,
+    elapsed: std::time::Duration,
+) -> bool {
+    previous.percentage != candidate.percentage
+        || previous.charging != candidate.charging
+        || previous.context != candidate.context
+        || elapsed >= std::time::Duration::from_secs((DEDUP_INTERVAL_MINUTES * 60) as u64)
+}
+
+/// 从 `DeviceSnapshot` 缓存中提取预测模型所需的低频变动参数上下文。
+///
+/// **不触发任何 HID 读取**：所有字段直接从宿主已缓存的快照中投影。
+/// 缓存更新（Quick 读取或 mutation 验证读）时，下一次 `record_samples` 调用
+/// 自动携带新上下文，rill 端随之看到新参数。
+///
+/// 灯光信息位于 `capabilities["mouseLighting"]`，由
+/// `normalized_mouse_lighting` 规范化为包含 `enabled`/`mode`/`effect`/
+/// `modeName`/`effectName`/`brightness` 等字段的对象。
+fn extract_context_from_snapshot(snapshot: &mira_core::DeviceSnapshot) -> DeviceContextSnapshot {
+    let light_mode = snapshot
+        .capabilities
+        .get("mouseLighting")
+        .and_then(|value| value.as_object())
+        .and_then(|lighting| {
+            if lighting.get("enabled").and_then(serde_json::Value::as_bool) == Some(false) {
+                return Some("off".to_string());
+            }
+            // 优先取人类可读的名称字段，回退到原始 mode/effect 值。
+            lighting
+                .get("modeName")
+                .or_else(|| lighting.get("effectName"))
+                .or_else(|| lighting.get("mode"))
+                .or_else(|| lighting.get("effect"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        });
+    let light_brightness = snapshot
+        .capabilities
+        .get("mouseLighting")
+        .and_then(|value| value.as_object())
+        .and_then(|lighting| lighting.get("brightness"))
+        .and_then(|value| value.as_u64())
+        .and_then(|value| u8::try_from(value.min(100)).ok());
+    DeviceContextSnapshot {
+        dpi: snapshot.dpi,
+        polling_rate_hz: snapshot.polling_rate_hz,
+        light_mode,
+        light_brightness,
+        profile: snapshot.profile.clone(),
+    }
+}
+
 pub fn record_samples(
     state: &BatteryHistoryState,
     app: &AppHandle,
@@ -577,6 +649,10 @@ pub fn record_samples(
                     history_key(&device_id, &device_name, &component_id)
                 };
                 let low_power = !charging && percentage < low_battery_threshold;
+                // 从宿主缓存的 DeviceSnapshot 投影低频变动参数上下文。
+                // 不触发任何 HID 读取：缓存由 Quick 读取/mutation 验证读维护。
+                let context = extract_context_from_snapshot(snapshot);
+                let context = (!context.is_empty()).then_some(context);
                 let candidate = BatterySample {
                     at: now,
                     device_id: device_id.clone(),
@@ -590,22 +666,18 @@ pub fn record_samples(
                     charging,
                     low_power,
                     eligible_for_prediction: true,
+                    context,
                 };
                 if promote_policy_approved_legacy_samples(&mut samples, &candidate) > 0 {
                     changed = true;
                 }
                 let should_record = match last_record.get(&key) {
                     Some((prev, last_instant)) => {
-                        let changed = prev.percentage != percentage || prev.charging != charging;
-                        if changed {
-                            true
-                        } else {
-                            // 没变化：至少间隔 5 分钟。
-                            last_instant.elapsed()
-                                >= std::time::Duration::from_secs(
-                                    (DEDUP_INTERVAL_MINUTES * 60) as u64,
-                                )
-                        }
+                        // Context changes are prediction-relevant events. Record them
+                        // immediately even when the coarse battery percentage has not
+                        // moved, so a DPI/polling/lighting change is visible to the next
+                        // prediction instead of waiting for the five-minute dedup window.
+                        should_record_candidate(prev, &candidate, last_instant.elapsed())
                     }
                     None => true,
                 };
@@ -658,10 +730,21 @@ fn connection_str(conn: &Connection) -> String {
     }
 }
 
+#[cfg(test)]
 pub fn build_response(
     state: &BatteryHistoryState,
     low_battery_threshold: u8,
     range: &str,
+) -> BatteryHistoryResponse {
+    build_response_with_analysis(state, low_battery_threshold, range, false, None)
+}
+
+pub fn build_response_with_analysis(
+    state: &BatteryHistoryState,
+    low_battery_threshold: u8,
+    range: &str,
+    local_ai_analysis_enabled: bool,
+    app: Option<&AppHandle>,
 ) -> BatteryHistoryResponse {
     let samples: Vec<BatterySample> = {
         let guard = state.samples.lock().unwrap_or_else(|e| e.into_inner());
@@ -754,7 +837,15 @@ pub fn build_response(
         })
         .collect();
 
-    let insights = build_insights(samples_ref, &devices, low_battery_threshold, range, now);
+    let insights = build_insights(
+        samples_ref,
+        &devices,
+        low_battery_threshold,
+        range,
+        now,
+        local_ai_analysis_enabled,
+        app,
+    );
 
     BatteryHistoryResponse {
         range: range.into(),
@@ -926,9 +1017,28 @@ fn build_insights(
     _threshold: u8,
     range: &str,
     now: DateTime<Utc>,
+    local_ai_analysis_enabled: bool,
+    app: Option<&AppHandle>,
 ) -> Vec<BatteryInsight> {
     let mut insights = Vec::new();
     let groups = build_sample_groups(samples);
+    let ai_batches = if local_ai_analysis_enabled {
+        devices
+            .iter()
+            .map(|device| {
+                (
+                    device.key.clone(),
+                    samples_for_group(samples, &groups, &device.key),
+                )
+            })
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    let ai_estimates = app
+        .filter(|_| local_ai_analysis_enabled)
+        .map(|app| crate::local_ai_runtime::predict_batteries(app, &ai_batches, now))
+        .unwrap_or_default();
     let window_start = match range {
         "24h" => now - Duration::hours(24),
         _ => now - Duration::days(10),
@@ -944,7 +1054,14 @@ fn build_insights(
         let current = device.latest_percentage;
         let charging = device.latest_charging.unwrap_or(false);
 
-        if let Some(remaining_hours) = estimate_remaining(&device_samples, range, now) {
+        let baseline_remaining = estimate_remaining(&device_samples, range, now);
+        let remaining_estimate = if local_ai_analysis_enabled {
+            ai_estimates.get(key).copied().or(baseline_remaining)
+        } else {
+            baseline_remaining
+        };
+
+        if let Some(remaining_hours) = remaining_estimate {
             if !charging && current.is_some() {
                 if remaining_hours >= VERY_SLOW_DRAIN_HOURS {
                     insights.push(BatteryInsight {
@@ -1933,6 +2050,7 @@ mod tests {
             charging,
             low_power: !charging && pct < 20,
             eligible_for_prediction: true,
+            context: None,
         }
     }
 
@@ -1961,6 +2079,26 @@ mod tests {
             .lock()
             .unwrap()
             .contains_key("abc123:mouse"));
+    }
+
+    #[test]
+    fn context_change_bypasses_battery_sample_dedup_window() {
+        let previous = make_sample(Utc::now(), 80, false);
+        let mut changed = previous.clone();
+        changed.context = Some(DeviceContextSnapshot {
+            dpi: Some(3200),
+            ..DeviceContextSnapshot::default()
+        });
+        assert!(should_record_candidate(
+            &previous,
+            &changed,
+            std::time::Duration::from_secs(1),
+        ));
+        assert!(!should_record_candidate(
+            &previous,
+            &previous,
+            std::time::Duration::from_secs(1),
+        ));
     }
 
     #[test]
@@ -2569,7 +2707,7 @@ mod tests {
             latest_at: Some(now.to_rfc3339()),
             low_battery: Some(false),
         };
-        let insights = build_insights(&samples, &[device], 20, "10d", now);
+        let insights = build_insights(&samples, &[device], 20, "10d", now, false, None);
         let remaining = insights
             .iter()
             .find(|i| i.insight_type == "estimatedRemaining");

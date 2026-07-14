@@ -1,4 +1,40 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+//! Mira 插件 API：能力声明与自动检测协议。
+//!
+//! # 行业常见鼠标高级参数参考
+//!
+//! 插件开发者可参考以下行业标准参数列表，通过 `Capability` + `CapabilityProbe`
+//! 声明设备支持的高级参数。所有参数类型均可映射到现有的 `Control` 枚举：
+//!
+//! | 参数 | 说明 | 推荐 Control | 典型范围/选项 |
+//! |------|------|-------------|--------------|
+//! | DPI 分档 | 传感器分辨率，当前主流最高 30000-44000 DPI | `DpiStages` | 100-60000，100 步进 |
+//! | 回报率 | 轮询频率，主流 125-8000 Hz，高端支持 4000-8000 Hz | `Segmented`/`Select` | 125/250/500/1000/2000/4000/8000 |
+//! | 灯光模式 | RGB 效果（常亮、呼吸、彩虹等） | `LightingZone` | off/static/breathing/rainbow/starlight |
+//! | 角度捕捉 | Angle Snapping，预测性直线修正 | `Toggle` | on/off |
+//! | 加速度曲线 | Pointer acceleration curve | `Select`/`Segmented` | off/low/medium/high |
+//! | 抬升距离 | Lift-Off Distance (LOD)，传感器离面停止距离 | `Slider`/`Select` | 1-2mm，预设档位 |
+//! | 按键响应速度 | Debounce time / 触发点调节 | `Slider`/`Segmented` | 1-10ms 或多档触发点 |
+//! | 滚轮分辨率 | Scroll wheel resolution / 滚轮模式 | `Toggle`/`Select` | notch/free-spin/4D |
+//! | Motion Sync | 传感器同步模式，减少抖动 | `Toggle` | on/off |
+//! | 平滑过滤 | Smoothing / Filter，轨迹平滑 | `Toggle`/`Slider` | off/low/medium/high |
+//! | 休眠超时 | 自动休眠时间（节能） | `Number` | 1-30 分钟 |
+//! | 配置文件切换 | Profile management | `Action`/`Select` | 1-5 |
+//!
+//! # 自动检测与回退机制
+//!
+//! 系统提供三层参数可用性判定，确保不支持的参数自动隐藏而非报错：
+//!
+//! 1. **`CapabilityProbe`**：引用 workflow 输出的 `{output, field}`，当字段值为 0
+//!    时标记 `available=false`。适用于设备通过 HID 报告声明是否支持某能力。
+//! 2. **`connections`**：声明能力仅在特定连接类型下可见（usb/receiver/bluetooth）。
+//!    例如蓝牙模式下隐藏 8000Hz 回报率。
+//! 3. **`min_firmware`**：声明能力所需的最低固件版本，低于此版本时隐藏。
+//!
+//! 当能力被判定为不可用时，UI 自动隐藏对应控件，不影响其他参数的配置。
+//! `MutationDecl::pick()` 方法在写入时按优先级选取第一个被设备 `writable_mutations`
+//! 支持的 mutation，实现写入层面的回退。
+
 use semver::VersionReq;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};

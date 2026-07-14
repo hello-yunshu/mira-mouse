@@ -83,19 +83,37 @@ jobs:
       - name: Verify plugin lock against published release assets
         run: cargo run --package xtask -- plugins check-lock
 
+  model-pack:
+    # Release/dispatch builds always need the signed pack. Same-repository PRs
+    # can use the repository secret as well; fork PRs skip packaging entirely
+    # instead of publishing an artifact with the zero-byte source placeholder.
+    if: ${{ always() && needs.rust.result != 'failure' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    needs: [rust]
+    uses: ./.github/workflows/model-pack.yml
+    permissions:
+      contents: read
+    secrets:
+      MODEL_PACK_SIGNING_KEY: ${{ secrets.MODEL_PACK_SIGNING_KEY }}
+
   tauri-bundle:
-    needs: [frontend, rust, configuration, plugin-lock]
-    if: ${{ !cancelled() && needs.frontend.result != 'failure' && needs.rust.result != 'failure' && needs.configuration.result != 'failure' && needs.plugin-lock.result != 'failure' }}
+    needs: [frontend, rust, configuration, plugin-lock, model-pack]
+    if: ${{ !cancelled() && needs.frontend.result != 'failure' && needs.rust.result != 'failure' && needs.configuration.result != 'failure' && needs.plugin-lock.result != 'failure' && needs.model-pack.result == 'success' }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: macos-14
             target: aarch64-apple-darwin
+            target_os: darwin
+            target_arch: aarch64
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
+            target_os: linux
+            target_arch: x86_64
           - os: windows-2022
             target: x86_64-pc-windows-msvc
+            target_os: windows
+            target_arch: x86_64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     steps:
@@ -122,6 +140,68 @@ jobs:
             cargo-bundle-${{ runner.os }}-${{ matrix.target }}-
             cargo-bundle-${{ runner.os }}-
             cargo-rust-${{ runner.os }}-
+      - name: Download signed model pack
+        uses: actions/download-artifact@v8
+        with:
+          name: model-rillpack
+          path: src-tauri/resources/local-ai
+      - name: Verify signed model pack is usable
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s src-tauri/resources/local-ai/model.rillpack
+          cargo run --release -p mira-runtime -- inspect-pack \
+            --pack src-tauri/resources/local-ai/model.rillpack \
+            --trust-key "mira-rill-2026-001=3d5ada931abc747610850f9e405fee637a3f445c0b4406eb96b41673814fc261"
+      - name: Build Mira runtime sidecar
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            RUSTUP_TOOLCHAIN=stable cargo run --package xtask -- dist-sidecar --target "${{ matrix.target }}"
+          elif [ "$RUNNER_OS" = "macOS" ]; then
+            rustup target add --toolchain stable aarch64-apple-darwin x86_64-apple-darwin
+            RUSTUP_TOOLCHAIN=stable cargo run --package xtask -- dist-sidecar --target aarch64-apple-darwin
+            RUSTUP_TOOLCHAIN=stable cargo run --package xtask -- dist-sidecar --target x86_64-apple-darwin
+            lipo -create \
+              src-tauri/binaries/mira-runtime-aarch64-apple-darwin \
+              src-tauri/binaries/mira-runtime-x86_64-apple-darwin \
+              -output src-tauri/binaries/mira-runtime-universal-apple-darwin
+          else
+            RUSTUP_TOOLCHAIN=stable cargo run --package xtask -- dist-sidecar --target "${{ matrix.target }}"
+          fi
+      - name: Build standalone local AI update bundle
+        if: github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(node scripts/app-version.mjs)
+          runtime_version=$(cargo tree -p mira-runtime --depth 1 --prefix none | awk '$1 == "rill-runtime" { sub(/^v/, "", $2); print $2; exit }')
+          test -n "$runtime_version"
+          mkdir -p local-ai-assets
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            runtime="src-tauri/binaries/mira-runtime-universal-apple-darwin"
+            /usr/bin/codesign --force --sign - "$runtime"
+            for arch in aarch64 x86_64; do
+              RUSTUP_TOOLCHAIN=stable cargo run --package xtask -- local-ai-bundle \
+                --runtime "$runtime" \
+                --model src-tauri/resources/local-ai/model.rillpack \
+                --target-os darwin --target-arch "$arch" \
+                --bundle-version "$version" --runtime-version "$runtime_version" \
+                --model-pack-version "$version" \
+                --output "local-ai-assets/local-ai-bundle-darwin-${arch}.zip"
+            done
+          else
+            runtime="src-tauri/binaries/mira-runtime-${{ matrix.target }}"
+            if [ "$RUNNER_OS" = "Windows" ]; then runtime="${runtime}.exe"; fi
+            RUSTUP_TOOLCHAIN=stable cargo run --package xtask -- local-ai-bundle \
+              --runtime "$runtime" \
+              --model src-tauri/resources/local-ai/model.rillpack \
+              --target-os "${{ matrix.target_os }}" --target-arch "${{ matrix.target_arch }}" \
+              --bundle-version "$version" --runtime-version "$runtime_version" \
+              --model-pack-version "$version" \
+              --output "local-ai-assets/local-ai-bundle-${{ matrix.target_os }}-${{ matrix.target_arch }}.zip"
+          fi
       - run: cargo run --package xtask -- plugins sync --locked
       - name: Clean stale bundle outputs
         # 清掉 cargo cache 里残留的旧版本 bundle 产物，避免旧版本文件被 upload-artifact 的 glob 命中后混入新 release
@@ -168,6 +248,7 @@ jobs:
             target/**/bundle/**/*-setup.exe.sig
             target/**/bundle/**/*.AppImage
             target/**/bundle/**/*.AppImage.sig
+            local-ai-assets/*.zip
           if-no-files-found: error
       - name: Job summary
         shell: bash
@@ -182,7 +263,7 @@ jobs:
     needs: [tauri-bundle]
     if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-22.04
-    timeout-minutes: 15
+    timeout-minutes: 25
     permissions: { contents: write, id-token: write, attestations: write }
     environment: release
     concurrency:
@@ -210,6 +291,10 @@ jobs:
               tag=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null || echo "")
               test -n "$tag" || { echo "No existing release to overwrite"; exit 1; }
               version="${tag#app/v}"
+              test "$version" = "$current_version" || {
+                echo "Refusing to relabel app/model artifacts from $current_version as $version" >&2
+                exit 1
+              }
             else
               tag="$INPUT_TAG"
               version="${tag#app/v}"
@@ -251,6 +336,7 @@ jobs:
             -name '*-setup.exe' -o -name '*-setup.exe.sig' -o \
             -name '*.AppImage' -o -name '*.AppImage.sig' \
           \) -exec cp {} publish-assets/ \;
+          find release-assets -type f -name 'local-ai-bundle-*.zip' -exec cp {} publish-assets/ \;
           (
             cd publish-assets
             # macOS: DMG 自带版本号（Mira_<v>_universal.dmg），仅替换前缀；
@@ -289,9 +375,9 @@ jobs:
           MAC_URL="$BASE/$(basename "$MAC_FILE")"
           WIN_URL="$BASE/$(basename "$WIN_FILE")"
           LINUX_URL="$BASE/$(basename "$LINUX_FILE")"
-          # 检查更新的元数据入口按 gh-proxy.com → direct → hey.run 尝试
-          # （见 tauri.conf.json）；下载安装包则优先使用 latest.json 中的
-          # github.hey.run URL。latest-cn.json 保留为 gh-proxy.com 下载兜底清单。
+          # 加速策略（endpoints 优先级见 tauri.conf.json）：
+          # 1. latest.json：URL 走 github.hey.run（用户专属加速域名，国内外都快，实测 ~3.4MB/s）
+          # 2. latest-cn.json：URL 走 gh-proxy.com 公共代理（hey.run 不可用时的国内备选）
           HEY_RUN_BASE="${BASE/github.com/github.hey.run}"
           MAC_URL_HEY="${HEY_RUN_BASE}/$(basename "$MAC_FILE")"
           WIN_URL_HEY="${HEY_RUN_BASE}/$(basename "$WIN_FILE")"
@@ -323,6 +409,18 @@ jobs:
             }
           }
           EOF
+      - name: Generate and sign local AI stable index
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          MODEL_PACK_SIGNING_KEY: ${{ secrets.MODEL_PACK_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          node scripts/build-local-ai-release-index.mjs publish-assets "$VERSION" "$TAG" local-ai-index-payload.json
+          rustup toolchain install stable --profile minimal
+          RUSTUP_TOOLCHAIN=stable cargo run --release -p mira-runtime -- sign-index \
+            --payload local-ai-index-payload.json \
+            --output local-ai-stable-index.json
       - uses: actions/attest-build-provenance@v4
         with:
           subject-path: 'publish-assets/*'
@@ -350,10 +448,10 @@ jobs:
           EOF
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "Release $TAG exists; uploading assets."
-            gh release upload "$TAG" publish-assets/* latest.json latest-cn.json --repo "$GITHUB_REPOSITORY" --clobber
+            gh release upload "$TAG" publish-assets/* latest.json latest-cn.json local-ai-stable-index.json --repo "$GITHUB_REPOSITORY" --clobber
             gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file release-notes.md --title "Mira $VERSION"
           else
-            gh release create "$TAG" publish-assets/* latest.json latest-cn.json \
+            gh release create "$TAG" publish-assets/* latest.json latest-cn.json local-ai-stable-index.json \
               --target "$TARGET" \
               --title "Mira $VERSION" \
               --notes-file release-notes.md

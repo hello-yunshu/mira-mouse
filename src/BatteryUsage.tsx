@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { save } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
 import { Warning, X, Trash, Download, Clock, ChartBar, CaretUpDown, Plug, Gauge, ArrowsLeftRight, Lightbulb, TrendDown, BatteryCharging, BatteryLow } from '@phosphor-icons/react';
 import type {
+  AppSettings,
   BatteryHistoryRange,
   BatteryHistoryResponse,
   BatteryHistoryDevice,
@@ -15,6 +16,7 @@ import type {
 import { MOCK_BATTERY_HISTORY_24H, MOCK_BATTERY_HISTORY_10D } from './mock';
 import { notifyError, notifySuccess } from './notify';
 import { BatteryLevelIcon } from './BatteryLevelIcon';
+import { LOCAL_AI_FEATURE, localAiFeatureEnabled } from './localAi';
 
 // ─── 工具函数 ───────────────────────────────────────────────────────────────
 
@@ -572,14 +574,25 @@ function BatteryUsageStatusStrip({
   const { t } = useTranslation();
   const [menuOpen, setMenuOpen] = useState(false);
   const stripRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuId = useId();
 
   useEffect(() => {
     if (!menuOpen) return;
-    const handler = (e: MouseEvent) => {
+    const handlePointerDown = (e: PointerEvent) => {
       if (!stripRef.current?.contains(e.target as Node)) setMenuOpen(false);
     };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      setMenuOpen(false);
+      triggerRef.current?.focus();
+    };
+    document.addEventListener('pointerdown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
   }, [menuOpen]);
 
   if (!device) return null;
@@ -602,34 +615,37 @@ function BatteryUsageStatusStrip({
   return (
     <div
       ref={stripRef}
-      className={`battery-status-strip ${charging ? 'charging' : lowBattery ? 'low' : 'normal'} ${hasMultipleDevices ? 'switchable' : ''}`}
-      role={hasMultipleDevices ? 'button' : undefined}
-      tabIndex={hasMultipleDevices ? 0 : undefined}
-      aria-expanded={hasMultipleDevices ? menuOpen : undefined}
-      aria-haspopup={hasMultipleDevices ? 'menu' : undefined}
-      aria-label={hasMultipleDevices ? t('batteryUsage.switchDevice') : undefined}
-      onClick={hasMultipleDevices ? toggleMenu : undefined}
-      onKeyDown={hasMultipleDevices ? (e) => {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleMenu(); }
-      } : undefined}
+      className="battery-status-strip-shell"
     >
-      <div className="battery-status-device">
-        <BatteryLevelIcon percentage={device.latestPercentage} charging={charging} />
-        <div className="battery-status-device-info">
-          <span>{device.deviceName}</span>
-          <strong>{t(device.componentLabel, { defaultValue: device.componentLabel })}</strong>
+      <button
+        ref={triggerRef}
+        type="button"
+        className={`battery-status-strip ${charging ? 'charging' : lowBattery ? 'low' : 'normal'} ${hasMultipleDevices ? 'switchable' : ''}`}
+        aria-expanded={hasMultipleDevices ? menuOpen : undefined}
+        aria-haspopup={hasMultipleDevices ? 'menu' : undefined}
+        aria-controls={hasMultipleDevices ? menuId : undefined}
+        aria-label={hasMultipleDevices ? t('batteryUsage.switchDevice') : undefined}
+        disabled={!hasMultipleDevices}
+        onClick={toggleMenu}
+      >
+        <div className="battery-status-device">
+          <BatteryLevelIcon percentage={device.latestPercentage} charging={charging} />
+          <div className="battery-status-device-info">
+            <span>{device.deviceName}</span>
+            <strong>{t(device.componentLabel, { defaultValue: device.componentLabel })}</strong>
+          </div>
         </div>
-      </div>
-      <div className="battery-status-metric">
-        <strong>{device.latestPercentage ?? '--'}%</strong>
-        <span>{remaining ? formatInsightMessage(remaining, t) : statusText}</span>
-      </div>
-      {hasMultipleDevices && (
-        <CaretUpDown weight="thin" className="battery-status-switch-icon" aria-hidden="true" />
-      )}
+        <div className="battery-status-metric">
+          <strong>{device.latestPercentage ?? '--'}%</strong>
+          <span>{remaining ? formatInsightMessage(remaining, t) : statusText}</span>
+        </div>
+        {hasMultipleDevices && (
+          <CaretUpDown weight="thin" className="battery-status-switch-icon" aria-hidden="true" />
+        )}
+      </button>
 
       {menuOpen && hasMultipleDevices && (
-        <div className="battery-device-menu" role="menu" onClick={(e) => e.stopPropagation()}>
+        <div id={menuId} className="battery-device-menu" role="menu">
           {devices.map((d) => {
             const dCharging = d.latestCharging ?? false;
             const active = d.key === device.key;
@@ -641,8 +657,9 @@ function BatteryUsageStatusStrip({
                 aria-checked={active}
                 className={`battery-device-menu-item ${active ? 'active' : ''}`}
                 onClick={() => {
-                  onSelectDevice(d.key);
                   setMenuOpen(false);
+                  onSelectDevice(d.key);
+                  triggerRef.current?.focus();
                 }}
               >
                 <BatteryLevelIcon percentage={d.latestPercentage} charging={dCharging} />
@@ -662,7 +679,7 @@ function BatteryUsageStatusStrip({
 
 // ─── 洞察卡片 ───────────────────────────────────────────────────────────────
 
-function BatteryInsightCards({ insights }: { insights: BatteryInsight[] }) {
+function BatteryInsightCards({ insights, aiAnalysisEnabled }: { insights: BatteryInsight[]; aiAnalysisEnabled: boolean }) {
   const { t } = useTranslation();
 
   // 过滤掉已在上方摘要 grid 中展示的"预计剩余"和"预计耗尽"，避免重复。
@@ -714,8 +731,12 @@ function BatteryInsightCards({ insights }: { insights: BatteryInsight[] }) {
   return (
     <section className="battery-insight-section">
       <div className="battery-insight-section-head">
-        <span className="battery-insight-section-title">{t('batteryUsage.insightSectionTitle')}</span>
-        <span className="battery-insight-section-hint">{t('batteryUsage.insightSectionHint')}</span>
+        <span className="battery-insight-section-title">
+          {t(aiAnalysisEnabled ? 'batteryUsage.insightSectionTitle' : 'batteryUsage.insightSectionTitleBasic')}
+        </span>
+        <span className="battery-insight-section-hint">
+          {t(aiAnalysisEnabled ? 'batteryUsage.insightSectionHint' : 'batteryUsage.insightSectionHintBasic')}
+        </span>
       </div>
       <div className="battery-insight-cards">
         {visible.map((insight, i) => (
@@ -773,6 +794,8 @@ export interface BatteryUsageModalProps {
   open: boolean;
   onClose: () => void;
   hasBattery: boolean;
+  batteryHistoryEnabled?: boolean;
+  aiAnalysisEnabled?: boolean;
   preferredDeviceName?: string;
   preferredComponentId?: string;
 }
@@ -785,6 +808,8 @@ export function BatteryUsageModal({
   open,
   onClose,
   hasBattery,
+  batteryHistoryEnabled: providedHistoryEnabled,
+  aiAnalysisEnabled: providedAiAnalysisEnabled,
   preferredDeviceName,
   preferredComponentId,
 }: BatteryUsageModalProps) {
@@ -795,19 +820,27 @@ export function BatteryUsageModal({
   const [loading, setLoading] = useState(false);
   const [confirmingClear, setConfirmingClear] = useState(false);
   // 模态打开时拉取设置中的 batteryHistoryEnabled
-  const [historyEnabled, setHistoryEnabled] = useState(true);
+  const [loadedHistoryEnabled, setLoadedHistoryEnabled] = useState(true);
+  const [loadedAiAnalysisEnabled, setLoadedAiAnalysisEnabled] = useState(false);
   const [reloadNonce, setReloadNonce] = useState(0);
   const pureWeb = isPureWebPreview();
+  const historyEnabled = providedHistoryEnabled ?? loadedHistoryEnabled;
+  const aiAnalysisEnabled = providedAiAnalysisEnabled ?? loadedAiAnalysisEnabled;
 
   // 打开时拉取设置；纯 web 预览默认开启。
   useEffect(() => {
-    if (!open || pureWeb) return;
-    invoke<{ batteryHistoryEnabled?: boolean }>('settings_get')
+    if (
+      !open
+      || pureWeb
+      || (providedHistoryEnabled !== undefined && providedAiAnalysisEnabled !== undefined)
+    ) return;
+    invoke<AppSettings>('settings_get')
       .then((s) => {
-        setHistoryEnabled(s.batteryHistoryEnabled ?? true);
+        setLoadedHistoryEnabled(s.batteryHistoryEnabled ?? true);
+        setLoadedAiAnalysisEnabled(localAiFeatureEnabled(s, LOCAL_AI_FEATURE.batteryUsage));
       })
       .catch(() => { /* 保留默认值 */ });
-  }, [open, pureWeb]);
+  }, [open, providedAiAnalysisEnabled, providedHistoryEnabled, pureWeb]);
 
   // 数据加载：仅在异步回调中调用 setState，避免 effect 内同步 setState 引发级联渲染
   useEffect(() => {
@@ -851,7 +884,13 @@ export function BatteryUsageModal({
   }, [response, preferredDeviceName, preferredComponentId]);
 
   // 未显式选择时，定位当前鼠标；没有匹配的旧记录时才回退到第一个。
-  const effectiveDeviceKey = selectedDeviceKey || preferredDeviceKey || response?.devices[0]?.key || '';
+  // 不让旧范围中的选择键拖垮整个切换器：某台设备在新响应里暂时缺席时，
+  // 立即回退到当前鼠标或第一个可用记录。
+  const selectedDeviceAvailable = response?.devices.some((device) => device.key === selectedDeviceKey) ?? false;
+  const effectiveDeviceKey = (selectedDeviceAvailable ? selectedDeviceKey : '')
+    || preferredDeviceKey
+    || response?.devices[0]?.key
+    || '';
 
   const selectedDevice = useMemo(
     () => response?.devices.find((d) => d.key === effectiveDeviceKey),
@@ -979,7 +1018,9 @@ export function BatteryUsageModal({
         <div className="battery-usage-header">
           <div className="battery-usage-title-wrap">
             <h2>{t('batteryUsage.title')}</h2>
-            <span className="battery-ai-badge">{t('batteryUsage.aiBadgeShort')}</span>
+            {aiAnalysisEnabled && (
+              <span className="battery-ai-badge">{t('batteryUsage.aiBadgeShort')}</span>
+            )}
           </div>
           <button className="battery-usage-close-icon" onClick={onClose} aria-label={t('batteryUsage.close')}>
             <X weight="regular" />
@@ -1038,7 +1079,10 @@ export function BatteryUsageModal({
             )}
 
             {/* 洞察 */}
-            <BatteryInsightCards insights={selectedInsights} />
+            <BatteryInsightCards
+              insights={selectedInsights}
+              aiAnalysisEnabled={aiAnalysisEnabled}
+            />
 
             {/* 操作区 */}
             <div className="battery-history-actions">

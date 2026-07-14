@@ -21,6 +21,8 @@ const settings: AppSettings = {
   nightModeTargetMouse: true, nightModeTargetReceiver: false,
   telemetryDisabled: true,
   automaticUpdateChecks: true, automaticUpdateInstall: false, automaticPluginUpdateChecks: true,
+  localAiAnalysisEnabled: false,
+  localAiFeatures: { batteryUsage: true },
   batteryHistoryEnabled: true, batteryHistoryRetentionDays: 30, unusualDrainAlerts: false,
   language: 'auto',
 };
@@ -153,6 +155,63 @@ function entries(...snapshots: DeviceSnapshot[]) {
 }
 
 describe('real device snapshot mapping', () => {
+  it('renders the signed plugin layout during the provisional presence snapshot', async () => {
+    const provisionalSnapshot: DeviceSnapshot = {
+      ...snapshot,
+      batteryPercent: undefined,
+      batteries: [],
+      dpi: undefined,
+      dpiStages: undefined,
+      pollingRateHz: undefined,
+      supportedPollingRatesHz: undefined,
+      profile: undefined,
+      confirmedLightColor: undefined,
+      capabilities: {},
+      writableMutations: [],
+      pluginCapabilities: snapshot.pluginCapabilities?.map((capability) => ({
+        ...capability,
+        metadata: { ...capability.metadata, _miraRuntimePending: true },
+      })),
+    };
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'settings_get') return Promise.resolve(settings);
+      if (command === 'device_snapshots') return Promise.resolve(entries(provisionalSnapshot));
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+
+    render(<App />);
+    await screen.findByRole('heading', { name: 'AM INFINITY 8K MOUSE' });
+
+    const dashboard = document.querySelector('.dashboard');
+    expect(dashboard).toHaveAttribute('aria-busy', 'true');
+    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['DPI', '回报率', '灯光']);
+    expect(screen.getByRole('region', { name: '设备状态' })).toBeInTheDocument();
+    expect(document.querySelectorAll('.dpi-stage-placeholder')).toHaveLength(5);
+    expect(screen.queryByText('这台鼠标还没带回 DPI 档位呢')).not.toBeInTheDocument();
+  });
+
+  it('hides capabilities that runtime probing marks unavailable', async () => {
+    const probedSnapshot: DeviceSnapshot = {
+      ...snapshot,
+      pluginCapabilities: snapshot.pluginCapabilities?.map((capability) => (
+        capability.id === 'polling-rate' || capability.id === 'sleep-time'
+          ? { ...capability, available: false }
+          : capability
+      )),
+    };
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'settings_get') return Promise.resolve(settings);
+      if (command === 'device_snapshots') return Promise.resolve(entries(probedSnapshot));
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+
+    render(<App />);
+    await screen.findByRole('heading', { name: 'AM INFINITY 8K MOUSE' });
+    expect(screen.queryByRole('tab', { name: '回报率' })).not.toBeInTheDocument();
+    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['DPI', '灯光']);
+    expect(screen.getByRole('region', { name: '设备状态' })).not.toHaveTextContent('休眠时间');
+  });
+
   it('renders plugin-declared readback summary inside the polling-rate block', async () => {
     invokeMock.mockImplementation((command: string) => {
       if (command === 'settings_get') return Promise.resolve(settings);
@@ -318,7 +377,9 @@ describe('real device snapshot mapping', () => {
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('device_mutate', {
       mutation: 'set-control-mode', params: { mode: 2 },
     }));
-    expect(screen.getByRole('region', { name: '设备状态' })).toHaveTextContent('灯光软件');
+    await waitFor(() => {
+      expect(screen.getByRole('region', { name: '设备状态' })).toHaveTextContent('灯光软件');
+    });
   });
 
   it('uses the plugin-declared mouse lighting color instead of receiver or DPI colors', async () => {
