@@ -40,6 +40,7 @@ const MAX_INDEX_BYTES: u64 = 1024 * 1024;
 /// bundle 上限:runtime 64 MiB + model 4 MiB + manifest 余量。
 const MAX_BUNDLE_BYTES: u64 = 80 * 1024 * 1024;
 const BUNDLE_ARTIFACT_ID: &str = "local-ai-bundle";
+const MODEL_ARTIFACT_ID: &str = "local-ai-model-pack";
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
 const INSTALL_METADATA_SCHEMA: u32 = 2;
 
@@ -49,7 +50,7 @@ pub struct LocalAiStatus {
     pub ready: bool,
     /// bundle 版本号(从 install.json 读取)。
     pub bundle_version: Option<String>,
-    /// 子进程握手后上报的 runtime 版本(仅显示用,可能随 sidecar 内置版本变化)。
+    /// rill-runtime 版本号,用于显示和更新比较(来自 manifest 或子进程握手)。
     pub runtime_version: Option<String>,
     pub model_pack_id: Option<String>,
     pub model_pack_version: Option<String>,
@@ -145,29 +146,36 @@ pub fn status(app: &AppHandle) -> LocalAiStatus {
 pub fn check_updates(app: &AppHandle) -> Result<Vec<LocalAiUpdateInfo>, String> {
     let index = fetch_and_verify_index()?;
     let current = status(app);
-    let artifact = select_bundle_artifact(&index.payload)?;
-    Ok(vec![update_info(current.bundle_version, artifact)?])
+    let runtime_artifact = select_bundle_artifact(&index.payload)?;
+    let model_artifact = select_model_artifact(&index.payload)?;
+    Ok(vec![update_info(
+        current.runtime_version,
+        current.model_pack_version,
+        runtime_artifact,
+        model_artifact,
+    )?])
 }
 
 pub fn install_update(app: &AppHandle, _component: &str) -> Result<LocalAiInstallResult, String> {
     // component 参数保留以兼容前端调用签名,实际只支持 bundle。
     let index = fetch_and_verify_index()?;
-    let artifact = select_bundle_artifact(&index.payload)?.clone();
+    let runtime_artifact = select_bundle_artifact(&index.payload)?.clone();
+    let model_artifact = select_model_artifact(&index.payload)?;
     let current = status(app);
-    let previous_version = current.bundle_version.clone();
-    if let Some(previous) = &previous_version {
-        let previous = semver::Version::parse(previous)
-            .map_err(|error| format!("invalid installed local AI version: {error}"))?;
-        let next = semver::Version::parse(&artifact.version)
-            .map_err(|error| format!("invalid local AI release version: {error}"))?;
-        if next <= previous {
-            return Err("bundle is already up to date".to_string());
-        }
+    let previous_version = current.runtime_version.clone();
+    let available_runtime = semver::Version::parse(&runtime_artifact.version)
+        .map_err(|error| format!("invalid local AI release runtime version: {error}"))?;
+    let available_model = semver::Version::parse(&model_artifact.version)
+        .map_err(|error| format!("invalid local AI release model pack version: {error}"))?;
+    let runtime_newer = is_newer(&available_runtime, current.runtime_version.as_deref())?;
+    let model_newer = is_newer(&available_model, current.model_pack_version.as_deref())?;
+    if !runtime_newer && !model_newer {
+        return Err("bundle is already up to date".to_string());
     }
-    let bytes = download_artifact(&artifact)?;
+    let bytes = download_artifact(&runtime_artifact)?;
     let root = local_ai_root(app)?;
     fs::create_dir_all(&root).map_err(|error| format!("create local AI directory: {error}"))?;
-    install_bundle(app, &root, &artifact, &bytes)?;
+    install_bundle(app, &root, &runtime_artifact, &bytes)?;
     let next_status = status(app);
     if !next_status.ready {
         let _ = rollback_bundle(&root);
@@ -178,7 +186,7 @@ pub fn install_update(app: &AppHandle, _component: &str) -> Result<LocalAiInstal
     }
     Ok(LocalAiInstallResult {
         component: "bundle".into(),
-        version: artifact.version,
+        version: runtime_artifact.version,
         previous_version,
         ready: next_status.ready,
     })
@@ -210,22 +218,32 @@ fn status_error(bundle_version: Option<String>, error: String) -> LocalAiStatus 
     }
 }
 
+/// 联合比较 runtime + model pack 版本。任一组件有新版即触发更新。
+///
+/// `available_version` 优先显示 runtime 版本(与 UI 主版本号一致);仅 model pack
+/// 变化时回退到 model pack 版本,让用户感知到版本号确实不同。
 fn update_info(
-    current_version: Option<String>,
-    artifact: &ReleaseArtifact,
+    current_runtime_version: Option<String>,
+    current_model_pack_version: Option<String>,
+    runtime_artifact: &ReleaseArtifact,
+    model_artifact: &ReleaseArtifact,
 ) -> Result<LocalAiUpdateInfo, String> {
-    let available = semver::Version::parse(&artifact.version)
-        .map_err(|error| format!("invalid available local AI version: {error}"))?;
-    let update_available = current_version
-        .as_deref()
-        .map(semver::Version::parse)
-        .transpose()
-        .map_err(|error| format!("invalid installed local AI version: {error}"))?
-        .is_none_or(|current| available > current);
+    let available_runtime = semver::Version::parse(&runtime_artifact.version)
+        .map_err(|error| format!("invalid available runtime version: {error}"))?;
+    let available_model = semver::Version::parse(&model_artifact.version)
+        .map_err(|error| format!("invalid available model pack version: {error}"))?;
+    let runtime_newer = is_newer(&available_runtime, current_runtime_version.as_deref())?;
+    let model_newer = is_newer(&available_model, current_model_pack_version.as_deref())?;
+    let update_available = runtime_newer || model_newer;
+    let available_version = if runtime_newer {
+        runtime_artifact.version.clone()
+    } else {
+        model_artifact.version.clone()
+    };
     Ok(LocalAiUpdateInfo {
         component: "bundle".into(),
-        current_version,
-        available_version: artifact.version.clone(),
+        current_version: current_runtime_version,
+        available_version,
         update_available,
     })
 }
@@ -378,6 +396,38 @@ fn select_bundle_artifact(payload: &ReleaseIndexPayload) -> Result<&ReleaseArtif
         std::env::consts::OS,
         std::env::consts::ARCH
     ))
+}
+
+/// 选择平台无关的 model pack artifact。
+/// Model 工件仅用于版本比较——model pack 本身内嵌在 bundle zip 中,不会单独下载,
+/// url/sha256/size 复用第一个 Runtime 工件的值。
+fn select_model_artifact(payload: &ReleaseIndexPayload) -> Result<&ReleaseArtifact, String> {
+    let model_matches = payload
+        .artifacts
+        .iter()
+        .filter(|artifact| {
+            artifact.kind == ReleaseArtifactKind::Model && artifact.id == MODEL_ARTIFACT_ID
+        })
+        .collect::<Vec<_>>();
+    if let [artifact] = model_matches.as_slice() {
+        return Ok(*artifact);
+    }
+    if model_matches.len() > 1 {
+        return Err("multiple model artifacts are published".into());
+    }
+    Err("no model artifact is published".into())
+}
+
+/// `available` 是否比 `current` 更新。`current` 为 None 时(未安装)视为需要更新。
+fn is_newer(available: &semver::Version, current: Option<&str>) -> Result<bool, String> {
+    match current {
+        None => Ok(true),
+        Some(current) => {
+            let current = semver::Version::parse(current)
+                .map_err(|error| format!("invalid installed local AI version: {error}"))?;
+            Ok(available > &current)
+        }
+    }
 }
 
 fn download_artifact(artifact: &ReleaseArtifact) -> Result<Vec<u8>, String> {
@@ -906,11 +956,65 @@ mod tests {
         }
     }
 
+    fn model_artifact(version: &str) -> ReleaseArtifact {
+        ReleaseArtifact {
+            kind: ReleaseArtifactKind::Model,
+            id: MODEL_ARTIFACT_ID.into(),
+            version: version.into(),
+            runtime_api_version: RUNTIME_API_VERSION,
+            target_os: None,
+            target_arch: None,
+            url: format!("{TRUSTED_RELEASE_PREFIX}local-ai-v{version}/bundle.zip"),
+            sha256: "ab".repeat(32),
+            size: 1024,
+        }
+    }
+
     #[test]
     fn update_info_never_downgrades() {
-        let artifact = bundle_artifact("0.5.0");
-        let info = update_info(Some("0.6.0".into()), &artifact).unwrap();
+        let runtime = bundle_artifact("0.5.0");
+        let model = model_artifact("0.8.0");
+        let info =
+            update_info(Some("0.6.0".into()), Some("0.8.0".into()), &runtime, &model).unwrap();
         assert!(!info.update_available);
+    }
+
+    #[test]
+    fn update_info_triggers_when_runtime_newer() {
+        let runtime = bundle_artifact("0.7.0");
+        let model = model_artifact("0.8.0");
+        let info =
+            update_info(Some("0.6.0".into()), Some("0.8.0".into()), &runtime, &model).unwrap();
+        assert!(info.update_available);
+        assert_eq!(info.available_version, "0.7.0");
+    }
+
+    #[test]
+    fn update_info_triggers_when_only_model_pack_newer() {
+        let runtime = bundle_artifact("0.5.0");
+        let model = model_artifact("0.9.0");
+        let info =
+            update_info(Some("0.5.0".into()), Some("0.8.0".into()), &runtime, &model).unwrap();
+        assert!(info.update_available);
+        assert_eq!(info.available_version, "0.9.0");
+    }
+
+    #[test]
+    fn update_info_shows_runtime_version_when_both_newer() {
+        let runtime = bundle_artifact("0.7.0");
+        let model = model_artifact("0.9.0");
+        let info =
+            update_info(Some("0.5.0".into()), Some("0.8.0".into()), &runtime, &model).unwrap();
+        assert!(info.update_available);
+        assert_eq!(info.available_version, "0.7.0");
+    }
+
+    #[test]
+    fn update_info_triggers_when_nothing_installed() {
+        let runtime = bundle_artifact("0.5.0");
+        let model = model_artifact("0.8.0");
+        let info = update_info(None, None, &runtime, &model).unwrap();
+        assert!(info.update_available);
     }
 
     #[test]
@@ -920,9 +1024,10 @@ mod tests {
             channel: "stable".into(),
             generated_at: "2026-07-13T00:00:00Z".into(),
             publisher_key_id: RILL_PRODUCTION_KEY_ID.into(),
-            artifacts: vec![bundle_artifact("0.5.0")],
+            artifacts: vec![bundle_artifact("0.5.0"), model_artifact("0.8.0")],
         };
         assert_eq!(select_bundle_artifact(&payload).unwrap().version, "0.5.0");
+        assert_eq!(select_model_artifact(&payload).unwrap().version, "0.8.0");
     }
 
     #[test]
