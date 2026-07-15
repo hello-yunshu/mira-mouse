@@ -240,6 +240,9 @@ export interface LocalAiStatus {
   runtimeVersion?: string;
   modelPackId?: string;
   modelPackVersion?: string;
+  handlerId?: string;
+  handlerVersion?: string;
+  handlerApiVersion?: number;
   rollbackAvailable: boolean;
   error?: string;
 }

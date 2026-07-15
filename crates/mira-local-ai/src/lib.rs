@@ -1,4 +1,4 @@
-use chrono::{DateTime, Datelike, Local, Timelike, Utc};
+use chrono::{DateTime, Datelike, FixedOffset, Timelike, Utc};
 use mira_protocol::{
     BatteryModelConfig, BatteryPredictionInput, BatteryPredictionOutput, BatterySampleInput,
     DeviceContextSnapshot, PredictionSource,
@@ -25,6 +25,7 @@ const MAX_POLLING_RATE_HZ: f64 = 16000.0;
 struct DrainObservation {
     at: DateTime<Utc>,
     ended_at: DateTime<Utc>,
+    timezone_offset_minutes: i32,
     percentage: u8,
     drain_per_hour: f64,
     /// 采样时段的设备上下文（DPI/回报率/灯光等），作为模型附加特征。
@@ -37,6 +38,8 @@ pub enum BatteryPredictionError {
     TooManySamples,
     #[error("invalid prediction timestamp")]
     InvalidNow,
+    #[error("invalid prediction timezone offset")]
+    InvalidNowTimezone,
     #[error("invalid battery sample at index {index}")]
     InvalidSample { index: usize },
     #[error("unable to initialize the configured model")]
@@ -52,9 +55,14 @@ pub fn predict(
     }
     let now = DateTime::from_timestamp_millis(input.now_unix_ms)
         .ok_or(BatteryPredictionError::InvalidNow)?;
+    validate_timezone_offset(input.now_timezone_offset_minutes)
+        .ok_or(BatteryPredictionError::InvalidNowTimezone)?;
     let mut samples = input.samples.clone();
     for (index, sample) in samples.iter().enumerate() {
-        if sample.percentage > 100 || DateTime::from_timestamp_millis(sample.at_unix_ms).is_none() {
+        if sample.percentage > 100
+            || DateTime::from_timestamp_millis(sample.at_unix_ms).is_none()
+            || validate_timezone_offset(sample.timezone_offset_minutes).is_none()
+        {
             return Err(BatteryPredictionError::InvalidSample { index });
         }
     }
@@ -79,6 +87,7 @@ pub fn predict(
         &observations,
         current.percentage,
         now,
+        input.now_timezone_offset_minutes,
         prediction_context.as_ref(),
         config,
     )
@@ -119,6 +128,7 @@ fn validated_model_prediction(
     observations: &[DrainObservation],
     current_percentage: u8,
     now: DateTime<Utc>,
+    now_timezone_offset_minutes: i32,
     current_context: Option<&DeviceContextSnapshot>,
     config: &BatteryModelConfig,
 ) -> Result<BatteryPredictionOutput, BatteryPredictionError> {
@@ -156,6 +166,7 @@ fn validated_model_prediction(
         let features = features(
             observation.percentage,
             observation.at,
+            observation.timezone_offset_minutes,
             recent_rate,
             observation.context.as_ref(),
         );
@@ -230,6 +241,7 @@ fn validated_model_prediction(
         .predict(&features(
             current_percentage,
             now,
+            now_timezone_offset_minutes,
             recent_rate,
             current_context,
         ))
@@ -365,10 +377,13 @@ fn context_features(context: Option<&DeviceContextSnapshot>) -> [f64; 3] {
 fn features(
     percentage: u8,
     at: DateTime<Utc>,
+    timezone_offset_minutes: i32,
     recent_rate: Option<f64>,
     context: Option<&DeviceContextSnapshot>,
 ) -> [f64; 9] {
-    let local = at.with_timezone(&Local);
+    let timezone = validate_timezone_offset(timezone_offset_minutes)
+        .expect("timezone offsets are validated at the handler boundary");
+    let local = at.with_timezone(&timezone);
     let hour_angle = local.hour() as f64 / 24.0 * std::f64::consts::TAU;
     let weekday_angle = local.weekday().num_days_from_monday() as f64 / 7.0 * std::f64::consts::TAU;
     let [dpi, polling_rate, light_intensity] = context_features(context);
@@ -383,6 +398,11 @@ fn features(
         polling_rate,
         light_intensity,
     ]
+}
+
+fn validate_timezone_offset(offset_minutes: i32) -> Option<FixedOffset> {
+    let seconds = offset_minutes.checked_mul(60)?;
+    FixedOffset::east_opt(seconds)
 }
 
 fn discharge_observations(
@@ -445,6 +465,7 @@ fn finish_segment(
     observations.push(DrainObservation {
         at,
         ended_at,
+        timezone_offset_minutes: start.timezone_offset_minutes,
         percentage: start.percentage,
         drain_per_hour: rate,
         // 使用放电段起始样本的上下文，代表该放电时段的设备参数状态。
@@ -457,9 +478,14 @@ mod tests {
     use super::*;
     use chrono::{Duration, TimeZone};
 
+    fn test_now() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 7, 15, 12, 0, 0).unwrap()
+    }
+
     fn sample(at: DateTime<Utc>, percentage: u8, charging: bool) -> BatterySampleInput {
         BatterySampleInput {
             at_unix_ms: at.timestamp_millis(),
+            timezone_offset_minutes: 0,
             percentage,
             charging,
             context: None,
@@ -468,10 +494,11 @@ mod tests {
 
     #[test]
     fn cold_start_explicitly_recommends_baseline() {
-        let now = Utc::now();
+        let now = test_now();
         let result = predict(
             &BatteryPredictionInput {
                 now_unix_ms: now.timestamp_millis(),
+                now_timezone_offset_minutes: 0,
                 samples: vec![sample(now, 80, false)],
                 current_context: None,
             },
@@ -492,6 +519,7 @@ mod tests {
                 DrainObservation {
                     at,
                     ended_at: at + Duration::minutes(30),
+                    timezone_offset_minutes: 0,
                     percentage: 80,
                     drain_per_hour: 5.0 + 3.0 * angle.sin() + 1.5 * angle.cos(),
                     context: None,
@@ -502,6 +530,7 @@ mod tests {
             &observations,
             80,
             start + Duration::hours(121),
+            0,
             None,
             &BatteryModelConfig::default(),
         )
@@ -513,6 +542,7 @@ mod tests {
             &observations,
             80,
             start + Duration::hours(121),
+            0,
             None,
             &BatteryModelConfig {
                 max_remaining_hours: 0.1,
@@ -530,6 +560,7 @@ mod tests {
         let result = predict(
             &BatteryPredictionInput {
                 now_unix_ms: now.timestamp_millis(),
+                now_timezone_offset_minutes: 0,
                 samples: vec![
                     sample(now, 80, false),
                     sample(now + Duration::minutes(1), 100, false),
@@ -547,10 +578,11 @@ mod tests {
 
     #[test]
     fn invalid_percentage_is_rejected() {
-        let now = Utc::now();
+        let now = test_now();
         let error = predict(
             &BatteryPredictionInput {
                 now_unix_ms: now.timestamp_millis(),
+                now_timezone_offset_minutes: 0,
                 samples: vec![sample(now, 101, false)],
                 current_context: None,
             },
@@ -590,7 +622,7 @@ mod tests {
 
     #[test]
     fn missing_or_partial_context_never_blocks_prediction() {
-        let now = Utc::now();
+        let now = test_now();
         for current_context in [
             None,
             Some(DeviceContextSnapshot {
@@ -601,6 +633,7 @@ mod tests {
             let output = predict(
                 &BatteryPredictionInput {
                     now_unix_ms: now.timestamp_millis(),
+                    now_timezone_offset_minutes: 0,
                     samples: vec![sample(now, 80, false)],
                     current_context,
                 },
@@ -703,6 +736,7 @@ mod tests {
                 DrainObservation {
                     at,
                     ended_at: at + Duration::minutes(30),
+                    timezone_offset_minutes: 0,
                     percentage: if is_high { 90 } else { 80 },
                     drain_per_hour: if is_high { 10.0 } else { 2.0 },
                     context: Some(if is_high {
@@ -718,6 +752,7 @@ mod tests {
             &observations,
             80,
             start + Duration::hours(121),
+            0,
             Some(&low_ctx),
             &BatteryModelConfig::default(),
         )
@@ -726,6 +761,7 @@ mod tests {
             &observations,
             80,
             start + Duration::hours(121),
+            0,
             Some(&high_ctx),
             &BatteryModelConfig::default(),
         )
@@ -755,7 +791,7 @@ mod tests {
     /// 验证 9 维特征向量包含上下文特征。
     #[test]
     fn features_vector_has_nine_dimensions_with_context() {
-        let now = Utc::now();
+        let now = test_now();
         let ctx = DeviceContextSnapshot {
             dpi: Some(16000),
             polling_rate_hz: Some(4000),
@@ -763,7 +799,7 @@ mod tests {
             light_brightness: Some(50),
             profile: None,
         };
-        let feats = features(80, now, Some(5.0), Some(&ctx));
+        let feats = features(80, now, 0, Some(5.0), Some(&ctx));
         assert_eq!(feats.len(), 9);
         // 基础特征
         assert!((feats[0] - 0.8).abs() < 1e-9); // percentage
@@ -775,7 +811,7 @@ mod tests {
         assert!((feats[8] - 0.15).abs() < 1e-9); // light_intensity
 
         // 无上下文时后 3 维为 0
-        let feats_none = features(80, now, Some(5.0), None);
+        let feats_none = features(80, now, 0, Some(5.0), None);
         assert_eq!(feats_none.len(), 9);
         assert_eq!(feats_none[6], 0.0);
         assert_eq!(feats_none[7], 0.0);

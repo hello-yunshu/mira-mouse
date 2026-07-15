@@ -3,6 +3,7 @@
 /dist/
 /outputs/
 /target/
+/handlers/*/target/
 /src-tauri/resources/plugins/
 /src-tauri/binaries/
 /AMasterDriver_v1.0.6_unpacked_reverse_bundle/
@@ -20,3 +21,4 @@ vite.config.js
 /src-tauri/gen/
 src-tauri/tauri.test.conf.json
 /artifacts/
+/RillML/

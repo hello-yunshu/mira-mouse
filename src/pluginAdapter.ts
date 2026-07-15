@@ -2,7 +2,7 @@
 // 插件适配层：声明式 capability metadata 解析纯函数。
 // 此模块不含任何插件特定的字符串常量，所有插件知识均从 capability metadata 声明字段读取。
 import type { DeviceState, PluginCapability, PluginField, PluginFieldOption, PluginMutation, PluginStageLayout, PluginStateMapping, PluginStatusDisplay, PluginSwitch, PluginVisibleWhen, PluginZone, RangeSpec } from './types';
-import { resolveLabelKey } from './i18n';
+import { resolveLabelKey, resolveRuntimeText } from './i18n';
 
 export const MAX_CONTROL_GROUPS = 6;
 export const MAX_STATUS_ITEMS = 6;
@@ -106,16 +106,39 @@ export function resolveFieldLabel(field: PluginField, device: DeviceState, plugi
   return '';
 }
 
-/// 解析字段当前值的友好名称：优先采用插件运行时提供的名称，再匹配声明选项。
+/// 解析字段当前值的友好名称。声明选项的 labelKey 可随当前语言翻译，
+/// 因此已知选项优先；运行时 labelSource 只用于插件未声明的动态值。
 export function resolveFieldValueLabel(field: PluginField, device: DeviceState, pluginId?: string): string | undefined {
-  if (field.labelSource) {
-    const value = readPath(device, field.labelSource);
-    if (value != null && value !== '') return String(value);
-  }
   if (field.options) {
     const value = readPath(device, field.source);
     const match = field.options.find((option) => option.value === value);
-    if (match) return resolveLabelKey(match.labelKey, pluginId);
+    if (match) {
+      const resolved = resolveLabelKey(match.labelKey, pluginId);
+      if (resolved !== match.labelKey || !match.labelKey.includes('.')) return resolved;
+    }
+  }
+  if (field.labelSource) {
+    const value = readPath(device, field.labelSource);
+    if (value != null && value !== '') return resolveRuntimeText(String(value), pluginId);
+  }
+  return undefined;
+}
+
+/// 将详情页中协议派生的 labelSource 值重新接回声明式字段选项。
+/// 详情页仍保留原始数值；只有插件明确声明了展示名称来源的字段才会本地化。
+export function resolveDetailValueLabel(group: string, key: string, device: DeviceState): string | undefined {
+  const source = `capabilities.${group}.${key}`;
+  for (const capability of device.pluginCapabilities) {
+    const fields = [
+      ...(capability.metadata.fields ?? []),
+      ...(capability.metadata.zones ?? []).flatMap((zone) => zone.fields),
+    ];
+    const field = fields.find((candidate) => candidate.labelSource === source);
+    if (field) return resolveFieldValueLabel(field, device, device.pluginId);
+  }
+  if (key.endsWith('Name') || key.endsWith('Label')) {
+    const value = readPath(device, source);
+    if (value != null && value !== '') return resolveRuntimeText(String(value), device.pluginId);
   }
   return undefined;
 }
