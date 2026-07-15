@@ -26,11 +26,12 @@ import { SettingsPage } from './Settings';
 import { AboutPage } from './About';
 import { BatteryUsageModal } from './BatteryUsage';
 import { BatteryLevelIcon } from './BatteryLevelIcon';
-import type { AboutInfo, AppSettings, DeviceCapabilities, DeviceSnapshot, DeviceSnapshotEntry, DeviceState, DpiStage, PluginCapability, PluginCapabilityPlacement, PluginField, PluginFieldFormat, RangeSpec, ThemeMode } from './types';
+import type { AboutInfo, AppSettings, DeviceSnapshot, DeviceSnapshotEntry, DeviceState, DpiStage, PluginCapability, PluginCapabilityPlacement, PluginField, PluginFieldFormat, RangeSpec, ThemeMode } from './types';
 import {
   MAX_CONTROL_GROUPS,
   MAX_STATUS_ITEMS,
   readPath,
+  resolveDetailValueLabel,
   resolveFieldMutationParams,
   resolveFieldParams,
   resolveMutation,
@@ -147,30 +148,32 @@ function colorValueStyle(value: unknown): React.CSSProperties | undefined {
   return color ? { '--value-color': color } as React.CSSProperties : undefined;
 }
 
-function LiveValue({ text, className, style }: {
+function LiveValue({ text, className, style, duration = 160 }: {
   text: string;
   className?: string;
   style?: React.CSSProperties;
+  duration?: number;
 }) {
-  const [currentText, setCurrentText] = useState(text);
-  const [nextText, setNextText] = useState<string>();
+  const [currentValue, setCurrentValue] = useState(() => ({ text, style }));
+  const [nextValue, setNextValue] = useState<{ text: string; style?: React.CSSProperties }>();
   const [transitioning, setTransitioning] = useState(false);
 
   useEffect(() => {
-    if (text === currentText) return;
+    if (text === currentValue.text && style === currentValue.style) return;
 
     let transitionFrame = 0;
     let timeout = 0;
+    const incomingValue = { text, style };
     const prepareFrame = window.requestAnimationFrame(() => {
-      setNextText(text);
+      setNextValue(incomingValue);
       setTransitioning(false);
       transitionFrame = window.requestAnimationFrame(() => {
         setTransitioning(true);
         timeout = window.setTimeout(() => {
-          setCurrentText(text);
-          setNextText(undefined);
+          setCurrentValue(incomingValue);
+          setNextValue(undefined);
           setTransitioning(false);
-        }, 160);
+        }, duration);
       });
     });
 
@@ -179,25 +182,26 @@ function LiveValue({ text, className, style }: {
       window.cancelAnimationFrame(transitionFrame);
       window.clearTimeout(timeout);
     };
-  }, [currentText, text]);
+  }, [currentValue.style, currentValue.text, duration, style, text]);
 
   return (
     <strong
       className={[className, 'live-value', transitioning ? 'is-transitioning' : undefined].filter(Boolean).join(' ')}
-      style={style}
       aria-label={text}
     >
-      <span className="live-value-current" aria-hidden="true">{currentText}</span>
-      {nextText !== undefined && <span className="live-value-next" aria-hidden="true">{nextText}</span>}
+      <span className="live-value-current" style={currentValue.style} aria-hidden="true">{currentValue.text}</span>
+      {nextValue !== undefined && (
+        <span className="live-value-next" style={nextValue.style} aria-hidden="true">{nextValue.text}</span>
+      )}
     </strong>
   );
 }
 
 function ColorValue({ value, fallback, className }: { value: unknown; fallback?: string; className?: string }) {
   const label = typeof value === 'string' && value ? value : fallback ?? i18n.t('common.notReported');
-  const style = colorValueStyle(value);
+  const style = useMemo(() => colorValueStyle(value), [value]);
   const classes = [className, style ? 'color-value' : undefined].filter(Boolean).join(' ') || undefined;
-  return <LiveValue text={label} className={classes} style={style} />;
+  return <LiveValue text={label} className={classes} style={style} duration={220} />;
 }
 
 function FormattedValue({ value, format, label, className }: {
@@ -717,7 +721,7 @@ function SwitchField({ field, device, writeBusy, runMutation }: {
       onClick={handleClick}
     >
       <span>{label}</span>
-      <strong>{isOn ? i18n.t('common.on') : i18n.t('common.off')}</strong>
+      <strong className="lighting-status-value">{isOn ? i18n.t('common.on') : i18n.t('common.off')}</strong>
     </button>
   );
 }
@@ -1202,6 +1206,12 @@ function ZoneRenderer({ capability, device, writeBusy, runMutation }: {
 
   const colorField = activeZone.fields.find((f) => f.editor === 'modal-color' || f.format === 'color');
   const zoneColor = colorField ? readPath(device, colorField.source) as string | undefined : undefined;
+  // 主题来源区域继续沿用全局主题色；附属灯光区域则只在当前分段滑块内
+  // 使用自己的灯光颜色。判断依据来自插件声明，不依赖鼠标/接收器 id。
+  const usesThemeAccent = capability.metadata.accentSource
+    ? colorField?.source === capability.metadata.accentSource
+    : activeZone.id === zones[0].id;
+  const tabAccent = usesThemeAccent ? 'var(--accent)' : zoneColor ?? 'var(--accent)';
 
   const visibleFields = activeZone.fields.filter((f) => resolveVisibleWhen(f.visibleWhen, device));
   // 条件显示的次级区域通常是接收器等附属对象；字段较多时使用与旧界面一致
@@ -1215,7 +1225,10 @@ function ZoneRenderer({ capability, device, writeBusy, runMutation }: {
           className="lighting-sub-tabs"
           role="tablist"
           aria-label={i18n.t('dashboard.lightingTarget')}
-          style={{ gridTemplateColumns: `repeat(${zones.length}, minmax(0, 1fr))` }}
+          style={{
+            gridTemplateColumns: `repeat(${zones.length}, minmax(0, 1fr))`,
+            '--lighting-tab-accent': tabAccent,
+          } as React.CSSProperties}
         >
           {zones.map((zone) => (
             <button
@@ -1334,15 +1347,15 @@ function CapabilityRouter({ capability, device, writeBusy, runMutation }: {
   return <GenericCapabilityControl capability={capability} device={device} writeBusy={writeBusy} runMutation={runMutation} />;
 }
 
-function DeviceDetails({ capabilities, pluginCapabilities, onClose }: { capabilities: DeviceCapabilities; pluginCapabilities: PluginCapability[]; onClose: () => void }) {
+function DeviceDetails({ device, onClose }: { device: DeviceState; onClose: () => void }) {
   const detailOrder = new Map<string, number>();
-  for (const capability of pluginCapabilities) {
+  for (const capability of device.pluginCapabilities) {
     const placement = placementsFor(capability, 'details')[0];
     if (placement) {
       detailOrder.set(capability.id, placement.order);
     }
   }
-  const groups = Object.entries(capabilities)
+  const groups = Object.entries(device.capabilities)
     .filter(([, fields]) => fields && Object.keys(fields).length > 0)
     .sort(([a], [b]) => (detailOrder.get(a) ?? 10_000) - (detailOrder.get(b) ?? 10_000));
   useEffect(() => {
@@ -1363,12 +1376,15 @@ function DeviceDetails({ capabilities, pluginCapabilities, onClose }: { capabili
             <section className="capability-group" key={group}>
               <h3>{capabilityGroupLabel(group)}</h3>
               <dl>
-                {Object.entries(fields).map(([key, value]) => (
-                  <div key={key}>
-                    <dt>{capabilityFieldLabel(key)}</dt>
-                    <dd><FormattedValue value={value} /></dd>
-                  </div>
-                ))}
+                {Object.entries(fields).map(([key, value]) => {
+                  const valueLabel = resolveDetailValueLabel(group, key, device);
+                  return (
+                    <div key={key}>
+                      <dt>{capabilityFieldLabel(key)}</dt>
+                      <dd><FormattedValue value={value} label={valueLabel} /></dd>
+                    </div>
+                  );
+                })}
               </dl>
             </section>
           )) : <p className="setting-hint">{i18n.t('dashboard.noCapabilities')}</p>}
@@ -1711,7 +1727,7 @@ function Dashboard({
         <span>{t('dashboard.lastUpdate', { time: device.updatedAt })}</span>
         <button className="details-button" onClick={() => { invoke('device_refresh').catch(() => {}); setShowDetails(true); }}><ReadCvLogo weight="regular" />{t('dashboard.allReadInfo')}</button>
       </div>
-      {showDetails && <DeviceDetails capabilities={device.capabilities} pluginCapabilities={device.pluginCapabilities} onClose={() => setShowDetails(false)} />}
+      {showDetails && <DeviceDetails device={device} onClose={() => setShowDetails(false)} />}
     </main>
   );
 }

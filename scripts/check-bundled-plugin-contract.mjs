@@ -16,6 +16,7 @@ const hostLocales = new Map(await Promise.all(languages.map(async (language) => 
 ])));
 const failures = [];
 let verified = 0;
+const translatableKeyProperties = new Set(['labelKey', 'editTitleKey', 'editLabelKey']);
 
 for (const plugin of lock.plugins.filter((entry) => entry.bundleByDefault)) {
   const manifest = await readArchiveJson(plugin.cachePath, 'plugin.json');
@@ -43,6 +44,13 @@ for (const plugin of lock.plugins.filter((entry) => entry.bundleByDefault)) {
         && !hostKeys.has(labelKey)
         && !hostKeys.has(`plugin.label.${labelKey}`)) {
         failures.push(`${plugin.asset}: ${language} has no translation for ${labelKey}`);
+      }
+    }
+    if (language === 'en') {
+      for (const [key, value] of Object.entries(pluginKeys)) {
+        if (typeof value === 'string' && /\p{Script=Han}/u.test(value)) {
+          failures.push(`${plugin.asset}: English translation ${key} contains Chinese text`);
+        }
       }
     }
   }
@@ -79,7 +87,7 @@ function collectLabelKeys(value, output) {
   }
   if (!value || typeof value !== 'object') return;
   for (const [key, child] of Object.entries(value)) {
-    if (key === 'labelKey' && typeof child === 'string') output.add(child);
+    if (translatableKeyProperties.has(key) && typeof child === 'string') output.add(child);
     collectLabelKeys(child, output);
   }
 }

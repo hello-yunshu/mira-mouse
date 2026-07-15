@@ -1,20 +1,23 @@
-name: Model Pack
+name: Local AI Packs
 
 on:
   workflow_call:
     inputs:
       pack-version:
-        description: 'Model pack version (defaults to app version)'
+        description: 'Mira model/handler version (defaults to app version)'
         required: false
         type: string
     secrets:
-      MODEL_PACK_SIGNING_KEY:
-        description: 'Ed25519 private signing seed for production model packs'
+      RILL_V2_SIGNING_KEY:
+        description: 'Ed25519 seed for the Rill v2 model pack and release index'
+        required: true
+      HANDLER_SIGNING_KEY:
+        description: 'Independent Ed25519 seed for Mira handler packs'
         required: true
   workflow_dispatch:
     inputs:
       pack-version:
-        description: 'Model pack version (e.g. 0.8.1)'
+        description: 'Model and handler version (e.g. 0.8.1)'
         required: true
         type: string
 
@@ -22,21 +25,33 @@ permissions:
   contents: read
 
 concurrency:
-  group: model-pack-${{ github.ref }}
+  group: local-ai-packs-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  build-model-pack:
+  build-local-ai-packs:
     runs-on: ubuntu-22.04
-    timeout-minutes: 15
+    timeout-minutes: 30
     outputs:
       pack-version: ${{ steps.meta.outputs.pack-version }}
-      pack-sha256: ${{ steps.sha.outputs.pack-sha256 }}
+      model-sha256: ${{ steps.sha.outputs.model-sha256 }}
+      handler-sha256: ${{ steps.sha.outputs.handler-sha256 }}
     steps:
       - uses: actions/checkout@v7
+      - name: Checkout Rill 0.7 source
+        uses: actions/checkout@v7
+        with:
+          repository: hello-yunshu/rill-ml
+          ref: v0.7.0
+          path: RillML
+      - name: Expose Rill as Mira's sibling source dependency
+        run: ln -sfn "$GITHUB_WORKSPACE/RillML" "$GITHUB_WORKSPACE/../RillML"
 
-      - name: Install Rust toolchain
-        run: rustup toolchain install stable --profile minimal
+      - name: Install Rust and WASM tooling
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup target add --toolchain stable wasm32-unknown-unknown
+          cargo install wasm-tools --locked
 
       - name: Cache cargo
         uses: actions/cache@v6
@@ -44,10 +59,12 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
+            ~/.cargo/bin/wasm-tools
             target
-          key: cargo-model-pack-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+            handlers/mira-battery-handler/target
+          key: cargo-local-ai-packs-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            cargo-model-pack-${{ runner.os }}-
+            cargo-local-ai-packs-${{ runner.os }}-
             cargo-rust-${{ runner.os }}-
 
       - name: Resolve pack version
@@ -61,54 +78,87 @@ jobs:
             version=$(node scripts/app-version.mjs)
           fi
           echo "pack-version=$version" >> "$GITHUB_OUTPUT"
-          echo "Pack version: $version" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Build signed model pack
         env:
-          MODEL_PACK_SIGNING_KEY: ${{ secrets.MODEL_PACK_SIGNING_KEY }}
+          RILL_SIGNING_KEY_HEX: ${{ secrets.RILL_V2_SIGNING_KEY }}
         run: |
           set -euo pipefail
           mkdir -p artifacts
-          cargo run --release -p mira-runtime -- build-pack \
-            --output artifacts/model.rillpack \
-            --config crates/mira-runtime/configs/model.json \
-            --pack-id mira-battery-model \
-            --pack-version "${{ steps.meta.outputs.pack-version }}" \
-            --min-runtime-version 0.5.0 \
-            --key-id mira-rill-2026-001
+          node scripts/build-model-manifest.mjs \
+            local-ai/model-manifest.json "${{ steps.meta.outputs.pack-version }}" \
+            artifacts/model-manifest.json
+          cargo run --release --manifest-path RillML/crates/rill-runtime/Cargo.toml \
+            --bin rill-pack -- create \
+            --manifest artifacts/model-manifest.json \
+            --model local-ai/model.json \
+            --output artifacts/model.rillpack
 
-      - name: Inspect built pack (verify round-trip)
+      - name: Build WASM handler component
         run: |
           set -euo pipefail
-          # The build-pack command already verifies the pack can be loaded.
-          # This step additionally prints the inspection JSON for audit logs.
-          cargo run --release -p mira-runtime -- inspect-pack \
+          cargo build --locked --release \
+            --manifest-path handlers/mira-battery-handler/Cargo.toml \
+            --target wasm32-unknown-unknown
+          wasm-tools component new \
+            handlers/mira-battery-handler/target/wasm32-unknown-unknown/release/mira-battery-handler.wasm \
+            -o artifacts/mira-battery-handler.component.wasm
+          node scripts/build-handler-manifest.mjs \
+            handlers/mira-battery-handler/manifest.template.json \
+            artifacts/mira-battery-handler.component.wasm \
+            "${{ steps.meta.outputs.pack-version }}" \
+            artifacts/handler-manifest.json
+
+      - name: Sign handler pack with its independent key
+        env:
+          RILL_SIGNING_KEY_HEX: ${{ secrets.HANDLER_SIGNING_KEY }}
+        run: |
+          cargo run --release --manifest-path RillML/crates/rill-runtime/Cargo.toml \
+            --bin rill-pack -- create-handler \
+            --manifest artifacts/handler-manifest.json \
+            --module artifacts/mira-battery-handler.component.wasm \
+            --output artifacts/handler.rillhandler
+
+      - name: Verify both signed packs
+        run: |
+          set -euo pipefail
+          cargo run --release --manifest-path RillML/crates/rill-runtime/Cargo.toml \
+            --bin rill-pack -- verify \
             --pack artifacts/model.rillpack \
-            --trust-key "mira-rill-2026-001=3d5ada931abc747610850f9e405fee637a3f445c0b4406eb96b41673814fc261"
+            --key-id mira-rill-2026-002 \
+            --public-key-hex 1b4b25b7b42a998a25142522626a4c956a0924b0775affb3695b914595dbe73c
+          cargo run --release --manifest-path RillML/crates/rill-runtime/Cargo.toml \
+            --bin rill-pack -- inspect-handler \
+            --handler artifacts/handler.rillhandler \
+            --key-id mira-handler-2026-001 \
+            --public-key-hex 1c1bfb235ec87c7cbfdddff6c8d63e5b22c28e6636beb50edc0c4603ccb7ed59
 
       - name: Compute SHA-256
         id: sha
         run: |
-          sha=$(sha256sum artifacts/model.rillpack | awk '{print $1}')
-          echo "pack-sha256=$sha" >> "$GITHUB_OUTPUT"
-          echo "SHA-256: $sha" >> "$GITHUB_STEP_SUMMARY"
+          model_sha=$(sha256sum artifacts/model.rillpack | awk '{print $1}')
+          handler_sha=$(sha256sum artifacts/handler.rillhandler | awk '{print $1}')
+          echo "model-sha256=$model_sha" >> "$GITHUB_OUTPUT"
+          echo "handler-sha256=$handler_sha" >> "$GITHUB_OUTPUT"
 
-      - name: Upload artifact
+      - name: Upload model and handler packs
         uses: actions/upload-artifact@v7
         with:
-          name: model-rillpack
-          path: artifacts/model.rillpack
+          name: local-ai-packs
+          path: |
+            artifacts/model.rillpack
+            artifacts/handler.rillhandler
           if-no-files-found: error
           retention-days: 30
 
       - name: Job summary
         run: |
-          size=$(stat -c%s artifacts/model.rillpack)
           {
-            echo "## Model Pack Build Summary"
+            echo "## Local AI Pack Summary"
             echo ""
-            echo "- **Version**: ${{ steps.meta.outputs.pack-version }}"
-            echo "- **Size**: ${size} bytes"
-            echo "- **SHA-256**: ${{ steps.sha.outputs.pack-sha256 }}"
-            echo "- **Feature count**: 9 (6 base + 3 context: DPI/polling rate/lighting)"
+            echo "- Version: ${{ steps.meta.outputs.pack-version }}"
+            echo "- Model SHA-256: ${{ steps.sha.outputs.model-sha256 }}"
+            echo "- Handler SHA-256: ${{ steps.sha.outputs.handler-sha256 }}"
+            echo "- Rill handler ABI: 1"
+            echo "- Rill runtime IPC: 2"
           } >> "$GITHUB_STEP_SUMMARY"

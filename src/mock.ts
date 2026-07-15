@@ -17,14 +17,26 @@ const MOCK_DPI_STAGES: DpiStage[] = [
 ];
 const MOCK_SUPPORTED_POLLING_RATES: number[] = [125, 250, 500, 1000, 2000, 4000, 8000];
 const MOCK_MOUSE_LIGHT_COLOR = DEFAULT_THEME_ACCENT;
+const MOCK_RECEIVER_LIGHT_COLOR = '#4BBFB1';
 
 // 灯效选项：mouse 与 receiver 共用同一套声明式选项。
 const LIGHTING_EFFECT_OPTIONS: PluginFieldOption[] = [
-  { value: 0, labelKey: 'lighting.effect.off' },
-  { value: 1, labelKey: 'lighting.effect.fixed' },
-  { value: 2, labelKey: 'lighting.effect.breathing' },
-  { value: 3, labelKey: 'lighting.effect.neon' },
-  { value: 4, labelKey: 'lighting.effect.rainbow' },
+  { value: 0, labelKey: 'receiverLighting.effect.off' },
+  { value: 1, labelKey: 'receiverLighting.effect.fixed' },
+  { value: 2, labelKey: 'receiverLighting.effect.breathing' },
+  { value: 3, labelKey: 'receiverLighting.effect.neon' },
+  { value: 4, labelKey: 'receiverLighting.effect.wave' },
+];
+const RECEIVER_COLOR_MODE_OPTIONS: PluginFieldOption[] = [
+  { value: 0, labelKey: 'receiverLighting.colorMode.red' },
+  { value: 1, labelKey: 'receiverLighting.colorMode.orange' },
+  { value: 2, labelKey: 'receiverLighting.colorMode.yellow' },
+  { value: 3, labelKey: 'receiverLighting.colorMode.green' },
+  { value: 4, labelKey: 'receiverLighting.colorMode.cyan' },
+  { value: 5, labelKey: 'receiverLighting.colorMode.blue' },
+  { value: 6, labelKey: 'receiverLighting.colorMode.purple' },
+  { value: 7, labelKey: 'receiverLighting.colorMode.custom' },
+  { value: 8, labelKey: 'receiverLighting.colorMode.colorful' },
 ];
 
 export const MOCK_DEVICE: DeviceState = {
@@ -53,7 +65,7 @@ export const MOCK_DEVICE: DeviceState = {
     receiverLightEffect: 3,
     receiverLightSpeed: 2,
     receiverLightBrightness: 70,
-    receiverLightColor: MOCK_MOUSE_LIGHT_COLOR,
+    receiverLightColor: MOCK_RECEIVER_LIGHT_COLOR,
     // 休眠时间
     wirelessSleepValue: 300,
     bluetoothSleepValue: 600,
@@ -63,7 +75,7 @@ export const MOCK_DEVICE: DeviceState = {
     dpi: { profile: 0, currentStage: 3, stageCount: 8, dpiX: [400, 800, 1000, 1600, 2400, 3200, 6400, 12800], dpiY: [400, 800, 1000, 1600, 2400, 3200, 6400, 12800], stageColors: ['#7ea7d8', '#9a8bd0', '#bf7fa8', '#d39378', '#7eb2a0', '#a8c46a', '#c9a86c', '#c77a9a'] },
     settings: { profile: 0, pollingRaw: 1, pollingRate: 1000, usbDebounce: 4, wirelessDebounce: 4, bluetoothDebounce: 4, rippleCorrection: true, angleSnap: false, motionSync: true, liftCutOff: 1, buttonChangeTime: 12, wheelToButton: 0, buttonToWheel: 0, bluetoothSleepValue: 600, wirelessSleepValue: 300, mouseLightStartColor: DEFAULT_THEME_ACCENT, mouseLightEndColor: DEFAULT_THEME_ACCENT, mouseLightEnabled: true },
     mouseLighting: { effect: 2, effectName: '呼吸', speed: 2, brightness: 70, color: DEFAULT_THEME_ACCENT, extraColor: DEFAULT_THEME_ACCENT, enabled: true },
-    receiverLighting: { effect: 3, effectName: '霓虹', speed: 2, brightness: 70, option: 7, optionName: '模式 7', color: DEFAULT_THEME_ACCENT, enabled: true },
+    receiverLighting: { effect: 3, effectName: '霓虹', speed: 2, brightness: 70, option: 7, optionName: '模式 7', color: MOCK_RECEIVER_LIGHT_COLOR, enabled: true },
     fps: { enabled: true },
     dpiButton: { enabled: true },
     firmwareUsb: { versionRaw: 258 },
@@ -174,7 +186,7 @@ export const MOCK_DEVICE: DeviceState = {
             visibleWhen: { path: 'capabilities.receiverLighting', ne: null },
             fields: [
               { id: 'effect', source: 'state.receiverLightEffect', mutation: 'set-receiver-lighting', param: 'effect', editor: 'modal-select', labelKey: 'receiverLighting.field.effect', labelSource: 'capabilities.receiverLighting.effectName', editTitleKey: 'dashboard.editReceiverLightingTitle', options: LIGHTING_EFFECT_OPTIONS, visibleWhen: { path: 'state.receiverLightEffect', ne: null } },
-              { id: 'option', source: 'capabilities.receiverLighting.option', mutation: 'set-receiver-lighting', param: 'option', editor: 'modal-number', labelKey: 'receiverLighting.field.option', labelSource: 'capabilities.receiverLighting.optionName', editTitleKey: 'dashboard.editReceiverLightingTitle' },
+              { id: 'option', source: 'capabilities.receiverLighting.option', mutation: 'set-receiver-lighting', param: 'option', editor: 'modal-select', labelKey: 'receiverLighting.field.option', labelSource: 'capabilities.receiverLighting.optionName', editTitleKey: 'dashboard.editReceiverLightingTitle', options: RECEIVER_COLOR_MODE_OPTIONS },
               { id: 'speed', source: 'state.receiverLightSpeed', mutation: 'set-receiver-lighting', param: 'speed', editor: 'modal-range', labelKey: 'receiverLighting.field.speed', editTitleKey: 'dashboard.editReceiverLightingTitle', range: { min: 0, max: 10, step: 1 }, visibleWhen: { path: 'state.receiverLightEffect', ne: null } },
               { id: 'brightness', source: 'state.receiverLightBrightness', mutation: 'set-receiver-lighting', param: 'brightness', editor: 'modal-range', labelKey: 'receiverLighting.field.brightness', editTitleKey: 'dashboard.editReceiverLightingTitle', format: 'percent', range: { min: 0, max: 100, step: 1 }, visibleWhen: { path: 'state.receiverLightEffect', ne: null } },
               { id: 'color', source: 'state.receiverLightColor', mutation: 'set-receiver-lighting', param: 'color', editor: 'modal-color', labelKey: 'receiverLighting.field.color', editTitleKey: 'dashboard.editReceiverLightingTitle', visibleWhen: { path: 'state.receiverLightEffect', ne: null } },
@@ -287,7 +299,7 @@ export const MOCK_DEVICE_ENTRIES: DeviceSnapshotEntry[] = [
         },
         receiverLighting: {
           ...MOCK_DEVICE.capabilities.receiverLighting,
-          color: '#8fc7b8',
+          color: MOCK_RECEIVER_LIGHT_COLOR,
         },
       },
     }),

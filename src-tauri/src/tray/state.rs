@@ -27,6 +27,17 @@ pub enum TrayRenderMode {
     Static,
 }
 
+/// One battery row reported by the active device/plugin. Keeping the complete
+/// list in shared tray state lets every platform build the same menu without
+/// hard-coding mouse/receiver-only assumptions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrayBatteryState {
+    pub id: String,
+    pub label: String,
+    pub percentage: u8,
+    pub charging: bool,
+}
+
 impl TrayRenderMode {
     pub fn from_setting(value: &str) -> Self {
         match value {
@@ -49,6 +60,8 @@ pub struct TrayStatusState {
     pub device_name: Option<String>,
     /// 设备连接类型，未连接时为 None。
     pub connection: Option<Connection>,
+    /// 插件报告的完整电量列表，供各平台菜单逐项展示。
+    pub batteries: Vec<TrayBatteryState>,
     /// 鼠标电量百分比（已 clamp 到 0..=100）。None 表示电量未知。
     pub mouse_battery: Option<u8>,
     pub mouse_charging: bool,
@@ -72,6 +85,7 @@ impl TrayStatusState {
                 connected: false,
                 device_name: None,
                 connection: None,
+                batteries: Vec::new(),
                 mouse_battery: None,
                 mouse_charging: false,
                 receiver_battery: None,
@@ -86,21 +100,41 @@ impl TrayStatusState {
 
         let mouse_battery = mouse_battery_percentage(snapshot).map(clamp_percentage);
         let mouse_charging = mouse_battery_charging(snapshot);
-        let receiver_battery = if settings.show_receiver {
-            receiver_battery_percentage(snapshot).map(clamp_percentage)
+        let batteries = if snapshot.batteries.is_empty() {
+            snapshot
+                .battery_percent
+                .map(|percentage| {
+                    vec![TrayBatteryState {
+                        id: "mouse".into(),
+                        label: String::new(),
+                        percentage: clamp_percentage(percentage),
+                        charging: snapshot.charging,
+                    }]
+                })
+                .unwrap_or_default()
         } else {
-            None
+            snapshot
+                .batteries
+                .iter()
+                .map(|battery| TrayBatteryState {
+                    id: battery.id.clone(),
+                    label: battery.label.clone(),
+                    percentage: clamp_percentage(battery.percentage),
+                    charging: battery.charging,
+                })
+                .collect()
         };
-        let receiver_charging = if settings.show_receiver {
-            receiver_battery_charging(snapshot)
-        } else {
-            false
-        };
+        // Keep the receiver reading in the shared state regardless of whether it
+        // is appended to the menu-bar title. The tray menu always lists every
+        // reported battery; `show_receiver` only controls the compact title/icon.
+        let receiver_battery = receiver_battery_percentage(snapshot).map(clamp_percentage);
+        let receiver_charging = receiver_battery_charging(snapshot);
 
         TrayStatusState {
             connected: true,
             device_name: Some(snapshot.display_name.clone()),
             connection: Some(snapshot.connection),
+            batteries,
             mouse_battery,
             mouse_charging,
             receiver_battery,
@@ -268,7 +302,7 @@ mod tests {
     }
 
     #[test]
-    fn receiver_battery_only_extracted_when_enabled() {
+    fn receiver_battery_is_available_for_menu_when_title_is_disabled() {
         let snapshot = make_snapshot(vec![
             mira_core::DeviceBattery {
                 id: "mouse".into(),
@@ -287,11 +321,44 @@ mod tests {
         let mut settings = test_settings();
         settings.show_receiver = false;
         let state = TrayStatusState::from_snapshot(Some(&snapshot), &settings);
-        assert_eq!(state.receiver_battery, None);
+        assert_eq!(state.receiver_battery, Some(30));
+        assert_eq!(state.batteries.len(), 2);
+        assert!(!state.show_receiver);
 
         settings.show_receiver = true;
         let state = TrayStatusState::from_snapshot(Some(&snapshot), &settings);
         assert_eq!(state.receiver_battery, Some(30));
+        assert!(state.show_receiver);
+    }
+
+    #[test]
+    fn all_reported_batteries_are_preserved_for_platform_menus() {
+        let snapshot = make_snapshot(vec![
+            mira_core::DeviceBattery {
+                id: "mouse".into(),
+                label: "Mouse".into(),
+                percentage: 60,
+                charging: false,
+            },
+            mira_core::DeviceBattery {
+                id: "receiver".into(),
+                label: "Receiver".into(),
+                percentage: 80,
+                charging: true,
+            },
+            mira_core::DeviceBattery {
+                id: "dock".into(),
+                label: "Charging Dock".into(),
+                percentage: 120,
+                charging: false,
+            },
+        ]);
+
+        let state = TrayStatusState::from_snapshot(Some(&snapshot), &test_settings());
+        assert_eq!(state.batteries.len(), 3);
+        assert_eq!(state.batteries[2].id, "dock");
+        assert_eq!(state.batteries[2].label, "Charging Dock");
+        assert_eq!(state.batteries[2].percentage, 100);
     }
 
     #[test]

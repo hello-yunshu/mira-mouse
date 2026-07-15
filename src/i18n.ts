@@ -97,6 +97,44 @@ export function resolveLabelKey(labelKey: string, pluginId?: string): string {
   return labelKey;
 }
 
+function findResourcePath(value: unknown, target: string, prefix: string[] = []): string[] | undefined {
+  if (typeof value === 'string') return value === target ? prefix : undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  for (const [key, child] of Object.entries(value)) {
+    const found = findResourcePath(child, target, [...prefix, key]);
+    if (found) return found;
+  }
+  return undefined;
+}
+
+function readResourcePath(value: unknown, path: string[]): unknown {
+  let current = value;
+  for (const part of path) {
+    if (!current || typeof current !== 'object' || Array.isArray(current)) return undefined;
+    current = (current as Record<string, unknown>)[part];
+  }
+  return current;
+}
+
+/** Translate a protocol-provided display string by matching it against the
+ * opposite-language locale bundle. This keeps signed plugins compatible when
+ * their parser exposes a localized `*Name`/`*Label` alongside the raw value.
+ */
+export function resolveRuntimeText(value: string, pluginId?: string): string {
+  const language: ResolvedLanguage = i18n.resolvedLanguage?.startsWith('en') ? 'en' : 'zh-CN';
+  const sourceLanguage: ResolvedLanguage = language === 'en' ? 'zh-CN' : 'en';
+  const namespaces = pluginId ? [pluginId, 'translation'] : ['translation'];
+  for (const namespace of namespaces) {
+    const sourceBundle = i18n.getResourceBundle(sourceLanguage, namespace) as unknown;
+    const targetBundle = i18n.getResourceBundle(language, namespace) as unknown;
+    const path = findResourcePath(sourceBundle, value);
+    if (!path) continue;
+    const translated = readResourcePath(targetBundle, path);
+    if (typeof translated === 'string') return translated;
+  }
+  return value;
+}
+
 /** Apply a settings language value: switch i18n language and update <html lang>. */
 export function applyLanguage(lang: AppLanguage): void {
   const resolved = resolveLanguage(lang);

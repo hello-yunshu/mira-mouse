@@ -48,10 +48,11 @@
     "resources": [
       "resources/plugins/mira-amaster-1.6.3.mira-plugin",
       "resources/plugins/mira-logitech-hidpp-0.8.1.mira-plugin",
-      "resources/local-ai/model.rillpack"
+      "resources/local-ai/model.rillpack",
+      "resources/local-ai/handler.rillhandler"
     ],
     "externalBin": [
-      "binaries/mira-runtime"
+      "binaries/rill-runtime"
     ],
     "fileAssociations": [
       {
@@ -66,6 +67,7 @@
     "macOS": {
       "minimumSystemVersion": "12.0",
       "signingIdentity": "-",
+      "entitlements": "Entitlements.plist",
       "dmg": {
         "background": "../scripts/assets/dmg-background.png",
         "windowSize": {

@@ -66,7 +66,7 @@ impl TauriTrayController {
                 state.mouse_charging,
             )
         } else {
-            static_tray_app_icon_bytes_for_theme(style.theme.is_dark())
+            static_tray_app_icon_bytes_for_theme(style.system_theme.is_dark())
         };
         let image = tauri::image::Image::from_bytes(icon_bytes)?;
         tray.set_icon(Some(image))?;
@@ -95,7 +95,7 @@ impl TrayController for TauriTrayController {
 
         // 未连接：使用 app 图标
         if !state.connected {
-            let icon_bytes = static_tray_app_icon_bytes_for_theme(style.theme.is_dark());
+            let icon_bytes = static_tray_app_icon_bytes_for_theme(style.system_theme.is_dark());
             let image = tauri::image::Image::from_bytes(icon_bytes)?;
             tray.set_icon(Some(image))?;
             tray.set_icon_as_template(false)?;

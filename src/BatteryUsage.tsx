@@ -138,7 +138,7 @@ function BatteryUsageChart({ points, range, generatedAt }: ChartProps) {
   const chartHeight = height - padding.top - padding.bottom;
   const pointCount = Math.max(points.length, 1);
   const slotWidth = chartWidth / pointCount;
-  // 24h 最多 48 点、10d 固定 30 点；统一克制柱宽，命中区仍覆盖整个 slot。
+  // 24h 最多显示 48 个聚合点、10d 固定 30 点；采样密度由后端独立保留给分析。
   const visualBarWidth = Math.max(2, Math.min(slotWidth * 0.52, slotWidth - 2));
 
   const recordedPercentages = useMemo(
@@ -494,7 +494,7 @@ function BatteryUsageChart({ points, range, generatedAt }: ChartProps) {
             {activePoint.minPercentage !== undefined && activePoint.maxPercentage !== undefined && (
               <div className="tooltip-row"><strong>{t('batteryUsage.tooltipMin')}/{t('batteryUsage.tooltipMax')}: </strong><span>{activePoint.minPercentage}%-{activePoint.maxPercentage}%</span></div>
             )}
-            <div className="tooltip-row"><strong>{t('batteryUsage.tooltipCharging')}: </strong><span>{activePoint.charging ? t('common.on') : t('common.off')}</span></div>
+            <div className="tooltip-row"><strong>{t('batteryUsage.tooltipCharging')}: </strong><span>{t(activePoint.charging ? 'batteryUsage.tooltipYes' : 'batteryUsage.tooltipNo')}</span></div>
             <div className="tooltip-row"><strong>{t('batteryUsage.tooltipLowBattery')}: </strong><span>{activePoint.lowBattery ? t('common.on') : t('common.off')}</span></div>
             <div className="tooltip-row"><strong>{t('batteryUsage.tooltipSamples')}: </strong><span>{activePoint.sampleCount}</span></div>
           </div>
@@ -727,6 +727,9 @@ function BatteryInsightCards({ insights, aiAnalysisEnabled }: { insights: Batter
   if (visible.length % 2 !== 0) {
     visible = visible.slice(0, visible.length - 1);
   }
+
+  // 标题只解释实际展示的卡片；若双列裁剪后没有卡片，整段都不渲染。
+  if (visible.length === 0) return null;
 
   return (
     <section className="battery-insight-section">

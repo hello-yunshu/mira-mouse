@@ -214,7 +214,7 @@ git clone https://github.com/hello-yunshu/mira-mouse.git
 cd mira-mouse
 npm install
 npm run dev              # 前端开发预览（Vite）
-npm run sidecar:build    # 首次桌面开发前构建本机 mira-runtime sidecar
+npm run sidecar:build    # 从相邻的 RillML 0.7 源码构建通用 rill-runtime sidecar
 npm exec tauri dev       # 桌面开发预览（Tauri 完整运行时）
 ```
 
@@ -239,6 +239,7 @@ npm run check:ci          # 本地 CI 等价流程
 | [插件安全模型](docs/plugin-security.md) | 签名、信任根、权限边界 |
 | [插件测试](docs/plugin-testing.md) | Fixture 证据与测试约定 |
 | [威胁模型](docs/threat-model.md) | 资产、不可信输入与控制措施 |
+| [本地 AI Runtime](docs/local-ai-analysis-plan.md) | Rill runtime、模型与 WASM handler 的边界和发布链 |
 | [macOS 安装](docs/install-macos.md) | DMG 与 Gatekeeper 说明 |
 | [Homebrew 安装](docs/install-homebrew.md) | tap 变量与升级流程 |
 | [Linux 权限](docs/linux-permissions.md) | udev 规则与热插拔 |

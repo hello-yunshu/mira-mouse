@@ -9,6 +9,10 @@ use serde::{Deserialize, Serialize};
 /// Capability string for battery usage prediction.
 pub const BATTERY_USAGE_CAPABILITY: &str = "batteryUsage";
 
+fn is_zero(value: &i32) -> bool {
+    *value == 0
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BatteryModelConfig {
@@ -133,6 +137,10 @@ impl DeviceContextSnapshot {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BatterySampleInput {
     pub at_unix_ms: i64,
+    /// UTC offset at the sample time. The sandboxed handler cannot query the
+    /// host timezone, so the host makes local-time feature extraction explicit.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub timezone_offset_minutes: i32,
     pub percentage: u8,
     pub charging: bool,
     /// 采样时刻的设备上下文。复用宿主缓存的 `DeviceSnapshot`，
@@ -145,6 +153,10 @@ pub struct BatterySampleInput {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BatteryPredictionInput {
     pub now_unix_ms: i64,
+    /// Current UTC offset supplied by the host for the same reason as the
+    /// per-sample offset above. Defaults to UTC for legacy payloads.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub now_timezone_offset_minutes: i32,
     pub samples: Vec<BatterySampleInput>,
     /// 当前设备上下文（最近一次成功读取的快照投影）。
     /// Runtime 据此识别参数切换点，提升短时预测准确性。
@@ -211,8 +223,10 @@ mod tests {
     fn context_none_omits_field_for_backward_compatibility() {
         let input = BatteryPredictionInput {
             now_unix_ms: 1_700_000_000_000,
+            now_timezone_offset_minutes: 0,
             samples: vec![BatterySampleInput {
                 at_unix_ms: 1_700_000_000_000,
+                timezone_offset_minutes: 0,
                 percentage: 80,
                 charging: false,
                 context: None,
@@ -253,8 +267,10 @@ mod tests {
         };
         let input = BatteryPredictionInput {
             now_unix_ms: 1_700_000_000_000,
+            now_timezone_offset_minutes: 480,
             samples: vec![BatterySampleInput {
                 at_unix_ms: 1_700_000_000_000,
+                timezone_offset_minutes: 480,
                 percentage: 80,
                 charging: false,
                 context: Some(context.clone()),
@@ -268,6 +284,8 @@ mod tests {
         assert!(json.contains("\"lightBrightness\":75"));
         assert!(json.contains("\"profile\":\"profile1\""));
         assert!(json.contains("\"currentContext\""));
+        assert!(json.contains("\"nowTimezoneOffsetMinutes\":480"));
+        assert!(json.contains("\"timezoneOffsetMinutes\":480"));
 
         let decoded: BatteryPredictionInput = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded, input);
@@ -279,7 +297,9 @@ mod tests {
         let legacy = r#"{"nowUnixMs":1700000000000,"samples":[{"atUnixMs":1700000000000,"percentage":80,"charging":false}]}"#;
         let decoded: BatteryPredictionInput = serde_json::from_str(legacy).unwrap();
         assert_eq!(decoded.now_unix_ms, 1_700_000_000_000);
+        assert_eq!(decoded.now_timezone_offset_minutes, 0);
         assert_eq!(decoded.samples.len(), 1);
+        assert_eq!(decoded.samples[0].timezone_offset_minutes, 0);
         assert_eq!(decoded.samples[0].percentage, 80);
         assert!(decoded.samples[0].context.is_none());
         assert!(decoded.current_context.is_none());

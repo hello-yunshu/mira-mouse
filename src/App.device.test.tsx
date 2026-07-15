@@ -256,6 +256,46 @@ describe('real device snapshot mapping', () => {
     expect(await screen.findByRole('heading', { name: 'Second Mouse' })).toBeInTheDocument();
   });
 
+  it('crossfades color codes without recoloring the outgoing value', async () => {
+    const firstSnapshot: DeviceSnapshot = {
+      ...snapshot,
+      displayName: 'First Color Mouse',
+      confirmedLightColor: '#112233',
+      capabilities: {
+        ...snapshot.capabilities,
+        mouseLighting: { ...snapshot.capabilities!.mouseLighting, color: '#112233' },
+      },
+    };
+    const secondSnapshot: DeviceSnapshot = {
+      ...firstSnapshot,
+      displayName: 'Second Color Mouse',
+      confirmedLightColor: '#8fc7b8',
+      capabilities: {
+        ...firstSnapshot.capabilities,
+        mouseLighting: { ...firstSnapshot.capabilities!.mouseLighting, color: '#8fc7b8' },
+      },
+    };
+    invokeMock.mockImplementation((command: string, args?: { deviceKey?: string }) => {
+      if (command === 'settings_get') return Promise.resolve(settings);
+      if (command === 'device_snapshots') return Promise.resolve(entries(firstSnapshot, secondSnapshot));
+      if (command === 'device_select' && args?.deviceKey === 'device-1') return Promise.resolve(secondSnapshot);
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+
+    render(<App />);
+    await screen.findByRole('heading', { name: 'First Color Mouse' });
+    fireEvent.click(screen.getByRole('tab', { name: '灯光' }));
+    const colorValue = document.querySelector<HTMLElement>('.lighting-group-mouse .color-value')!;
+    expect(colorValue.querySelector<HTMLElement>('.live-value-current')?.style.getPropertyValue('--value-color')).toBe('#112233');
+
+    fireEvent.click(screen.getByRole('button', { name: '切换鼠标' }));
+    fireEvent.click(screen.getByText('Second Color Mouse').closest('button')!);
+
+    await waitFor(() => expect(colorValue.querySelector('.live-value-next')).toHaveTextContent('#8fc7b8'));
+    expect(colorValue.querySelector<HTMLElement>('.live-value-current')?.style.getPropertyValue('--value-color')).toBe('#112233');
+    expect(colorValue.querySelector<HTMLElement>('.live-value-next')?.style.getPropertyValue('--value-color')).toBe('#8fc7b8');
+  });
+
   it('keeps plugin-declared dashboard rows within the host layout limit', async () => {
     const capabilities = Array.from({ length: 7 }, (_, index) => ({
       id: `control-${index}`,
@@ -382,7 +422,7 @@ describe('real device snapshot mapping', () => {
     });
   });
 
-  it('uses the plugin-declared mouse lighting color instead of receiver or DPI colors', async () => {
+  it('keeps the global mouse accent while the lighting tabs follow the active zone color', async () => {
     const receiverOnlySnapshot: DeviceSnapshot = {
       displayName: 'Receiver-lit Mouse',
       connection: 'wireless',
@@ -457,6 +497,14 @@ describe('real device snapshot mapping', () => {
     expect(accent).toBe(themeAccent('#CC2244'));
     expect(accent).not.toBe(themeAccent('#00FF00'));
     expect(accent).not.toBe(themeAccent('#9a8bd0'));
+
+    fireEvent.click(screen.getByRole('tab', { name: '灯光' }));
+    const lightingTabs = screen.getByRole('tablist', { name: '灯光对象' });
+    expect(lightingTabs.style.getPropertyValue('--lighting-tab-accent')).toBe('var(--accent)');
+
+    fireEvent.click(screen.getByRole('tab', { name: '接收器灯光' }));
+    expect(lightingTabs.style.getPropertyValue('--lighting-tab-accent')).toBe('#00FF00');
+    expect(document.documentElement.style.getPropertyValue('--accent')).toBe(themeAccent('#CC2244'));
   });
 
   it('uses receiver lighting options to label the off effect', async () => {
@@ -1087,7 +1135,7 @@ describe('real device snapshot mapping', () => {
     await screen.findByRole('heading', { name: 'Off Lighting Mouse' });
     fireEvent.click(screen.getByRole('tab', { name: '灯光' }));
     // 灯效为 0（off）时，开关显示"关闭"，effect/color 字段不可见
-    expect(screen.getByText('关闭')).toBeInTheDocument();
+    expect(screen.getByText('关闭')).toHaveClass('lighting-status-value');
     expect(screen.queryByText('灯效')).not.toBeInTheDocument();
     expect(screen.queryByText('鼠标灯光颜色')).not.toBeInTheDocument();
   });

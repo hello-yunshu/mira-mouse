@@ -37,6 +37,12 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: hello-yunshu/rill-ml
+          ref: v0.7.0
+          path: RillML
+      - run: ln -sfn "$GITHUB_WORKSPACE/RillML" "$GITHUB_WORKSPACE/../RillML"
       - name: Install host libraries
         run: |
           set -euo pipefail
@@ -60,7 +66,7 @@ jobs:
         # tauri-bundle job 的职责),用空文件满足存在性检查即可。
         run: |
           mkdir -p src-tauri/binaries
-          touch "src-tauri/binaries/mira-runtime-$(rustc -vV | awk '/^host:/ {print $2}')"
+          touch "src-tauri/binaries/rill-runtime-$(rustc -vV | awk '/^host:/ {print $2}')"
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
   configuration:
@@ -85,6 +91,12 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: hello-yunshu/rill-ml
+          ref: v0.7.0
+          path: RillML
+      - run: ln -sfn "$GITHUB_WORKSPACE/RillML" "$GITHUB_WORKSPACE/../RillML"
       - run: rustup toolchain install stable --profile minimal
       - name: Verify plugin lock against published release assets
         run: cargo run --package xtask -- plugins check-lock
@@ -99,7 +111,8 @@ jobs:
     permissions:
       contents: read
     secrets:
-      MODEL_PACK_SIGNING_KEY: ${{ secrets.MODEL_PACK_SIGNING_KEY }}
+      RILL_V2_SIGNING_KEY: ${{ secrets.RILL_V2_SIGNING_KEY }}
+      HANDLER_SIGNING_KEY: ${{ secrets.HANDLER_SIGNING_KEY }}
 
   tauri-bundle:
     needs: [frontend, rust, configuration, plugin-lock, model-pack]
@@ -124,6 +137,12 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: hello-yunshu/rill-ml
+          ref: v0.7.0
+          path: RillML
+      - run: ln -sfn "$GITHUB_WORKSPACE/RillML" "$GITHUB_WORKSPACE/../RillML"
       - uses: actions/setup-node@v6
         with: { node-version: 22, cache: npm }
       - run: npm ci
@@ -146,20 +165,28 @@ jobs:
             cargo-bundle-${{ runner.os }}-${{ matrix.target }}-
             cargo-bundle-${{ runner.os }}-
             cargo-rust-${{ runner.os }}-
-      - name: Download signed model pack
+      - name: Download signed model and handler packs
         uses: actions/download-artifact@v8
         with:
-          name: model-rillpack
+          name: local-ai-packs
           path: src-tauri/resources/local-ai
-      - name: Verify signed model pack is usable
+      - name: Verify signed model and handler packs
         shell: bash
         run: |
           set -euo pipefail
           test -s src-tauri/resources/local-ai/model.rillpack
-          cargo run --release -p mira-runtime -- inspect-pack \
+          test -s src-tauri/resources/local-ai/handler.rillhandler
+          cargo run --release --manifest-path RillML/crates/rill-runtime/Cargo.toml \
+            --bin rill-pack -- verify \
             --pack src-tauri/resources/local-ai/model.rillpack \
-            --trust-key "mira-rill-2026-001=3d5ada931abc747610850f9e405fee637a3f445c0b4406eb96b41673814fc261"
-      - name: Build Mira runtime sidecar
+            --key-id mira-rill-2026-002 \
+            --public-key-hex 1b4b25b7b42a998a25142522626a4c956a0924b0775affb3695b914595dbe73c
+          cargo run --release --manifest-path RillML/crates/rill-runtime/Cargo.toml \
+            --bin rill-pack -- inspect-handler \
+            --handler src-tauri/resources/local-ai/handler.rillhandler \
+            --key-id mira-handler-2026-001 \
+            --public-key-hex 1c1bfb235ec87c7cbfdddff6c8d63e5b22c28e6636beb50edc0c4603ccb7ed59
+      - name: Build generic Rill runtime sidecar
         shell: bash
         run: |
           set -euo pipefail
@@ -170,43 +197,29 @@ jobs:
             RUSTUP_TOOLCHAIN=stable cargo run --package xtask -- dist-sidecar --target aarch64-apple-darwin
             RUSTUP_TOOLCHAIN=stable cargo run --package xtask -- dist-sidecar --target x86_64-apple-darwin
             lipo -create \
-              src-tauri/binaries/mira-runtime-aarch64-apple-darwin \
-              src-tauri/binaries/mira-runtime-x86_64-apple-darwin \
-              -output src-tauri/binaries/mira-runtime-universal-apple-darwin
+              src-tauri/binaries/rill-runtime-aarch64-apple-darwin \
+              src-tauri/binaries/rill-runtime-x86_64-apple-darwin \
+              -output src-tauri/binaries/rill-runtime-universal-apple-darwin
+            /usr/bin/codesign --force --sign - src-tauri/binaries/rill-runtime-universal-apple-darwin
           else
             RUSTUP_TOOLCHAIN=stable cargo run --package xtask -- dist-sidecar --target "${{ matrix.target }}"
           fi
-      - name: Build standalone local AI update bundle
+      - name: Prepare independently downloadable Rill runtime
         if: github.event_name != 'pull_request'
         shell: bash
         run: |
           set -euo pipefail
-          version=$(node scripts/app-version.mjs)
-          runtime_version=$(cargo tree -p mira-runtime --depth 1 --prefix none | awk '$1 == "rill-runtime" { sub(/^v/, "", $2); print $2; exit }')
-          test -n "$runtime_version"
           mkdir -p local-ai-assets
           if [ "$RUNNER_OS" = "macOS" ]; then
-            runtime="src-tauri/binaries/mira-runtime-universal-apple-darwin"
-            /usr/bin/codesign --force --sign - "$runtime"
-            for arch in aarch64 x86_64; do
-              RUSTUP_TOOLCHAIN=stable cargo run --package xtask -- local-ai-bundle \
-                --runtime "$runtime" \
-                --model src-tauri/resources/local-ai/model.rillpack \
-                --target-os macos --target-arch "$arch" \
-                --bundle-version "$version" --runtime-version "$runtime_version" \
-                --model-pack-version "$version" \
-                --output "local-ai-assets/local-ai-bundle-macos-${arch}.zip"
-            done
+            runtime="src-tauri/binaries/rill-runtime-universal-apple-darwin"
+            cp "$runtime" local-ai-assets/rill-runtime-macos-aarch64
+            cp "$runtime" local-ai-assets/rill-runtime-macos-x86_64
           else
-            runtime="src-tauri/binaries/mira-runtime-${{ matrix.target }}"
+            runtime="src-tauri/binaries/rill-runtime-${{ matrix.target }}"
             if [ "$RUNNER_OS" = "Windows" ]; then runtime="${runtime}.exe"; fi
-            RUSTUP_TOOLCHAIN=stable cargo run --package xtask -- local-ai-bundle \
-              --runtime "$runtime" \
-              --model src-tauri/resources/local-ai/model.rillpack \
-              --target-os "${{ matrix.target_os }}" --target-arch "${{ matrix.target_arch }}" \
-              --bundle-version "$version" --runtime-version "$runtime_version" \
-              --model-pack-version "$version" \
-              --output "local-ai-assets/local-ai-bundle-${{ matrix.target_os }}-${{ matrix.target_arch }}.zip"
+            suffix=""
+            if [ "$RUNNER_OS" = "Windows" ]; then suffix=".exe"; fi
+            cp "$runtime" "local-ai-assets/rill-runtime-${{ matrix.target_os }}-${{ matrix.target_arch }}${suffix}"
           fi
       - run: cargo run --package xtask -- plugins sync --locked
       - name: Clean stale bundle outputs
@@ -254,7 +267,7 @@ jobs:
             target/**/bundle/**/*-setup.exe.sig
             target/**/bundle/**/*.AppImage
             target/**/bundle/**/*.AppImage.sig
-            local-ai-assets/*.zip
+            local-ai-assets/rill-runtime-*
           if-no-files-found: error
       - name: Job summary
         shell: bash
@@ -266,7 +279,7 @@ jobs:
           fi
 
   release-publish:
-    needs: [tauri-bundle]
+    needs: [tauri-bundle, model-pack]
     if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-22.04
     timeout-minutes: 25
@@ -277,11 +290,21 @@ jobs:
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: hello-yunshu/rill-ml
+          ref: v0.7.0
+          path: RillML
+      - run: ln -sfn "$GITHUB_WORKSPACE/RillML" "$GITHUB_WORKSPACE/../RillML"
       - uses: actions/download-artifact@v8
         with:
           path: release-assets
           pattern: mira-bundle-*
           merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          name: local-ai-packs
+          path: release-assets/local-ai-packs
       - name: Verify release-ready and determine tag
         id: meta
         env:
@@ -342,7 +365,8 @@ jobs:
             -name '*-setup.exe' -o -name '*-setup.exe.sig' -o \
             -name '*.AppImage' -o -name '*.AppImage.sig' \
           \) -exec cp {} publish-assets/ \;
-          find release-assets -type f -name 'local-ai-bundle-*.zip' -exec cp {} publish-assets/ \;
+          find release-assets -type f -name 'rill-runtime-*' -exec cp {} publish-assets/ \;
+          find release-assets/local-ai-packs -type f \( -name 'model.rillpack' -o -name 'handler.rillhandler' \) -exec cp {} publish-assets/ \;
           (
             cd publish-assets
             # macOS: DMG 自带版本号（Mira_<v>_universal.dmg），仅替换前缀；
@@ -419,14 +443,15 @@ jobs:
         env:
           TAG: ${{ steps.meta.outputs.tag }}
           VERSION: ${{ steps.meta.outputs.version }}
-          MODEL_PACK_SIGNING_KEY: ${{ secrets.MODEL_PACK_SIGNING_KEY }}
+          RILL_SIGNING_KEY_HEX: ${{ secrets.RILL_V2_SIGNING_KEY }}
         run: |
           set -euo pipefail
           rustup toolchain install stable --profile minimal
-          RUNTIME_VERSION=$(RUSTUP_TOOLCHAIN=stable cargo tree -p mira-runtime --depth 1 --prefix none | awk '$1 == "rill-runtime" { sub(/^v/, "", $2); print $2; exit }')
+          RUNTIME_VERSION=$(cargo metadata --manifest-path RillML/crates/rill-runtime/Cargo.toml --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "rill-runtime") | .version')
           test -n "$RUNTIME_VERSION"
-          node scripts/build-local-ai-release-index.mjs publish-assets "$RUNTIME_VERSION" "$VERSION" "$TAG" local-ai-index-payload.json
-          RUSTUP_TOOLCHAIN=stable cargo run --release -p mira-runtime -- sign-index \
+          node scripts/build-local-ai-release-index.mjs publish-assets "$RUNTIME_VERSION" "$VERSION" "$VERSION" "$TAG" local-ai-index-payload.json
+          RUSTUP_TOOLCHAIN=stable cargo run --release --manifest-path RillML/crates/rill-runtime/Cargo.toml \
+            --bin rill-pack -- sign-index \
             --payload local-ai-index-payload.json \
             --output local-ai-stable-index.json
       - uses: actions/attest-build-provenance@v4

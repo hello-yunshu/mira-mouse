@@ -1,0 +1,22 @@
+[package]
+name = "mira-battery-handler"
+version = "0.8.1"
+edition = "2021"
+publish = false
+description = "Mira battery prediction handler for the generic Rill runtime."
+
+[[bin]]
+name = "mira-battery-handler"
+path = "src/main.rs"
+
+[dependencies]
+mira-local-ai = { path = "../../crates/mira-local-ai" }
+mira-protocol = { path = "../../crates/mira-protocol" }
+serde_json = "1"
+wit-bindgen = "0.29"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true

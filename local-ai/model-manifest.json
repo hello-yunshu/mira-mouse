@@ -1,0 +1,11 @@
+{
+  "formatVersion": 1,
+  "id": "mira-battery-model",
+  "version": "0.8.1",
+  "runtimeApiVersion": 2,
+  "minRuntimeVersion": "0.7.0",
+  "publisherKeyId": "mira-rill-2026-002",
+  "capabilities": [
+    "batteryUsage"
+  ]
+}

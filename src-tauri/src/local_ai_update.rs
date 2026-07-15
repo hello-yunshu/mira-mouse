@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! 签名、原子、版本化的本地 AI bundle 更新。
+//! Signed, independently versioned local-AI artifact updates.
 //!
-//! Bundle = mira-runtime 二进制 + model.rillpack,单一版本号,单一 staging/current/
-//! previous 目录,单一回滚。首次安装随 Mira 主程序打包(sidecar + resources),独立更新
-//! 仅在用户主动检查时触发。下载复用主程序的 `fetch_bounded` 镜像 fallback。
+//! Rill runtime, Mira model and Mira handler are published as three artifacts.
+//! They update independently, but activation is transactional: a candidate
+//! deployment is assembled in staging, fully handshaken, then atomically
+//! swapped with `current`. One complete previous deployment remains rollbackable.
 
 use std::{
     collections::BTreeSet,
@@ -17,7 +18,8 @@ use std::{
 
 use ed25519_dalek::{Signature, Verifier};
 use rill_runtime_protocol::{
-    ReleaseArtifact, ReleaseArtifactKind, ReleaseIndexPayload, SignedReleaseIndex,
+    ReleaseArtifact, ReleaseArtifactKind, ReleaseIndexPayload, RuntimeResponseV2,
+    SignedReleaseIndex, HANDLER_API_VERSION, RUNTIME_ARTIFACT_ID,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -27,33 +29,35 @@ use tauri::{AppHandle, Manager};
 use crate::{
     decode_key, fetch_bounded,
     local_ai_runtime::{
-        resolve_installation, rill_trust_keys, runtime_executable_name, RuntimeInstallation,
+        resolve_installation, rill_handler_trust_keys, rill_trust_keys, runtime_executable_name,
+        RuntimeInstallation, MIRA_HANDLER_ID,
     },
-    RILL_PRODUCTION_KEY_ID, RILL_PRODUCTION_PUBLIC_KEY_HEX,
+    RILL_V2_PRODUCTION_KEY_ID, RILL_V2_PRODUCTION_PUBLIC_KEY_HEX,
 };
 
 const RELEASE_INDEX_URL: &str =
     "https://github.com/hello-yunshu/mira-mouse/releases/latest/download/local-ai-stable-index.json";
 const TRUSTED_RELEASE_PREFIX: &str =
     "https://github.com/hello-yunshu/mira-mouse/releases/download/";
+const MODEL_ARTIFACT_ID: &str = "mira-battery-model";
 const MAX_INDEX_BYTES: u64 = 1024 * 1024;
-/// bundle 上限:runtime 64 MiB + model 4 MiB + manifest 余量。
-const MAX_BUNDLE_BYTES: u64 = 80 * 1024 * 1024;
-const BUNDLE_ARTIFACT_ID: &str = "local-ai-bundle";
-const MODEL_ARTIFACT_ID: &str = "local-ai-model-pack";
+const MAX_ARTIFACT_BYTES: u64 = 128 * 1024 * 1024;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
-const INSTALL_METADATA_SCHEMA: u32 = 2;
+const INSTALL_METADATA_SCHEMA: u32 = 3;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LocalAiStatus {
     pub ready: bool,
-    /// bundle 版本号(从 install.json 读取)。
+    /// Compatibility field used by the current UI. This is the version that
+    /// triggered the latest transactional deployment, not a coupled bundle ABI.
     pub bundle_version: Option<String>,
-    /// rill-runtime 版本号,用于显示和更新比较(来自 manifest 或子进程握手)。
     pub runtime_version: Option<String>,
     pub model_pack_id: Option<String>,
     pub model_pack_version: Option<String>,
+    pub handler_id: Option<String>,
+    pub handler_version: Option<String>,
+    pub handler_api_version: Option<u32>,
     pub rollback_available: bool,
     pub error: Option<String>,
 }
@@ -80,14 +84,38 @@ pub struct LocalAiInstallResult {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct InstallMetadata {
     schema_version: u32,
-    bundle_version: String,
+    deployment_version: String,
     runtime_version: String,
     model_pack_id: String,
     model_pack_version: String,
+    handler_id: String,
+    handler_version: String,
+    handler_api_version: u32,
     runtime_sha256: String,
     model_sha256: String,
+    handler_sha256: String,
     publisher_key_id: String,
     installed_at: String,
+}
+
+#[derive(Clone, Copy)]
+struct SelectedArtifacts<'a> {
+    runtime: &'a ReleaseArtifact,
+    model: &'a ReleaseArtifact,
+    handler: &'a ReleaseArtifact,
+}
+
+#[derive(Clone, Copy)]
+struct UpdatePlan {
+    runtime: bool,
+    model: bool,
+    handler: bool,
+}
+
+impl UpdatePlan {
+    fn any(self) -> bool {
+        self.runtime || self.model || self.handler
+    }
 }
 
 pub fn status(app: &AppHandle) -> LocalAiStatus {
@@ -95,48 +123,55 @@ pub fn status(app: &AppHandle) -> LocalAiStatus {
         Ok(root) => root,
         Err(error) => return status_error(None, error),
     };
-    let metadata = read_metadata(&bundle_current_dir(&root).join("install.json"));
-    let rollback_available = bundle_previous_dir(&root).is_dir();
+    let metadata = read_metadata(&deployment_current_dir(&root).join("install.json"));
+    let rollback_available = deployment_previous_dir(&root).is_dir();
     let Some(installation) = resolve_installation(app) else {
         return LocalAiStatus {
             ready: false,
-            bundle_version: metadata.as_ref().map(|item| item.bundle_version.clone()),
+            bundle_version: metadata
+                .as_ref()
+                .map(|item| item.deployment_version.clone()),
             runtime_version: metadata.as_ref().map(|item| item.runtime_version.clone()),
             model_pack_id: metadata.as_ref().map(|item| item.model_pack_id.clone()),
             model_pack_version: metadata
                 .as_ref()
                 .map(|item| item.model_pack_version.clone()),
+            handler_id: metadata.as_ref().map(|item| item.handler_id.clone()),
+            handler_version: metadata.as_ref().map(|item| item.handler_version.clone()),
+            handler_api_version: metadata.as_ref().map(|item| item.handler_api_version),
             rollback_available,
-            error: Some("runtimeOrModelNotInstalled".into()),
+            error: Some("runtimeModelOrHandlerNotInstalled".into()),
         };
     };
     match probe_runtime(&installation) {
-        Ok(probe) => {
-            // The built-in sidecar/model pair has no install.json. Its signed model
-            // pack version is the bundle version by construction, so use that as the
-            // current version instead of reporting the bundled runtime as uninstalled.
-            let bundle_version = metadata
+        Ok(probe) => LocalAiStatus {
+            ready: true,
+            bundle_version: metadata
                 .as_ref()
-                .map(|item| item.bundle_version.clone())
-                .or_else(|| Some(probe.model_pack_version.clone()));
-            LocalAiStatus {
-                ready: true,
-                bundle_version,
-                runtime_version: Some(probe.runtime_version),
-                model_pack_id: Some(probe.model_pack_id),
-                model_pack_version: Some(probe.model_pack_version),
-                rollback_available,
-                error: None,
-            }
-        }
+                .map(|item| item.deployment_version.clone())
+                .or_else(|| Some(probe.handler_version.clone())),
+            runtime_version: Some(probe.runtime_version),
+            model_pack_id: Some(probe.model_pack_id),
+            model_pack_version: Some(probe.model_pack_version),
+            handler_id: Some(probe.handler_id),
+            handler_version: Some(probe.handler_version),
+            handler_api_version: Some(probe.handler_api_version),
+            rollback_available,
+            error: None,
+        },
         Err(error) => LocalAiStatus {
             ready: false,
-            bundle_version: metadata.as_ref().map(|item| item.bundle_version.clone()),
+            bundle_version: metadata
+                .as_ref()
+                .map(|item| item.deployment_version.clone()),
             runtime_version: metadata.as_ref().map(|item| item.runtime_version.clone()),
             model_pack_id: metadata.as_ref().map(|item| item.model_pack_id.clone()),
             model_pack_version: metadata
                 .as_ref()
                 .map(|item| item.model_pack_version.clone()),
+            handler_id: metadata.as_ref().map(|item| item.handler_id.clone()),
+            handler_version: metadata.as_ref().map(|item| item.handler_version.clone()),
+            handler_api_version: metadata.as_ref().map(|item| item.handler_api_version),
             rollback_available,
             error: Some(error),
         },
@@ -145,40 +180,57 @@ pub fn status(app: &AppHandle) -> LocalAiStatus {
 
 pub fn check_updates(app: &AppHandle) -> Result<Vec<LocalAiUpdateInfo>, String> {
     let index = fetch_and_verify_index()?;
+    let artifacts = select_artifacts(&index.payload)?;
     let current = status(app);
-    let runtime_artifact = select_bundle_artifact(&index.payload)?;
-    let model_artifact = select_model_artifact(&index.payload)?;
-    Ok(vec![update_info(
-        current.runtime_version,
-        current.model_pack_version,
-        runtime_artifact,
-        model_artifact,
-    )?])
+    Ok(vec![update_info(&current, artifacts)?])
 }
 
-pub fn install_update(app: &AppHandle, _component: &str) -> Result<LocalAiInstallResult, String> {
-    // component 参数保留以兼容前端调用签名,实际只支持 bundle。
-    let index = fetch_and_verify_index()?;
-    let runtime_artifact = select_bundle_artifact(&index.payload)?.clone();
-    let model_artifact = select_model_artifact(&index.payload)?;
-    let current = status(app);
-    let previous_version = current.runtime_version.clone();
-    let available_runtime = semver::Version::parse(&runtime_artifact.version)
-        .map_err(|error| format!("invalid local AI release runtime version: {error}"))?;
-    let available_model = semver::Version::parse(&model_artifact.version)
-        .map_err(|error| format!("invalid local AI release model pack version: {error}"))?;
-    let runtime_newer = is_newer(&available_runtime, current.runtime_version.as_deref())?;
-    let model_newer = is_newer(&available_model, current.model_pack_version.as_deref())?;
-    if !runtime_newer && !model_newer {
-        return Err("bundle is already up to date".to_string());
+pub fn install_update(app: &AppHandle, component: &str) -> Result<LocalAiInstallResult, String> {
+    if component != "bundle" {
+        return Err("unsupported local AI update component".into());
     }
-    let bytes = download_artifact(&runtime_artifact)?;
+    let index = fetch_and_verify_index()?;
+    let artifacts = select_artifacts(&index.payload)?;
+    let current = status(app);
+    let plan = update_plan(&current, artifacts)?;
+    if !plan.any() {
+        return Err("local AI components are already up to date".into());
+    }
+
+    let previous_version = current.bundle_version.clone();
+    let source = resolve_installation(app);
     let root = local_ai_root(app)?;
-    fs::create_dir_all(&root).map_err(|error| format!("create local AI directory: {error}"))?;
-    install_bundle(app, &root, &runtime_artifact, &bytes)?;
+    let parent = root.join("bundle");
+    fs::create_dir_all(&parent).map_err(|error| format!("create deployment directory: {error}"))?;
+    let staging = create_staging_dir(&parent)?;
+    let result = stage_deployment(source.as_ref(), &staging, artifacts, plan)
+        .and_then(|()| validate_staged_deployment(&staging, artifacts, plan))
+        .and_then(|probe| {
+            let deployment_version = selected_deployment_version(artifacts, plan).to_string();
+            write_metadata(
+                &staging.join("install.json"),
+                &deployment_version,
+                &staging,
+                &probe,
+            )?;
+            activate_directory(
+                &staging,
+                &deployment_current_dir(&root),
+                &deployment_previous_dir(&root),
+            )?;
+            Ok(deployment_version)
+        });
+    let deployment_version = match result {
+        Ok(version) => version,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&staging);
+            return Err(error);
+        }
+    };
+
     let next_status = status(app);
     if !next_status.ready {
-        let _ = rollback_bundle(&root);
+        let _ = rollback_deployment(&root);
         return Err(format!(
             "local AI activation failed and was rolled back: {}",
             next_status.error.unwrap_or_else(|| "unknown error".into())
@@ -186,20 +238,23 @@ pub fn install_update(app: &AppHandle, _component: &str) -> Result<LocalAiInstal
     }
     Ok(LocalAiInstallResult {
         component: "bundle".into(),
-        version: runtime_artifact.version,
+        version: deployment_version,
         previous_version,
-        ready: next_status.ready,
+        ready: true,
     })
 }
 
-pub fn rollback(app: &AppHandle, _component: &str) -> Result<LocalAiStatus, String> {
+pub fn rollback(app: &AppHandle, component: &str) -> Result<LocalAiStatus, String> {
+    if component != "bundle" {
+        return Err("unsupported local AI rollback component".into());
+    }
     let root = local_ai_root(app)?;
-    rollback_bundle(&root)?;
+    rollback_deployment(&root)?;
     let next_status = status(app);
     if !next_status.ready {
-        let _ = rollback_bundle(&root);
+        let _ = rollback_deployment(&root);
         return Err(format!(
-            "rolled-back local AI version failed validation: {}",
+            "rolled-back local AI deployment failed validation: {}",
             next_status.error.unwrap_or_else(|| "unknown error".into())
         ));
     }
@@ -213,39 +268,68 @@ fn status_error(bundle_version: Option<String>, error: String) -> LocalAiStatus 
         runtime_version: None,
         model_pack_id: None,
         model_pack_version: None,
+        handler_id: None,
+        handler_version: None,
+        handler_api_version: None,
         rollback_available: false,
         error: Some(error),
     }
 }
 
-/// 联合比较 runtime + model pack 版本。任一组件有新版即触发更新。
-///
-/// `available_version` 优先显示 runtime 版本(与 UI 主版本号一致);仅 model pack
-/// 变化时回退到 model pack 版本,让用户感知到版本号确实不同。
+fn update_plan(
+    current: &LocalAiStatus,
+    artifacts: SelectedArtifacts<'_>,
+) -> Result<UpdatePlan, String> {
+    Ok(UpdatePlan {
+        runtime: is_newer(
+            &artifacts.runtime.version,
+            current.runtime_version.as_deref(),
+        )?,
+        model: is_newer(
+            &artifacts.model.version,
+            current.model_pack_version.as_deref(),
+        )?,
+        handler: is_newer(
+            &artifacts.handler.version,
+            current.handler_version.as_deref(),
+        )?,
+    })
+}
+
 fn update_info(
-    current_runtime_version: Option<String>,
-    current_model_pack_version: Option<String>,
-    runtime_artifact: &ReleaseArtifact,
-    model_artifact: &ReleaseArtifact,
+    current: &LocalAiStatus,
+    artifacts: SelectedArtifacts<'_>,
 ) -> Result<LocalAiUpdateInfo, String> {
-    let available_runtime = semver::Version::parse(&runtime_artifact.version)
-        .map_err(|error| format!("invalid available runtime version: {error}"))?;
-    let available_model = semver::Version::parse(&model_artifact.version)
-        .map_err(|error| format!("invalid available model pack version: {error}"))?;
-    let runtime_newer = is_newer(&available_runtime, current_runtime_version.as_deref())?;
-    let model_newer = is_newer(&available_model, current_model_pack_version.as_deref())?;
-    let update_available = runtime_newer || model_newer;
-    let available_version = if runtime_newer {
-        runtime_artifact.version.clone()
-    } else {
-        model_artifact.version.clone()
-    };
+    let plan = update_plan(current, artifacts)?;
     Ok(LocalAiUpdateInfo {
         component: "bundle".into(),
-        current_version: current_runtime_version,
-        available_version,
-        update_available,
+        current_version: current.bundle_version.clone(),
+        available_version: selected_deployment_version(artifacts, plan).to_string(),
+        update_available: plan.any(),
     })
+}
+
+fn selected_deployment_version(artifacts: SelectedArtifacts<'_>, plan: UpdatePlan) -> &str {
+    if plan.runtime {
+        &artifacts.runtime.version
+    } else if plan.handler {
+        &artifacts.handler.version
+    } else {
+        &artifacts.model.version
+    }
+}
+
+fn is_newer(available: &str, current: Option<&str>) -> Result<bool, String> {
+    let available = semver::Version::parse(available)
+        .map_err(|error| format!("invalid available local AI version: {error}"))?;
+    match current {
+        None => Ok(true),
+        Some(current) => {
+            let current = semver::Version::parse(current)
+                .map_err(|error| format!("invalid installed local AI version: {error}"))?;
+            Ok(available > current)
+        }
+    }
 }
 
 fn fetch_and_verify_index() -> Result<SignedReleaseIndex, String> {
@@ -256,70 +340,12 @@ fn fetch_and_verify_index() -> Result<SignedReleaseIndex, String> {
     Ok(index)
 }
 
-/// 自定义 payload 校验。
-///
-/// 不复用 `ReleaseIndexPayload::validate_shape()`:协议库 0.5.1 对 Runtime 工件
-/// 强制 `id == "rill-runtime"` 且 `size <= 64 MiB`,而 bundle 工件用 `id="local-ai-bundle"`
-/// 标识、上限放宽到 [`MAX_BUNDLE_BYTES`]。其余字段约束与协议一致。
-fn validate_index_payload(payload: &ReleaseIndexPayload) -> Result<(), String> {
-    use rill_runtime_protocol::{RELEASE_INDEX_SCHEMA_VERSION, RUNTIME_API_VERSION};
-    if payload.schema_version != RELEASE_INDEX_SCHEMA_VERSION {
-        return Err("unsupported release-index schema".into());
-    }
-    if payload.channel != "stable" {
-        return Err("unsupported release channel".into());
-    }
-    if payload.generated_at.is_empty() || payload.generated_at.len() > 64 {
-        return Err("invalid release-index timestamp".into());
-    }
-    if payload.publisher_key_id.is_empty() || payload.publisher_key_id.len() > 96 {
-        return Err("invalid release-index publisher".into());
-    }
-    if payload.artifacts.is_empty() || payload.artifacts.len() > 64 {
-        return Err("invalid release-index artifact count".into());
-    }
-    for artifact in &payload.artifacts {
-        if artifact.id.is_empty() || artifact.id.len() > 96 {
-            return Err("invalid artifact id".into());
-        }
-        if artifact.version.is_empty() || artifact.version.len() > 48 {
-            return Err("invalid artifact version".into());
-        }
-        if artifact.runtime_api_version != RUNTIME_API_VERSION {
-            return Err("unsupported artifact runtime API version".into());
-        }
-        if artifact.url.is_empty() || artifact.url.len() > 2048 {
-            return Err("invalid artifact URL".into());
-        }
-        if artifact.sha256.len() != 64 || !artifact.sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return Err("invalid artifact SHA-256".into());
-        }
-        if artifact.size == 0 || artifact.size > MAX_BUNDLE_BYTES {
-            return Err("invalid artifact size".into());
-        }
-        // bundle 工件(kind=Runtime + id=BUNDLE_ARTIFACT_ID)必须有平台信息。
-        // 普通模型工件(kind=Model)必须平台无关。
-        match artifact.kind {
-            ReleaseArtifactKind::Runtime => {
-                if artifact.target_os.as_deref().is_none_or(str::is_empty)
-                    || artifact.target_arch.as_deref().is_none_or(str::is_empty)
-                {
-                    return Err("bundle artifact requires a target OS and architecture".into());
-                }
-            }
-            ReleaseArtifactKind::Model => {
-                if artifact.target_os.is_some() || artifact.target_arch.is_some() {
-                    return Err("model artifact must be platform independent".into());
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
 fn verify_index(index: &SignedReleaseIndex) -> Result<(), String> {
-    validate_index_payload(&index.payload)?;
-    if index.payload.publisher_key_id != RILL_PRODUCTION_KEY_ID {
+    index
+        .payload
+        .validate_shape()
+        .map_err(|message| format!("invalid local AI release index: {message}"))?;
+    if index.payload.publisher_key_id != RILL_V2_PRODUCTION_KEY_ID {
         return Err("local AI release index uses an untrusted publisher".into());
     }
     chrono::DateTime::parse_from_rfc3339(&index.payload.generated_at)
@@ -328,12 +354,11 @@ fn verify_index(index: &SignedReleaseIndex) -> Result<(), String> {
         .map_err(|_| "invalid local AI release signature encoding".to_string())?;
     let signature = Signature::from_slice(&signature_bytes)
         .map_err(|_| "invalid local AI release signature length".to_string())?;
-    let canonical = canonical_json(&index.payload)?;
-    decode_key(RILL_PRODUCTION_PUBLIC_KEY_HEX)
-        .verify(&canonical, &signature)
+    decode_key(RILL_V2_PRODUCTION_PUBLIC_KEY_HEX)
+        .verify(&canonical_json(&index.payload)?, &signature)
         .map_err(|_| "local AI release-index signature verification failed".to_string())?;
 
-    let mut identities = std::collections::BTreeSet::new();
+    let mut identities = BTreeSet::new();
     for artifact in &index.payload.artifacts {
         semver::Version::parse(&artifact.version)
             .map_err(|error| format!("invalid local AI artifact version: {error}"))?;
@@ -350,7 +375,8 @@ fn verify_index(index: &SignedReleaseIndex) -> Result<(), String> {
             return Err("local AI release index has duplicate artifacts".into());
         }
     }
-    Ok(())
+    let selected = select_artifacts(&index.payload)?;
+    validate_handler_runtime_compatibility(selected.handler, &selected.runtime.version)
 }
 
 fn canonical_json<T: Serialize>(value: &T) -> Result<Vec<u8>, String> {
@@ -371,73 +397,133 @@ fn canonical_json<T: Serialize>(value: &T) -> Result<Vec<u8>, String> {
         .map_err(|error| format!("canonicalize local AI release index: {error}"))
 }
 
-/// 选择当前平台的 bundle artifact。
-/// bundle 工件用 `ReleaseArtifactKind::Runtime` + id="local-ai-bundle" + 平台匹配标识
-/// (协议库 0.5.1 没有 Bundle 变体,复用 Runtime kind)。
-fn select_bundle_artifact(payload: &ReleaseIndexPayload) -> Result<&ReleaseArtifact, String> {
-    let bundle_matches = payload
-        .artifacts
-        .iter()
-        .filter(|artifact| {
+fn select_artifacts(payload: &ReleaseIndexPayload) -> Result<SelectedArtifacts<'_>, String> {
+    let runtime = select_unique(
+        payload,
+        |artifact| {
             artifact.kind == ReleaseArtifactKind::Runtime
-                && artifact.id == BUNDLE_ARTIFACT_ID
+                && artifact.id == RUNTIME_ARTIFACT_ID
                 && artifact.target_os.as_deref() == Some(std::env::consts::OS)
                 && artifact.target_arch.as_deref() == Some(std::env::consts::ARCH)
-        })
-        .collect::<Vec<_>>();
-    if let [artifact] = bundle_matches.as_slice() {
-        return Ok(*artifact);
-    }
-    if bundle_matches.len() > 1 {
-        return Err("multiple compatible bundle artifacts are published".into());
-    }
-    Err(format!(
-        "no compatible bundle artifact is published for {}-{}",
-        std::env::consts::OS,
-        std::env::consts::ARCH
-    ))
+        },
+        "runtime",
+    )?;
+    let model = select_unique(
+        payload,
+        |artifact| artifact.kind == ReleaseArtifactKind::Model && artifact.id == MODEL_ARTIFACT_ID,
+        "model",
+    )?;
+    let handler = select_unique(
+        payload,
+        |artifact| artifact.kind == ReleaseArtifactKind::Handler && artifact.id == MIRA_HANDLER_ID,
+        "handler",
+    )?;
+    Ok(SelectedArtifacts {
+        runtime,
+        model,
+        handler,
+    })
 }
 
-/// 选择平台无关的 model pack artifact。
-/// Model 工件仅用于版本比较——model pack 本身内嵌在 bundle zip 中,不会单独下载,
-/// url/sha256/size 复用第一个 Runtime 工件的值。
-fn select_model_artifact(payload: &ReleaseIndexPayload) -> Result<&ReleaseArtifact, String> {
-    let model_matches = payload
+fn select_unique<'a>(
+    payload: &'a ReleaseIndexPayload,
+    predicate: impl Fn(&ReleaseArtifact) -> bool,
+    label: &str,
+) -> Result<&'a ReleaseArtifact, String> {
+    let matches = payload
         .artifacts
         .iter()
-        .filter(|artifact| {
-            artifact.kind == ReleaseArtifactKind::Model && artifact.id == MODEL_ARTIFACT_ID
-        })
+        .filter(|artifact| predicate(artifact))
         .collect::<Vec<_>>();
-    if let [artifact] = model_matches.as_slice() {
-        return Ok(*artifact);
+    match matches.as_slice() {
+        [artifact] => Ok(*artifact),
+        [] => Err(format!("no compatible {label} artifact is published")),
+        _ => Err(format!(
+            "multiple compatible {label} artifacts are published"
+        )),
     }
-    if model_matches.len() > 1 {
-        return Err("multiple model artifacts are published".into());
-    }
-    Err("no model artifact is published".into())
 }
 
-/// `available` 是否比 `current` 更新。`current` 为 None 时(未安装)视为需要更新。
-fn is_newer(available: &semver::Version, current: Option<&str>) -> Result<bool, String> {
-    match current {
-        None => Ok(true),
-        Some(current) => {
-            let current = semver::Version::parse(current)
-                .map_err(|error| format!("invalid installed local AI version: {error}"))?;
-            Ok(available > &current)
-        }
+fn validate_handler_runtime_compatibility(
+    handler: &ReleaseArtifact,
+    runtime_version: &str,
+) -> Result<(), String> {
+    if handler.handler_api_version != Some(HANDLER_API_VERSION) {
+        return Err("handler artifact uses an unsupported handler API".into());
+    }
+    let minimum = handler
+        .min_runtime_version
+        .as_deref()
+        .ok_or_else(|| "handler artifact is missing its minimum runtime version".to_string())?;
+    let minimum = semver::Version::parse(minimum)
+        .map_err(|error| format!("invalid handler minimum runtime version: {error}"))?;
+    let runtime = semver::Version::parse(runtime_version)
+        .map_err(|error| format!("invalid runtime artifact version: {error}"))?;
+    if runtime < minimum {
+        return Err("published handler requires a newer Rill runtime".into());
+    }
+    Ok(())
+}
+
+fn stage_deployment(
+    source: Option<&RuntimeInstallation>,
+    staging: &Path,
+    artifacts: SelectedArtifacts<'_>,
+    plan: UpdatePlan,
+) -> Result<(), String> {
+    stage_component(
+        source.map(|item| item.executable.as_path()),
+        &staging.join(runtime_executable_name()),
+        artifacts.runtime,
+        plan.runtime,
+    )?;
+    set_executable_permissions(&staging.join(runtime_executable_name()))?;
+    verify_platform_signature(&staging.join(runtime_executable_name()))?;
+    stage_component(
+        source.map(|item| item.model_pack.as_path()),
+        &staging.join("model.rillpack"),
+        artifacts.model,
+        plan.model,
+    )?;
+    stage_component(
+        source.map(|item| item.handler_pack.as_path()),
+        &staging.join("handler.rillhandler"),
+        artifacts.handler,
+        plan.handler,
+    )
+}
+
+fn stage_component(
+    source: Option<&Path>,
+    destination: &Path,
+    artifact: &ReleaseArtifact,
+    download: bool,
+) -> Result<(), String> {
+    if let (false, Some(source)) = (download, source) {
+        crate::local_ai_runtime::ensure_safe_runtime_file(source)?;
+        fs::copy(source, destination).map_err(|error| {
+            format!(
+                "copy installed local AI artifact {} to staging: {error}",
+                source.display()
+            )
+        })?;
+        fs::File::open(destination)
+            .and_then(|file| file.sync_all())
+            .map_err(|error| format!("sync staged artifact {}: {error}", destination.display()))
+    } else {
+        let bytes = download_artifact(artifact)?;
+        write_synced(destination, &bytes)
     }
 }
 
 fn download_artifact(artifact: &ReleaseArtifact) -> Result<Vec<u8>, String> {
-    if artifact.size > MAX_BUNDLE_BYTES {
-        return Err("local AI bundle exceeds the size limit".into());
+    if artifact.size == 0 || artifact.size > MAX_ARTIFACT_BYTES {
+        return Err("local AI artifact exceeds the size limit".into());
     }
-    let bytes = fetch_bounded(&artifact.url, MAX_BUNDLE_BYTES)?;
+    let bytes = fetch_bounded(&artifact.url, MAX_ARTIFACT_BYTES)?;
     if bytes.len() as u64 != artifact.size {
         return Err(format!(
-            "local AI bundle size mismatch: expected {}, got {}",
+            "local AI artifact size mismatch: expected {}, got {}",
             artifact.size,
             bytes.len()
         ));
@@ -445,271 +531,73 @@ fn download_artifact(artifact: &ReleaseArtifact) -> Result<Vec<u8>, String> {
     let actual = hex::encode(Sha256::digest(&bytes));
     if actual != artifact.sha256 {
         return Err(format!(
-            "local AI bundle SHA-256 mismatch: expected {}, got {actual}",
+            "local AI artifact SHA-256 mismatch: expected {}, got {actual}",
             artifact.sha256
         ));
     }
     Ok(bytes)
 }
 
-/// Bundle zip 内的清单文件:列出每个平台的 runtime 文件名 + sha256,以及模型包 sha256 +
-/// 模型 pack_id/version。运行时按平台选择对应 runtime 文件。
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct BundleManifest {
-    schema_version: u32,
-    bundle_version: String,
-    runtime_version: String,
-    model_pack_id: String,
-    model_pack_version: String,
-    /// 每个平台的 runtime 文件名与 sha256。
-    runtimes: Vec<BundleRuntimeEntry>,
-    model_sha256: String,
-    model_filename: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct BundleRuntimeEntry {
-    target_os: String,
-    target_arch: String,
-    filename: String,
-    sha256: String,
-}
-
-fn install_bundle(
-    _app: &AppHandle,
-    root: &Path,
-    artifact: &ReleaseArtifact,
-    bytes: &[u8],
-) -> Result<(), String> {
-    let parent = root.join("bundle");
-    fs::create_dir_all(&parent).map_err(|error| format!("create bundle directory: {error}"))?;
-    let staging = create_staging_dir(&parent)?;
-    let result = (|| {
-        let manifest = extract_bundle(bytes, &staging)?;
-        if manifest.bundle_version != artifact.version {
-            return Err("bundle manifest version does not match the signed release index".into());
-        }
-        let runtime_entry = manifest
-            .runtimes
-            .iter()
-            .find(|entry| {
-                entry.target_os == std::env::consts::OS
-                    && entry.target_arch == std::env::consts::ARCH
-            })
-            .ok_or_else(|| {
-                format!(
-                    "bundle has no runtime for {}-{}",
-                    std::env::consts::OS,
-                    std::env::consts::ARCH
-                )
-            })?;
-        let runtime_path = staging.join(runtime_executable_name());
-        // runtime_entry.filename 可能与 runtime_executable_name() 不同(如带 -linux 后缀),
-        // 解压后重命名为统一名称供 resolve_installation 找到。
-        let extracted_runtime = staging.join(&runtime_entry.filename);
-        if extracted_runtime != runtime_path {
-            fs::rename(&extracted_runtime, &runtime_path)
-                .map_err(|error| format!("rename bundled runtime: {error}"))?;
-        }
-        set_executable_permissions(&runtime_path)?;
-        verify_platform_signature(&runtime_path)?;
-
-        let model_path = staging.join("model.rillpack");
-        let extracted_model = staging.join(&manifest.model_filename);
-        if extracted_model != model_path {
-            fs::rename(&extracted_model, &model_path)
-                .map_err(|error| format!("rename bundled model: {error}"))?;
-        }
-
-        // 启动自检:握手验证 runtime + model。
-        let probe = probe_runtime(&RuntimeInstallation {
-            executable: runtime_path.clone(),
-            model_pack: model_path.clone(),
-            trust_keys: rill_trust_keys(),
-        })?;
-        if probe.model_pack_id != manifest.model_pack_id
-            || probe.model_pack_version != manifest.model_pack_version
-            || probe.runtime_version != manifest.runtime_version
-        {
-            return Err("bundled runtime or model identity does not match the manifest".into());
-        }
-
-        write_metadata(
-            &staging.join("install.json"),
-            &manifest,
-            &runtime_entry.sha256,
-        )?;
-        activate_directory(
-            &staging,
-            &bundle_current_dir(root),
-            &bundle_previous_dir(root),
-        )
-    })();
-    if result.is_err() && staging.exists() {
-        let _ = fs::remove_dir_all(&staging);
+fn validate_staged_deployment(
+    staging: &Path,
+    artifacts: SelectedArtifacts<'_>,
+    plan: UpdatePlan,
+) -> Result<crate::local_ai_runtime::RuntimeProbe, String> {
+    let installation = RuntimeInstallation {
+        executable: staging.join(runtime_executable_name()),
+        model_pack: staging.join("model.rillpack"),
+        handler_pack: staging.join("handler.rillhandler"),
+        model_trust_keys: rill_trust_keys(),
+        handler_trust_keys: rill_handler_trust_keys(),
+    };
+    let probe = probe_runtime(&installation)?;
+    if probe.model_pack_id != MODEL_ARTIFACT_ID || probe.handler_id != MIRA_HANDLER_ID {
+        return Err("staged local AI artifact identities do not match Mira's contract".into());
     }
-    // bundle 更新后 controller 的 restart 在 lib.rs 的 install_update 命令层调用,
-    // 避免在此处直接访问 controller 造成循环依赖。
-    result
-}
-
-fn extract_bundle(bytes: &[u8], staging: &Path) -> Result<BundleManifest, String> {
-    let cursor = std::io::Cursor::new(bytes);
-    let mut archive = zip::ZipArchive::new(cursor)
-        .map_err(|error| format!("open local AI bundle archive: {error}"))?;
-    let manifest_bytes = archive
-        .by_name("manifest.json")
-        .map_err(|error| format!("read bundle manifest: {error}"))?;
-    let manifest: BundleManifest = serde_json::from_reader(manifest_bytes)
-        .map_err(|error| format!("parse bundle manifest: {error}"))?;
-    if manifest.schema_version != 1 {
-        return Err(format!(
-            "unsupported bundle manifest schema version: {}",
-            manifest.schema_version
-        ));
+    if plan.runtime && probe.runtime_version != artifacts.runtime.version {
+        return Err("staged runtime version does not match the signed release index".into());
     }
-    validate_bundle_manifest(&manifest)?;
-    let expected_entries = std::iter::once("manifest.json".to_string())
-        .chain(std::iter::once(manifest.model_filename.clone()))
-        .chain(
-            manifest
-                .runtimes
-                .iter()
-                .map(|runtime| runtime.filename.clone()),
-        )
-        .collect::<BTreeSet<_>>();
-    let mut seen_entries = BTreeSet::new();
-    let mut total_uncompressed = 0_u64;
-
-    // Bundle is a signed, fixed-shape archive. Reject traversal, duplicates,
-    // directories and undeclared payloads before anything can escape staging.
-    for index in 0..archive.len() {
-        let mut entry = archive
-            .by_index(index)
-            .map_err(|error| format!("read bundle entry {index}: {error}"))?;
-        let name = entry.name().to_string();
-        if entry.is_dir() || !safe_bundle_filename(&name) {
-            return Err(format!("unsafe bundle entry path: {name}"));
-        }
-        if !expected_entries.contains(&name) {
-            return Err(format!("undeclared bundle entry: {name}"));
-        }
-        if !seen_entries.insert(name.clone()) {
-            return Err(format!("duplicate bundle entry: {name}"));
-        }
-        total_uncompressed = total_uncompressed
-            .checked_add(entry.size())
-            .ok_or_else(|| "bundle uncompressed size overflow".to_string())?;
-        if total_uncompressed > MAX_BUNDLE_BYTES {
-            return Err("local AI bundle uncompressed payload exceeds the size limit".into());
-        }
-        let dest = staging.join(&name);
-        let mut file = fs::File::create(&dest)
-            .map_err(|error| format!("create bundle file {}: {error}", dest.display()))?;
-        let mut buf = Vec::new();
-        std::io::Read::read_to_end(&mut entry, &mut buf)
-            .map_err(|error| format!("read bundle entry {name}: {error}"))?;
-        // 校验 runtime 条目 sha256。
-        if let Some(runtime_entry) = manifest.runtimes.iter().find(|r| r.filename == name) {
-            let actual = hex::encode(Sha256::digest(&buf));
-            if actual != runtime_entry.sha256 {
-                return Err(format!(
-                    "bundle runtime {name} SHA-256 mismatch: expected {}, got {actual}",
-                    runtime_entry.sha256
-                ));
-            }
-        }
-        // 校验 model 条目 sha256。
-        if name == manifest.model_filename {
-            let actual = hex::encode(Sha256::digest(&buf));
-            if actual != manifest.model_sha256 {
-                return Err(format!(
-                    "bundle model {name} SHA-256 mismatch: expected {}, got {actual}",
-                    manifest.model_sha256
-                ));
-            }
-        }
-        file.write_all(&buf)
-            .map_err(|error| format!("write bundle file {}: {error}", dest.display()))?;
+    if plan.model && probe.model_pack_version != artifacts.model.version {
+        return Err("staged model version does not match the signed release index".into());
     }
-    if seen_entries != expected_entries {
-        let missing = expected_entries
-            .difference(&seen_entries)
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(", ");
-        return Err(format!("bundle is missing declared entries: {missing}"));
+    if plan.handler && probe.handler_version != artifacts.handler.version {
+        return Err("staged handler version does not match the signed release index".into());
     }
-    Ok(manifest)
-}
-
-fn safe_bundle_filename(value: &str) -> bool {
-    let mut components = Path::new(value).components();
-    matches!(components.next(), Some(std::path::Component::Normal(_)))
-        && components.next().is_none()
-}
-
-fn valid_sha256(value: &str) -> bool {
-    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
-}
-
-fn validate_bundle_manifest(manifest: &BundleManifest) -> Result<(), String> {
-    semver::Version::parse(&manifest.bundle_version)
-        .map_err(|error| format!("invalid bundle manifest version: {error}"))?;
-    semver::Version::parse(&manifest.runtime_version)
-        .map_err(|error| format!("invalid bundled runtime version: {error}"))?;
-    semver::Version::parse(&manifest.model_pack_version)
-        .map_err(|error| format!("invalid bundled model version: {error}"))?;
-    if manifest.model_pack_id.is_empty()
-        || !safe_bundle_filename(&manifest.model_filename)
-        || !valid_sha256(&manifest.model_sha256)
-        || manifest.runtimes.is_empty()
-        || manifest.runtimes.len() > 8
-    {
-        return Err("invalid bundle manifest fields".into());
+    if probe.handler_api_version != HANDLER_API_VERSION {
+        return Err("staged handler API version is unsupported".into());
     }
-    let mut platforms = BTreeSet::new();
-    let mut filenames =
-        BTreeSet::from(["manifest.json".to_string(), manifest.model_filename.clone()]);
-    if filenames.len() != 2 {
-        return Err("bundle manifest filenames overlap".into());
-    }
-    for runtime in &manifest.runtimes {
-        if runtime.target_os.is_empty()
-            || runtime.target_arch.is_empty()
-            || !safe_bundle_filename(&runtime.filename)
-            || !valid_sha256(&runtime.sha256)
-            || !platforms.insert((&runtime.target_os, &runtime.target_arch))
-            || !filenames.insert(runtime.filename.clone())
-        {
-            return Err("invalid or duplicate bundled runtime entry".into());
-        }
-    }
-    Ok(())
+    validate_handler_runtime_compatibility(artifacts.handler, &probe.runtime_version)?;
+    Ok(probe)
 }
 
 fn probe_runtime(
     installation: &RuntimeInstallation,
 ) -> Result<crate::local_ai_runtime::RuntimeProbe, String> {
     use rill_runtime_protocol::{RuntimeRequest, RUNTIME_API_VERSION};
-    // 直接调用 sidecar 一次握手。
+
+    crate::local_ai_runtime::ensure_safe_runtime_file(&installation.executable)?;
+    crate::local_ai_runtime::ensure_safe_runtime_file(&installation.model_pack)?;
+    crate::local_ai_runtime::ensure_safe_runtime_file(&installation.handler_pack)?;
     let request = RuntimeRequest::Handshake {
         request_id: "mira-handshake".into(),
         api_version: RUNTIME_API_VERSION,
         client_name: "mira".into(),
         client_version: env!("CARGO_PKG_VERSION").into(),
     };
-    let line =
-        serde_json::to_vec(&request).map_err(|error| format!("encode handshake: {error}"))?;
+    let line = serde_json::to_vec(&request)
+        .map_err(|error| format!("encode local AI handshake: {error}"))?;
     let mut command = Command::new(&installation.executable);
     command
         .arg("serve")
         .arg("--pack")
-        .arg(&installation.model_pack);
-    for key in &installation.trust_keys {
+        .arg(&installation.model_pack)
+        .arg("--handler")
+        .arg(&installation.handler_pack);
+    for key in &installation.model_trust_keys {
         command.arg("--trust-key").arg(key);
+    }
+    for key in &installation.handler_trust_keys {
+        command.arg("--handler-trust-key").arg(key);
     }
     let mut child = command
         .stdin(Stdio::piped())
@@ -720,11 +608,11 @@ fn probe_runtime(
     let mut stdin = child
         .stdin
         .take()
-        .ok_or_else(|| "stdin unavailable".to_string())?;
+        .ok_or_else(|| "local AI runtime stdin unavailable".to_string())?;
     let stdout = child
         .stdout
         .take()
-        .ok_or_else(|| "stdout unavailable".to_string())?;
+        .ok_or_else(|| "local AI runtime stdout unavailable".to_string())?;
     if let Some(stderr) = child.stderr.take() {
         std::thread::spawn(move || {
             let mut sink = Vec::new();
@@ -778,8 +666,8 @@ fn probe_runtime(
     };
     let _ = child.kill();
     let _ = child.wait();
-    let response: rill_runtime_protocol::RuntimeResponse = serde_json::from_slice(&buf)
-        .map_err(|error| format!("decode handshake response: {error}"))?;
+    let response: RuntimeResponseV2 = serde_json::from_slice(&buf)
+        .map_err(|error| format!("decode local AI handshake response: {error}"))?;
     crate::local_ai_runtime::validate_handshake_response(&response)
 }
 
@@ -796,7 +684,7 @@ fn verify_platform_signature(executable: &Path) -> Result<(), String> {
     status
         .success()
         .then_some(())
-        .ok_or_else(|| "downloaded local AI runtime has no valid macOS code signature".into())
+        .ok_or_else(|| "downloaded Rill runtime has no valid macOS code signature".into())
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -822,18 +710,23 @@ fn set_executable_permissions(_path: &Path) -> Result<(), String> {
 
 fn write_metadata(
     path: &Path,
-    manifest: &BundleManifest,
-    runtime_sha256: &str,
+    deployment_version: &str,
+    staging: &Path,
+    probe: &crate::local_ai_runtime::RuntimeProbe,
 ) -> Result<(), String> {
     let metadata = InstallMetadata {
         schema_version: INSTALL_METADATA_SCHEMA,
-        bundle_version: manifest.bundle_version.clone(),
-        runtime_version: manifest.runtime_version.clone(),
-        model_pack_id: manifest.model_pack_id.clone(),
-        model_pack_version: manifest.model_pack_version.clone(),
-        runtime_sha256: runtime_sha256.to_string(),
-        model_sha256: manifest.model_sha256.clone(),
-        publisher_key_id: RILL_PRODUCTION_KEY_ID.into(),
+        deployment_version: deployment_version.into(),
+        runtime_version: probe.runtime_version.clone(),
+        model_pack_id: probe.model_pack_id.clone(),
+        model_pack_version: probe.model_pack_version.clone(),
+        handler_id: probe.handler_id.clone(),
+        handler_version: probe.handler_version.clone(),
+        handler_api_version: probe.handler_api_version,
+        runtime_sha256: file_sha256(&staging.join(runtime_executable_name()))?,
+        model_sha256: file_sha256(&staging.join("model.rillpack"))?,
+        handler_sha256: file_sha256(&staging.join("handler.rillhandler"))?,
+        publisher_key_id: RILL_V2_PRODUCTION_KEY_ID.into(),
         installed_at: chrono::Utc::now().to_rfc3339(),
     };
     let bytes = serde_json::to_vec_pretty(&metadata)
@@ -841,10 +734,16 @@ fn write_metadata(
     write_synced(path, &bytes)
 }
 
+fn file_sha256(path: &Path) -> Result<String, String> {
+    fs::read(path)
+        .map(|bytes| hex::encode(Sha256::digest(bytes)))
+        .map_err(|error| format!("hash local AI artifact {}: {error}", path.display()))
+}
+
 fn read_metadata(path: &Path) -> Option<InstallMetadata> {
     let metadata: InstallMetadata = serde_json::from_slice(&fs::read(path).ok()?).ok()?;
     (metadata.schema_version == INSTALL_METADATA_SCHEMA
-        && metadata.publisher_key_id == RILL_PRODUCTION_KEY_ID)
+        && metadata.publisher_key_id == RILL_V2_PRODUCTION_KEY_ID)
         .then_some(metadata)
 }
 
@@ -886,11 +785,11 @@ fn activate_directory(staging: &Path, current: &Path, rollback: &Path) -> Result
     Ok(())
 }
 
-fn rollback_bundle(root: &Path) -> Result<(), String> {
-    let current = bundle_current_dir(root);
-    let rollback = bundle_previous_dir(root);
+fn rollback_deployment(root: &Path) -> Result<(), String> {
+    let current = deployment_current_dir(root);
+    let rollback = deployment_previous_dir(root);
     if !rollback.is_dir() {
-        return Err("no bundle rollback is available".into());
+        return Err("no local AI rollback is available".into());
     }
     let swap = current.with_file_name(format!(".rollback-swap-{}", std::process::id()));
     if swap.exists() {
@@ -899,7 +798,7 @@ fn rollback_bundle(root: &Path) -> Result<(), String> {
     }
     if current.exists() {
         fs::rename(&current, &swap)
-            .map_err(|error| format!("prepare current local AI version: {error}"))?;
+            .map_err(|error| format!("prepare current local AI deployment: {error}"))?;
     }
     if let Err(error) = fs::rename(&rollback, &current) {
         if swap.exists() {
@@ -909,7 +808,7 @@ fn rollback_bundle(root: &Path) -> Result<(), String> {
     }
     if swap.exists() {
         fs::rename(&swap, &rollback)
-            .map_err(|error| format!("preserve replaced local AI version: {error}"))?;
+            .map_err(|error| format!("preserve replaced local AI deployment: {error}"))?;
     }
     Ok(())
 }
@@ -921,11 +820,11 @@ fn local_ai_root(app: &AppHandle) -> Result<PathBuf, String> {
         .map_err(|error| format!("resolve local AI data directory: {error}"))
 }
 
-fn bundle_current_dir(root: &Path) -> PathBuf {
+fn deployment_current_dir(root: &Path) -> PathBuf {
     root.join("bundle").join("current")
 }
 
-fn bundle_previous_dir(root: &Path) -> PathBuf {
+fn deployment_previous_dir(root: &Path) -> PathBuf {
     root.join("bundle").join("previous")
 }
 
@@ -938,16 +837,18 @@ mod tests {
 
     use super::*;
 
-    fn bundle_artifact(version: &str) -> ReleaseArtifact {
+    fn runtime_artifact(version: &str) -> ReleaseArtifact {
         ReleaseArtifact {
             kind: ReleaseArtifactKind::Runtime,
-            id: BUNDLE_ARTIFACT_ID.into(),
+            id: RUNTIME_ARTIFACT_ID.into(),
             version: version.into(),
             runtime_api_version: RUNTIME_API_VERSION,
             target_os: Some(std::env::consts::OS.into()),
             target_arch: Some(std::env::consts::ARCH.into()),
+            handler_api_version: None,
+            min_runtime_version: None,
             url: format!(
-                "{TRUSTED_RELEASE_PREFIX}local-ai-v{version}/bundle-{}-{}.zip",
+                "{TRUSTED_RELEASE_PREFIX}local-ai-v{version}/rill-runtime-{}-{}",
                 std::env::consts::OS,
                 std::env::consts::ARCH
             ),
@@ -964,70 +865,108 @@ mod tests {
             runtime_api_version: RUNTIME_API_VERSION,
             target_os: None,
             target_arch: None,
-            url: format!("{TRUSTED_RELEASE_PREFIX}local-ai-v{version}/bundle.zip"),
-            sha256: "ab".repeat(32),
+            handler_api_version: None,
+            min_runtime_version: None,
+            url: format!("{TRUSTED_RELEASE_PREFIX}local-ai-v{version}/model.rillpack"),
+            sha256: "bc".repeat(32),
             size: 1024,
         }
     }
 
-    #[test]
-    fn update_info_never_downgrades() {
-        let runtime = bundle_artifact("0.5.0");
-        let model = model_artifact("0.8.0");
-        let info =
-            update_info(Some("0.6.0".into()), Some("0.8.0".into()), &runtime, &model).unwrap();
-        assert!(!info.update_available);
+    fn handler_artifact(version: &str) -> ReleaseArtifact {
+        ReleaseArtifact {
+            kind: ReleaseArtifactKind::Handler,
+            id: MIRA_HANDLER_ID.into(),
+            version: version.into(),
+            runtime_api_version: RUNTIME_API_VERSION,
+            target_os: None,
+            target_arch: None,
+            handler_api_version: Some(HANDLER_API_VERSION),
+            min_runtime_version: Some("0.7.0".into()),
+            url: format!("{TRUSTED_RELEASE_PREFIX}local-ai-v{version}/handler.rillhandler"),
+            sha256: "cd".repeat(32),
+            size: 1024,
+        }
+    }
+
+    fn selected<'a>(
+        runtime: &'a ReleaseArtifact,
+        model: &'a ReleaseArtifact,
+        handler: &'a ReleaseArtifact,
+    ) -> SelectedArtifacts<'a> {
+        SelectedArtifacts {
+            runtime,
+            model,
+            handler,
+        }
+    }
+
+    fn current(runtime: &str, model: &str, handler: &str) -> LocalAiStatus {
+        LocalAiStatus {
+            ready: true,
+            bundle_version: Some(handler.into()),
+            runtime_version: Some(runtime.into()),
+            model_pack_id: Some(MODEL_ARTIFACT_ID.into()),
+            model_pack_version: Some(model.into()),
+            handler_id: Some(MIRA_HANDLER_ID.into()),
+            handler_version: Some(handler.into()),
+            handler_api_version: Some(HANDLER_API_VERSION),
+            rollback_available: false,
+            error: None,
+        }
     }
 
     #[test]
-    fn update_info_triggers_when_runtime_newer() {
-        let runtime = bundle_artifact("0.7.0");
-        let model = model_artifact("0.8.0");
-        let info =
-            update_info(Some("0.6.0".into()), Some("0.8.0".into()), &runtime, &model).unwrap();
-        assert!(info.update_available);
-        assert_eq!(info.available_version, "0.7.0");
+    fn independent_versions_never_downgrade() {
+        let runtime = runtime_artifact("0.7.0");
+        let model = model_artifact("0.8.1");
+        let handler = handler_artifact("0.8.1");
+        let plan = update_plan(
+            &current("0.8.0", "0.9.0", "0.9.0"),
+            selected(&runtime, &model, &handler),
+        )
+        .unwrap();
+        assert!(!plan.any());
     }
 
     #[test]
-    fn update_info_triggers_when_only_model_pack_newer() {
-        let runtime = bundle_artifact("0.5.0");
-        let model = model_artifact("0.9.0");
-        let info =
-            update_info(Some("0.5.0".into()), Some("0.8.0".into()), &runtime, &model).unwrap();
+    fn handler_can_update_without_runtime_or_model() {
+        let runtime = runtime_artifact("0.7.0");
+        let model = model_artifact("0.8.1");
+        let handler = handler_artifact("0.9.0");
+        let info = update_info(
+            &current("0.7.0", "0.8.1", "0.8.1"),
+            selected(&runtime, &model, &handler),
+        )
+        .unwrap();
         assert!(info.update_available);
         assert_eq!(info.available_version, "0.9.0");
     }
 
     #[test]
-    fn update_info_shows_runtime_version_when_both_newer() {
-        let runtime = bundle_artifact("0.7.0");
-        let model = model_artifact("0.9.0");
-        let info =
-            update_info(Some("0.5.0".into()), Some("0.8.0".into()), &runtime, &model).unwrap();
-        assert!(info.update_available);
-        assert_eq!(info.available_version, "0.7.0");
-    }
-
-    #[test]
-    fn update_info_triggers_when_nothing_installed() {
-        let runtime = bundle_artifact("0.5.0");
-        let model = model_artifact("0.8.0");
-        let info = update_info(None, None, &runtime, &model).unwrap();
-        assert!(info.update_available);
-    }
-
-    #[test]
-    fn artifact_selection_is_platform_exact() {
+    fn artifact_selection_requires_all_three_contracts() {
         let payload = ReleaseIndexPayload {
             schema_version: RELEASE_INDEX_SCHEMA_VERSION,
             channel: "stable".into(),
-            generated_at: "2026-07-13T00:00:00Z".into(),
-            publisher_key_id: RILL_PRODUCTION_KEY_ID.into(),
-            artifacts: vec![bundle_artifact("0.5.0"), model_artifact("0.8.0")],
+            generated_at: "2026-07-15T00:00:00Z".into(),
+            publisher_key_id: RILL_V2_PRODUCTION_KEY_ID.into(),
+            artifacts: vec![
+                runtime_artifact("0.7.0"),
+                model_artifact("0.8.1"),
+                handler_artifact("0.8.1"),
+            ],
         };
-        assert_eq!(select_bundle_artifact(&payload).unwrap().version, "0.5.0");
-        assert_eq!(select_model_artifact(&payload).unwrap().version, "0.8.0");
+        let selected = select_artifacts(&payload).unwrap();
+        assert_eq!(selected.runtime.id, RUNTIME_ARTIFACT_ID);
+        assert_eq!(selected.model.id, MODEL_ARTIFACT_ID);
+        assert_eq!(selected.handler.id, MIRA_HANDLER_ID);
+    }
+
+    #[test]
+    fn incompatible_handler_runtime_pair_is_rejected() {
+        let mut handler = handler_artifact("0.8.1");
+        handler.min_runtime_version = Some("0.8.0".into());
+        assert!(validate_handler_runtime_compatibility(&handler, "0.7.0").is_err());
     }
 
     #[test]
@@ -1036,9 +975,9 @@ mod tests {
         let payload = ReleaseIndexPayload {
             schema_version: RELEASE_INDEX_SCHEMA_VERSION,
             channel: "stable".into(),
-            generated_at: "2026-07-13T00:00:00Z".into(),
+            generated_at: "2026-07-15T00:00:00Z".into(),
             publisher_key_id: "test".into(),
-            artifacts: vec![bundle_artifact("0.5.0")],
+            artifacts: vec![runtime_artifact("0.7.0")],
         };
         let canonical = canonical_json(&payload).unwrap();
         let signature = signing.sign(&canonical);
@@ -1047,7 +986,7 @@ mod tests {
             .verify(&canonical, &signature)
             .unwrap();
         let mut changed = payload;
-        changed.artifacts[0].sha256 = "cd".repeat(32);
+        changed.artifacts[0].sha256 = "ef".repeat(32);
         assert!(signing
             .verifying_key()
             .verify(&canonical_json(&changed).unwrap(), &signature)
@@ -1055,7 +994,7 @@ mod tests {
     }
 
     #[test]
-    fn activation_keeps_one_rollback() {
+    fn activation_keeps_one_complete_rollback() {
         let temporary = tempfile::tempdir().unwrap();
         let current = temporary.path().join("current");
         let rollback = temporary.path().join("previous");
@@ -1070,22 +1009,9 @@ mod tests {
     }
 
     #[test]
-    fn release_contract_uses_the_mira_repository_and_dedicated_rill_key() {
-        assert_eq!(
-            RELEASE_INDEX_URL,
-            "https://github.com/hello-yunshu/mira-mouse/releases/latest/download/local-ai-stable-index.json"
-        );
+    fn release_contract_uses_mira_origin_and_rill_index_key() {
         assert!(TRUSTED_RELEASE_PREFIX.contains("/hello-yunshu/mira-mouse/"));
-        assert_eq!(RILL_PRODUCTION_KEY_ID, "mira-rill-2026-001");
-        assert_ne!(RILL_PRODUCTION_KEY_ID, crate::PRODUCTION_KEY_ID);
-    }
-
-    #[test]
-    fn bundle_entry_paths_are_single_safe_filenames() {
-        assert!(safe_bundle_filename("mira-runtime"));
-        assert!(safe_bundle_filename("model.rillpack"));
-        assert!(!safe_bundle_filename("../mira-runtime"));
-        assert!(!safe_bundle_filename("nested/mira-runtime"));
-        assert!(!safe_bundle_filename("/tmp/mira-runtime"));
+        assert_eq!(RILL_V2_PRODUCTION_KEY_ID, "mira-rill-2026-002");
+        assert_ne!(RILL_V2_PRODUCTION_KEY_ID, crate::PRODUCTION_KEY_ID);
     }
 }

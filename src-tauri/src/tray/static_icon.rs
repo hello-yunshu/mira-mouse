@@ -75,6 +75,7 @@ pub fn static_tray_icon_bytes(level: u8, dark: bool, charging: bool) -> &'static
 }
 
 /// 应用图标（未连接时使用）。
+#[cfg(test)]
 pub fn static_tray_app_icon_bytes() -> &'static [u8] {
     static_tray_app_icon_bytes_for_theme(false)
 }

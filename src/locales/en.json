@@ -97,6 +97,13 @@
     "hardwareSync": "Hardware sync",
     "off": "Off",
     "on": "On",
+    "fixed": "Fixed",
+    "cycle": "Cycle",
+    "wave": "Wave",
+    "starlight": "Starlight",
+    "breathing": "Breathing",
+    "ripple": "Ripple",
+    "custom": "Custom",
     "mouse": "Mouse lighting",
     "receiver": "Receiver lighting",
     "effectN": "Effect {{value}}",
@@ -120,6 +127,7 @@
       "featureIndexUnifiedBattery": "Unified battery feature index",
       "settings": "Sensor & connection",
       "lighting": "Main lighting (legacy plugin)",
+      "mouseLighting": "Mouse lighting",
       "mouseEffect": "Mouse effect",
       "receiverLighting": "Receiver lighting",
       "fps": "Sensor frame rate",
@@ -189,7 +197,8 @@
       "effectName": "Effect name",
       "optionName": "Color mode name",
       "speedLabel": "Speed level",
-      "brightnessLabel": "Brightness level"
+      "brightnessLabel": "Brightness level",
+      "extraColor": "Secondary color"
     }
   },
   "plugin": {
@@ -197,7 +206,7 @@
       "capability": {
         "battery": "Battery",
         "dpi": "DPI",
-        "polling-rate": "Polling rate",
+        "polling-rate": "Polling",
         "sleep-time": "Sleep time",
         "profile": "Profile",
         "firmware": "Firmware",
@@ -212,6 +221,42 @@
       "speed": "Speed",
       "brightness": "Brightness",
       "color": "Color"
+    },
+    "effect": {
+      "off": "Off",
+      "fixed": "Fixed",
+      "breathing": "Breathing",
+      "neon": "Neon",
+      "wave": "Wave",
+      "running": "Running",
+      "ring": "Ring",
+      "buffer": "Buffer",
+      "chase": "Chase"
+    },
+    "colorMode": {
+      "red": "Red",
+      "orange": "Orange",
+      "yellow": "Yellow",
+      "green": "Green",
+      "cyan": "Cyan",
+      "blue": "Blue",
+      "purple": "Purple",
+      "custom": "Custom",
+      "colorful": "Colorful"
+    },
+    "speed": {
+      "fastest": "Fastest",
+      "fast": "Fast",
+      "medium": "Medium",
+      "slow": "Slow",
+      "slowest": "Slowest"
+    },
+    "brightness": {
+      "dimmest": "Dimmest",
+      "dark": "Dark",
+      "medium": "Medium",
+      "bright": "Bright",
+      "brightest": "Brightest"
     }
   },
   "settings": {
@@ -312,7 +357,7 @@
     },
     "lowBattery": {
       "label": "Low battery threshold: {{value}}%",
-      "hint": "Notifies once when battery dips below threshold; silent while charging",
+      "hint": "Notifies once when battery reaches or drops below the threshold; silent while charging",
       "tooltip": "Notifies once when crossing the threshold, no repeated pop-ups"
     },
     "nightMode": {
@@ -326,8 +371,8 @@
       "triggerThemeHint": "Turn off lighting when system switches to the specified theme",
       "triggerCharging": "While charging",
       "triggerChargingHint": "Turn off lighting while the mouse is charging",
-      "triggerLowBattery": "Low battery",
-      "triggerLowBatteryHint": "Turn off lighting when battery is below {{value}}%",
+      "triggerLowBattery": "Battery at or below threshold",
+      "triggerLowBatteryHint": "Turn off lighting when battery is at or below {{value}}%",
       "themeDark": "Turn off in dark mode",
       "themeLight": "Turn off in light mode",
       "targetSection": "Lighting targets",
@@ -447,7 +492,7 @@
   "notification": {
     "lowBattery": {
       "title": "Low battery alert",
-      "body": "Mouse battery is below {{threshold}}% (currently {{percent}}%). Please charge the device."
+      "body": "Mouse battery is at or below {{threshold}}% (currently {{percent}}%). Please charge the device."
     },
     "updateFound": {
       "title": "New version available",
@@ -591,7 +636,9 @@
     "tooltipPercentage": "Battery",
     "tooltipMin": "Min",
     "tooltipMax": "Max",
-    "tooltipCharging": "Charging",
+    "tooltipCharging": "Charging during period",
+    "tooltipYes": "Yes",
+    "tooltipNo": "No",
     "tooltipLowBattery": "Low battery",
     "tooltipSamples": "Samples",
     "averageLine": "Avg {{value}}%",
