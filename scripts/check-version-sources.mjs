@@ -55,4 +55,32 @@ if (/package\.json['"]?\)\.version|package\.json['"]?\]\.version/.test(workflow)
   throw new Error('.github/workflows/pipeline.yml must not read the app version from package.json');
 }
 
+// 校验仍需硬编码版本号的文件与 [workspace.package].version 保持一致。
+// 这些文件无法通过 workspace = true 派生版本，由 scripts/sync-version.mjs 同步。
+function assertSynced(label, text, pattern, expected) {
+  const match = text.match(pattern);
+  if (!match) {
+    throw new Error(`${label}: could not find version field; run \`npm run sync:version\``);
+  }
+  if (match[1] !== expected) {
+    throw new Error(
+      `${label} version is ${match[1]} but expected ${expected}; run \`npm run sync:version\``,
+    );
+  }
+}
+
+const handlerCargo = await readFile('handlers/mira-battery-handler/Cargo.toml', 'utf8');
+assertSynced(
+  'handlers/mira-battery-handler/Cargo.toml',
+  handlerCargo,
+  /^\[package\][\s\S]*?version\s*=\s*"([^"]+)"/m,
+  appVersion,
+);
+
+const citation = await readFile('CITATION.cff', 'utf8');
+assertSynced('CITATION.cff', citation, /^version:\s*(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)/m, appVersion);
+
+const roadmap = await readFile('ROADMAP.md', 'utf8');
+assertSynced('ROADMAP.md', roadmap, /\*\*版本\s*(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)\s*\*\*/, appVersion);
+
 console.log(`app version source: Cargo.toml [workspace.package].version = ${appVersion}`);
