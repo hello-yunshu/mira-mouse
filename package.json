@@ -11,6 +11,7 @@
     "sidecar:build": "cargo run --package xtask -- dist-sidecar",
     "build:dmg": "npm exec tauri build -- --bundles app,dmg",
     "version:print": "node scripts/app-version.mjs",
+    "sync:version": "node scripts/sync-version.mjs",
     "typecheck": "tsc -b --pretty false",
     "test": "vitest run",
     "lint": "eslint .",
