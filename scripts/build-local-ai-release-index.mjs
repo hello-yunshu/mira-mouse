@@ -11,36 +11,67 @@ if (!assetsDirArg || !runtimeVersion || !modelVersion || !handlerVersion || !tag
 }
 
 const assetsDir = resolve(assetsDirArg);
-const releaseUrl = (path) =>
+const miraReleaseUrl = (path) =>
   `https://github.com/hello-yunshu/mira-mouse/releases/download/${tag}/${basename(path)}`;
-const describe = (path) => {
+const describeLocal = (path) => {
   const bytes = readFileSync(path);
   if (bytes.length === 0) throw new Error(`empty local AI artifact: ${path}`);
   return {
-    url: releaseUrl(path),
+    url: miraReleaseUrl(path),
     sha256: createHash('sha256').update(bytes).digest('hex'),
     size: statSync(path).size,
   };
 };
 
-const targets = [
-  ['macos', 'aarch64', 'rill-runtime-macos-aarch64'],
-  ['macos', 'x86_64', 'rill-runtime-macos-x86_64'],
-  ['linux', 'x86_64', 'rill-runtime-linux-x86_64'],
-  ['windows', 'x86_64', 'rill-runtime-windows-x86_64.exe'],
-];
-const runtimeArtifacts = targets.map(([targetOs, targetArch, filename]) => ({
-  kind: 'runtime',
-  id: 'rill-runtime',
-  version: runtimeVersion,
-  runtimeApiVersion: 2,
-  targetOs,
-  targetArch,
-  ...describe(resolve(assetsDir, filename)),
-}));
+// Runtime 二进制由 rill-ml releases 托管，从其 stable-index.json 提取 URL/SHA-256/size。
+const RILL_ML_INDEX_URL = `https://github.com/hello-yunshu/rill-ml/releases/download/v${runtimeVersion}/stable-index.json`;
+
+async function fetchRuntimeArtifacts() {
+  const response = await fetch(RILL_ML_INDEX_URL);
+  if (!response.ok) {
+    throw new Error(`fetch rill-ml stable-index.json: ${response.status} ${response.statusText}`);
+  }
+  const index = await response.json();
+  const artifacts = index?.payload?.artifacts;
+  if (!Array.isArray(artifacts)) {
+    throw new Error('rill-ml stable-index.json missing payload.artifacts array');
+  }
+  const targets = [
+    ['macos', 'aarch64'],
+    ['macos', 'x86_64'],
+    ['linux', 'x86_64'],
+    ['windows', 'x86_64'],
+  ];
+  return targets.map(([targetOs, targetArch]) => {
+    const artifact = artifacts.find(
+      (a) =>
+        a.kind === 'runtime' &&
+        a.id === 'rill-runtime' &&
+        a.targetOs === targetOs &&
+        a.targetArch === targetArch,
+    );
+    if (!artifact) {
+      throw new Error(
+        `rill-ml stable-index.json has no runtime artifact for ${targetOs}-${targetArch}`,
+      );
+    }
+    return {
+      kind: 'runtime',
+      id: 'rill-runtime',
+      version: runtimeVersion,
+      runtimeApiVersion: 2,
+      targetOs,
+      targetArch,
+      url: artifact.url,
+      sha256: artifact.sha256,
+      size: artifact.size,
+    };
+  });
+}
 
 const modelPath = resolve(assetsDir, 'model.rillpack');
 const handlerPath = resolve(assetsDir, 'handler.rillhandler');
+const runtimeArtifacts = await fetchRuntimeArtifacts();
 const artifacts = [
   ...runtimeArtifacts,
   {
@@ -48,7 +79,7 @@ const artifacts = [
     id: 'mira-battery-model',
     version: modelVersion,
     runtimeApiVersion: 2,
-    ...describe(modelPath),
+    ...describeLocal(modelPath),
   },
   {
     kind: 'handler',
@@ -57,7 +88,7 @@ const artifacts = [
     runtimeApiVersion: 2,
     handlerApiVersion: 1,
     minRuntimeVersion: '0.7.0',
-    ...describe(handlerPath),
+    ...describeLocal(handlerPath),
   },
 ];
 

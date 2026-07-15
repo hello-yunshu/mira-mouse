@@ -287,7 +287,7 @@ mod tests {
             model_pack_version: "0.5.0".into(),
             capabilities: vec![BATTERY_USAGE_CAPABILITY.into()],
             handler_id: MIRA_HANDLER_ID.into(),
-            handler_version: "0.8.1".into(),
+            handler_version: "0.8.2".into(),
             handler_api_version: HANDLER_API_VERSION,
             effective_capabilities: vec![BATTERY_USAGE_CAPABILITY.into()],
         };
