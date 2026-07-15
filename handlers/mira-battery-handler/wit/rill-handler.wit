@@ -1,0 +1,26 @@
+package rill:handler@1.0.0;
+
+// Vendored snapshot of Rill handler ABI v1. Keep byte-for-byte compatible
+// with rill-handler-api 0.7.x.
+world invoke-handler {
+    record handler-metadata {
+        id: string,
+        version: string,
+        api-version: u32,
+        capabilities: list<string>,
+    }
+
+    variant handler-error {
+        invalid-model(string),
+        invalid-input(string),
+        unsupported-capability(string),
+        execution-failed(string),
+    }
+
+    export metadata: func() -> handler-metadata;
+    export configure: func(model-json: list<u8>) -> result<_, handler-error>;
+    export invoke: func(
+        capability: string,
+        input-json: list<u8>,
+    ) -> result<list<u8>, handler-error>;
+}

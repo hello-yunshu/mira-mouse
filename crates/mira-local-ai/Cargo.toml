@@ -1,0 +1,12 @@
+[package]
+name = "mira-local-ai"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+mira-protocol = { path = "../mira-protocol" }
+rill-ml = { workspace = true }
+thiserror.workspace = true

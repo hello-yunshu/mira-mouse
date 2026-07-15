@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useEffectEvent, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useTranslation } from 'react-i18next';
 import { ChartBar } from '@phosphor-icons/react';
@@ -47,12 +47,35 @@ const DEFAULT_SETTINGS: AppSettings = {
   unusualDrainAlerts: false,
 };
 
+function mergeSettingsSnapshot(
+  loaded: Partial<AppSettings>,
+  patch: Partial<AppSettings> = {},
+): AppSettings {
+  return {
+    ...DEFAULT_SETTINGS,
+    ...loaded,
+    ...patch,
+    localAiFeatures: {
+      ...DEFAULT_LOCAL_AI_FEATURES,
+      ...loaded.localAiFeatures,
+      ...patch.localAiFeatures,
+    },
+  };
+}
+
 const EMPTY_LOCAL_AI_STATUS: LocalAiStatus = {
   ready: false,
   rollbackAvailable: false,
 };
 
 type SettingsTab = 'general' | 'device' | 'plugins' | 'privacy' | 'about';
+
+type PendingSettingsSave = {
+  settings: AppSettings;
+  sequence: number;
+  automaticUpdateChanged: boolean;
+  automaticPluginUpdateChanged: boolean;
+};
 
 function SettingRow({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
   return (
@@ -101,7 +124,18 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
   const windowsPlatform = isWindowsPlatform();
   const macPlatform = isMacPlatform();
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
+  // Settings writes are full-object replacements. Keep one authoritative
+  // optimistic snapshot and coalesce serialized saves so rapid UI changes
+  // cannot race, overwrite a newer response, contend for settings.json.tmp,
+  // or build a long write backlog while dragging a range control.
+  const settingsRef = useRef<AppSettings>(DEFAULT_SETTINGS);
+  const settingsHydrated = useRef(previewMode);
+  const pendingHydrationPatch = useRef<Partial<AppSettings>>({});
+  const settingsSaveSequence = useRef(0);
+  const pendingSettingsSave = useRef<PendingSettingsSave | undefined>(undefined);
+  const settingsSaveInFlight = useRef(false);
   const [autostartEnabled, setAutostartEnabled] = useState(false);
+  const autostartTouched = useRef(false);
   const [plugins, setPlugins] = useState<BundledPluginInfo[]>([]);
   const [pluginUpdate, setPluginUpdate] = useState<PluginUpdateState>(pluginUpdateState());
   const [localAiStatus, setLocalAiStatus] = useState<LocalAiStatus>(EMPTY_LOCAL_AI_STATUS);
@@ -131,6 +165,90 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
   // 灯光角色可用性由插件 zone 声明驱动，UI 不再硬编码 mutation 名。
   const { mouse: supportsMouseLighting, receiver: supportsReceiverLighting } = resolveLightingRoles(availablePluginCapabilities, writableMutations);
 
+  function syncAutomaticAppUpdateChecks(nextSettings: AppSettings) {
+    if (!nextSettings.automaticUpdateChecks) {
+      void startAutomaticAppUpdateCheck(false);
+      return;
+    }
+    void invoke<AboutInfo>('about_info')
+      .then((info) => {
+        if (info.updaterActive) {
+          return startAutomaticAppUpdateCheck(true, nextSettings.automaticUpdateInstall);
+        }
+      })
+      .catch(() => { /* Pre-release and offline builds skip automatic application checks. */ });
+  }
+
+  async function flushSettingsSaveQueue() {
+    if (settingsSaveInFlight.current) return;
+    const pending = pendingSettingsSave.current;
+    if (!pending) return;
+    pendingSettingsSave.current = undefined;
+    settingsSaveInFlight.current = true;
+    try {
+      const savedSettings = await invoke<AppSettings>('settings_set', { settings: pending.settings });
+      // A newer optimistic edit may already be queued. Only the newest save
+      // is allowed to replace the visible state with its normalized response.
+      if (pending.sequence === settingsSaveSequence.current) {
+        settingsRef.current = savedSettings;
+        setSettings(savedSettings);
+      }
+      if (pending.automaticUpdateChanged) {
+        syncAutomaticAppUpdateChecks(savedSettings);
+      }
+      if (pending.automaticPluginUpdateChanged) {
+        void startAutomaticPluginUpdateCheck(savedSettings.automaticPluginUpdateChecks);
+      }
+      if (pending.sequence === settingsSaveSequence.current) {
+        setSaved(true);
+        setTimeout(() => setSaved(false), 1500);
+      }
+    } catch (error) {
+      notifyError(t('notification.saveFailed'), String(error));
+      // A newer full-object save already includes this optimistic change. If
+      // this attempt fails, carry its runtime side-effect flags forward so the
+      // successful replacement save still resynchronizes update schedulers.
+      const queuedAfterFailure = pendingSettingsSave.current as PendingSettingsSave | undefined;
+      if (queuedAfterFailure) {
+        queuedAfterFailure.automaticUpdateChanged ||= pending.automaticUpdateChanged;
+        queuedAfterFailure.automaticPluginUpdateChanged ||= pending.automaticPluginUpdateChanged;
+      }
+      // If this was the latest edit, restore the backend's canonical state so
+      // an optimistic toggle does not remain visibly enabled after a failure.
+      if (pending.sequence === settingsSaveSequence.current) {
+        try {
+          const persisted = await invoke<AppSettings>('settings_get');
+          const recovered = mergeSettingsSnapshot(persisted);
+          settingsRef.current = recovered;
+          setSettings(recovered);
+          applyLanguage(recovered.language);
+          onThemeChange(recovered.theme as ThemeMode);
+        } catch {
+          // Keep the optimistic state if the canonical settings cannot be read.
+        }
+      }
+    } finally {
+      settingsSaveInFlight.current = false;
+      if (pendingSettingsSave.current) void flushSettingsSaveQueue();
+    }
+  }
+
+  function queueSettingsSave(next: AppSettings, patch: Partial<AppSettings>) {
+    const automaticUpdateChanged = patch.automaticUpdateChecks !== undefined || patch.automaticUpdateInstall !== undefined;
+    const automaticPluginUpdateChanged = patch.automaticPluginUpdateChecks !== undefined;
+    const saveSequence = ++settingsSaveSequence.current;
+    const queued = pendingSettingsSave.current;
+    pendingSettingsSave.current = {
+      settings: next,
+      sequence: saveSequence,
+      automaticUpdateChanged: automaticUpdateChanged || queued?.automaticUpdateChanged === true,
+      automaticPluginUpdateChanged: automaticPluginUpdateChanged || queued?.automaticPluginUpdateChanged === true,
+    };
+    void flushSettingsSaveQueue();
+  }
+
+  const queueSettingsSaveFromEffect = useEffectEvent(queueSettingsSave);
+
   // 点击「插件更新可用」通知后，先切到 plugins 标签，待渲染后再滚动聚焦。
   useEffect(() => {
     if (focusPluginUpdateToken === 0) return;
@@ -157,19 +275,39 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
     if (previewMode) return;
     invoke<AppSettings>('settings_get')
       .then((loaded) => {
-        // 与默认值合并，避免后端字段缺失导致受控输入变为 undefined
-        const merged: AppSettings = {
-          ...DEFAULT_SETTINGS,
-          ...loaded,
-          localAiFeatures: { ...DEFAULT_LOCAL_AI_FEATURES, ...loaded.localAiFeatures },
-        };
+        // 与默认值合并，避免后端字段缺失导致受控输入变为 undefined。
+        // 首次 IPC 返回前发生的极早用户操作作为补丁叠加，不能用默认
+        // 整对象覆盖已经持久化的其他偏好。
+        const hydrationPatch = pendingHydrationPatch.current;
+        const merged = mergeSettingsSnapshot(loaded, hydrationPatch);
+        pendingHydrationPatch.current = {};
+        settingsHydrated.current = true;
+        settingsRef.current = merged;
         setSettings(merged);
         onThemeChange(merged.theme as ThemeMode);
+        if (Object.keys(hydrationPatch).length > 0) {
+          queueSettingsSaveFromEffect(merged, hydrationPatch);
+        }
       })
-      .catch(() => setSettings(DEFAULT_SETTINGS));
+      .catch(() => {
+        const hydrationPatch = pendingHydrationPatch.current;
+        const fallback = mergeSettingsSnapshot(DEFAULT_SETTINGS, hydrationPatch);
+        pendingHydrationPatch.current = {};
+        settingsHydrated.current = true;
+        settingsRef.current = fallback;
+        setSettings(fallback);
+        onThemeChange(fallback.theme as ThemeMode);
+        if (Object.keys(hydrationPatch).length > 0) {
+          queueSettingsSaveFromEffect(fallback, hydrationPatch);
+        }
+      });
     invoke<boolean>('autostart_state')
-      .then(setAutostartEnabled)
-      .catch(() => setAutostartEnabled(false));
+      .then((enabled) => {
+        if (!autostartTouched.current) setAutostartEnabled(enabled);
+      })
+      .catch(() => {
+        if (!autostartTouched.current) setAutostartEnabled(false);
+      });
     invoke<AboutInfo>('about_info')
       .then((info) => setPlugins(info.bundledPlugins ?? []))
       .catch(() => setPlugins([]));
@@ -188,9 +326,8 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
   }, [batteryAiAnalysisEnabled, onBatteryUsageSettingsChange, settings.batteryHistoryEnabled]);
 
   function update(patch: Partial<AppSettings>) {
-    const next = { ...settings, ...patch };
-    const automaticUpdateChanged = patch.automaticUpdateChecks !== undefined || patch.automaticUpdateInstall !== undefined;
-    const automaticPluginUpdateChanged = patch.automaticPluginUpdateChecks !== undefined;
+    const next = { ...settingsRef.current, ...patch };
+    settingsRef.current = next;
     setSettings(next);
     if (patch.theme && onThemeChange) onThemeChange(patch.theme as ThemeMode);
     if (previewMode) {
@@ -198,36 +335,15 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
       setTimeout(() => setSaved(false), 1500);
       return;
     }
-    invoke<AppSettings>('settings_set', { settings: next })
-      .then((savedSettings) => {
-        setSettings(savedSettings);
-        if (automaticUpdateChanged) {
-          syncAutomaticAppUpdateChecks(savedSettings);
-        }
-        if (automaticPluginUpdateChanged) {
-          void startAutomaticPluginUpdateCheck(savedSettings.automaticPluginUpdateChecks);
-        }
-        setSaved(true);
-        setTimeout(() => setSaved(false), 1500);
-      })
-      .catch((error) => notifyError(t('notification.saveFailed'), String(error)));
-  }
-
-  function syncAutomaticAppUpdateChecks(nextSettings: AppSettings) {
-    if (!nextSettings.automaticUpdateChecks) {
-      void startAutomaticAppUpdateCheck(false);
+    if (!settingsHydrated.current) {
+      pendingHydrationPatch.current = { ...pendingHydrationPatch.current, ...patch };
       return;
     }
-    void invoke<AboutInfo>('about_info')
-      .then((info) => {
-        if (info.updaterActive) {
-          return startAutomaticAppUpdateCheck(true, nextSettings.automaticUpdateInstall);
-        }
-      })
-      .catch(() => { /* Pre-release and offline builds skip automatic application checks. */ });
+    queueSettingsSave(next, patch);
   }
 
   function toggleAutostart(enabled: boolean) {
+    autostartTouched.current = true;
     if (previewMode) {
       setAutostartEnabled(enabled);
       update({ autostart: enabled });

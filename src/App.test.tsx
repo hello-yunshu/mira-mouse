@@ -57,7 +57,11 @@ describe('Mira shell', () => {
     expect(document.documentElement.style.getPropertyValue('--accent')).toBe('#ffb3b3');
     expect(screen.getAllByText('82%')).toHaveLength(2);
     expect(screen.getByLabelText('当前 DPI：1000，点击编辑')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('tab', { name: '灯光' }));
+    const lightingControlTab = screen.getByRole('tab', { name: '灯光' });
+    fireEvent.click(lightingControlTab);
+    fireEvent.click(screen.getByRole('tab', { name: '接收器灯光' }));
+    expect(screen.getByRole('tablist', { name: '灯光对象' }).style.getPropertyValue('--lighting-tab-accent')).toBe('#4BBFB1');
+    expect(document.documentElement.style.getPropertyValue('--accent')).toBe('#ffb3b3');
     expect(screen.queryByText('fixture-verified')).not.toBeInTheDocument();
     expect(document.querySelector('[data-animation="realtime-deformation"]')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '全部读数' }));
