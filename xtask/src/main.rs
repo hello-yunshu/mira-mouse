@@ -10,6 +10,10 @@ use std::{
 use zip::ZipArchive;
 
 const MAX_PLUGIN_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_INDEX_BYTES: u64 = 1024 * 1024;
+const MAX_RUNTIME_BYTES: u64 = 64 * 1024 * 1024;
+const RILL_RUNTIME_VERSION: &str = "0.7.1";
+const RILL_ML_RELEASE_BASE: &str = "https://github.com/hello-yunshu/rill-ml/releases/download";
 
 #[derive(Parser)]
 struct Cli {
@@ -26,13 +30,13 @@ enum Command {
         #[arg(trailing_var_arg = true)]
         args: Vec<String>,
     },
-    /// 把通用 `rill-runtime` 二进制按当前/指定 target 编译并拷到 `src-tauri/binaries/`，
+    /// 从 rill-ml releases 下载预编译 `rill-runtime` 并拷到 `src-tauri/binaries/`，
     /// 供 Tauri `externalBin` sidecar 打包使用。文件名需带 target-triple 后缀。
     DistSidecar {
-        /// 编译目标，缺省为 host target。
+        /// 下载目标，缺省为 host target。
         #[arg(long)]
         target: Option<String>,
-        /// 使用 release profile（默认 true；传 --no-release 走 debug）。
+        /// 保留兼容性参数（预编译二进制始终为 release）。
         #[arg(long, default_value_t = true)]
         release: bool,
     },
@@ -499,11 +503,11 @@ fn encode_path_segment(value: &str) -> String {
     encoded
 }
 
-/// 编译通用 `rill-runtime`（启用 WASM handler）并按 Tauri sidecar 约定拷到
-/// `src-tauri/binaries/`。Tauri `externalBin` 要求文件名形如
+/// 从 rill-ml GitHub Releases 下载预编译的 `rill-runtime`（已启用 WASM handler），
+/// 按 Tauri sidecar 约定拷到 `src-tauri/binaries/`。Tauri `externalBin` 要求文件名形如
 /// `rill-runtime-<target-triple>[.exe]`，
 /// 其中 target-triple 必须与构建 Tauri 应用时使用的 `--target` 一致。
-fn dist_sidecar(target: Option<&str>, release: bool) -> Result<()> {
+fn dist_sidecar(target: Option<&str>, _release: bool) -> Result<()> {
     let target_triple = match target {
         Some(t) => t.to_string(),
         None => host_target_triple()?,
@@ -525,58 +529,11 @@ fn dist_sidecar(target: Option<&str>, release: bool) -> Result<()> {
         .to_path_buf();
     let dest_dir = workspace_root.join("src-tauri/binaries");
     fs::create_dir_all(&dest_dir)?;
-    let rill_root = env::var("RILLML_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            workspace_root
-                .parent()
-                .unwrap_or(&workspace_root)
-                .join("RillML")
-        });
-    let rill_manifest = rill_root.join("crates/rill-runtime/Cargo.toml");
-    if !rill_manifest.is_file() {
-        bail!(
-            "RillML 0.7 source not found at {}; set RILLML_DIR",
-            rill_root.display()
-        );
-    }
-    let target_dir = workspace_root.join("target/rill-sidecar");
 
-    let mut cargo = StdCommand::new("cargo");
-    cargo
-        .arg("build")
-        .arg("--manifest-path")
-        .arg(&rill_manifest)
-        .args(["--bin", "rill-runtime", "--features", "wasm"])
-        .arg("--target")
-        .arg(&target_triple)
-        .arg("--target-dir")
-        .arg(&target_dir);
-    if release {
-        cargo.arg("--release");
-    }
-    let status = cargo
-        .status()
-        .context("invoke cargo build for rill-runtime")?;
-    if !status.success() {
-        bail!("cargo build for rill-runtime failed");
-    }
-
-    let profile = if release { "release" } else { "debug" };
-    let src = target_dir
-        .join(&target_triple)
-        .join(profile)
-        .join(if is_windows {
-            "rill-runtime.exe"
-        } else {
-            "rill-runtime"
-        });
-    if !src.is_file() {
-        bail!("expected rill-runtime binary at {}", src.display());
-    }
+    let (target_os, target_arch) = rill_ml_platform(&target_triple)?;
+    let bytes = download_runtime_binary(target_os, target_arch)?;
     let dest = dest_dir.join(&binary_name);
-    fs::copy(&src, &dest)
-        .with_context(|| format!("copy {} -> {}", src.display(), dest.display()))?;
+    fs::write(&dest, &bytes).with_context(|| format!("write sidecar to {}", dest.display()))?;
     #[cfg(target_os = "macos")]
     if target_triple.contains("apple-darwin") {
         let status = StdCommand::new("/usr/bin/codesign")
@@ -588,8 +545,105 @@ fn dist_sidecar(target: Option<&str>, release: bool) -> Result<()> {
             bail!("codesign rill-runtime failed");
         }
     }
-    println!("dist-sidecar: {}", dest.display());
+    println!(
+        "dist-sidecar: downloaded {} → {}",
+        target_triple,
+        dest.display()
+    );
     Ok(())
+}
+
+/// 将 Rust target triple 映射到 rill-ml release 资产的 (os, arch) 命名。
+fn rill_ml_platform(target_triple: &str) -> Result<(&'static str, &'static str)> {
+    match target_triple {
+        "aarch64-apple-darwin" => Ok(("macos", "aarch64")),
+        "x86_64-apple-darwin" => Ok(("macos", "x86_64")),
+        "x86_64-unknown-linux-gnu" => Ok(("linux", "x86_64")),
+        "x86_64-pc-windows-msvc" => Ok(("windows", "x86_64")),
+        other => bail!("unsupported target triple for rill-runtime download: {other}"),
+    }
+}
+
+/// 从 rill-ml releases 下载 stable-index.json 并解析为 JSON。
+fn fetch_rill_ml_index() -> Result<serde_json::Value> {
+    let url = format!("{RILL_ML_RELEASE_BASE}/v{RILL_RUNTIME_VERSION}/stable-index.json");
+    let bytes = download_bounded(&url, MAX_INDEX_BYTES)?;
+    serde_json::from_slice(&bytes).context("parse rill-ml stable-index.json")
+}
+
+/// 在 rill-ml stable-index.json 中查找指定平台的 runtime artifact。
+struct RuntimeArtifactInfo {
+    url: String,
+    sha256: String,
+    size: u64,
+}
+
+fn find_runtime_artifact(
+    index: &serde_json::Value,
+    target_os: &str,
+    target_arch: &str,
+) -> Result<RuntimeArtifactInfo> {
+    let artifacts = index
+        .get("payload")
+        .and_then(|p| p.get("artifacts"))
+        .and_then(|a| a.as_array())
+        .context("stable-index.json missing payload.artifacts")?;
+    for artifact in artifacts {
+        let kind = artifact.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+        let id = artifact.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        let os = artifact.get("targetOs").and_then(|v| v.as_str());
+        let arch = artifact.get("targetArch").and_then(|v| v.as_str());
+        if kind == "runtime"
+            && id == "rill-runtime"
+            && os == Some(target_os)
+            && arch == Some(target_arch)
+        {
+            return Ok(RuntimeArtifactInfo {
+                url: artifact
+                    .get("url")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                sha256: artifact
+                    .get("sha256")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                size: artifact.get("size").and_then(|v| v.as_u64()).unwrap_or(0),
+            });
+        }
+    }
+    bail!("runtime artifact for {target_os}-{target_arch} not found in rill-ml stable-index.json");
+}
+
+/// 下载指定平台的 rill-runtime 预编译二进制，并通过 stable-index.json 校验 SHA-256 和大小。
+fn download_runtime_binary(target_os: &str, target_arch: &str) -> Result<Vec<u8>> {
+    let index = fetch_rill_ml_index()?;
+    let artifact = find_runtime_artifact(&index, target_os, target_arch)?;
+    if artifact.size == 0 || artifact.size > MAX_RUNTIME_BYTES {
+        bail!(
+            "runtime binary size {} is invalid or exceeds the {} byte limit",
+            artifact.size,
+            MAX_RUNTIME_BYTES
+        );
+    }
+    let bytes = download_bounded(&artifact.url, MAX_RUNTIME_BYTES)?;
+    if bytes.len() as u64 != artifact.size {
+        bail!(
+            "runtime binary size mismatch: expected {}, got {}",
+            artifact.size,
+            bytes.len()
+        );
+    }
+    let actual = sha256_hex(&bytes);
+    if actual != artifact.sha256 {
+        bail!(
+            "runtime binary SHA-256 mismatch: expected {}, got {}",
+            artifact.sha256,
+            actual
+        );
+    }
+    Ok(bytes)
 }
 
 /// 通过 `rustc -vV` 解析 host target triple。

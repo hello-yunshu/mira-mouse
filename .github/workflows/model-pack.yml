@@ -17,7 +17,7 @@ on:
   workflow_dispatch:
     inputs:
       pack-version:
-        description: 'Model and handler version (e.g. 0.8.1)'
+        description: 'Model and handler version (e.g. 0.8.2)'
         required: true
         type: string
 
@@ -38,14 +38,12 @@ jobs:
       handler-sha256: ${{ steps.sha.outputs.handler-sha256 }}
     steps:
       - uses: actions/checkout@v7
-      - name: Checkout Rill 0.7 source
+      - name: Checkout Rill 0.7.1 source (for rill-pack tool)
         uses: actions/checkout@v7
         with:
           repository: hello-yunshu/rill-ml
-          ref: v0.7.0
+          ref: v0.7.1
           path: RillML
-      - name: Expose Rill as Mira's sibling source dependency
-        run: ln -sfn "$GITHUB_WORKSPACE/RillML" "$GITHUB_WORKSPACE/../RillML"
 
       - name: Install Rust and WASM tooling
         run: |
