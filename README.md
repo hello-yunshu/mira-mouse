@@ -214,7 +214,7 @@ git clone https://github.com/hello-yunshu/mira-mouse.git
 cd mira-mouse
 npm install
 npm run dev              # 前端开发预览（Vite）
-npm run sidecar:build    # 从相邻的 RillML 0.7 源码构建通用 rill-runtime sidecar
+npm run sidecar:build    # 从 rill-ml releases 下载预编译 rill-runtime sidecar
 npm exec tauri dev       # 桌面开发预览（Tauri 完整运行时）
 ```
 
