@@ -97,6 +97,13 @@
     "hardwareSync": "硬件同步",
     "off": "已关闭",
     "on": "已开启",
+    "fixed": "常亮",
+    "cycle": "循环",
+    "wave": "光波",
+    "starlight": "星夜",
+    "breathing": "呼吸",
+    "ripple": "涟漪",
+    "custom": "自定义",
     "mouse": "鼠标灯光",
     "receiver": "接收器灯光",
     "effectN": "灯效 {{value}}",
@@ -120,6 +127,7 @@
       "featureIndexUnifiedBattery": "统一电池功能索引",
       "settings": "传感器与连接",
       "lighting": "主灯光（旧插件）",
+      "mouseLighting": "鼠标灯光",
       "mouseEffect": "鼠标灯效",
       "receiverLighting": "接收器灯光",
       "fps": "传感器帧率",
@@ -189,7 +197,8 @@
       "effectName": "灯效名称",
       "optionName": "颜色模式名称",
       "speedLabel": "速度等级",
-      "brightnessLabel": "亮度等级"
+      "brightnessLabel": "亮度等级",
+      "extraColor": "第二色"
     }
   },
   "plugin": {
@@ -212,6 +221,42 @@
       "speed": "速度",
       "brightness": "亮度",
       "color": "颜色"
+    },
+    "effect": {
+      "off": "关闭",
+      "fixed": "常亮",
+      "breathing": "呼吸",
+      "neon": "霓虹",
+      "wave": "光波",
+      "running": "跑马",
+      "ring": "圆环",
+      "buffer": "缓冲",
+      "chase": "追捕"
+    },
+    "colorMode": {
+      "red": "红",
+      "orange": "橙",
+      "yellow": "黄",
+      "green": "绿",
+      "cyan": "青",
+      "blue": "蓝",
+      "purple": "紫",
+      "custom": "自定义",
+      "colorful": "炫彩"
+    },
+    "speed": {
+      "fastest": "最快",
+      "fast": "快",
+      "medium": "中",
+      "slow": "慢",
+      "slowest": "最慢"
+    },
+    "brightness": {
+      "dimmest": "最暗",
+      "dark": "暗",
+      "medium": "中",
+      "bright": "亮",
+      "brightest": "最亮"
     }
   },
   "settings": {
@@ -312,7 +357,7 @@
     },
     "lowBattery": {
       "label": "低电量阈值：{{value}}%",
-      "hint": "电量低于阈值时提醒一次，充电期间不重复提醒",
+      "hint": "电量低于或等于阈值时提醒一次，充电期间不重复提醒",
       "tooltip": "仅在跨越阈值时提醒一次，不会重复弹窗"
     },
     "nightMode": {
@@ -326,8 +371,8 @@
       "triggerThemeHint": "系统切换到指定主题时关闭灯光",
       "triggerCharging": "仅在充电时",
       "triggerChargingHint": "鼠标正在充电时关闭灯光",
-      "triggerLowBattery": "电量低于阈值时",
-      "triggerLowBatteryHint": "电量低于 {{value}}% 时关闭灯光",
+      "triggerLowBattery": "电量低于或等于阈值时",
+      "triggerLowBatteryHint": "电量低于或等于 {{value}}% 时关闭灯光",
       "themeDark": "深色模式时关灯",
       "themeLight": "浅色模式时关灯",
       "targetSection": "灯光对象",
@@ -447,7 +492,7 @@
   "notification": {
     "lowBattery": {
       "title": "低电量提醒",
-      "body": "鼠标电量已低于 {{threshold}}%（当前 {{percent}}%），请及时充电。"
+      "body": "鼠标电量已低于或等于 {{threshold}}%（当前 {{percent}}%），请及时充电。"
     },
     "updateFound": {
       "title": "发现新版本",
@@ -591,7 +636,9 @@
     "tooltipPercentage": "电量",
     "tooltipMin": "最低",
     "tooltipMax": "最高",
-    "tooltipCharging": "充电",
+    "tooltipCharging": "时段内充电",
+    "tooltipYes": "是",
+    "tooltipNo": "否",
     "tooltipLowBattery": "低电量",
     "tooltipSamples": "样本",
     "averageLine": "平均 {{value}}%",

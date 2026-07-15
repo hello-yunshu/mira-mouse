@@ -648,7 +648,7 @@ pub fn record_samples(
                 } else {
                     history_key(&device_id, &device_name, &component_id)
                 };
-                let low_power = !charging && percentage < low_battery_threshold;
+                let low_power = !charging && percentage <= low_battery_threshold;
                 // 从宿主缓存的 DeviceSnapshot 投影低频变动参数上下文。
                 // 不触发任何 HID 读取：缓存由 Quick 读取/mutation 验证读维护。
                 let context = extract_context_from_snapshot(snapshot);
@@ -784,7 +784,7 @@ pub fn build_response_with_analysis(
                         d.latest_percentage = s.percentage;
                         d.latest_charging = s.charging;
                         d.latest_at = s.at;
-                        d.low_battery = !s.charging && s.percentage < low_battery_threshold;
+                        d.low_battery = !s.charging && s.percentage <= low_battery_threshold;
                         d.device_name = s.device_name.clone();
                         d.connection = s.connection.clone();
                         d.component_label = s.component_label.clone();
@@ -800,7 +800,7 @@ pub fn build_response_with_analysis(
                     latest_percentage: s.percentage,
                     latest_charging: s.charging,
                     latest_at: s.at,
-                    low_battery: !s.charging && s.percentage < low_battery_threshold,
+                    low_battery: !s.charging && s.percentage <= low_battery_threshold,
                 });
         }
     }
@@ -900,12 +900,35 @@ fn aggregate_active_usage(
         prev = Some(sample);
     }
 
+    // 真实样本继续按 3/5/15 分钟节奏保留给分析；24 小时图最多聚合成
+    // 48 个展示点（约 30 分钟一槽），避免把采样密度直接等同于视觉密度。
+    // 这里只压缩过密数据，不为休眠/断连时段制造样本。
     let max_points = 48usize;
     let chunk_size = active_samples.len().div_ceil(max_points).max(1);
     active_samples
         .chunks(chunk_size)
         .map(|chunk| build_active_usage_point(chunk, low_battery_threshold))
         .collect()
+}
+
+fn ten_day_first_day(now: DateTime<Utc>) -> chrono::NaiveDate {
+    now.with_timezone(&Local).date_naive() - Duration::days(9)
+}
+
+/// 与 10 天图共享同一个范围起点：包含今天在内的十个本地自然日。
+/// 这样图表与随范围变化的传统分析不会各自使用不同的“10 天”口径。
+/// 本地 AI 仍使用完整的有效保留历史，避免因切换视图而损失预测上下文。
+fn range_window_start(range: &str, now: DateTime<Utc>) -> DateTime<Utc> {
+    if range == "24h" {
+        return now - Duration::hours(24);
+    }
+
+    ten_day_first_day(now)
+        .and_hms_opt(0, 0, 0)
+        .and_then(|start| start.and_local_timezone(Local).earliest())
+        .map(|start| start.with_timezone(&Utc))
+        // 极少数时区若本地午夜不存在，宁可回退到滚动窗口，也不让分析失败。
+        .unwrap_or(now - Duration::days(10))
 }
 
 /// 过去 10 天按本地自然日的 8 小时时段聚合，共 30 个固定槽位。
@@ -916,7 +939,7 @@ fn aggregate_ten_day_history(
     low_battery_threshold: u8,
 ) -> Vec<BatteryHistoryPoint> {
     let today = now.with_timezone(&Local).date_naive();
-    let first_day = today - Duration::days(9);
+    let first_day = ten_day_first_day(now);
     let mut by_slot: BTreeMap<_, Vec<&BatterySample>> = BTreeMap::new();
 
     for sample in samples {
@@ -940,7 +963,7 @@ fn aggregate_ten_day_history(
             let charging = slot_samples.iter().any(|sample| sample.charging);
             let low_battery = slot_samples
                 .iter()
-                .any(|sample| !sample.charging && sample.percentage < low_battery_threshold);
+                .any(|sample| !sample.charging && sample.percentage <= low_battery_threshold);
             let start_hour = slot * 8;
             let end_hour = start_hour + 8;
 
@@ -974,7 +997,7 @@ fn build_active_usage_point(
     let charging = chunk.iter().any(|s| s.sample.charging);
     let low_battery = chunk
         .iter()
-        .any(|s| !s.sample.charging && s.sample.percentage < low_battery_threshold);
+        .any(|s| !s.sample.charging && s.sample.percentage <= low_battery_threshold);
 
     BatteryHistoryPoint {
         bucket_start: first.at.to_rfc3339(),
@@ -1039,10 +1062,7 @@ fn build_insights(
         .filter(|_| local_ai_analysis_enabled)
         .map(|app| crate::local_ai_runtime::predict_batteries(app, &ai_batches, now))
         .unwrap_or_default();
-    let window_start = match range {
-        "24h" => now - Duration::hours(24),
-        _ => now - Duration::days(10),
-    };
+    let window_start = range_window_start(range, now);
 
     for device in devices {
         let key = &device.key;
@@ -1196,10 +1216,7 @@ fn estimate_remaining(samples: &[&BatterySample], range: &str, now: DateTime<Utc
         return None;
     }
 
-    let cutoff = match range {
-        "24h" => now - Duration::hours(24),
-        _ => now - Duration::days(10),
-    };
+    let cutoff = range_window_start(range, now);
     let recent: Vec<&&BatterySample> = samples.iter().filter(|s| s.at >= cutoff).collect();
     if recent.len() < 2 {
         return None;
@@ -1521,8 +1538,8 @@ fn compute_consistency(
     }
 
     let (recent_cutoff, hist_cutoff) = match range {
-        "24h" => (now - Duration::hours(6), now - Duration::hours(24)),
-        _ => (now - Duration::days(3), now - Duration::days(10)),
+        "24h" => (now - Duration::hours(6), range_window_start(range, now)),
+        _ => (now - Duration::days(3), range_window_start(range, now)),
     };
 
     let recent_rate = drain_rate(samples, recent_cutoff, now)?;
@@ -1740,10 +1757,7 @@ fn compare_devices(
     range: &str,
     now: DateTime<Utc>,
 ) -> Option<BatteryInsight> {
-    let cutoff = match range {
-        "24h" => now - Duration::hours(24),
-        _ => now - Duration::days(10),
-    };
+    let cutoff = range_window_start(range, now);
     let groups = build_sample_groups(samples);
 
     let mut rates: Vec<(String, f64)> = Vec::new();
@@ -2171,6 +2185,53 @@ mod tests {
     }
 
     #[test]
+    fn ten_day_window_starts_at_first_displayed_local_midnight() {
+        let now = Utc::now();
+        let start = range_window_start("10d", now).with_timezone(&Local);
+
+        assert_eq!(start.date_naive(), ten_day_first_day(now));
+        assert_eq!(start.hour(), 0);
+        assert_eq!(start.minute(), 0);
+        assert_eq!(start.second(), 0);
+        assert_eq!(range_window_start("24h", now), now - Duration::hours(24));
+    }
+
+    #[test]
+    fn ten_day_baseline_prediction_excludes_samples_before_the_chart() {
+        let now = Utc::now();
+        let start = range_window_start("10d", now);
+        let samples = [
+            make_sample(start - Duration::minutes(1), 90, false),
+            make_sample(start + Duration::minutes(1), 80, false),
+        ];
+        let refs: Vec<&BatterySample> = samples.iter().collect();
+
+        assert!(estimate_remaining(&refs, "10d", now).is_none());
+    }
+
+    #[test]
+    fn ten_day_slot_reports_charging_occurrence_without_changing_last_level() {
+        let now = Utc::now();
+        let local_day = now.with_timezone(&Local).date_naive() - Duration::days(1);
+        let slot_start = local_day
+            .and_hms_opt(8, 0, 0)
+            .and_then(|start| start.and_local_timezone(Local).earliest())
+            .unwrap()
+            .with_timezone(&Utc);
+        let samples = [
+            make_sample(slot_start + Duration::minutes(5), 60, true),
+            make_sample(slot_start + Duration::minutes(10), 82, false),
+        ];
+        let refs: Vec<&BatterySample> = samples.iter().collect();
+
+        let points = aggregate_ten_day_history(&refs, now, 20);
+        let point = &points[25];
+        assert_eq!(point.percentage, Some(82));
+        assert_eq!(point.charging, Some(true));
+        assert_eq!(point.sample_count, 2);
+    }
+
+    #[test]
     fn new_state_persists_first_sample_immediately() {
         let state = BatteryHistoryState::new();
         let last_persist = *state.last_persist.lock().unwrap();
@@ -2181,7 +2242,8 @@ mod tests {
     fn build_response_recomputes_low_battery_with_current_threshold() {
         let state = BatteryHistoryState::new();
         let now = Utc::now();
-        let mut sample = make_sample(now, 25, false);
+        // Equality is low battery too, matching tray fill and notifications.
+        let mut sample = make_sample(now, 30, false);
         sample.low_power = false;
         state.samples.lock().unwrap().push(sample);
 

@@ -116,6 +116,29 @@ describe('BatteryUsageModal', () => {
     expect(screen.getByText('本地 AI 洞察')).toBeInTheDocument();
   });
 
+  it('hides the insight heading when no insight cards are rendered', async () => {
+    mockInvoke({
+      response: {
+        ...MOCK_BATTERY_HISTORY_24H,
+        insights: [
+          {
+            type: 'chargingHabit',
+            severity: 'info',
+            title: 'chargingHabit',
+            message: 'chargingHabitStartEnd|18|92|3',
+            deviceKey: 'mouse:abc123:mouse',
+          },
+        ],
+      },
+    });
+    render(<BatteryUsageModal open onClose={() => {}} hasBattery />);
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('battery_history_get', { range: '24h' }));
+
+    expect(document.querySelector('.battery-insight-card')).toBeNull();
+    expect(screen.queryByText('本地 AI 洞察')).toBeNull();
+    expect(screen.queryByText('由趋势建模、异常掉电检测与充电习惯推断生成')).toBeNull();
+  });
+
   it('renders the four summary blocks in one row above the 24h chart', async () => {
     mockInvoke({ response: MOCK_BATTERY_HISTORY_24H });
     render(<BatteryUsageModal open onClose={() => {}} hasBattery />);
@@ -212,6 +235,13 @@ describe('BatteryUsageModal', () => {
     if (!datedBar) throw new Error('10-day chart has no dated bar');
     fireEvent.mouseEnter(datedBar);
     expect(document.querySelector('.battery-chart-tooltip strong')).toHaveTextContent('日期');
+
+    const chargingPath = document.querySelector<SVGPathElement>('.battery-chart-charging');
+    const chargingBar = chargingPath?.closest<SVGGElement>('g[role="button"]');
+    expect(chargingBar).not.toBeNull();
+    if (!chargingBar) throw new Error('10-day chart has no charging period');
+    fireEvent.mouseEnter(chargingBar);
+    expect(document.querySelector('.battery-chart-tooltip')).toHaveTextContent('时段内充电: 是');
   });
 
   it('formats English hour, weekday, and date labels compactly', async () => {

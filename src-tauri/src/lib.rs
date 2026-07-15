@@ -597,7 +597,8 @@ struct NightModeStore {
 
 /// 每设备指数退避状态。
 /// 连续读取失败时增加退避时间，避免对休眠/离线设备的无效轮询。
-/// 重置事件：热插拔、用户刷新、窗口聚焦、系统恢复、mutation。
+/// 重置事件：热插拔、用户刷新、系统恢复、mutation。
+/// 单纯窗口聚焦不是设备已唤醒的证据，不应解除退避。
 #[derive(Default)]
 struct DeviceBackoff {
     /// 连续失败次数
@@ -639,7 +640,7 @@ impl DeviceBackoff {
 }
 
 /// 清除所有设备的退避状态。
-/// 在窗口聚焦、用户手动刷新、系统恢复等事件时调用。
+/// 只在有设备活动证据的事件（热插拔、用户手动刷新、系统恢复、mutation）调用。
 fn reset_all_backoff(state: &SessionState) {
     if let Ok(mut backoff) = state.backoff_state.lock() {
         for b in backoff.values_mut() {
@@ -868,7 +869,7 @@ struct SessionState {
     /// 已通知不可用能力的设备路径集合，避免同一设备重复通知。
     /// 设备断开时由 clear_snapshots 清空。
     notified_unavailable_capabilities: Mutex<BTreeSet<String>>,
-    /// 本地 AI 常驻子进程控制器。开关 on 时持有 mira-runtime 子进程,
+    /// 本地 AI 常驻子进程控制器。开关 on 时持有通用 rill-runtime 子进程,
     /// off 时优雅退出。predict_batteries 通过此字段发送请求。
     local_ai_controller: local_ai_controller::LocalAiController,
     /// 自动回滚 supervisor 写入的状态标识(`autoRolledBack`/`autoDisabled`),
@@ -939,9 +940,9 @@ fn quick_observation_active(state: &SessionState, visible: bool, now: Instant) -
 }
 
 /// 窗口聚焦/托盘点击/Dock 点击等窗口事件触发的 Presence 刷新。
-/// 这些事件属于设计文档定义的退避重置事件（窗口重新打开），需重置所有设备退避。
+/// PresenceOnly 只枚举 HID，不执行协议读取；窗口出现不代表休眠设备已经醒来，
+/// 因此保留现有协议退避，避免每次聚焦都重新打扰设备。
 fn request_presence_refresh(state: &SessionState) {
-    reset_all_backoff(state);
     request_refresh_with_plan(state, ReadPlan::PresenceOnly);
 }
 
@@ -985,6 +986,8 @@ fn spawn_hotplug_watcher(app: AppHandle) {
             if let Ok(mut reads) = state.last_read_at.lock() {
                 reads.clear();
             }
+            // 原生热插拔是设备状态变化的明确信号，可以安全解除旧路径的退避。
+            reset_all_backoff(&state);
             request_presence_refresh(&state);
         }
     });
@@ -1749,6 +1752,20 @@ const RILL_PRODUCTION_KEY_ID: &str = "mira-rill-2026-001";
 const RILL_PRODUCTION_PUBLIC_KEY_HEX: &str =
     "3d5ada931abc747610850f9e405fee637a3f445c0b4406eb96b41673814fc261";
 
+// Rill IPC v2 / package-v2 publisher. Keep the previous key above in the
+// model trust store so already downloaded v1 artifacts remain identifiable,
+// while all new release-index and model assets are signed by this key.
+const RILL_V2_PRODUCTION_KEY_ID: &str = "mira-rill-2026-002";
+const RILL_V2_PRODUCTION_PUBLIC_KEY_HEX: &str =
+    "1b4b25b7b42a998a25142522626a4c956a0924b0775affb3695b914595dbe73c";
+
+// Handler packages have an independent trust root from model packs and the
+// release index, so compromise or rotation of one publisher does not grant
+// authority over the other artifact class.
+const RILL_HANDLER_KEY_ID: &str = "mira-handler-2026-001";
+const RILL_HANDLER_PUBLIC_KEY_HEX: &str =
+    "1c1bfb235ec87c7cbfdddff6c8d63e5b22c28e6636beb50edc0c4603ccb7ed59";
+
 // Test packages are accepted only by debug/test builds. Release builds trust only
 // the production publisher key above.
 #[cfg(debug_assertions)]
@@ -1855,7 +1872,7 @@ struct AppSettings {
     night_mode_theme_dark: bool,
     /// 安静灯光触发场景：仅在充电时（状态组，可多选）。
     night_mode_trigger_charging: bool,
-    /// 安静灯光触发场景：电量低于阈值时（状态组，可多选，复用 low_battery_threshold）。
+    /// 安静灯光触发场景：电量低于或等于阈值时（状态组，可多选，复用 low_battery_threshold）。
     night_mode_trigger_low_battery: bool,
     /// 安静灯光控制对象：鼠标灯光。
     night_mode_target_mouse: bool,
@@ -1966,6 +1983,12 @@ impl AppSettings {
         if !is_clock_time(&self.night_mode_end) {
             self.night_mode_end = defaults.night_mode_end;
         }
+        // A present but partial map does not trigger serde's field default.
+        // Fill only missing feature IDs so old/partial settings files have the
+        // same feature gates in Rust as the frontend's DEFAULT_LOCAL_AI_FEATURES.
+        for (feature_id, enabled) in default_local_ai_features() {
+            self.local_ai_features.entry(feature_id).or_insert(enabled);
+        }
         // 时间组互斥：trigger_time 和 trigger_theme 不能同时为 true。
         // 如果用户同时启用了两个，保留 trigger_time，禁用 trigger_theme。
         if self.night_mode_trigger_time && self.night_mode_trigger_theme {
@@ -2017,7 +2040,7 @@ fn is_in_night_window(start: NaiveTime, end: NaiveTime, now: NaiveTime) -> bool 
 ///
 /// 触发场景（任一满足即返回 Night，全部不满足返回 Day）：
 /// - 时间组（互斥）：特定时间 / 跟随系统主题
-/// - 状态组（可多选）：仅在充电时 / 电量低于阈值时
+/// - 状态组（可多选）：仅在充电时 / 电量低于或等于阈值时
 ///
 /// `system_dark` 为 None 时视为浅色模式（不触发跟随系统主题）。
 /// `snapshot` 为 None 时跳过状态类触发（设备未连接）。
@@ -2055,7 +2078,7 @@ fn should_be_night(
     let low_battery_trigger = settings.night_mode_trigger_low_battery
         && snapshot
             .and_then(tray::state::mouse_battery_percentage)
-            .map(|p| p < settings.low_battery_threshold)
+            .map(|p| p <= settings.low_battery_threshold)
             .unwrap_or(false);
 
     if time_trigger || charging_trigger || low_battery_trigger {
@@ -2267,6 +2290,26 @@ mod settings_tests {
     }
 
     #[test]
+    fn normalized_repairs_partial_local_ai_feature_map() {
+        let settings = AppSettings {
+            local_ai_analysis_enabled: true,
+            local_ai_features: BTreeMap::new(),
+            ..Default::default()
+        }
+        .normalized();
+        assert_eq!(
+            settings
+                .local_ai_features
+                .get(LOCAL_AI_FEATURE_BATTERY_USAGE),
+            Some(&true)
+        );
+        assert!(local_ai_feature_enabled(
+            &settings,
+            LOCAL_AI_FEATURE_BATTERY_USAGE
+        ));
+    }
+
+    #[test]
     fn launch_arguments_only_hide_startup_window_when_enabled_in_settings() {
         assert!(!launch_args_request_hidden(["mira"]));
         assert!(!launch_args_request_hidden(["mira", "--updated"]));
@@ -2451,10 +2494,10 @@ mod settings_tests {
     fn device_writes_queue_and_release_after_completion() {
         let state = SessionState::default();
         std::thread::scope(|s| {
-            let guard = begin_device_write(&state).unwrap();
+            let guard = begin_device_write(&state, "en").unwrap();
             let handle = s.spawn(|| {
                 // 并发写入排队等待，而非立即失败。
-                let _queued = begin_device_write(&state).unwrap();
+                let _queued = begin_device_write(&state, "en").unwrap();
             });
             // 给排队线程一点时间进入等待。
             std::thread::sleep(Duration::from_millis(50));
@@ -2462,6 +2505,16 @@ mod settings_tests {
             // guard 释放后，排队的写入应能获取锁并完成。
             handle.join().unwrap();
         });
+    }
+
+    #[test]
+    fn device_write_and_import_errors_follow_language() {
+        assert!(tr_write_queue_timeout("en").starts_with("Device write queue"));
+        assert!(tr_device_write_timeout("zh-CN").starts_with("设备写入超时"));
+        assert!(
+            tr_partial_import_failure("en", "pollingRate", "unsupported", &["dpi".into()],)
+                .starts_with("Import failed at field pollingRate")
+        );
     }
 
     #[test]
@@ -3323,7 +3376,7 @@ mod night_mode_tests {
             ),
             NightPhase::Night
         );
-        // 电量 20% == 阈值 → Day（不小于）
+        // 电量 20% == 阈值 → Night（与通知、托盘和历史的低电量边界一致）
         snapshot.battery_percent = Some(20);
         assert_eq!(
             should_be_night(
@@ -3332,7 +3385,7 @@ mod night_mode_tests {
                 None,
                 Some(&snapshot)
             ),
-            NightPhase::Day
+            NightPhase::Night
         );
         snapshot.battery_percent = None;
         snapshot.batteries.push(mira_core::DeviceBattery {
@@ -5262,10 +5315,12 @@ fn device_config_import(
                 if applied.is_empty() {
                     return Err(error);
                 }
-                return Err(format!(
-                    "导入在字段 {export_key} 失败：{error}。已成功导入字段：{applied_list}。建议重新导出当前配置或手动校准未导入字段。",
-                    export_key = field.export_key,
-                    applied_list = applied.join(", ")
+                let settings = cached_settings(&app);
+                return Err(tr_partial_import_failure(
+                    effective_language(&settings.language),
+                    &field.export_key,
+                    &error,
+                    &applied,
                 ));
             }
         }
@@ -5919,15 +5974,119 @@ fn select_read_plan(
 const BATTERY_CHARGING_INTERVAL: Duration = Duration::from_secs(3 * 60);
 const BATTERY_VISIBLE_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const BATTERY_HIDDEN_INTERVAL: Duration = Duration::from_secs(15 * 60);
-const BATTERY_STABLE_INTERVAL: Duration = Duration::from_secs(30 * 60);
+const BATTERY_STABLE_INTERVAL: Duration = Duration::from_secs(15 * 60);
 const BATTERY_LONG_STABLE_AFTER: Duration = Duration::from_secs(60 * 60);
+const SLEEP_READ_GRACE_MIN: Duration = Duration::from_secs(30);
+const SLEEP_READ_GRACE_MAX: Duration = Duration::from_secs(5 * 60);
+const MAX_DECLARED_SLEEP_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
+
+fn snapshot_connection_value(connection: Connection) -> &'static str {
+    match connection {
+        Connection::Usb => "usb",
+        Connection::Wireless => "wireless",
+        Connection::Bluetooth => "bluetooth",
+        Connection::Virtual => "virtual",
+    }
+}
+
+fn read_capability_source<'a>(
+    capabilities: &'a BTreeMap<String, serde_json::Value>,
+    source: &str,
+) -> Option<&'a serde_json::Value> {
+    let mut parts = source.strip_prefix("capabilities.")?.split('.');
+    let first = parts.next()?;
+    let mut current = capabilities.get(first)?;
+    for part in parts {
+        current = current.as_object()?.get(part)?;
+    }
+    Some(current)
+}
+
+fn runtime_field_is_visible(
+    field: &serde_json::Value,
+    connection: Connection,
+    capabilities: &BTreeMap<String, serde_json::Value>,
+) -> bool {
+    let Some(condition) = field
+        .get("visibleWhen")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return true;
+    };
+    let Some(path) = condition.get("path").and_then(serde_json::Value::as_str) else {
+        return false;
+    };
+
+    if path == "connection" {
+        let current = snapshot_connection_value(connection);
+        if let Some(expected) = condition.get("eq").and_then(serde_json::Value::as_str) {
+            return normalize_connection(current) == normalize_connection(expected);
+        }
+        if let Some(excluded) = condition.get("ne").and_then(serde_json::Value::as_str) {
+            return normalize_connection(current) != normalize_connection(excluded);
+        }
+        return true;
+    }
+
+    let Some(current) = read_capability_source(capabilities, path) else {
+        return false;
+    };
+    if let Some(expected) = condition.get("eq") {
+        return current == expected;
+    }
+    if let Some(excluded) = condition.get("ne") {
+        return current != excluded;
+    }
+    !current.is_null()
+}
+
+/// Resolve the current connection's device sleep timeout from the signed plugin
+/// capability contract. The host only understands the canonical `sleep-time`
+/// capability and its declarative source/visibility bindings; protocol output
+/// names such as `wirelessSleepValue` remain entirely plugin-owned.
+fn declared_sleep_timeout(snapshot: &DeviceSnapshot) -> Option<Duration> {
+    snapshot
+        .plugin_capabilities
+        .iter()
+        .filter(|capability| capability.available && capability.id == "sleep-time")
+        .filter_map(|capability| capability.metadata.get("fields"))
+        .filter_map(serde_json::Value::as_array)
+        .flatten()
+        .filter(|field| {
+            field.get("format").and_then(serde_json::Value::as_str) == Some("sleep")
+                && runtime_field_is_visible(field, snapshot.connection, &snapshot.capabilities)
+        })
+        .filter_map(|field| field.get("source").and_then(serde_json::Value::as_str))
+        .filter_map(|source| read_capability_source(&snapshot.capabilities, source))
+        .filter_map(serde_json::Value::as_u64)
+        .filter(|seconds| *seconds > 0)
+        .map(Duration::from_secs)
+        .find(|timeout| *timeout <= MAX_DECLARED_SLEEP_TIMEOUT)
+}
+
+fn longest_declared_sleep_timeout(
+    snapshots: &BTreeMap<String, DeviceSnapshot>,
+) -> Option<Duration> {
+    snapshots.values().filter_map(declared_sleep_timeout).max()
+}
+
+fn sleep_aware_interval(base: Duration, sleep_timeout: Option<Duration>) -> Duration {
+    let Some(sleep_timeout) = sleep_timeout else {
+        return base;
+    };
+    // A protocol read at the exact configured timeout can race the device's own
+    // idle transition. Add a bounded 10% grace before the next autonomous read.
+    let grace = (sleep_timeout / 10).clamp(SLEEP_READ_GRACE_MIN, SLEEP_READ_GRACE_MAX);
+    base.max(sleep_timeout.saturating_add(grace))
+}
 
 fn adaptive_battery_interval(
     visible: bool,
     charging: bool,
     unchanged_for: Option<Duration>,
+    sleep_timeout: Option<Duration>,
 ) -> Duration {
-    if charging {
+    let base = if charging {
         BATTERY_CHARGING_INTERVAL
     } else if visible {
         BATTERY_VISIBLE_INTERVAL
@@ -5935,7 +6094,8 @@ fn adaptive_battery_interval(
         BATTERY_STABLE_INTERVAL
     } else {
         BATTERY_HIDDEN_INTERVAL
-    }
+    };
+    sleep_aware_interval(base, sleep_timeout)
 }
 
 fn battery_signature(snapshot: Option<&DeviceSnapshot>) -> Vec<(String, u8, bool)> {
@@ -6219,9 +6379,13 @@ enum DeviceReadOutcome {
     /// 保留上次有效快照，避免清除缓存后形成"识别→丢失→识别"的无限循环。
     /// 注意：不应清除 feature_index_cache 等缓存，否则下次读取更慢，加剧循环。
     PreserveLast,
-    /// Read succeeded — publish snapshots for all matched devices.
-    /// 修复 #10：携带所有 matched 设备的快照，实现多设备并行读取。
-    Ready(Vec<(String, DeviceSnapshot)>),
+    /// Publish snapshots for all matched devices. `fresh_paths` contains only
+    /// devices that completed a real protocol read in this pass; cached/backoff
+    /// snapshots remain visible but must not become AI/history samples.
+    Ready {
+        entries: Vec<(String, DeviceSnapshot)>,
+        fresh_paths: BTreeSet<String>,
+    },
 }
 
 /// Read the device once, update the cached snapshot, and emit `device-updated`.
@@ -6271,6 +6435,7 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
             return Some(DeviceReadOutcome::Clear);
         }
         let mut entries: Vec<(String, DeviceSnapshot)> = Vec::new();
+        let mut fresh_paths = BTreeSet::new();
         for device in &matched {
             let (inspection, devices, plugin_files) = match plugins
                 .iter()
@@ -6570,6 +6735,7 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
                             .or_insert(next);
                     }
                     entries.push((device.path.clone(), snapshot));
+                    fresh_paths.insert(device.path.clone());
                     // #9 记录读取时间戳，供下一轮 TTL 防抖判断。
                     if let Ok(mut cache) = state.last_read_at.lock() {
                         cache.insert(device.path.clone(), Instant::now());
@@ -6628,7 +6794,10 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
             // 只有 matched 为空（设备真正断开）时才触发 Clear。
             Some(DeviceReadOutcome::PreserveLast)
         } else {
-            Some(DeviceReadOutcome::Ready(entries))
+            Some(DeviceReadOutcome::Ready {
+                entries,
+                fresh_paths,
+            })
         }
     })()
     .unwrap_or(DeviceReadOutcome::Skip);
@@ -6658,7 +6827,10 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
             );
             let _ = update_tray(app, None, &cached_settings(app));
         }
-        DeviceReadOutcome::Ready(entries) => {
+        DeviceReadOutcome::Ready {
+            entries,
+            fresh_paths,
+        } => {
             // 多设备管理：用当前 matched 设备的快照整体替换 map，清除已断开的设备。
             // into_iter 移动所有权，避免逐条克隆 DeviceSnapshot。
             let new_map: BTreeMap<String, DeviceSnapshot> = entries.into_iter().collect();
@@ -6680,6 +6852,11 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
                     selected: selected_path.as_ref() == Some(device_key),
                 })
                 .collect();
+            let fresh_snapshot_entries: Vec<DeviceSnapshotEntry> = snapshot_entries
+                .iter()
+                .filter(|entry| fresh_paths.contains(&entry.device_key))
+                .cloned()
+                .collect();
             let snapshots_changed = store_snapshots(&state, &new_map);
             if snapshots_changed {
                 let _ = app.emit("device-snapshots-updated", &snapshot_entries);
@@ -6691,7 +6868,7 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
             }
             // 电量使用情况采样：在设备轮询成功后记录电量样本。
             // 记录失败不影响设备功能（record_samples 内部静默处理）。
-            if plan != ReadPlan::PresenceOnly {
+            if plan != ReadPlan::PresenceOnly && !fresh_snapshot_entries.is_empty() {
                 let settings = cached_settings(app);
                 battery_history::record_samples(
                     &state.battery_history,
@@ -6699,7 +6876,7 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
                     settings.battery_history_enabled,
                     settings.low_battery_threshold,
                     settings.battery_history_retention_days as i64,
-                    &snapshot_entries,
+                    &fresh_snapshot_entries,
                 );
                 // 异常耗电通知：仅在设置开启时检查，节流由 AbnormalDrainNotifyState 保证。
                 if settings.unusual_drain_alerts {
@@ -6736,7 +6913,7 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
                 let _ = app.emit("device-updated", &snapshot);
                 let settings = cached_settings(app);
                 let _ = update_tray(app, Some(&snapshot), &settings);
-                // 低电量跨阈值检测：充电时不触发，充电结束后若仍低于阈值才再次提醒
+                // 低电量跨阈值检测：充电时不触发，充电结束后若仍低于或等于阈值才再次提醒
                 let battery_value = tray::state::low_battery_notification_value(&snapshot);
                 let threshold = settings.low_battery_threshold;
                 let notify = state
@@ -6771,8 +6948,10 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
 ///   wakes it immediately for an on-demand read.
 /// - Connected, stable devices only receive a PresenceOnly enumeration every
 ///   15 seconds. No protocol workflow runs merely because the window is visible.
-/// - BatteryOnly uses an adaptive 3/5/15/30-minute cadence based on charging,
-///   visibility, and how long the battery state has remained unchanged.
+/// - BatteryOnly uses an adaptive 3/5/15-minute base cadence based on charging,
+///   visibility, and how long the battery state has remained unchanged. When a
+///   plugin declares the current connection's sleep timeout, autonomous reads
+///   wait until after that timeout so they do not continually delay device sleep.
 /// - The fallback interval otherwise adapts to the situation:
 ///   * 90 ms between initial Presence and the single Full read, so the static
 ///     dashboard can paint without adding a visible half-second pause.
@@ -6801,18 +6980,22 @@ fn spawn_device_reader(app: AppHandle) {
             .get_webview_window("main")
             .and_then(|window| window.is_visible().ok())
             .unwrap_or(false);
-        let (connected_before, next_initial_plan) = {
+        let (connected_before, next_initial_plan, sleep_timeout) = {
             let snapshots = state
                 .last_snapshot
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             let connected = !snapshots.is_empty();
+            // BatteryOnly currently reads all matched devices in one pass. Use
+            // the longest declared timeout so a short-timeout peer cannot make
+            // the shared pass repeatedly touch a longer-sleeping device.
+            let sleep_timeout = longest_declared_sleep_timeout(&snapshots);
             let next_initial_plan = state
                 .snapshot_readiness
                 .lock()
                 .ok()
                 .and_then(|readiness| next_initial_read_plan(&readiness));
-            (connected, next_initial_plan)
+            (connected, next_initial_plan, sleep_timeout)
         };
 
         let now = Instant::now();
@@ -6821,7 +7004,8 @@ fn spawn_device_reader(app: AppHandle) {
             snapshot.charging || snapshot.batteries.iter().any(|battery| battery.charging)
         });
         let unchanged_for = battery_stable_since.map(|since| now.saturating_duration_since(since));
-        let battery_interval = adaptive_battery_interval(visible, charging, unchanged_for);
+        let battery_interval =
+            adaptive_battery_interval(visible, charging, unchanged_for, sleep_timeout);
         let battery_due = connected_before
             && last_battery_read_at.is_none_or(|last| now.duration_since(last) >= battery_interval);
         let observing_quick = quick_observation_active(&state, visible, now);
@@ -7024,20 +7208,23 @@ impl Drop for WriteFlagGuard<'_> {
     }
 }
 
-fn begin_device_write(state: &SessionState) -> Result<WriteFlagGuard<'_>, String> {
+fn begin_device_write<'a>(
+    state: &'a SessionState,
+    lang: &str,
+) -> Result<WriteFlagGuard<'a>, String> {
     let mut active = state
         .write_in_progress
         .lock()
-        .map_err(|_| "transaction state unavailable")?;
+        .map_err(|_| tr_transaction_state_unavailable(lang))?;
     // 排队等待前一个写入完成。最多等 25 秒，留 5 秒给实际 HID 写入，
     // 配合 device_mutate 的 30 秒总超时。
     let (guard, wait_result) = state
         .write_cond
         .wait_timeout_while(active, Duration::from_secs(25), |a| *a)
-        .map_err(|_| "transaction state unavailable")?;
+        .map_err(|_| tr_transaction_state_unavailable(lang))?;
     active = guard;
     if *active || wait_result.timed_out() {
-        return Err("写入排队超时：前一个写入仍未完成，请稍后重试".into());
+        return Err(tr_write_queue_timeout(lang).into());
     }
     *active = true;
     drop(active);
@@ -7092,6 +7279,8 @@ async fn device_mutate(
     mutation: String,
     params: serde_json::Map<String, serde_json::Value>,
 ) -> Result<DeviceSnapshot, String> {
+    let settings = cached_settings(&app);
+    let lang = effective_language(&settings.language);
     // HID 写入/回读是阻塞式调用，必须放在独立线程中执行，否则主线程会被卡死。
     let (tx, rx) = std::sync::mpsc::channel();
     let worker_app = app.clone();
@@ -7102,9 +7291,11 @@ async fn device_mutate(
     match rx.recv_timeout(std::time::Duration::from_secs(30)) {
         Ok(result) => result,
         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-            Err("设备写入超时（30 秒）。鼠标可能处于休眠状态，请移动鼠标唤醒后重试。写入可能仍在后台执行，设备状态将在完成后自动刷新。".into())
+            Err(tr_device_write_timeout(lang).into())
         }
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err("设备写入线程异常退出".into()),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            Err(tr_device_write_thread_failed(lang).into())
+        }
     }
 }
 
@@ -7118,7 +7309,8 @@ fn device_mutate_blocking(
     // Disk I/O (profile save, load_settings), tray updates and event emission
     // run after the locks are released so they cannot block discover_devices or reads.
     let (device_path, snapshot, profile_remember) = {
-        let _write_guard = begin_device_write(&state)?;
+        let settings = cached_settings(app);
+        let _write_guard = begin_device_write(&state, effective_language(&settings.language))?;
         let _io_guard = state
             .device_io
             .lock()
@@ -7840,7 +8032,7 @@ fn settings_set(app: tauri::AppHandle, settings: AppSettings) -> Result<AppSetti
     let start_hidden_changed = previous_settings.start_hidden != settings.start_hidden;
     let low_battery_threshold_changed =
         previous_settings.low_battery_threshold != settings.low_battery_threshold;
-    // 本地 AI 总开关翻转时,启动或停止常驻 mira-runtime 子进程。
+    // 本地 AI 总开关翻转时,启动或停止常驻 rill-runtime 子进程。
     let local_ai_toggle =
         previous_settings.local_ai_analysis_enabled != settings.local_ai_analysis_enabled;
     // 安静灯光设置变更时唤醒调度器立即重新评估阶段。
@@ -7875,8 +8067,12 @@ fn settings_set(app: tauri::AppHandle, settings: AppSettings) -> Result<AppSetti
     }
     let state = app.state::<SessionState>();
     let snapshot = selected_snapshot(&state);
-    update_tray(&app, snapshot.as_ref(), &settings)
-        .map_err(|error| format!("update tray: {error}"))?;
+    // Persistence has already succeeded. A transient tray/menu failure must
+    // not abort unrelated runtime side effects (low-battery state, quiet
+    // lighting, local AI) or make the frontend skip updater resynchronization.
+    if let Err(error) = update_tray(&app, snapshot.as_ref(), &settings) {
+        eprintln!("[mira] update tray after settings save failed: {error}");
+    }
     if low_battery_threshold_changed {
         let battery_value = snapshot
             .as_ref()
@@ -8250,6 +8446,57 @@ fn effective_language(settings_language: &str) -> &'static str {
     }
 }
 
+fn tr_transaction_state_unavailable(lang: &str) -> &'static str {
+    if lang == "en" {
+        "Device write state is unavailable"
+    } else {
+        "设备写入状态不可用"
+    }
+}
+
+fn tr_write_queue_timeout(lang: &str) -> &'static str {
+    if lang == "en" {
+        "Device write queue timed out because the previous write is still running. Please try again shortly."
+    } else {
+        "写入排队超时：前一个写入仍未完成，请稍后重试"
+    }
+}
+
+fn tr_device_write_timeout(lang: &str) -> &'static str {
+    if lang == "en" {
+        "Device write timed out after 30 seconds. The mouse may be asleep; move it to wake it, then try again. The write may still finish in the background, and the device state will refresh automatically."
+    } else {
+        "设备写入超时（30 秒）。鼠标可能处于休眠状态，请移动鼠标唤醒后重试。写入可能仍在后台执行，设备状态将在完成后自动刷新。"
+    }
+}
+
+fn tr_device_write_thread_failed(lang: &str) -> &'static str {
+    if lang == "en" {
+        "The device write worker stopped unexpectedly"
+    } else {
+        "设备写入线程异常退出"
+    }
+}
+
+fn tr_partial_import_failure(
+    lang: &str,
+    export_key: &str,
+    error: &str,
+    applied: &[String],
+) -> String {
+    if lang == "en" {
+        format!(
+            "Import failed at field {export_key}: {error}. Successfully imported fields: {applied}. Export the current configuration again or adjust the remaining fields manually.",
+            applied = applied.join(", ")
+        )
+    } else {
+        format!(
+            "导入在字段 {export_key} 失败：{error}。已成功导入字段：{applied}。建议重新导出当前配置或手动校准未导入字段。",
+            applied = applied.join(", ")
+        )
+    }
+}
+
 fn tr_connection(connection: mira_core::Connection, lang: &str) -> &'static str {
     match (connection, lang) {
         (mira_core::Connection::Usb, _) => "USB",
@@ -8350,11 +8597,11 @@ fn tr_low_battery_title(lang: &str) -> &'static str {
 fn tr_low_battery_body(lang: &str, threshold: u8, percent: u8) -> String {
     if lang == "en" {
         format!(
-            "Mouse battery is below {}% (currently {}%)",
+            "Mouse battery is at or below {}% (currently {}%)",
             threshold, percent
         )
     } else {
-        format!("鼠标电量已低于 {}%（当前 {}%）", threshold, percent)
+        format!("鼠标电量已低于或等于 {}%（当前 {}%）", threshold, percent)
     }
 }
 
@@ -8914,7 +9161,8 @@ fn update_tray(
     #[cfg(target_os = "macos")]
     tray::macos::set_app_lang(effective_language(&settings.language));
     let system_dark = tray_theme_is_dark(app);
-    let theme = tray::style::resolve_tray_theme(&tray_settings, system_dark);
+    // 保留未经托盘颜色设置覆盖的系统主题，供未连接时的彩色应用图标使用。
+    let theme = tray::style::TrayTheme::from_system_dark(system_dark);
     let style = tray::style::TrayVisualStyle::from_settings(&tray_settings, theme);
 
     // 图标更新委托给平台控制器（内部做 diff，未变化时跳过 set_icon）
@@ -8937,7 +9185,9 @@ fn update_tray(
                     tray_state.mouse_charging,
                 )
             } else {
-                tray::static_icon::static_tray_app_icon_bytes_for_theme(style.theme.is_dark())
+                tray::static_icon::static_tray_app_icon_bytes_for_theme(
+                    style.system_theme.is_dark(),
+                )
             };
             if let Ok(image) = tauri::image::Image::from_bytes(icon_bytes) {
                 let _ = tray.set_icon(Some(image));
@@ -8951,27 +9201,13 @@ fn update_tray(
 
     let lang = effective_language(&settings.language);
 
-    // 计算当前菜单签名，用于判断是否需要重建菜单
-    // Clone batteries once and share between signature calculation and menu rebuild.
-    let prepared_batteries = snapshot.map(|snapshot| {
-        let mut batteries = snapshot.batteries.clone();
-        if batteries.is_empty() {
-            if let Some(percentage) = snapshot.battery_percent {
-                batteries.push(mira_core::DeviceBattery {
-                    id: "mouse".into(),
-                    label: tr_battery_fallback_label(lang).into(),
-                    percentage,
-                    charging: snapshot.charging,
-                });
-            }
-        }
-        batteries
-    });
+    // 计算当前菜单签名，用于判断是否需要重建菜单。所有平台使用
+    // TrayStatusState 中同一份完整、已规范化的电量列表。
     let current_signature = if let Some(snapshot) = snapshot {
-        let batteries = prepared_batteries.as_ref().unwrap();
         TrayMenuSignature {
             connected: true,
-            batteries: batteries
+            batteries: tray_state
+                .batteries
                 .iter()
                 .map(|b| {
                     (
@@ -9004,9 +9240,7 @@ fn update_tray(
 
     if menu_changed {
         if let Some(snapshot) = snapshot {
-            // Reuse the batteries prepared for the signature instead of cloning again.
-            let batteries = prepared_batteries.as_ref().unwrap();
-            for (index, battery) in batteries.iter().enumerate() {
+            for (index, battery) in tray_state.batteries.iter().enumerate() {
                 let label = tr_battery_label(lang, &battery.id, &battery.label);
                 let item = MenuItem::with_id(
                     app,
@@ -9088,8 +9322,9 @@ fn build_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let open_i = MenuItem::with_id(app, "open", tr_open(lang), true, None::<&str>)?;
     let quit_i = MenuItem::with_id(app, "quit", tr_quit(lang), true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&open_i, &quit_i])?;
-    let initial_icon =
-        tauri::image::Image::from_bytes(tray::static_icon::static_tray_app_icon_bytes())?;
+    let initial_icon = tauri::image::Image::from_bytes(
+        tray::static_icon::static_tray_app_icon_bytes_for_theme(detect_system_dark(app.handle())),
+    )?;
 
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(initial_icon)
@@ -9594,20 +9829,142 @@ mod read_plan_tests {
     #[test]
     fn battery_interval_is_adaptive_without_starving_background_checks() {
         assert_eq!(
-            adaptive_battery_interval(false, true, Some(Duration::from_secs(7200))),
+            adaptive_battery_interval(false, true, Some(Duration::from_secs(7200)), None),
             BATTERY_CHARGING_INTERVAL
         );
         assert_eq!(
-            adaptive_battery_interval(true, false, Some(Duration::from_secs(7200))),
+            adaptive_battery_interval(true, false, Some(Duration::from_secs(7200)), None),
             BATTERY_VISIBLE_INTERVAL
         );
         assert_eq!(
-            adaptive_battery_interval(false, false, Some(Duration::from_secs(30 * 60))),
+            adaptive_battery_interval(false, false, Some(Duration::from_secs(30 * 60)), None),
             BATTERY_HIDDEN_INTERVAL
         );
         assert_eq!(
-            adaptive_battery_interval(false, false, Some(Duration::from_secs(60 * 60))),
+            adaptive_battery_interval(false, false, Some(Duration::from_secs(60 * 60)), None),
             BATTERY_STABLE_INTERVAL
+        );
+    }
+
+    fn sleep_capability() -> PluginCapability {
+        PluginCapability {
+            id: "sleep-time".into(),
+            control: "Number".into(),
+            label_key: "capability.sleep-time".into(),
+            read_only: false,
+            placements: Vec::new(),
+            metadata: BTreeMap::from([(
+                "fields".into(),
+                serde_json::json!([
+                    {
+                        "id": "bluetooth",
+                        "source": "capabilities.settings.bluetoothSleepValue",
+                        "editor": "modal-number",
+                        "format": "sleep",
+                        "visibleWhen": { "path": "connection", "eq": "bluetooth" }
+                    },
+                    {
+                        "id": "wireless",
+                        "source": "capabilities.settings.wirelessSleepValue",
+                        "editor": "modal-number",
+                        "format": "sleep",
+                        "visibleWhen": { "path": "connection", "eq": "receiver" }
+                    }
+                ]),
+            )]),
+            available: true,
+            connections: None,
+            min_firmware: None,
+        }
+    }
+
+    fn sleep_snapshot(connection: Connection, bluetooth: u64, wireless: u64) -> DeviceSnapshot {
+        DeviceSnapshot {
+            display_name: "Mouse".into(),
+            connection,
+            battery_percent: Some(80),
+            charging: false,
+            batteries: Vec::new(),
+            dpi: None,
+            dpi_stages: None,
+            polling_rate_hz: None,
+            supported_polling_rates_hz: None,
+            profile: None,
+            confirmed_light_color: None,
+            capabilities: BTreeMap::from([(
+                "settings".into(),
+                serde_json::json!({
+                    "bluetoothSleepValue": bluetooth,
+                    "wirelessSleepValue": wireless
+                }),
+            )]),
+            plugin_capabilities: vec![sleep_capability()],
+            writable_mutations: Vec::new(),
+            evidence: "hardware-verified".into(),
+            readonly: false,
+            plugin_id: Some("mira.test".into()),
+            history_identity: None,
+        }
+    }
+
+    #[test]
+    fn declared_sleep_timeout_follows_the_current_connection_binding() {
+        let bluetooth = sleep_snapshot(Connection::Bluetooth, 600, 300);
+        let wireless = sleep_snapshot(Connection::Wireless, 600, 300);
+        assert_eq!(
+            declared_sleep_timeout(&bluetooth),
+            Some(Duration::from_secs(600))
+        );
+        // `receiver` and `wireless` are aliases in plugin contracts.
+        assert_eq!(
+            declared_sleep_timeout(&wireless),
+            Some(Duration::from_secs(300))
+        );
+    }
+
+    #[test]
+    fn missing_or_invalid_sleep_contract_falls_back_to_the_base_interval() {
+        let mut snapshot = sleep_snapshot(Connection::Wireless, 600, 0);
+        assert_eq!(declared_sleep_timeout(&snapshot), None);
+
+        snapshot.capabilities.insert(
+            "settings".into(),
+            serde_json::json!({ "wirelessSleepValue": 7 * 24 * 60 * 60 }),
+        );
+        assert_eq!(declared_sleep_timeout(&snapshot), None);
+        assert_eq!(
+            sleep_aware_interval(BATTERY_VISIBLE_INTERVAL, None),
+            BATTERY_VISIBLE_INTERVAL
+        );
+    }
+
+    #[test]
+    fn sleep_timeout_raises_only_the_autonomous_battery_interval() {
+        assert_eq!(
+            adaptive_battery_interval(true, false, None, Some(Duration::from_secs(10 * 60))),
+            Duration::from_secs(11 * 60)
+        );
+        assert_eq!(
+            adaptive_battery_interval(false, false, None, Some(Duration::from_secs(30 * 60))),
+            Duration::from_secs(33 * 60)
+        );
+    }
+
+    #[test]
+    fn shared_battery_pass_respects_the_longest_device_sleep_timeout() {
+        let snapshots = BTreeMap::from([
+            (
+                "short".into(),
+                sleep_snapshot(Connection::Wireless, 600, 300),
+            ),
+            (
+                "long".into(),
+                sleep_snapshot(Connection::Bluetooth, 1800, 300),
+            ),
+        ]);
+        assert_eq!(
+            longest_declared_sleep_timeout(&snapshots),
+            Some(Duration::from_secs(1800))
         );
     }
 

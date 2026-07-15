@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SettingsPage } from './Settings';
 import type { AppSettings, PluginCapability } from './types';
@@ -246,6 +246,141 @@ describe('SettingsPage', () => {
     fireEvent.click(screen.getByRole('switch', { name: '自动检查 Mira 更新' }));
     fireEvent.click(screen.getByRole('switch', { name: '自动下载并安装' }));
     await waitFor(() => expect(startAutomaticAppUpdateCheckMock).toHaveBeenCalledWith(true, true));
+  });
+
+  it('serializes rapid full-object settings writes without losing newer edits', async () => {
+    const pendingSaves: Array<{
+      settings: AppSettings;
+      resolve: (value: AppSettings) => void;
+    }> = [];
+    invokeMock.mockImplementation((command: string, payload?: { settings?: AppSettings }) => {
+      if (command === 'settings_get') return Promise.resolve(settings);
+      if (command === 'settings_set' && payload?.settings) {
+        return new Promise<AppSettings>((resolve) => {
+          pendingSaves.push({ settings: payload.settings as AppSettings, resolve });
+        });
+      }
+      if (command === 'autostart_state') return Promise.resolve(false);
+      if (command === 'about_info') return Promise.resolve({ bundledPlugins: [], updaterActive: true });
+      return Promise.resolve(undefined);
+    });
+
+    render(<SettingsPage onNavigateAbout={vi.fn()} onThemeChange={vi.fn()} />);
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('settings_get'));
+
+    fireEvent.click(screen.getByRole('switch', { name: '菜单显示连接状态' }));
+    fireEvent.change(screen.getByRole('combobox', { name: '托盘图标颜色' }), { target: { value: 'black' } });
+
+    await waitFor(() => expect(pendingSaves).toHaveLength(1));
+    expect(invokeMock.mock.calls.filter(([command]) => command === 'settings_set')).toHaveLength(1);
+    expect(pendingSaves[0].settings.trayShowConnection).toBe(false);
+
+    await act(async () => pendingSaves[0].resolve(pendingSaves[0].settings));
+    await waitFor(() => expect(pendingSaves).toHaveLength(2));
+    expect(pendingSaves[1].settings).toEqual(expect.objectContaining({
+      trayShowConnection: false,
+      trayIconColor: 'black',
+    }));
+
+    await act(async () => pendingSaves[1].resolve(pendingSaves[1].settings));
+    await waitFor(() => expect(screen.getByRole('combobox', { name: '托盘图标颜色' })).toHaveValue('black'));
+    expect(screen.getByRole('switch', { name: '菜单显示连接状态' })).not.toBeChecked();
+  });
+
+  it('merges an edit made before settings hydration without overwriting persisted preferences', async () => {
+    let resolveSettingsGet!: (value: AppSettings) => void;
+    const settingsGet = new Promise<AppSettings>((resolve) => {
+      resolveSettingsGet = resolve;
+    });
+    invokeMock.mockImplementation((command: string, payload?: { settings?: AppSettings }) => {
+      if (command === 'settings_get') return settingsGet;
+      if (command === 'settings_set') return Promise.resolve(payload?.settings);
+      if (command === 'autostart_state') return Promise.resolve(false);
+      if (command === 'about_info') return Promise.resolve({ bundledPlugins: [], updaterActive: true });
+      return Promise.resolve(undefined);
+    });
+
+    render(<SettingsPage onNavigateAbout={vi.fn()} onThemeChange={vi.fn()} />);
+    fireEvent.click(screen.getByRole('switch', { name: '菜单显示连接状态' }));
+    expect(invokeMock.mock.calls.filter(([command]) => command === 'settings_set')).toHaveLength(0);
+
+    const persisted: AppSettings = {
+      ...settings,
+      startHidden: false,
+      trayIconColor: 'white',
+      batteryHistoryRetentionDays: 90,
+    };
+    await act(async () => resolveSettingsGet(persisted));
+
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('settings_set', {
+      settings: expect.objectContaining({
+        startHidden: false,
+        trayIconColor: 'white',
+        batteryHistoryRetentionDays: 90,
+        trayShowConnection: false,
+      }),
+    }));
+  });
+
+  it('ignores a stale initial autostart read after the user changes the setting', async () => {
+    let resolveAutostartState!: (value: boolean) => void;
+    const autostartState = new Promise<boolean>((resolve) => {
+      resolveAutostartState = resolve;
+    });
+    invokeMock.mockImplementation((command: string, payload?: { settings?: AppSettings }) => {
+      if (command === 'settings_get') return Promise.resolve(settings);
+      if (command === 'settings_set') return Promise.resolve(payload?.settings);
+      if (command === 'autostart_state') return autostartState;
+      if (command === 'set_autostart') return Promise.resolve(undefined);
+      if (command === 'about_info') return Promise.resolve({ bundledPlugins: [], updaterActive: true });
+      return Promise.resolve(undefined);
+    });
+
+    render(<SettingsPage onNavigateAbout={vi.fn()} onThemeChange={vi.fn()} />);
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('settings_get'));
+    const autostartToggle = screen.getByRole('switch', { name: '开机自动启动' });
+    fireEvent.click(autostartToggle);
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('set_autostart', { enabled: true }));
+    await waitFor(() => expect(autostartToggle).toBeChecked());
+
+    await act(async () => resolveAutostartState(false));
+    expect(autostartToggle).toBeChecked();
+  });
+
+  it('resyncs updater behavior when a failed save is replaced by a newer full-object save', async () => {
+    const pendingSaves: Array<{
+      settings: AppSettings;
+      resolve: (value: AppSettings) => void;
+      reject: (reason: Error) => void;
+    }> = [];
+    invokeMock.mockImplementation((command: string, payload?: { settings?: AppSettings }) => {
+      if (command === 'settings_get') return Promise.resolve(settings);
+      if (command === 'settings_set' && payload?.settings) {
+        return new Promise<AppSettings>((resolve, reject) => {
+          pendingSaves.push({ settings: payload.settings as AppSettings, resolve, reject });
+        });
+      }
+      if (command === 'autostart_state') return Promise.resolve(false);
+      if (command === 'about_info') return Promise.resolve({ bundledPlugins: [], updaterActive: true });
+      return Promise.resolve(undefined);
+    });
+
+    render(<SettingsPage onNavigateAbout={vi.fn()} onThemeChange={vi.fn()} />);
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('settings_get'));
+
+    fireEvent.click(screen.getByRole('switch', { name: '自动检查 Mira 更新' }));
+    fireEvent.click(screen.getByRole('switch', { name: '菜单显示连接状态' }));
+    await waitFor(() => expect(pendingSaves).toHaveLength(1));
+
+    await act(async () => pendingSaves[0].reject(new Error('transient write failure')));
+    await waitFor(() => expect(pendingSaves).toHaveLength(2));
+    expect(pendingSaves[1].settings).toEqual(expect.objectContaining({
+      automaticUpdateChecks: false,
+      trayShowConnection: false,
+    }));
+
+    await act(async () => pendingSaves[1].resolve(pendingSaves[1].settings));
+    await waitFor(() => expect(startAutomaticAppUpdateCheckMock).toHaveBeenCalledWith(false));
   });
 
   it('shows cached plugin update results after opening from an update notification', async () => {

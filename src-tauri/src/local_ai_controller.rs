@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! 常驻式本地 AI Runtime 控制器。
 //!
-//! 总开关 `local_ai_analysis_enabled` 翻转到 on 时调用 `start()` 启动 mira-runtime
+//! 总开关 `local_ai_analysis_enabled` 翻转到 on 时调用 `start()` 启动通用 rill-runtime
 //! 子进程并完成握手;翻转到 off 时调用 `stop()` 优雅退出。`predict()` 复用已建立的
 //! stdin/stdout 通道,避免每次预测的进程启动开销。任何 IO/解析错误或子进程意外退出
 //! 都标记 `Failed`,下次 `predict()` 在冷却窗口外自动重启。
@@ -20,13 +20,13 @@ use std::{
     time::{Duration, Instant},
 };
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local, Utc};
 use mira_protocol::{
     BatteryPredictionInput, BatteryPredictionOutput, BatterySampleInput, PredictionSource,
     BATTERY_USAGE_CAPABILITY,
 };
 use rill_runtime_protocol::{
-    RuntimeRequest, RuntimeResponse, MAX_MESSAGE_BYTES, RUNTIME_API_VERSION,
+    RuntimeRequest, RuntimeResponseV2 as RuntimeResponse, MAX_MESSAGE_BYTES, RUNTIME_API_VERSION,
 };
 use tauri::AppHandle;
 
@@ -155,7 +155,7 @@ impl LocalAiController {
             guard.state = ControllerState::Stopped;
             return;
         };
-        // drop stdin 触发 EOF,mira-runtime 的 BufReader::read_until 返回 0 退出主循环。
+        // drop stdin 触发 EOF,rill-runtime 的 BufReader::read_until 返回 0 退出主循环。
         drop(runtime.stdin);
         let status = runtime.child.wait_timeout(STOP_GRACE);
         if status.is_err() {
@@ -223,10 +223,12 @@ impl LocalAiController {
             let recent_start = samples.len().saturating_sub(MAX_PREDICTION_SAMPLES);
             let battery_input = BatteryPredictionInput {
                 now_unix_ms: now.timestamp_millis(),
+                now_timezone_offset_minutes: timezone_offset_minutes(now),
                 samples: samples[recent_start..]
                     .iter()
                     .map(|sample| BatterySampleInput {
                         at_unix_ms: sample.at.timestamp_millis(),
+                        timezone_offset_minutes: timezone_offset_minutes(sample.at),
                         percentage: sample.percentage,
                         charging: sample.charging,
                         context: sample.context.clone(),
@@ -353,13 +355,19 @@ fn spawn_and_handshake(
 ) -> Result<(), String> {
     local_ai_runtime::ensure_safe_runtime_file(&installation.executable)?;
     local_ai_runtime::ensure_safe_runtime_file(&installation.model_pack)?;
+    local_ai_runtime::ensure_safe_runtime_file(&installation.handler_pack)?;
     let mut command = Command::new(&installation.executable);
     command
         .arg("serve")
         .arg("--pack")
-        .arg(&installation.model_pack);
-    for key in &installation.trust_keys {
+        .arg(&installation.model_pack)
+        .arg("--handler")
+        .arg(&installation.handler_pack);
+    for key in &installation.model_trust_keys {
         command.arg("--trust-key").arg(key);
+    }
+    for key in &installation.handler_trust_keys {
+        command.arg("--handler-trust-key").arg(key);
     }
     command
         .stdin(Stdio::piped())
@@ -553,6 +561,10 @@ fn parse_prediction(
         }
         _ => Err("local AI prediction contract mismatch".into()),
     }
+}
+
+fn timezone_offset_minutes(at: DateTime<Utc>) -> i32 {
+    at.with_timezone(&Local).offset().local_minus_utc() / 60
 }
 
 /// 等待子进程退出的辅助方法,带超时。

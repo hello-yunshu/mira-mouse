@@ -19,8 +19,8 @@ use std::{
 use tauri::{AppHandle, Manager};
 
 use crate::{
-    cached_settings, local_ai_controller::CrashEvent, local_ai_update, save_settings,
-    update_cached_settings, SessionState,
+    cached_settings, effective_language, local_ai_controller::CrashEvent, local_ai_update,
+    save_settings, update_cached_settings, SessionState,
 };
 
 /// 10 分钟滑动窗口:窗口外的失败时间戳被清出。
@@ -106,11 +106,22 @@ impl AutoRollbackSupervisor {
         let controller = self.app.state::<SessionState>();
         controller.local_ai_controller.stop();
         self.auto_state.set("autoDisabled");
-        show_local_ai_notification(
-            &self.app,
+        let (title, body) = local_ai_disabled_notification(effective_language(&settings.language));
+        show_local_ai_notification(&self.app, title, body);
+    }
+}
+
+fn local_ai_disabled_notification(lang: &str) -> (&'static str, &'static str) {
+    if lang == "en" {
+        (
+            "Local AI disabled",
+            "The current version failed repeatedly and no previous version is available. Local AI analysis was disabled automatically.",
+        )
+    } else {
+        (
             "本地 AI 已停用",
-            "当前版本连续故障且无可用历史版本,已自动关闭本地 AI 分析。",
-        );
+            "当前版本连续故障且无可用历史版本，已自动关闭本地 AI 分析。",
+        )
     }
 }
 
@@ -182,6 +193,12 @@ fn show_local_ai_notification(app: &AppHandle, title: &str, body: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn disabled_notification_follows_language() {
+        assert_eq!(local_ai_disabled_notification("en").0, "Local AI disabled");
+        assert_eq!(local_ai_disabled_notification("zh-CN").0, "本地 AI 已停用");
+    }
 
     #[test]
     fn failure_window_evicts_old_entries() {

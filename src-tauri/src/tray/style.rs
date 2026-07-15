@@ -68,6 +68,11 @@ impl RgbaColor {
 /// 与 `TrayStatusState` 配合使用，由 `image.rs` 据此绘制图标。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TrayVisualStyle {
+    /// 系统自身的浅色/深色主题，不受托盘图标颜色覆盖影响。
+    ///
+    /// 未连接时显示的彩色应用图标使用这个主题；鼠标、电量和充电图标
+    /// 继续使用下面的 `theme`，以便适配菜单栏背景或用户颜色设置。
+    pub system_theme: TrayTheme,
     pub theme: TrayTheme,
     pub icon_color_mode: TrayIconColorMode,
 
@@ -152,6 +157,7 @@ impl TrayVisualStyle {
         };
 
         TrayVisualStyle {
+            system_theme: theme,
             theme: effective_theme,
             icon_color_mode,
             outline,
@@ -170,7 +176,9 @@ impl TrayVisualStyle {
     #[allow(dead_code)]
     pub fn with_auto_theme(self, theme: TrayTheme) -> Self {
         if self.icon_color_mode == TrayIconColorMode::Auto {
-            Self::from_color_mode(TrayIconColorMode::Auto, theme)
+            let mut style = Self::from_color_mode(TrayIconColorMode::Auto, theme);
+            style.system_theme = self.system_theme;
+            style
         } else {
             self
         }
@@ -213,6 +221,7 @@ impl TrayVisualStyle {
 /// 解析托盘主题：结合 `tray_icon_color` 设置和系统主题。
 ///
 /// 调用方负责提供 `system_dark`（来自 `tray_theme_is_dark` 或主题监听器缓存）。
+#[cfg(test)]
 pub fn resolve_tray_theme(settings: &TraySettings<'_>, system_dark: bool) -> TrayTheme {
     let mode = TrayIconColorMode::from_setting(settings.tray_icon_color);
     match mode {
@@ -277,6 +286,25 @@ mod tests {
 
         let light_style = TrayVisualStyle::from_settings(&settings, TrayTheme::Light);
         assert_eq!(light_style.outline, RgbaColor::rgba(0, 0, 0, 118));
+    }
+
+    #[test]
+    fn forced_icon_color_preserves_system_theme_for_colored_app_icon() {
+        let white_settings = settings_with_color("white");
+        let style = TrayVisualStyle::from_settings(&white_settings, TrayTheme::Light);
+
+        assert_eq!(style.system_theme, TrayTheme::Light);
+        assert_eq!(style.theme, TrayTheme::Dark);
+    }
+
+    #[test]
+    fn menu_bar_auto_override_does_not_change_colored_app_icon_theme() {
+        let settings = settings_with_color("auto");
+        let system_style = TrayVisualStyle::from_settings(&settings, TrayTheme::Light);
+        let dark_menu_bar_style = system_style.with_auto_theme(TrayTheme::Dark);
+
+        assert_eq!(dark_menu_bar_style.system_theme, TrayTheme::Light);
+        assert_eq!(dark_menu_bar_style.theme, TrayTheme::Dark);
     }
 
     #[test]

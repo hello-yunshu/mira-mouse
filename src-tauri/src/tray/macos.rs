@@ -50,7 +50,7 @@ use objc2_foundation::{NSArray, NSData, NSPoint, NSRect, NSSize, NSString};
 use crate::tray::dynamic_icon::TrayIconCacheKey;
 use crate::tray::image::{encode_rgba_png, render_mouse_icon_rgba};
 use crate::tray::renderer::{TauriTrayController, TrayController};
-use crate::tray::state::{TrayRenderMode, TrayStatusState};
+use crate::tray::state::{TrayBatteryState, TrayRenderMode, TrayStatusState};
 use crate::tray::style::{TrayIconColorMode, TrayTheme, TrayVisualStyle};
 
 // ─── 全局状态（供 delegate 回调使用） ─────────────────────────────────────
@@ -246,6 +246,8 @@ pub struct MacNativeTrayController {
     last_cache_key: Option<TrayIconCacheKey>,
     /// 上次 tooltip 文本，用于 diff
     last_tooltip: Option<String>,
+    /// 上次菜单栏标题，用于 diff
+    last_title: Option<String>,
     /// 上次菜单签名，用于 diff
     last_menu_signature: Option<MenuSignature>,
     /// 初始化是否失败。失败后永远使用 fallback。
@@ -264,24 +266,32 @@ unsafe impl Send for MacNativeTrayController {}
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct MenuSignature {
     connected: bool,
+    batteries: Vec<TrayBatteryState>,
     mouse_battery: Option<u8>,
     mouse_charging: bool,
     receiver_battery: Option<u8>,
     receiver_charging: bool,
     show_receiver: bool,
+    show_connection: bool,
+    connection: Option<mira_core::Connection>,
     device_name: Option<String>,
+    language: &'static str,
 }
 
 impl MenuSignature {
-    fn from_state(state: &TrayStatusState) -> Self {
+    fn from_state(state: &TrayStatusState, language: &'static str) -> Self {
         MenuSignature {
             connected: state.connected,
+            batteries: state.batteries.clone(),
             mouse_battery: state.mouse_battery,
             mouse_charging: state.mouse_charging,
             receiver_battery: state.receiver_battery,
             receiver_charging: state.receiver_charging,
             show_receiver: state.show_receiver,
+            show_connection: state.show_connection,
+            connection: state.connection,
             device_name: state.device_name.clone(),
+            language,
         }
     }
 }
@@ -294,6 +304,7 @@ impl Default for MacNativeTrayController {
             status_view: None,
             last_cache_key: None,
             last_tooltip: None,
+            last_title: None,
             last_menu_signature: None,
             failed: false,
             fallback: TauriTrayController::new(),
@@ -325,6 +336,9 @@ impl MacNativeTrayController {
             unsafe {
                 button.setTarget(Some(any_obj));
                 button.setAction(Some(objc2::sel!(openWindow:)));
+                // NSTextAlignmentRight. Keep the native title to the right of
+                // the 28pt custom icon view instead of centering underneath it.
+                let _: () = msg_send![&*button, setAlignment: 1isize];
             }
             button
                 .as_super()
@@ -370,7 +384,7 @@ impl MacNativeTrayController {
         if !state.connected {
             // 未连接：使用 app 图标
             let icon_bytes = crate::tray::static_icon::static_tray_app_icon_bytes_for_theme(
-                style.theme.is_dark(),
+                style.system_theme.is_dark(),
             );
             Self::ns_image_from_png(icon_bytes)
         } else {
@@ -389,18 +403,27 @@ impl MacNativeTrayController {
         menu.setAutoenablesItems(false);
 
         if state.connected {
-            // 设备名
-            if let Some(name) = &state.device_name {
+            // 连接状态与设备名由设置控制，保持与 Tauri fallback 菜单一致。
+            if state.show_connection {
+                let name = state.device_name.as_deref().unwrap_or("");
+                let connection = state
+                    .connection
+                    .map(|value| crate::connection_label(value, lang))
+                    .unwrap_or("");
                 let item = NSMenuItem::new(mtm);
-                item.setTitle(&NSString::from_str(name));
+                item.setTitle(&NSString::from_str(&crate::tr_connection_status(
+                    lang, connection, name,
+                )));
                 item.setEnabled(true);
                 menu.addItem(&item);
             }
 
-            // 鼠标电量
-            if let Some(pct) = state.mouse_battery {
-                let label = if lang == "en" { "Mouse" } else { "鼠标" };
-                let text = crate::tr_battery_item(lang, label, pct, state.mouse_charging);
+            // 菜单始终逐项列出插件报告的完整电量列表；show_receiver
+            // 只控制菜单栏标题附带的接收器电量。
+            for battery in &state.batteries {
+                let label = crate::tr_battery_label(lang, &battery.id, &battery.label);
+                let text =
+                    crate::tr_battery_item(lang, &label, battery.percentage, battery.charging);
                 let item = NSMenuItem::new(mtm);
                 item.setTitle(&NSString::from_str(&text));
                 if let Some(delegate) = &self.delegate {
@@ -412,29 +435,6 @@ impl MacNativeTrayController {
                 }
                 item.setEnabled(true);
                 menu.addItem(&item);
-            }
-
-            // 接收器电量
-            if state.show_receiver {
-                if let Some(pct) = state.receiver_battery {
-                    let label = if lang == "en" {
-                        "Receiver"
-                    } else {
-                        "接收器"
-                    };
-                    let text = crate::tr_battery_item(lang, label, pct, state.receiver_charging);
-                    let item = NSMenuItem::new(mtm);
-                    item.setTitle(&NSString::from_str(&text));
-                    if let Some(delegate) = &self.delegate {
-                        let any_obj: &AnyObject = delegate;
-                        unsafe {
-                            item.setTarget(Some(any_obj));
-                            item.setAction(Some(objc2::sel!(openBatteryUsage:)));
-                        }
-                    }
-                    item.setEnabled(true);
-                    menu.addItem(&item);
-                }
             }
         } else {
             // 未连接
@@ -493,6 +493,28 @@ impl MacNativeTrayController {
         }
     }
 
+    /// 构建菜单栏图标右侧的电量标题。接收器只在对应设置开启时附带，
+    /// 但不会影响菜单中的完整电量列表。
+    fn build_title(&self, state: &TrayStatusState) -> String {
+        if !state.connected || !state.show_battery_title {
+            return String::new();
+        }
+        let Some(mouse) = state.mouse_battery else {
+            return String::new();
+        };
+        if state.show_receiver {
+            if let Some(receiver) = state.receiver_battery {
+                let lang = current_lang();
+                return format!(
+                    "{} {mouse}% · {} {receiver}%",
+                    crate::tr_mouse_label(lang),
+                    crate::tr_receiver_label(lang)
+                );
+            }
+        }
+        format!("{mouse}%")
+    }
+
     /// 更新 NSStatusItem 的图标、菜单和 tooltip
     fn update_native(
         &mut self,
@@ -542,14 +564,36 @@ impl MacNativeTrayController {
         }
 
         // 2. 菜单 diff + 重建
-        let menu_sig = MenuSignature::from_state(state);
+        let menu_sig = MenuSignature::from_state(state, current_lang());
         if self.last_menu_signature.as_ref() != Some(&menu_sig) {
             let menu = self.build_menu(state, mtm);
             item.setMenu(Some(&*menu));
             self.last_menu_signature = Some(menu_sig);
         }
 
-        // 3. tooltip diff + 更新
+        // 3. 标题 diff + 更新。自绘图标占左侧 28pt，按钮标题靠右，
+        // 并按内容调整 NSStatusItem 宽度。
+        let title = self.build_title(state);
+        if self.last_title.as_deref() != Some(title.as_str()) {
+            let title_width = if let Some(button) = item.button(mtm) {
+                button.setTitle(&NSString::from_str(&title));
+                let attributed_title = button.attributedTitle();
+                // SAFETY: NSAttributedString implements the AppKit `size`
+                // category method and returns an NSSize by value.
+                let title_size: NSSize = unsafe { msg_send![&*attributed_title, size] };
+                title_size.width
+            } else {
+                0.0
+            };
+            item.setLength(if title.is_empty() {
+                28.0
+            } else {
+                36.0 + title_width
+            });
+            self.last_title = Some(title);
+        }
+
+        // 4. tooltip diff + 更新
         let tooltip = self.build_tooltip(state);
         if self.last_tooltip.as_deref() != Some(tooltip.as_str()) {
             if let Some(button) = item.button(mtm) {
@@ -678,17 +722,34 @@ mod tests {
     fn menu_signature_differs_by_battery() {
         let state1 = make_state(Some(50), false);
         let state2 = make_state(Some(80), false);
-        let sig1 = MenuSignature::from_state(&state1);
-        let sig2 = MenuSignature::from_state(&state2);
+        let sig1 = MenuSignature::from_state(&state1, "zh-CN");
+        let sig2 = MenuSignature::from_state(&state2, "zh-CN");
         assert_ne!(sig1, sig2);
+    }
+
+    #[test]
+    fn menu_signature_tracks_additional_plugin_batteries() {
+        let state1 = make_state(Some(50), false);
+        let mut state2 = state1.clone();
+        state2.batteries.push(TrayBatteryState {
+            id: "dock".into(),
+            label: "Charging Dock".into(),
+            percentage: 75,
+            charging: true,
+        });
+
+        assert_ne!(
+            MenuSignature::from_state(&state1, "zh-CN"),
+            MenuSignature::from_state(&state2, "zh-CN")
+        );
     }
 
     #[test]
     fn menu_signature_differs_by_connected() {
         let connected = make_state(Some(50), false);
         let disconnected = make_disconnected_state();
-        let sig1 = MenuSignature::from_state(&connected);
-        let sig2 = MenuSignature::from_state(&disconnected);
+        let sig1 = MenuSignature::from_state(&connected, "zh-CN");
+        let sig2 = MenuSignature::from_state(&disconnected, "zh-CN");
         assert_ne!(sig1, sig2);
     }
 
@@ -696,9 +757,34 @@ mod tests {
     fn menu_signature_same_for_same_state() {
         let state1 = make_state(Some(50), false);
         let state2 = make_state(Some(50), false);
-        let sig1 = MenuSignature::from_state(&state1);
-        let sig2 = MenuSignature::from_state(&state2);
+        let sig1 = MenuSignature::from_state(&state1, "zh-CN");
+        let sig2 = MenuSignature::from_state(&state2, "zh-CN");
         assert_eq!(sig1, sig2);
+    }
+
+    #[test]
+    fn menu_signature_changes_when_connection_row_setting_changes() {
+        let state1 = make_state(Some(50), false);
+        let mut state2 = state1.clone();
+        state2.show_connection = false;
+        assert_ne!(
+            MenuSignature::from_state(&state1, "zh-CN"),
+            MenuSignature::from_state(&state2, "zh-CN")
+        );
+    }
+
+    #[test]
+    fn title_visibility_and_receiver_suffix_follow_settings() {
+        let controller = MacNativeTrayController::default();
+        let mut state = make_state(Some(64), false);
+        assert_eq!(controller.build_title(&state), "64%");
+
+        state.receiver_battery = Some(91);
+        state.show_receiver = true;
+        assert!(controller.build_title(&state).contains("91%"));
+
+        state.show_battery_title = false;
+        assert_eq!(controller.build_title(&state), "");
     }
 
     #[test]

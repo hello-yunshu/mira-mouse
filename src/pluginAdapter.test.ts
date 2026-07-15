@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { describe, expect, it } from 'vitest';
+import i18n from './i18n';
 import {
   resolveFieldLabel,
+  resolveDetailValueLabel,
   resolveFieldValueLabel,
   resolveFieldMutationParams,
   resolveFieldOptions,
@@ -265,6 +267,48 @@ describe('resolveFieldLabel', () => {
       ],
     };
     expect(resolveFieldValueLabel(field, makeDevice({ mode: 2 }))).toBe('软件');
+  });
+});
+
+describe('resolveFieldValueLabel', () => {
+  it('prefers localizable declared options over protocol-provided localized text', () => {
+    i18n.addResource(i18n.language, 'test-plugin', 'receiverLighting.brightness.brightest', 'Localized brightest');
+    const field: PluginField = {
+      id: 'brightness',
+      source: 'capabilities.receiverLighting.brightness',
+      editor: 'modal-select',
+      labelSource: 'capabilities.receiverLighting.brightnessLabel',
+      options: [{ value: 4, labelKey: 'receiverLighting.brightness.brightest' }],
+    };
+    const device = makeDevice({}, {
+      capabilities: { receiverLighting: { brightness: 4, brightnessLabel: '最亮' } },
+      pluginId: 'test-plugin',
+      pluginCapabilities: [{
+        id: 'lighting',
+        control: 'LightingZone',
+        labelKey: 'capability.lighting',
+        readOnly: false,
+        metadata: { zones: [{ id: 'receiver', labelKey: 'lighting.receiver', fields: [field] }] },
+      }],
+    });
+
+    expect(resolveFieldValueLabel(field, device, device.pluginId)).toBe('Localized brightest');
+    expect(resolveDetailValueLabel('receiverLighting', 'brightnessLabel', device)).toBe('Localized brightest');
+  });
+
+  it('falls back to a dynamic runtime label when the declared key is unavailable', () => {
+    const field: PluginField = {
+      id: 'effect',
+      source: 'capabilities.mouseLighting.effect',
+      editor: 'modal-select',
+      labelSource: 'capabilities.mouseLighting.effectName',
+      options: [{ value: 3, labelKey: 'plugin.effect.not-installed' }],
+    };
+    const device = makeDevice({}, {
+      capabilities: { mouseLighting: { effect: 3, effectName: '霓虹' } },
+    });
+
+    expect(resolveFieldValueLabel(field, device)).toBe('霓虹');
   });
 });
 

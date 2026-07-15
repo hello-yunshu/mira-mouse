@@ -7,10 +7,13 @@ members = [
   "crates/mira-plugin-api",
   "crates/mira-plugin-runtime",
   "crates/mira-plugin-cli",
-  "crates/mira-runtime",
+  "crates/mira-local-ai",
   "crates/mira-testkit",
   "src-tauri",
   "xtask",
+]
+exclude = [
+  "handlers/mira-battery-handler",
 ]
 
 [workspace.package]
@@ -29,9 +32,8 @@ serde = { version = "1.0.217", features = ["derive"] }
 serde_json = "1.0.134"
 sha2 = "0.10.8"
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "rustls"] }
-rill-runtime-protocol = "0.5.1"
-rill-ml = "0.5.1"
-rill-runtime = "0.5.1"
+rill-runtime-protocol = { version = "0.7.0", path = "../RillML/crates/rill-runtime-protocol" }
+rill-ml = { version = "0.7.0", path = "../RillML", default-features = false }
 tempfile = "3.14.0"
 thiserror = "2.0.9"
 walkdir = "2.5.0"
