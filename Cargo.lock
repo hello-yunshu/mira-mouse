@@ -2428,7 +2428,7 @@ dependencies = [
 
 [[package]]
 name = "mira-app"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "auto-launch",
  "chrono",
@@ -2467,7 +2467,7 @@ dependencies = [
 
 [[package]]
 name = "mira-core"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -2476,7 +2476,7 @@ dependencies = [
 
 [[package]]
 name = "mira-local-ai"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "chrono",
  "mira-protocol",
@@ -2486,7 +2486,7 @@ dependencies = [
 
 [[package]]
 name = "mira-plugin-api"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "semver",
  "serde",
@@ -2496,7 +2496,7 @@ dependencies = [
 
 [[package]]
 name = "mira-plugin-cli"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -2514,7 +2514,7 @@ dependencies = [
 
 [[package]]
 name = "mira-plugin-runtime"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "ed25519-dalek",
  "hex",
@@ -2532,7 +2532,7 @@ dependencies = [
 
 [[package]]
 name = "mira-protocol"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -2540,7 +2540,7 @@ dependencies = [
 
 [[package]]
 name = "mira-testkit"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "mira-plugin-runtime",
 ]
@@ -3553,14 +3553,18 @@ dependencies = [
 
 [[package]]
 name = "rill-ml"
-version = "0.7.0"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3cafc56c74038070ac02686a2072a5be76130d5d5136f073c08722078e3cca13"
 dependencies = [
  "thiserror 1.0.69",
 ]
 
 [[package]]
 name = "rill-runtime-protocol"
-version = "0.7.0"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dd5d834d26801e2aaad7c595f0481b25b9a3ae3059404bfe67ed7148a225eaa4"
 dependencies = [
  "serde",
  "serde_json",
@@ -6093,7 +6097,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "anyhow",
  "clap",

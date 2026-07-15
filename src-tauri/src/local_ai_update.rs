@@ -37,8 +37,10 @@ use crate::{
 
 const RELEASE_INDEX_URL: &str =
     "https://github.com/hello-yunshu/mira-mouse/releases/latest/download/local-ai-stable-index.json";
-const TRUSTED_RELEASE_PREFIX: &str =
-    "https://github.com/hello-yunshu/mira-mouse/releases/download/";
+const TRUSTED_RELEASE_PREFIXES: &[&str] = &[
+    "https://github.com/hello-yunshu/mira-mouse/releases/download/",
+    "https://github.com/hello-yunshu/rill-ml/releases/download/",
+];
 const MODEL_ARTIFACT_ID: &str = "mira-battery-model";
 const MAX_INDEX_BYTES: u64 = 1024 * 1024;
 const MAX_ARTIFACT_BYTES: u64 = 128 * 1024 * 1024;
@@ -362,8 +364,11 @@ fn verify_index(index: &SignedReleaseIndex) -> Result<(), String> {
     for artifact in &index.payload.artifacts {
         semver::Version::parse(&artifact.version)
             .map_err(|error| format!("invalid local AI artifact version: {error}"))?;
-        if !artifact.url.starts_with(TRUSTED_RELEASE_PREFIX) {
-            return Err("local AI artifact URL is outside the trusted release origin".into());
+        if !TRUSTED_RELEASE_PREFIXES
+            .iter()
+            .any(|prefix| artifact.url.starts_with(prefix))
+        {
+            return Err("local AI artifact URL is outside the trusted release origins".into());
         }
         let identity = (
             artifact.kind.clone(),
@@ -848,7 +853,8 @@ mod tests {
             handler_api_version: None,
             min_runtime_version: None,
             url: format!(
-                "{TRUSTED_RELEASE_PREFIX}local-ai-v{version}/rill-runtime-{}-{}",
+                "{}local-ai-v{version}/rill-runtime-{}-{}",
+                TRUSTED_RELEASE_PREFIXES[0],
                 std::env::consts::OS,
                 std::env::consts::ARCH
             ),
@@ -867,7 +873,10 @@ mod tests {
             target_arch: None,
             handler_api_version: None,
             min_runtime_version: None,
-            url: format!("{TRUSTED_RELEASE_PREFIX}local-ai-v{version}/model.rillpack"),
+            url: format!(
+                "{}local-ai-v{version}/model.rillpack",
+                TRUSTED_RELEASE_PREFIXES[0]
+            ),
             sha256: "bc".repeat(32),
             size: 1024,
         }
@@ -883,7 +892,10 @@ mod tests {
             target_arch: None,
             handler_api_version: Some(HANDLER_API_VERSION),
             min_runtime_version: Some("0.7.0".into()),
-            url: format!("{TRUSTED_RELEASE_PREFIX}local-ai-v{version}/handler.rillhandler"),
+            url: format!(
+                "{}local-ai-v{version}/handler.rillhandler",
+                TRUSTED_RELEASE_PREFIXES[0]
+            ),
             sha256: "cd".repeat(32),
             size: 1024,
         }
@@ -919,8 +931,8 @@ mod tests {
     #[test]
     fn independent_versions_never_downgrade() {
         let runtime = runtime_artifact("0.7.0");
-        let model = model_artifact("0.8.1");
-        let handler = handler_artifact("0.8.1");
+        let model = model_artifact("0.8.2");
+        let handler = handler_artifact("0.8.2");
         let plan = update_plan(
             &current("0.8.0", "0.9.0", "0.9.0"),
             selected(&runtime, &model, &handler),
@@ -932,10 +944,10 @@ mod tests {
     #[test]
     fn handler_can_update_without_runtime_or_model() {
         let runtime = runtime_artifact("0.7.0");
-        let model = model_artifact("0.8.1");
+        let model = model_artifact("0.8.2");
         let handler = handler_artifact("0.9.0");
         let info = update_info(
-            &current("0.7.0", "0.8.1", "0.8.1"),
+            &current("0.7.0", "0.8.2", "0.8.2"),
             selected(&runtime, &model, &handler),
         )
         .unwrap();
@@ -952,8 +964,8 @@ mod tests {
             publisher_key_id: RILL_V2_PRODUCTION_KEY_ID.into(),
             artifacts: vec![
                 runtime_artifact("0.7.0"),
-                model_artifact("0.8.1"),
-                handler_artifact("0.8.1"),
+                model_artifact("0.8.2"),
+                handler_artifact("0.8.2"),
             ],
         };
         let selected = select_artifacts(&payload).unwrap();
@@ -964,7 +976,7 @@ mod tests {
 
     #[test]
     fn incompatible_handler_runtime_pair_is_rejected() {
-        let mut handler = handler_artifact("0.8.1");
+        let mut handler = handler_artifact("0.8.2");
         handler.min_runtime_version = Some("0.8.0".into());
         assert!(validate_handler_runtime_compatibility(&handler, "0.7.0").is_err());
     }
@@ -1010,7 +1022,8 @@ mod tests {
 
     #[test]
     fn release_contract_uses_mira_origin_and_rill_index_key() {
-        assert!(TRUSTED_RELEASE_PREFIX.contains("/hello-yunshu/mira-mouse/"));
+        assert!(TRUSTED_RELEASE_PREFIXES[0].contains("/hello-yunshu/mira-mouse/"));
+        assert!(TRUSTED_RELEASE_PREFIXES[1].contains("/hello-yunshu/rill-ml/"));
         assert_eq!(RILL_V2_PRODUCTION_KEY_ID, "mira-rill-2026-002");
         assert_ne!(RILL_V2_PRODUCTION_KEY_ID, crate::PRODUCTION_KEY_ID);
     }
