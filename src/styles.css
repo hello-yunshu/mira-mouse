@@ -39,6 +39,15 @@
   --glass-shadow: 0 10px 34px rgb(47 39 60 / 13%), inset 0 1px 0 rgb(255 255 255 / 32%);
   --floating-glass-blur: var(--glass-blur);
   --floating-glass-shadow: var(--glass-shadow), 0 20px 52px rgb(42 35 52 / 20%);
+  /* 弹窗统一设计 token */
+  --modal-radius-sm: 14px;            /* popover / tooltip / notification */
+  --modal-radius-md: 16px;            /* edit-modal 中型弹窗 */
+  --modal-radius-lg: 20px;            /* device-details / battery-usage 大型弹窗 */
+  --modal-padding: 13px;              /* 模态弹窗统一内边距 */
+  --modal-backdrop-padding: 48px 16px 18px;  /* 模态遮罩统一内边距 */
+  --modal-close-size: 28px;           /* 模态关闭按钮统一尺寸 */
+  --modal-close-icon: 15px;           /* 模态关闭图标统一尺寸 */
+  --z-modal: 30;                      /* 模态遮罩统一层级 */
   --bg-blob-1: oklch(78% .06 290);
   --bg-blob-2: oklch(80% .05 200);
   --bg-blob-3: oklch(75% .04 350);
@@ -552,7 +561,7 @@ body:has(.platform-fallback:not(.web-preview)) {
   flex-direction: column;
   gap: 4px;
   border: 1px solid var(--floating-glass-border);
-  border-radius: 13px;
+  border-radius: var(--modal-radius-sm);
   background: var(--floating-glass-bg);
   -webkit-backdrop-filter: var(--floating-glass-blur);
   backdrop-filter: var(--floating-glass-blur);
@@ -679,7 +688,7 @@ body:has(.platform-fallback:not(.web-preview)) {
   width: 238px;
   padding: 10px;
   border: 1px solid var(--floating-glass-border);
-  border-radius: 16px;
+  border-radius: var(--modal-radius-sm);
   background: var(--glass-popup);
   -webkit-backdrop-filter: var(--floating-glass-blur);
   backdrop-filter: var(--floating-glass-blur);
@@ -804,7 +813,7 @@ body:has(.platform-fallback:not(.web-preview)) {
   justify-content: space-between;
   gap: 12px;
   border: 1px solid var(--floating-glass-border);
-  border-radius: 14px;
+  border-radius: var(--modal-radius-sm);
   background: var(--floating-glass-bg);
   -webkit-backdrop-filter: var(--floating-glass-blur);
   backdrop-filter: var(--floating-glass-blur);
@@ -1276,15 +1285,6 @@ body:has(.platform-fallback:not(.web-preview)) {
   border-color: transparent;
   box-shadow: none;
 }
-.control-stage.has-preview-message {
-  grid-template-rows: var(--control-stage-badge-row) minmax(0, 1fr);
-  row-gap: 2px;
-  place-items: stretch center;
-}
-.control-stage.has-preview-message .control-stage-layers {
-  grid-row: 2;
-  align-self: stretch;
-}
 .control-reading {
   width: 100%;
   height: 100%;
@@ -1430,11 +1430,12 @@ body:has(.platform-fallback:not(.web-preview)) {
 .dpi-stage-value:hover:not(:disabled) { color: inherit; background: var(--control-hover-bg); }
 .dpi-stage-value:disabled { opacity: .48; }
 .preview-message {
-  grid-row: 1;
-  position: relative;
-  justify-self: center;
-  align-self: start;
-  margin: 0;
+  position: absolute;
+  top: 6px;
+  left: 0;
+  right: 0;
+  margin: 0 auto;
+  width: fit-content;
   padding: 5px 11px 5px 10px;
   display: inline-flex;
   align-items: center;
@@ -1453,7 +1454,7 @@ body:has(.platform-fallback:not(.web-preview)) {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  z-index: 2;
+  z-index: 5;
   pointer-events: none;
 }
 .preview-message::before {
@@ -1752,12 +1753,14 @@ body:has(.platform-fallback:not(.web-preview)) {
 /* Compact edit popovers use the same glass treatment as the battery popover. */
 .edit-modal-backdrop {
   position: fixed;
-  z-index: 30;
+  z-index: var(--z-modal);
   inset: 0;
-  padding: 48px 16px 18px;
+  padding: var(--modal-backdrop-padding);
   display: grid;
   place-items: center;
-  background: var(--scrim-bg);
+  background: var(--modal-backdrop-bg);
+  -webkit-backdrop-filter: var(--modal-backdrop-blur);
+  backdrop-filter: var(--modal-backdrop-blur);
 }
 .edit-modal {
   width: min(304px, 50vw, calc(100vw - 32px));
@@ -1766,8 +1769,8 @@ body:has(.platform-fallback:not(.web-preview)) {
   display: flex;
   flex-direction: column;
   border: 1px solid var(--floating-glass-border);
-  border-radius: 16px;
-  padding: 12px;
+  border-radius: var(--modal-radius-md);
+  padding: var(--modal-padding);
   background: var(--floating-glass-bg);
   -webkit-backdrop-filter: var(--floating-glass-blur);
   backdrop-filter: var(--floating-glass-blur);
@@ -1958,9 +1961,9 @@ body:has(.platform-fallback:not(.web-preview)) {
 .details-button svg { width: 14px; height: 14px; }
 .details-backdrop {
   position: fixed;
-  z-index: 20;
+  z-index: var(--z-modal);
   inset: 0;
-  padding: 48px 16px 18px;
+  padding: var(--modal-backdrop-padding);
   display: grid;
   place-items: center;
   background: var(--modal-backdrop-bg);
@@ -1973,27 +1976,18 @@ body:has(.platform-fallback:not(.web-preview)) {
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  border: 1px solid var(--surface-border);
-  border-radius: 22px;
-  padding: 15px;
-  background: var(--surface-bg-strong);
-  -webkit-backdrop-filter: none;
-  backdrop-filter: none;
-  box-shadow: var(--floating-glass-shadow);
-}
-/* native path: device-details 用 floating-glass，由平台分支控制 opacity/blur
-   macOS 72% + blur（毛玻璃）；Windows 92% / fallback 96% + blur none（实色） */
-.platform-macos:not(.web-preview) .device-details,
-.platform-windows:not(.web-preview) .device-details,
-.platform-fallback:not(.web-preview) .device-details {
+  border: 1px solid var(--floating-glass-border);
+  border-radius: var(--modal-radius-lg);
+  padding: var(--modal-padding);
   background: var(--floating-glass-bg);
   -webkit-backdrop-filter: var(--floating-glass-blur);
   backdrop-filter: var(--floating-glass-blur);
+  box-shadow: var(--floating-glass-shadow);
 }
 .device-details > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.device-details > header h2 { margin-top: 2px; font-size: 18px; }
-.device-details .icon-button { display: grid; place-items: center; }
-.device-details .icon-button svg { width: 16px; height: 16px; }
+.device-details > header h2 { margin-top: 2px; font-size: 18px; letter-spacing: -.01em; }
+.device-details .icon-button { display: grid; place-items: center; border-radius: 50%; }
+.device-details .icon-button svg { width: var(--modal-close-icon); height: var(--modal-close-icon); }
 .details-note { margin: 9px 0 11px; color: var(--muted); font-size: 10px; line-height: 1.45; }
 .capability-groups { min-height: 0; overflow-y: auto; overscroll-behavior: contain; columns: 2; column-gap: 8px; padding-right: 3px; }
 .capability-group { min-width: 0; break-inside: avoid; margin: 0 0 8px; padding: 10px; border-radius: 12px; background: var(--surface-group-bg); border: 1px solid var(--surface-group-border); }
@@ -2041,7 +2035,7 @@ body:has(.platform-fallback:not(.web-preview)) {
   height: 13px;
 }
 h2 { margin: 2px 0 0; letter-spacing: -.02em; font-size: 16px; }
-.icon-button { width: 28px; height: 28px; padding: 0; color: var(--muted); background: transparent; border: 1px solid var(--control-secondary-border); font-size: 12px; }
+.icon-button { width: var(--modal-close-size); height: var(--modal-close-size); padding: 0; color: var(--muted); background: transparent; border: 1px solid var(--control-secondary-border); font-size: 12px; }
 .icon-button:hover:not(:disabled) { color: inherit; background: var(--control-hover-bg); }
 
 /* Tooltip keeps its own glass token because it renders through a React Portal. */
@@ -2051,7 +2045,7 @@ h2 { margin: 2px 0 0; letter-spacing: -.02em; font-size: 16px; }
   z-index: 30;
   width: min(240px, 50vw, calc(100vw - 32px));
   padding: 12px;
-  border-radius: 16px;
+  border-radius: var(--modal-radius-sm);
   border: 1px solid var(--floating-glass-border);
   overflow: hidden;
   background: var(--tooltip-glass-bg);
@@ -2498,9 +2492,9 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
 /* 模态遮罩 */
 .battery-usage-modal-overlay {
   position: fixed;
-  z-index: 40;
+  z-index: var(--z-modal);
   inset: 0;
-  padding: 36px 16px 18px;
+  padding: var(--modal-backdrop-padding);
   display: grid;
   place-items: center;
   background: var(--modal-backdrop-bg);
@@ -2516,8 +2510,8 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   display: flex;
   flex-direction: column;
   border: 1px solid var(--floating-glass-border);
-  border-radius: 20px;
-  padding: 13px;
+  border-radius: var(--modal-radius-lg);
+  padding: var(--modal-padding);
   background: var(--glass-popup);
   -webkit-backdrop-filter: var(--floating-glass-blur);
   backdrop-filter: var(--floating-glass-blur);
@@ -2553,8 +2547,8 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
 }
 .battery-usage-close-icon {
   flex-shrink: 0;
-  width: 28px;
-  height: 28px;
+  width: var(--modal-close-size);
+  height: var(--modal-close-size);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -2571,7 +2565,7 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   color: inherit;
   background: var(--control-hover-bg);
 }
-.battery-usage-close-icon svg { width: 15px; height: 15px; display: block; }
+.battery-usage-close-icon svg { width: var(--modal-close-icon); height: var(--modal-close-icon); display: block; }
 
 /* 控制区：时间范围切换（设备切换已移至状态条） */
 .battery-usage-controls {
