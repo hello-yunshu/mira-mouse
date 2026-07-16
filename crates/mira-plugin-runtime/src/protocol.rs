@@ -1091,16 +1091,21 @@ fn receiver_mouse_battery_percentage(object: &serde_json::Map<String, Value>) ->
 
 fn receiver_status_battery_percentage(object: &serde_json::Map<String, Value>) -> Option<u8> {
     let percentage = percentage_value(object, "receiverBattery")?;
-    // Protocol A receivers can report 0x32 while charging even when the real
-    // level is different; treat it as an unavailable placeholder, not 50%.
-    if percentage == 0 || percentage == 50 {
+    // Official AMasterDriver (MouseDocker.get_0xf7) reads offset 10 raw and
+    // only maps 0 → -1 (unavailable). It does NOT treat 0x32 (50) as a
+    // placeholder — 50 is a legitimate battery level. Mirroring that here.
+    if percentage == 0 {
         return None;
     }
     Some(percentage)
 }
 
-fn protocol_a_receiver_battery_charging(percentage: u8) -> bool {
-    (1..100).contains(&percentage)
+fn protocol_a_receiver_battery_charging(_percentage: u8) -> bool {
+    // The official driver computes mouseDBatStatus as 1 (discharging) for
+    // 0 < pct < 100 and 2 (full) for pct == 100, but neither value means
+    // "charging" — the receiver/dongle is USB-powered and has no charging
+    // phase. Always report not charging to match official semantics.
+    false
 }
 
 /// 电池充电状态字段约定：原始字节值 1 表示充电中（与官方前端
@@ -1316,7 +1321,8 @@ mod tests {
         assert_eq!(reading.batteries.len(), 2);
         assert_eq!(reading.batteries[1].id, "receiver");
         assert_eq!(reading.batteries[1].percentage, 88);
-        assert!(reading.batteries[1].charging);
+        // Receiver/dongle is USB-powered — no charging phase per official driver.
+        assert!(!reading.batteries[1].charging);
     }
 
     #[test]
@@ -1335,18 +1341,21 @@ mod tests {
         assert_eq!(reading.batteries.len(), 2);
         assert_eq!(reading.batteries[1].id, "receiver");
         assert_eq!(reading.batteries[1].percentage, 87);
-        assert!(reading.batteries[1].charging);
+        assert!(!reading.batteries[1].charging);
     }
 
     #[test]
-    fn protocol_a_receiver_drops_charging_placeholder_50() {
+    fn protocol_a_receiver_keeps_battery_level_50() {
+        // Official AMasterDriver does NOT filter 0x32 (50) — it is a legitimate
+        // battery level, not a placeholder. Only 0 maps to unavailable.
         let outputs = BTreeMap::from([(
             "receiver".into(),
             json!({"mouseBattery": 75, "mouseOnline": true, "receiverBattery": 50}),
         )]);
         let reading = standard_reading(outputs, None);
-        assert_eq!(reading.batteries.len(), 1);
-        assert_eq!(reading.batteries[0].id, "mouse");
+        assert_eq!(reading.batteries.len(), 2);
+        assert_eq!(reading.batteries[1].id, "receiver");
+        assert_eq!(reading.batteries[1].percentage, 50);
     }
 
     #[test]

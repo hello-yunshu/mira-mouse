@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useTransition } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -46,11 +46,13 @@ import {
   resolveSwitchState,
   resolveVisibleWhen,
   resolveZones,
+  simulateDemoMutation,
 } from './pluginAdapter';
 import { onAppNotification, notifyError, notifySuccess, type AppNotification } from './notify';
 import { relaunchAfterUpdate, startAutomaticAppUpdateCheck } from './updater';
 import { startAutomaticPluginUpdateCheck } from './plugin-updater';
 import { LOCAL_AI_FEATURE, localAiFeatureEnabled } from './localAi';
+import { segmentedIndicatorStyle } from './segmentedControl';
 import './styles.css';
 
 type View = 'dashboard' | 'settings' | 'about';
@@ -148,6 +150,16 @@ function colorValueStyle(value: unknown): React.CSSProperties | undefined {
   return color ? { '--value-color': color } as React.CSSProperties : undefined;
 }
 
+function secondaryRevealStyle(seed: string): React.CSSProperties {
+  let hash = 2166136261;
+  for (const char of seed) {
+    hash ^= char.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  const delay = 165 + (Math.abs(hash) % 45);
+  return { '--control-detail-delay': `${delay}ms` } as React.CSSProperties;
+}
+
 function LiveValue({ text, className, style, duration = 160 }: {
   text: string;
   className?: string;
@@ -197,6 +209,98 @@ function LiveValue({ text, className, style, duration = 160 }: {
   );
 }
 
+type MetricFlipValue = {
+  contextKey: string;
+  text: string;
+  unit: string;
+  variant: SharedControlMetric['variant'];
+};
+
+function MorphingMetricValue({
+  active,
+  contextKey,
+  text,
+  unit,
+  variant,
+  duration = 280,
+}: MetricFlipValue & { active: boolean; duration?: number }) {
+  const [currentValue, setCurrentValue] = useState<MetricFlipValue>(() => ({
+    contextKey,
+    text,
+    unit,
+    variant,
+  }));
+  const [nextValue, setNextValue] = useState<MetricFlipValue>();
+  const [transitioning, setTransitioning] = useState(false);
+  const [transitionKind, setTransitionKind] = useState<'crossfade' | 'flip'>('crossfade');
+
+  useEffect(() => {
+    if (!active) return;
+    if (
+      text === currentValue.text
+      && unit === currentValue.unit
+      && variant === currentValue.variant
+      && contextKey === currentValue.contextKey
+    ) return;
+
+    let transitionFrame = 0;
+    let commitFrame = 0;
+    let timeout = 0;
+    const incomingValue = {
+      contextKey,
+      text,
+      unit,
+      variant,
+    };
+    const incomingTransitionKind = contextKey === currentValue.contextKey ? 'flip' : 'crossfade';
+    const transitionDuration = incomingTransitionKind === 'crossfade' ? 360 : duration;
+    const prepareFrame = window.requestAnimationFrame(() => {
+      setTransitionKind(incomingTransitionKind);
+      setNextValue(incomingValue);
+      setTransitioning(false);
+      transitionFrame = window.requestAnimationFrame(() => {
+        setTransitioning(true);
+        timeout = window.setTimeout(() => {
+          commitFrame = window.requestAnimationFrame(() => {
+            setCurrentValue(incomingValue);
+            setNextValue(undefined);
+            setTransitioning(false);
+          });
+        }, transitionDuration);
+      });
+    });
+
+    return () => {
+      window.cancelAnimationFrame(prepareFrame);
+      window.cancelAnimationFrame(transitionFrame);
+      window.cancelAnimationFrame(commitFrame);
+      window.clearTimeout(timeout);
+    };
+  }, [active, contextKey, currentValue, duration, text, unit, variant]);
+
+  const renderFace = (value: MetricFlipValue, className: string) => (
+    <span
+      key={`${value.contextKey}\u0000${value.variant}\u0000${value.text}\u0000${value.unit}`}
+      className={`shared-control-metric-face ${className}`}
+      data-variant={value.variant}
+    >
+      <strong className="shared-control-metric-text">{value.text}</strong>
+      {value.unit && <em>{value.unit}</em>}
+    </span>
+  );
+
+  return (
+    <span
+      className={`shared-control-metric-value${transitioning ? ' is-transitioning' : ''}`}
+      data-transition={transitionKind}
+      aria-label={`${text}${unit ? ` ${unit}` : ''}`}
+    >
+      {renderFace(currentValue, 'is-current')}
+      {nextValue && renderFace(nextValue, 'is-next')}
+    </span>
+  );
+}
+
 function ColorValue({ value, fallback, className }: { value: unknown; fallback?: string; className?: string }) {
   const label = typeof value === 'string' && value ? value : fallback ?? i18n.t('common.notReported');
   const style = useMemo(() => colorValueStyle(value), [value]);
@@ -236,7 +340,11 @@ function CapabilitySummary({ capability, device }: { capability: PluginCapabilit
           ? resolveLabelKey(item.labelKey, device.pluginId)
           : item.label ?? item.source;
         return (
-          <span key={`${label}:${item.source}`}>
+          <span
+            key={`${label}:${item.source}`}
+            className="secondary-control-item"
+            style={secondaryRevealStyle(`${capability.id}:${item.source}:${label}`)}
+          >
             {label}
             <FormattedValue value={value} format={item.format} label={valueLabel} />
           </span>
@@ -767,14 +875,19 @@ function FieldRenderer({ field, device, writeBusy, runMutation }: {
 
     case 'inline-segmented': {
       const options = resolveFieldOptions(field, device);
+      const activeOptionIndex = Math.max(options.findIndex((option) => value === option.value), 0);
       return (
         <>
           <span>{label}</span>
           <div
-            className="plugin-segmented"
+            className="plugin-segmented segmented-slider"
             role="group"
             aria-label={label}
-            style={{ gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))` }}
+            data-active-index={activeOptionIndex}
+            style={{
+              gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))`,
+              ...segmentedIndicatorStyle(options.length, activeOptionIndex, { gap: 6, padding: 6 }),
+            }}
           >
             {options.map((option) => (
               <button
@@ -882,8 +995,10 @@ function MetricField({ capability, field, device, writeBusy, runMutation }: {
 
   return (
     <div className="control-reading mode-reading metric-reading">
-      <WaveSine weight="regular" />
-      <span>{i18n.t('dashboard.currentPollingRate')}</span>
+      <div className="metric-reading-heading">
+        <WaveSine weight="regular" />
+        <span>{i18n.t('dashboard.currentPollingRate')}</span>
+      </div>
       <button
         type="button"
         className="metric-reading-value editable-reading"
@@ -979,12 +1094,17 @@ function GenericFieldControl({ field, device, writeBusy, runMutation }: {
 
     case 'inline-segmented': {
       const options = resolveFieldOptions(field, device);
+      const activeOptionIndex = Math.max(options.findIndex((option) => value === option.value), 0);
       return (
         <div
-          className="plugin-segmented"
+          className="plugin-segmented segmented-slider"
           role="group"
           aria-label={label}
-          style={{ gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))` }}
+          data-active-index={activeOptionIndex}
+          style={{
+            gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))`,
+            ...segmentedIndicatorStyle(options.length, activeOptionIndex, { gap: 6, padding: 6 }),
+          }}
         >
           {options.map((option) => (
             <button
@@ -1136,7 +1256,11 @@ function StageLayout({ capability, device, writeBusy, runMutation }: {
           {displayedStages.map((stage, index) => {
             const stageNumber = index + 1;
             return (
-              <div key={`${index}-${stage.value}`} className="dpi-stage-item">
+              <div
+                key={`${index}-${stage.value}`}
+                className="dpi-stage-item"
+                style={{ '--dpi-stage-delay': `${60 + index * 26}ms` } as React.CSSProperties}
+              >
               <button
                 type="button"
                 className={`dpi-stage-dot ${stage.active ? 'active' : ''}`}
@@ -1198,14 +1322,64 @@ function ZoneRenderer({ capability, device, writeBusy, runMutation }: {
 }) {
   const zones = resolveZones(capability, device);
   const [activeZoneId, setActiveZoneId] = useState<string>('');
+  const [editingColorZoneId, setEditingColorZoneId] = useState<string>();
 
-  if (zones.length === 0) return null;
+  // 灯光区域标题（鼠标灯光/接收器灯光）的淡入淡出状态机。
+  // Hooks 必须在条件返回之前调用，所以 activeZone 在此安全派生。
+  const activeZone = zones.length > 0 ? (zones.find((z) => z.id === activeZoneId) ?? zones[0]) : undefined;
+  const currentLabel = activeZone ? resolveLabelKey(activeZone.labelKey, device.pluginId) : '';
+  const [displayedLabel, setDisplayedLabel] = useState(currentLabel);
+  const [titlePhase, setTitlePhase] = useState<'in' | 'out' | 'waiting'>('waiting');
+  const previousLabelRef = useRef<string | undefined>(undefined);
 
-  const activeZone = zones.find((z) => z.id === activeZoneId) ?? zones[0];
+  useEffect(() => {
+    const prev = previousLabelRef.current;
+    previousLabelRef.current = currentLabel;
+    if (prev === undefined || prev === currentLabel) {
+      // 初次挂载（含 StrictMode 重复挂载）：在子块淡入动画的末尾阶段淡入标题
+      //（220ms 开始，340ms 完成，早于子块完成时间 345~390ms，让标题在子块
+      // 淡入播放完前就出现）。StrictMode 下 useEffect 执行两次，第一次会把
+      // previousLabelRef 设为 currentLabel 并被清理掉定时器，第二次 prev ===
+      // currentLabel 也走此分支，保证定时器被重新建立。
+      setDisplayedLabel(currentLabel);
+      setTitlePhase('waiting');
+      const inTimer = window.setTimeout(() => setTitlePhase('in'), 220);
+      return () => window.clearTimeout(inTimer);
+    }
+    // 切换区域：先在子块淡出的中间点淡出（90ms ≈ 子块淡入时长 180ms 的一半），
+    // 然后在子块淡入动画的末尾阶段（220ms）淡入新标题，340ms 完成。
+    setTitlePhase('out');
+    const switchTimer = window.setTimeout(() => {
+      setDisplayedLabel(currentLabel);
+      setTitlePhase('waiting');
+    }, 90);
+    const inTimer = window.setTimeout(() => setTitlePhase('in'), 220);
+    return () => {
+      window.clearTimeout(switchTimer);
+      window.clearTimeout(inTimer);
+    };
+  }, [currentLabel]);
+
+  if (zones.length === 0 || !activeZone) return null;
+
+  const activeZoneIndex = Math.max(zones.findIndex((zone) => zone.id === activeZone.id), 0);
   const multipleZones = zones.length > 1;
 
-  const colorField = activeZone.fields.find((f) => f.editor === 'modal-color' || f.format === 'color');
+  const colorField = activeZone.fields.find((f) => f.editor === 'modal-color')
+    ?? activeZone.fields.find((f) => f.format === 'color');
   const zoneColor = colorField ? readPath(device, colorField.source) as string | undefined : undefined;
+  const colorMutation = colorField?.editor === 'modal-color'
+    ? resolveMutation(colorField.mutation, device.writableMutations)
+    : undefined;
+  const colorWritable = Boolean(
+    colorField
+    && resolveVisibleWhen(colorField.visibleWhen, device)
+    && colorMutation
+    && !writeBusy,
+  );
+  const colorLabel = colorField
+    ? resolveFieldLabel(colorField, device, device.pluginId)
+    : i18n.t('common.color');
   // 主题来源区域继续沿用全局主题色；附属灯光区域则只在当前分段滑块内
   // 使用自己的灯光颜色。判断依据来自插件声明，不依赖鼠标/接收器 id。
   const usesThemeAccent = capability.metadata.accentSource
@@ -1222,12 +1396,13 @@ function ZoneRenderer({ capability, device, writeBusy, runMutation }: {
     <>
       {multipleZones && (
         <div
-          className="lighting-sub-tabs"
+          className="lighting-sub-tabs segmented-slider"
           role="tablist"
           aria-label={i18n.t('dashboard.lightingTarget')}
+          data-active-index={activeZoneIndex}
           style={{
             gridTemplateColumns: `repeat(${zones.length}, minmax(0, 1fr))`,
-            '--lighting-tab-accent': tabAccent,
+            ...segmentedIndicatorStyle(zones.length, activeZoneIndex, { accent: tabAccent, gap: 3, padding: 3 }),
           } as React.CSSProperties}
         >
           {zones.map((zone) => (
@@ -1241,26 +1416,55 @@ function ZoneRenderer({ capability, device, writeBusy, runMutation }: {
           ))}
         </div>
       )}
-      <div className="lighting-swatch" style={{ '--light-color': zoneColor ?? '#b87ab0' } as React.CSSProperties} />
+      <button
+        type="button"
+        className="lighting-swatch"
+        style={{ '--light-color': zoneColor ?? '#b87ab0' } as React.CSSProperties}
+        aria-label={colorLabel}
+        title={colorLabel}
+        disabled={!colorWritable}
+        onClick={() => {
+          invoke('device_refresh_quick').catch(() => {});
+          setEditingColorZoneId(activeZone.id);
+        }}
+      />
       <div className="lighting-sections" aria-label={i18n.t('dashboard.lightingGroups')}>
         <div className={`lighting-group lighting-group-${activeZone.id}${compactDetailGrid ? ' is-compact' : ''}`}>
-          <p className="lighting-group-title">{resolveLabelKey(activeZone.labelKey, device.pluginId)}</p>
+          <p className="lighting-group-title" data-title-phase={titlePhase}>{displayedLabel}</p>
           <div
             className={`lighting-rows${compactDetailGrid ? ' is-compact' : ''}`}
             style={{ gridTemplateColumns: `repeat(${Math.max(visibleFields.length, 1)}, minmax(0, 1fr))` }}
           >
             {visibleFields.map((field) => (
-              <FieldRenderer
-                key={field.id}
-                field={field}
-                device={device}
-                writeBusy={writeBusy}
-                runMutation={runMutation}
-              />
+              <div
+                key={`${activeZone.id}:${field.id}`}
+                className="lighting-row-slot secondary-control-item"
+                style={secondaryRevealStyle(`${capability.id}:${activeZone.id}:${field.id}`)}
+              >
+                <FieldRenderer
+                  field={field}
+                  device={device}
+                  writeBusy={writeBusy}
+                  runMutation={runMutation}
+                />
+              </div>
             ))}
           </div>
         </div>
       </div>
+      {colorField && colorMutation && editingColorZoneId === activeZone.id && (
+        <FieldEditModal
+          key={`${activeZone.id}:${colorField.id}`}
+          field={colorField}
+          device={device}
+          writeBusy={writeBusy}
+          onClose={() => setEditingColorZoneId(undefined)}
+          onApply={(value) => {
+            void runMutation(colorMutation, resolveFieldMutationParams(colorField, device, value));
+            setEditingColorZoneId(undefined);
+          }}
+        />
+      )}
     </>
   );
 }
@@ -1394,6 +1598,221 @@ function DeviceDetails({ device, onClose }: { device: DeviceState; onClose: () =
   );
 }
 
+type SharedControlMetric = {
+  label: string;
+  targetSelector: string;
+  text: string;
+  unit: string;
+  variant: 'dpi' | 'hertz';
+};
+
+type SharedControlSurface = {
+  kind: 'summary' | 'lighting';
+  targetSelector: string;
+};
+
+function sharedControlMetric(capabilities: PluginCapability[], device: DeviceState): SharedControlMetric | undefined {
+  for (const capability of capabilities) {
+    const layout = resolveStageLayout(capability);
+    if (layout) {
+      const stages = ((readPath(device, layout.dotsSource) as DpiStage[] | undefined) ?? [])
+        .filter((stage) => stage.enabled);
+      const activeDpi = stages.find((stage) => stage.active)?.value ?? stages[0]?.value;
+      const text = activeDpi
+        ? String(activeDpi)
+        : capabilityRuntimePending(capability) ? '—' : i18n.t('common.notReported');
+      return {
+        label: activeDpi
+          ? i18n.t('dashboard.currentDpiEdit', { value: activeDpi })
+          : i18n.t('dashboard.dpiNotReported'),
+        targetSelector: '.dpi-reading > .primary-reading',
+        text,
+        unit: 'DPI',
+        variant: 'dpi',
+      };
+    }
+
+    const fields = (capability.metadata.fields ?? [])
+      .filter((field) => resolveVisibleWhen(field.visibleWhen, device));
+    const metricField = fields.length === 1 && fields[0].format === 'hertz' ? fields[0] : undefined;
+    if (metricField) {
+      const value = readPath(device, metricField.source);
+      const hasHertzValue = typeof value === 'number';
+      const text = hasHertzValue ? String(value) : formatFieldValue(value, metricField.format, i18n.t);
+      return {
+        label: hasHertzValue
+          ? i18n.t('dashboard.currentPollingRateEdit', { value: text })
+          : i18n.t('dashboard.pollingRateNotReportedEdit'),
+        targetSelector: '.metric-reading > .metric-reading-value',
+        text,
+        unit: hasHertzValue ? 'Hz' : '',
+        variant: 'hertz',
+      };
+    }
+  }
+  return undefined;
+}
+
+function sharedControlSurface(capabilities: PluginCapability[], device: DeviceState): SharedControlSurface | undefined {
+  for (const capability of capabilities) {
+    if (resolveZones(capability, device).length > 0) {
+      return { kind: 'lighting', targetSelector: '.lighting-reading .lighting-group' };
+    }
+    if ((capability.metadata.summary ?? []).length > 0) {
+      return { kind: 'summary', targetSelector: '.metric-reading > .capability-summary' };
+    }
+  }
+  return undefined;
+}
+
+function useControlTargetPosition(
+  stageRef: React.RefObject<HTMLElement | null>,
+  targetSelector: string | undefined,
+  layerRef: React.RefObject<HTMLElement | null>,
+  transitionMode: 'morph' | 'snap',
+) {
+  const previousTargetRef = useRef<string | undefined>(undefined);
+
+  useLayoutEffect(() => {
+    const previousTarget = previousTargetRef.current;
+    previousTargetRef.current = targetSelector;
+    if (!targetSelector) return;
+
+    const stage = stageRef.current;
+    const target = stage?.querySelector<HTMLElement>(targetSelector);
+    const layer = layerRef.current;
+    if (!stage || !target || !layer) return;
+
+    const shouldSnap = layer.dataset.positioned !== 'true'
+      || (transitionMode === 'snap' && previousTarget === undefined);
+    let revealFrame = 0;
+
+    const measure = () => {
+      const stageRect = stage.getBoundingClientRect();
+      const targetRect = target.getBoundingClientRect();
+      layer.style.width = `${targetRect.width}px`;
+      layer.style.height = `${targetRect.height}px`;
+      layer.style.transform = `translate3d(${targetRect.left - stageRect.left}px, ${targetRect.top - stageRect.top}px, 0)`;
+      layer.dataset.positioned = 'true';
+    };
+
+    if (shouldSnap) {
+      layer.dataset.geometryReady = 'false';
+      layer.dataset.repositioning = 'true';
+      layer.getBoundingClientRect();
+    } else {
+      layer.dataset.geometryReady = 'true';
+    }
+    measure();
+    if (shouldSnap) {
+      layer.getBoundingClientRect();
+      revealFrame = window.requestAnimationFrame(() => {
+        layer.dataset.geometryReady = 'true';
+        layer.dataset.repositioning = 'false';
+      });
+    }
+
+    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(measure) : undefined;
+    observer?.observe(stage);
+    observer?.observe(target);
+    window.addEventListener('resize', measure);
+    return () => {
+      window.cancelAnimationFrame(revealFrame);
+      observer?.disconnect();
+      window.removeEventListener('resize', measure);
+      layer.dataset.repositioning = 'false';
+    };
+  }, [layerRef, stageRef, targetSelector, transitionMode]);
+}
+
+function SharedControlMetricLayer({
+  contextKey,
+  layerRef,
+  metric,
+  sync,
+}: {
+  contextKey: string;
+  layerRef: React.RefObject<HTMLDivElement | null>;
+  metric: SharedControlMetric | undefined;
+  sync: 'metric' | 'surface';
+}) {
+  return (
+    <div
+      ref={layerRef}
+      className="shared-control-metric"
+      data-sync={sync}
+      data-variant={metric?.variant ?? 'hertz'}
+      data-visible={metric ? 'true' : 'false'}
+      data-positioned="false"
+      aria-hidden="true"
+    >
+      <MorphingMetricValue
+        active={Boolean(metric)}
+        contextKey={contextKey}
+        text={metric?.text ?? ''}
+        unit={metric?.unit ?? ''}
+        variant={metric?.variant ?? 'hertz'}
+      />
+    </div>
+  );
+}
+
+function SharedControlSurfaceLayer({
+  layerRef,
+  surface,
+}: {
+  layerRef: React.RefObject<HTMLDivElement | null>;
+  surface: SharedControlSurface | undefined;
+}) {
+  return (
+    <div
+      ref={layerRef}
+      className="shared-control-surface"
+      data-kind={surface?.kind ?? 'summary'}
+      data-visible={surface ? 'true' : 'false'}
+      data-positioned="false"
+      aria-hidden="true"
+    />
+  );
+}
+
+function SharedPollingContextLayer({
+  layerRef,
+  sync,
+  visible,
+}: {
+  layerRef: React.RefObject<HTMLDivElement | null>;
+  sync: 'metric' | 'surface';
+  visible: boolean;
+}) {
+  return (
+    <div
+      ref={layerRef}
+      className="shared-control-context"
+      data-positioned="false"
+      data-sync={sync}
+      data-visible={visible ? 'true' : 'false'}
+      aria-hidden="true"
+    >
+      <div className="shared-control-context-content">
+        <WaveSine weight="regular" />
+        <span>{i18n.t('dashboard.currentPollingRate')}</span>
+      </div>
+    </div>
+  );
+}
+
+function resolveContextMotionSync(
+  currentHasMetric: boolean,
+  currentHasSurface: boolean,
+  targetHasMetric: boolean,
+  targetHasSurface: boolean,
+): 'metric' | 'surface' {
+  if (currentHasMetric && targetHasMetric) return 'metric';
+  if (currentHasSurface || targetHasSurface) return 'surface';
+  return 'metric';
+}
+
 function Dashboard({
   device,
   deviceEntries,
@@ -1401,6 +1820,7 @@ function Dashboard({
   onDeviceSelect,
   onOpenBatteryUsage,
   pluginLocaleRevision,
+  demoMode,
 }: {
   device: DeviceState;
   deviceEntries: DeviceSnapshotEntry[];
@@ -1408,15 +1828,21 @@ function Dashboard({
   onDeviceSelect: (deviceKey: string) => void;
   onOpenBatteryUsage: () => void;
   pluginLocaleRevision: number;
+  demoMode: boolean;
 }) {
   const { t } = useTranslation();
   const [mode, setMode] = useState<ControlMode>('');
+  const [contextMotionSync, setContextMotionSync] = useState<'metric' | 'surface'>('metric');
   const [previewMessage, setPreviewMessage] = useState('');
   const [showDetails, setShowDetails] = useState(false);
   const [showBatteries, setShowBatteries] = useState(false);
   const [showDeviceSwitcher, setShowDeviceSwitcher] = useState(false);
   const batteryControlRef = useRef<HTMLDivElement>(null);
   const deviceSwitcherRef = useRef<HTMLDivElement>(null);
+  const controlStageLayersRef = useRef<HTMLDivElement>(null);
+  const sharedContextLayerRef = useRef<HTMLDivElement>(null);
+  const sharedMetricLayerRef = useRef<HTMLDivElement>(null);
+  const sharedSurfaceLayerRef = useRef<HTMLDivElement>(null);
   const [writeBusy, setWriteBusy] = useState(false);
   const [editingField, setEditingField] = useState<{ capability: PluginCapability; field: PluginField } | null>(null);
 
@@ -1446,6 +1872,15 @@ function Dashboard({
     setWriteBusy(true);
     setPreviewMessage(i18n.t('dashboard.writing'));
     try {
+      if (demoMode) {
+        // 演示模式：直接在前端模拟写入，不调用 Tauri device_mutate。
+        // 参数变化立即反映在 UI 上，并保留「搞定啦」成功通知。
+        const nextDevice = simulateDemoMutation(device, mutation, params);
+        onDeviceChange(nextDevice);
+        setPreviewMessage('');
+        notifySuccess(i18n.t('dashboard.writeConfirmed'));
+        return;
+      }
       const snapshot = await invoke<DeviceSnapshot>('device_mutate', { mutation, params });
       onDeviceChange(snapshotToState(snapshot));
       setPreviewMessage('');
@@ -1488,15 +1923,38 @@ function Dashboard({
         });
       }
     }
-    return [...groups.values()].slice(0, MAX_CONTROL_GROUPS);
+    return [...groups.values()]
+      .slice(0, MAX_CONTROL_GROUPS)
+      .map((group) => ({
+        ...group,
+        hasMetric: Boolean(sharedControlMetric(group.capabilities, device)),
+        hasSurface: Boolean(sharedControlSurface(group.capabilities, device)),
+      }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [device, pluginLocaleRevision]);
 
   const activeMode = controls.some((c) => c.id === mode) ? mode : controls[0]?.id ?? '';
   const activeGroup = controls.find((c) => c.id === activeMode);
   const activeCapabilities = activeGroup?.capabilities ?? [];
+  const metricPresentation = sharedControlMetric(activeCapabilities, device);
+  const surfacePresentation = sharedControlSurface(activeCapabilities, device);
+  const activeHasMetric = activeGroup?.hasMetric ?? false;
+  const activeHasSurface = activeGroup?.hasSurface ?? false;
+  const pollingContextTarget = metricPresentation?.variant === 'hertz'
+    ? '.metric-reading > .metric-reading-heading'
+    : undefined;
+  useControlTargetPosition(controlStageLayersRef, pollingContextTarget, sharedContextLayerRef, 'snap');
+  useControlTargetPosition(controlStageLayersRef, metricPresentation?.targetSelector, sharedMetricLayerRef, 'morph');
+  useControlTargetPosition(controlStageLayersRef, surfacePresentation?.targetSelector, sharedSurfaceLayerRef, 'snap');
 
-  const statusItems = useMemo(() => {
+  const switchMode = (targetMode: string, sync: 'metric' | 'surface') => {
+    if (!targetMode || targetMode === activeMode) return;
+    setContextMotionSync(sync);
+    setMode(targetMode);
+    setPreviewMessage('');
+  };
+
+  const statusItems = (() => {
     const items: { capability: PluginCapability; placement: PluginCapabilityPlacement; onClick: (() => void) | undefined }[] = [];
     for (const capability of device.pluginCapabilities) {
       if (!capabilityAvailable(capability)) continue;
@@ -1521,8 +1979,15 @@ function Dashboard({
           const controlPlacement = placementsFor(capability, 'control')[0];
           if (controlPlacement) {
             const target = controlPlacement.group || capability.id;
-            if (controls.some((c) => c.id === target)) {
-              onClick = () => setMode(target);
+            const targetControl = controls.find((control) => control.id === target);
+            if (targetControl) {
+              const sync = resolveContextMotionSync(
+                activeHasMetric,
+                activeHasSurface,
+                targetControl.hasMetric,
+                targetControl.hasSurface,
+              );
+              onClick = () => switchMode(target, sync);
             }
           }
         }
@@ -1530,8 +1995,7 @@ function Dashboard({
       }
     }
     return items.sort((a, b) => a.placement.order - b.placement.order).slice(0, MAX_STATUS_ITEMS);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [device, controls, pluginLocaleRevision]);
+  })();
 
   const selectedEntry = selectedDeviceEntry(deviceEntries);
   const multipleDevices = deviceEntries.length > 1;
@@ -1650,42 +2114,81 @@ function Dashboard({
       </section>
 
       <div
-        className="control-tabs"
+        className="control-tabs segmented-slider"
         role="tablist"
         aria-label={t('dashboard.deviceControl')}
+        data-active-index={Math.max(controls.findIndex(({ id }) => activeMode === id), 0)}
         style={{
           gridTemplateColumns: `repeat(${Math.max(controls.length, 1)}, minmax(0, 1fr))`,
           width: `min(92%, ${Math.max(220, controls.length * 104)}px)`,
+          ...segmentedIndicatorStyle(
+            controls.length,
+            Math.max(controls.findIndex(({ id }) => activeMode === id), 0),
+            { gap: 3, padding: 4 },
+          ),
         }}
       >
-        {controls.map(({ id, label, icon }) => (
-          <button
-            key={id}
-            role="tab"
-            aria-selected={activeMode === id}
-            className={activeMode === id ? 'active' : ''}
-            onClick={() => {
-              invoke('device_refresh_quick').catch(() => {});
-              setMode(id);
-              setPreviewMessage('');
-            }}
-          >
-            <PluginIconView name={icon} device={device} />
-            <span>{label}</span>
-          </button>
-        ))}
+        {controls.map(({ id, label, icon, hasMetric, hasSurface }) => {
+          const sync = resolveContextMotionSync(
+            activeHasMetric,
+            activeHasSurface,
+            hasMetric,
+            hasSurface,
+          );
+          return (
+            <button
+              key={id}
+              role="tab"
+              aria-selected={activeMode === id}
+              className={activeMode === id ? 'active' : ''}
+              onClick={() => {
+                invoke('device_refresh_quick').catch(() => {});
+                switchMode(id, sync);
+              }}
+            >
+              <PluginIconView name={icon} device={device} />
+              <span>{label}</span>
+            </button>
+          );
+        })}
       </div>
 
-      <section className={`control-stage ${previewMessage ? 'has-preview-message' : ''}`} aria-live="polite">
-        {activeCapabilities.map((capability) => (
-          <CapabilityRouter
-            key={capability.id}
-            capability={capability}
-            device={device}
-            writeBusy={writeBusy}
-            runMutation={runMutation}
+      <section
+        className={[
+          'control-stage',
+          previewMessage ? 'has-preview-message' : '',
+          pollingContextTarget ? 'has-shared-context' : '',
+          metricPresentation ? 'has-shared-metric' : '',
+          surfacePresentation ? 'has-shared-surface' : '',
+        ].filter(Boolean).join(' ')}
+        aria-live="polite"
+        data-control-mode={activeMode}
+      >
+        <div ref={controlStageLayersRef} className="control-stage-layers">
+          <SharedControlSurfaceLayer layerRef={sharedSurfaceLayerRef} surface={surfacePresentation} />
+          <div className="control-stage-content">
+            {activeCapabilities.map((capability) => (
+              <CapabilityRouter
+                key={capability.id}
+                capability={capability}
+                device={device}
+                writeBusy={writeBusy}
+                runMutation={runMutation}
+              />
+            ))}
+          </div>
+          <SharedPollingContextLayer
+            layerRef={sharedContextLayerRef}
+            sync={contextMotionSync}
+            visible={Boolean(pollingContextTarget)}
           />
-        ))}
+          <SharedControlMetricLayer
+            contextKey={activeMode}
+            layerRef={sharedMetricLayerRef}
+            metric={metricPresentation}
+            sync={contextMotionSync}
+          />
+        </div>
         {previewMessage && <p className="preview-message">{previewMessage}</p>}
         {editingField && (
           <FieldEditModal
@@ -1981,7 +2484,7 @@ export default function App() {
       <button className={`nav-link nav-about ${view === 'about' ? 'active' : ''}`} onClick={() => setView('about')} aria-label={t('nav.about')}><Info weight="regular" /></button>
       {demoMode && <button className="nav-link nav-exit" onClick={exitDemo} aria-label={t('nav.exitDemo')} title={t('nav.exitDemo')}><SignOut weight="regular" /></button>}
     </div>
-    {view === 'dashboard' && (device ? <Dashboard device={device} deviceEntries={deviceEntries} onDeviceChange={setDevice} onDeviceSelect={selectDevice} onOpenBatteryUsage={openBatteryUsage} pluginLocaleRevision={pluginLocaleRevision} /> : <EmptyState onRefresh={() => { setDemoMode(false); setDevice(undefined); setDeviceEntries([]); deviceEntriesRef.current = []; setRefreshNonce((value) => value + 1); invoke('device_refresh').catch(() => {}); }} onDemo={() => { setDemoMode(true); setDevice(MOCK_DEVICE); setDeviceEntries(MOCK_DEVICE_ENTRIES); deviceEntriesRef.current = MOCK_DEVICE_ENTRIES; }} onOpenSettings={() => setView('settings')} />)}
+    {view === 'dashboard' && (device ? <Dashboard device={device} deviceEntries={deviceEntries} onDeviceChange={setDevice} onDeviceSelect={selectDevice} onOpenBatteryUsage={openBatteryUsage} pluginLocaleRevision={pluginLocaleRevision} demoMode={demoMode} /> : <EmptyState onRefresh={() => { setDemoMode(false); setDevice(undefined); setDeviceEntries([]); deviceEntriesRef.current = []; setRefreshNonce((value) => value + 1); invoke('device_refresh').catch(() => {}); }} onDemo={() => { setDemoMode(true); setDevice(MOCK_DEVICE); setDeviceEntries(MOCK_DEVICE_ENTRIES); deviceEntriesRef.current = MOCK_DEVICE_ENTRIES; }} onOpenSettings={() => setView('settings')} />)}
     {view === 'settings' && <SettingsPage previewMode={pureWeb} focusPluginUpdateToken={settingsPluginFocusToken} onNavigateAbout={() => setView('about')} onOpenBatteryUsage={openBatteryUsage} onBatteryUsageSettingsChange={syncBatteryUsageSettings} onThemeChange={setTheme} pluginCapabilities={device?.pluginCapabilities ?? []} writableMutations={device?.writableMutations ?? []} />}
     {view === 'about' && <AboutPage previewMode={pureWeb} focusUpdateToken={aboutFocusToken} onBack={() => setView('settings')} />}
     <BatteryUsageModal

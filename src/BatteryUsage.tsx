@@ -17,6 +17,7 @@ import { MOCK_BATTERY_HISTORY_24H, MOCK_BATTERY_HISTORY_10D } from './mock';
 import { notifyError, notifySuccess } from './notify';
 import { BatteryLevelIcon } from './BatteryLevelIcon';
 import { LOCAL_AI_FEATURE, localAiFeatureEnabled } from './localAi';
+import { segmentedIndicatorStyle } from './segmentedControl';
 
 // ─── 工具函数 ───────────────────────────────────────────────────────────────
 
@@ -1037,7 +1038,12 @@ export function BatteryUsageModal({
           <>
             {/* 时间范围切换 */}
             <div className="battery-usage-controls">
-              <div className="battery-range-toggle" role="tablist">
+              <div
+                className="battery-range-toggle segmented-slider"
+                role="tablist"
+                data-active-index={range === '24h' ? 0 : 1}
+                style={segmentedIndicatorStyle(2, range === '24h' ? 0 : 1)}
+              >
                 <button
                   type="button"
                   role="tab"

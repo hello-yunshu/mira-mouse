@@ -991,9 +991,11 @@ impl ProtocolPackage {
                     continue;
                 }
             }
-            if step.skip_if_zero.iter().any(|reference| {
-                output_value(&session.outputs, reference).and_then(Value::as_u64) == Some(0)
-            }) {
+            if step
+                .skip_if_zero
+                .iter()
+                .any(|reference| output_reference_is_zero(&session.outputs, reference))
+            {
                 continue;
             }
             let params =
@@ -1427,9 +1429,10 @@ impl ProtocolPackage {
                 "mutation {mutation_id} write strategy does not match its command template"
             ));
         }
-        let direct_write_skipped = mutation.write_skip_if_zero.iter().any(|reference| {
-            output_value(ctx_outputs, reference).and_then(Value::as_u64) == Some(0)
-        });
+        let direct_write_skipped = mutation
+            .write_skip_if_zero
+            .iter()
+            .any(|reference| output_reference_is_zero(ctx_outputs, reference));
         let mut memory_read = match &mutation.memory {
             Some(memory)
                 if output_value(ctx_outputs, &memory.available_when)
@@ -1506,9 +1509,11 @@ impl ProtocolPackage {
             .transport
             .as_deref()
             .unwrap_or(&mutation.transport);
-        let read_skipped = mutation.read.skip_if_zero.iter().any(|reference| {
-            output_value(&session.outputs, reference).and_then(Value::as_u64) == Some(0)
-        });
+        let read_skipped = mutation
+            .read
+            .skip_if_zero
+            .iter()
+            .any(|reference| output_reference_is_zero(&session.outputs, reference));
         let before = if memory_read.is_some() || read_skipped {
             Vec::new()
         } else {
@@ -1540,9 +1545,10 @@ impl ProtocolPackage {
 
         // writeSkipIfZero: memory-only 路径下，当直写 feature 不存在（如无 0x8070）时跳过 writeCommand。
         // memory 补丁已由 execute_memory_mutation 完成，直写命令无意义且会失败。
-        let write_skipped = mutation.write_skip_if_zero.iter().any(|reference| {
-            output_value(&session.outputs, reference).and_then(Value::as_u64) == Some(0)
-        });
+        let write_skipped = mutation
+            .write_skip_if_zero
+            .iter()
+            .any(|reference| output_reference_is_zero(&session.outputs, reference));
         if write_skipped && memory_read.is_none() {
             return Err(format!(
                 "mutation {mutation_id} is not available on this device"
@@ -1565,9 +1571,10 @@ impl ProtocolPackage {
         }
 
         for (index, post_write) in mutation.post_writes.iter().enumerate() {
-            let skipped = post_write.skip_if_zero.iter().any(|reference| {
-                output_value(&session.outputs, reference).and_then(Value::as_u64) == Some(0)
-            });
+            let skipped = post_write
+                .skip_if_zero
+                .iter()
+                .any(|reference| output_reference_is_zero(&session.outputs, reference));
             if skipped {
                 continue;
             }
@@ -1603,9 +1610,10 @@ impl ProtocolPackage {
             )?;
             session.delay(post_write.settle_ms)?;
             if let Some(verify) = &post_write.verify {
-                let verify_skipped = verify.skip_if_zero.iter().any(|reference| {
-                    output_value(&session.outputs, reference).and_then(Value::as_u64) == Some(0)
-                });
+                let verify_skipped = verify
+                    .skip_if_zero
+                    .iter()
+                    .any(|reference| output_reference_is_zero(&session.outputs, reference));
                 if !verify_skipped {
                     let verify_transport = verify.transport.as_deref().unwrap_or(transport);
                     let verify_params = resolve_workflow_params(&verify.params, &session.outputs)
@@ -1643,9 +1651,11 @@ impl ProtocolPackage {
             .unwrap_or(&mutation.transport);
         let verify_params = resolve_workflow_params(&mutation.verify.params, &session.outputs)
             .map_err(|error| format!("mutation {mutation_id} verify params: {error}"))?;
-        let verify_skipped = mutation.verify.skip_if_zero.iter().any(|reference| {
-            output_value(&session.outputs, reference).and_then(Value::as_u64) == Some(0)
-        });
+        let verify_skipped = mutation
+            .verify
+            .skip_if_zero
+            .iter()
+            .any(|reference| output_reference_is_zero(&session.outputs, reference));
         let expected_memory =
             if let (Some(memory), Some((_, expected))) = (&mutation.memory, &memory_read) {
                 let mut patch_params = params.clone();
@@ -2573,6 +2583,24 @@ fn output_value<'a>(
         .get(&reference.field)
 }
 
+/// Checks if the referenced output value should be considered "zero" for
+/// skip-condition purposes. Treats numeric 0 and bool `false` as zero;
+/// missing values are treated as non-zero (don't skip).
+///
+/// `Value::Bool(false).as_u64()` returns `None` rather than `Some(0)`, so a
+/// direct `as_u64() == Some(0)` check fails for bool fields. This helper
+/// bridges that gap so `skipIfZero` works with `bool` parser fields.
+fn output_reference_is_zero(
+    outputs: &BTreeMap<String, Value>,
+    reference: &OutputReference,
+) -> bool {
+    match output_value(outputs, reference) {
+        Some(Value::Bool(false)) => true,
+        Some(value) => value.as_u64() == Some(0),
+        None => false,
+    }
+}
+
 fn output_condition_value<'a>(
     outputs: &'a BTreeMap<String, Value>,
     condition: &OutputCondition,
@@ -2593,7 +2621,7 @@ fn mutation_base_available(
     let zero_skipped = mutation
         .skip_if_zero
         .iter()
-        .any(|reference| output_value(outputs, reference).and_then(Value::as_u64) == Some(0));
+        .any(|reference| output_reference_is_zero(outputs, reference));
     let non_zero_skipped = mutation.skip_if_non_zero.iter().any(|reference| {
         output_value(outputs, reference)
             .and_then(Value::as_u64)
@@ -2604,7 +2632,7 @@ fn mutation_base_available(
         && mutation
             .skip_if_all_zero
             .iter()
-            .all(|reference| output_value(outputs, reference).and_then(Value::as_u64) == Some(0));
+            .all(|reference| output_reference_is_zero(outputs, reference));
     !(zero_skipped || non_zero_skipped || all_zero_skipped)
 }
 
@@ -2615,7 +2643,7 @@ fn direct_write_available(
     !mutation
         .write_skip_if_zero
         .iter()
-        .any(|reference| output_value(outputs, reference).and_then(Value::as_u64) == Some(0))
+        .any(|reference| output_reference_is_zero(outputs, reference))
 }
 
 fn memory_write_available(
@@ -4121,6 +4149,52 @@ mod tests {
         );
         let api = test_hid_api();
         let outputs = BTreeMap::from([("dpi".into(), serde_json::json!({"value": 0}))]);
+        let result = package.mutate(
+            api,
+            "test-path",
+            "test-set-dpi",
+            &Map::new(),
+            &outputs,
+            None,
+            None,
+            None,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not available on this device"));
+    }
+
+    /// `skipIfZero` must also trigger for bool `false` values, not just numeric 0.
+    /// `Value::Bool(false).as_u64()` returns `None` (not `Some(0)`), so a naive
+    /// `as_u64() == Some(0)` check fails. This test guards the
+    /// `output_reference_is_zero` helper that bridges that gap.
+    #[test]
+    fn mutate_rejects_when_skip_if_zero_matches_bool_false() {
+        let workflows = r#"{
+            "schemaVersion": 1,
+            "workflows": {},
+            "mutations": {
+                "test-set-dpi": {
+                    "transport": "feature",
+                    "inputs": {},
+                    "skipIfZero": [{"output": "receiverIdle", "field": "mouseOnline"}],
+                    "read": {"command": "read-dpi", "parser": "dpi", "params": {}},
+                    "writeCommand": "write-dpi",
+                    "preserveUnknown": false,
+                    "verify": {"command": "verify-dpi", "parser": "dpi", "params": {}, "assertions": []}
+                }
+            }
+        }"#;
+        let package = build_test_package(
+            r#"{"schemaVersion": 1, "commands": {}}"#,
+            r#"{"schemaVersion": 1, "parsers": {}}"#,
+            r#"{"schemaVersion": 1, "transports": {}}"#,
+            workflows,
+        );
+        let api = test_hid_api();
+        let outputs = BTreeMap::from([(
+            "receiverIdle".into(),
+            serde_json::json!({"mouseOnline": false}),
+        )]);
         let result = package.mutate(
             api,
             "test-path",
