@@ -202,4 +202,23 @@ describe('Mira shell', () => {
     expect(screen.getByText('还没找到支持的鼠标呢')).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: '设置' })).not.toBeInTheDocument();
   });
+  it('applies demo mutations locally without calling device_mutate or showing errors', async () => {
+    render(<App />);
+    fireEvent.click(screen.getByText('查看演示'));
+    fireEvent.click(screen.getByRole('tab', { name: '回报率' }));
+
+    fireEvent.click(screen.getByRole('button', { name: '当前回报率：1000 Hz，点击编辑' }));
+    const dialog = await screen.findByRole('dialog', { name: '设置回报率' });
+    fireEvent.change(within(dialog).getByLabelText('回报率'), { target: { value: '2000' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: '应用' }));
+
+    // 演示模式下不应调用真实 Tauri device_mutate
+    expect(invokeMock).not.toHaveBeenCalledWith('device_mutate', expect.anything());
+    // 不应弹出错误通知
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    // 应该看到「搞定啦」成功通知
+    expect(await screen.findByText('搞定啦')).toBeInTheDocument();
+    // UI 反映新的回报率
+    expect(screen.getByRole('button', { name: '当前回报率：2000 Hz，点击编辑' })).toBeInTheDocument();
+  });
 });
