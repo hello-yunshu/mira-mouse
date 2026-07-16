@@ -26,7 +26,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with: { node-version: 22, cache: npm }
       - run: npm ci
       - run: npm run lint && npm run typecheck && npm test && npm run build
@@ -97,7 +97,7 @@ jobs:
       tag: ${{ steps.rill.outputs.tag }}
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with: { node-version: 22 }
       - name: Resolve and verify latest signed Rill stable release
         id: rill
@@ -146,7 +146,7 @@ jobs:
           repository: hello-yunshu/rill-ml
           ref: ${{ needs.rill-release.outputs.tag }}
           path: RillML
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with: { node-version: 22, cache: npm }
       - run: npm ci
       - name: Install host libraries (Linux)
