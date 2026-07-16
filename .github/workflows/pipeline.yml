@@ -130,7 +130,6 @@ jobs:
           repository: hello-yunshu/rill-ml
           ref: v0.7.1
           path: RillML
-      - run: ln -sfn "$GITHUB_WORKSPACE/RillML" "$GITHUB_WORKSPACE/../RillML"
       - uses: actions/setup-node@v6
         with: { node-version: 22, cache: npm }
       - run: npm ci
@@ -262,7 +261,6 @@ jobs:
           repository: hello-yunshu/rill-ml
           ref: v0.7.1
           path: RillML
-      - run: ln -sfn "$GITHUB_WORKSPACE/RillML" "$GITHUB_WORKSPACE/../RillML"
       - uses: actions/download-artifact@v8
         with:
           path: release-assets
