@@ -39,6 +39,15 @@
   --glass-shadow: 0 10px 34px rgb(47 39 60 / 13%), inset 0 1px 0 rgb(255 255 255 / 32%);
   --floating-glass-blur: var(--glass-blur);
   --floating-glass-shadow: var(--glass-shadow), 0 20px 52px rgb(42 35 52 / 20%);
+  /* 弹窗统一设计 token */
+  --modal-radius-sm: 14px;            /* popover / tooltip / notification */
+  --modal-radius-md: 16px;            /* edit-modal 中型弹窗 */
+  --modal-radius-lg: 20px;            /* device-details / battery-usage 大型弹窗 */
+  --modal-padding: 13px;              /* 模态弹窗统一内边距 */
+  --modal-backdrop-padding: 48px 16px 18px;  /* 模态遮罩统一内边距 */
+  --modal-close-size: 28px;           /* 模态关闭按钮统一尺寸 */
+  --modal-close-icon: 15px;           /* 模态关闭图标统一尺寸 */
+  --z-modal: 30;                      /* 模态遮罩统一层级 */
   --bg-blob-1: oklch(78% .06 290);
   --bg-blob-2: oklch(80% .05 200);
   --bg-blob-3: oklch(75% .04 350);
@@ -394,7 +403,7 @@ option {
   --floating-glass-blur: none;
 }
 .platform-macos:not(.web-preview) {
-  --floating-glass-bg: rgb(247 244 250 / 72%);
+  --floating-glass-bg: rgb(247 244 250 / 45%);
 }
 .platform-fallback:not(.web-preview) {
   --window-tint: rgb(247 245 248 / 96%);
@@ -409,7 +418,7 @@ option {
   --floating-glass-blur: none;
 }
 :root[data-theme="dark"] .platform-macos:not(.web-preview) {
-  --floating-glass-bg: rgb(35 32 43 / 70%);
+  --floating-glass-bg: rgb(35 32 43 / 50%);
 }
 :root[data-theme="dark"] .platform-fallback:not(.web-preview) {
   --window-tint: rgb(29 26 34 / 96%);
@@ -425,7 +434,7 @@ option {
     --floating-glass-blur: none;
   }
   :root[data-theme="system"] .platform-macos:not(.web-preview) {
-    --floating-glass-bg: rgb(35 32 43 / 70%);
+    --floating-glass-bg: rgb(35 32 43 / 50%);
   }
   :root[data-theme="system"] .platform-fallback:not(.web-preview) {
     --window-tint: rgb(29 26 34 / 96%);
@@ -552,21 +561,21 @@ body:has(.platform-fallback:not(.web-preview)) {
   flex-direction: column;
   gap: 4px;
   border: 1px solid var(--floating-glass-border);
-  border-radius: 13px;
+  border-radius: var(--modal-radius-sm);
   background: var(--floating-glass-bg);
   -webkit-backdrop-filter: var(--floating-glass-blur);
   backdrop-filter: var(--floating-glass-blur);
   box-shadow: var(--floating-glass-shadow);
   opacity: 0;
   visibility: hidden;
-  transform: translateY(-3px);
-  transition: opacity .14s ease, transform .14s ease, visibility 0s linear .14s;
+  margin-top: -3px;
+  transition: opacity .14s ease, margin-top .14s ease, visibility 0s linear .14s;
   pointer-events: none;
 }
 .device-switcher.open .device-switcher-popover {
   opacity: 1;
   visibility: visible;
-  transform: none;
+  margin-top: 0;
   transition-delay: 0s;
   pointer-events: auto;
 }
@@ -679,21 +688,21 @@ body:has(.platform-fallback:not(.web-preview)) {
   width: 238px;
   padding: 10px;
   border: 1px solid var(--floating-glass-border);
-  border-radius: 16px;
+  border-radius: var(--modal-radius-sm);
   background: var(--glass-popup);
   -webkit-backdrop-filter: var(--floating-glass-blur);
   backdrop-filter: var(--floating-glass-blur);
   box-shadow: var(--floating-glass-shadow);
   opacity: 0;
   visibility: hidden;
-  transform: translateY(-3px);
-  transition: opacity .14s ease, transform .14s ease, visibility 0s linear .14s;
+  margin-top: -3px;
+  transition: opacity .14s ease, margin-top .14s ease, visibility 0s linear .14s;
   pointer-events: none;
 }
 .battery-control.open .battery-popover {
   opacity: 1;
   visibility: visible;
-  transform: none;
+  margin-top: 0;
   transition-delay: 0s;
   pointer-events: auto;
 }
@@ -800,11 +809,11 @@ body:has(.platform-fallback:not(.web-preview)) {
   max-width: min(360px, 50vw, calc(100% - 32px));
   padding: 12px 12px 12px 14px;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
   border: 1px solid var(--floating-glass-border);
-  border-radius: 14px;
+  border-radius: var(--modal-radius-sm);
   background: var(--floating-glass-bg);
   -webkit-backdrop-filter: var(--floating-glass-blur);
   backdrop-filter: var(--floating-glass-blur);
@@ -1276,15 +1285,6 @@ body:has(.platform-fallback:not(.web-preview)) {
   border-color: transparent;
   box-shadow: none;
 }
-.control-stage.has-preview-message {
-  grid-template-rows: var(--control-stage-badge-row) minmax(0, 1fr);
-  row-gap: 2px;
-  place-items: stretch center;
-}
-.control-stage.has-preview-message .control-stage-layers {
-  grid-row: 2;
-  align-self: stretch;
-}
 .control-reading {
   width: 100%;
   height: 100%;
@@ -1430,11 +1430,12 @@ body:has(.platform-fallback:not(.web-preview)) {
 .dpi-stage-value:hover:not(:disabled) { color: inherit; background: var(--control-hover-bg); }
 .dpi-stage-value:disabled { opacity: .48; }
 .preview-message {
-  grid-row: 1;
-  position: relative;
-  justify-self: center;
-  align-self: start;
-  margin: 0;
+  position: absolute;
+  top: 6px;
+  left: 0;
+  right: 0;
+  margin: 0 auto;
+  width: fit-content;
   padding: 5px 11px 5px 10px;
   display: inline-flex;
   align-items: center;
@@ -1453,7 +1454,7 @@ body:has(.platform-fallback:not(.web-preview)) {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  z-index: 2;
+  z-index: 5;
   pointer-events: none;
 }
 .preview-message::before {
@@ -1679,7 +1680,34 @@ body:has(.platform-fallback:not(.web-preview)) {
   background: var(--surface-group-bg);
   border: 1px solid var(--surface-group-border);
 }
-.lighting-group-title { margin: 0 0 6px; font-size: 11px; font-weight: 650; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+.lighting-group-title {
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  opacity: 1;
+  transition: opacity 120ms var(--motion-ease-out);
+}
+/* 标题淡入淡出状态机：与子块（lighting-row-slot）的 mira-control-secondary-in
+   动画时序对齐。子块为 180ms 时长 + 165~210ms 延迟（末尾约 345~390ms）。
+   - out：切换区域时，在子块淡出的中间点淡出（90ms ≈ 子块时长的一半）。
+   - waiting：内容已切换但保持不可见，等子块淡入动画走到末尾阶段。
+   - in：220ms 开始淡入（子块淡入末尾阶段），120ms 时长，340ms 完成，
+     早于子块完成时间，让标题在子块淡入播放完前就出现。 */
+.lighting-group-title[data-title-phase="out"] {
+  opacity: 0;
+  transition: opacity 90ms var(--motion-ease-standard);
+}
+.lighting-group-title[data-title-phase="waiting"] {
+  opacity: 0;
+  transition: none;
+}
+.lighting-group-title[data-title-phase="in"] {
+  opacity: 1;
+  transition: opacity 120ms var(--motion-ease-out);
+}
 .lighting-rows {
   flex: 1;
   display: grid;
@@ -1752,12 +1780,14 @@ body:has(.platform-fallback:not(.web-preview)) {
 /* Compact edit popovers use the same glass treatment as the battery popover. */
 .edit-modal-backdrop {
   position: fixed;
-  z-index: 30;
+  z-index: var(--z-modal);
   inset: 0;
-  padding: 48px 16px 18px;
+  padding: var(--modal-backdrop-padding);
   display: grid;
   place-items: center;
-  background: var(--scrim-bg);
+  background: var(--modal-backdrop-bg);
+  -webkit-backdrop-filter: var(--modal-backdrop-blur);
+  backdrop-filter: var(--modal-backdrop-blur);
 }
 .edit-modal {
   width: min(304px, 50vw, calc(100vw - 32px));
@@ -1766,8 +1796,8 @@ body:has(.platform-fallback:not(.web-preview)) {
   display: flex;
   flex-direction: column;
   border: 1px solid var(--floating-glass-border);
-  border-radius: 16px;
-  padding: 12px;
+  border-radius: var(--modal-radius-md);
+  padding: var(--modal-padding);
   background: var(--floating-glass-bg);
   -webkit-backdrop-filter: var(--floating-glass-blur);
   backdrop-filter: var(--floating-glass-blur);
@@ -1958,9 +1988,9 @@ body:has(.platform-fallback:not(.web-preview)) {
 .details-button svg { width: 14px; height: 14px; }
 .details-backdrop {
   position: fixed;
-  z-index: 20;
+  z-index: var(--z-modal);
   inset: 0;
-  padding: 48px 16px 18px;
+  padding: var(--modal-backdrop-padding);
   display: grid;
   place-items: center;
   background: var(--modal-backdrop-bg);
@@ -1973,27 +2003,18 @@ body:has(.platform-fallback:not(.web-preview)) {
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  border: 1px solid var(--surface-border);
-  border-radius: 22px;
-  padding: 15px;
-  background: var(--surface-bg-strong);
-  -webkit-backdrop-filter: none;
-  backdrop-filter: none;
-  box-shadow: var(--floating-glass-shadow);
-}
-/* native path: device-details 用 floating-glass，由平台分支控制 opacity/blur
-   macOS 72% + blur（毛玻璃）；Windows 92% / fallback 96% + blur none（实色） */
-.platform-macos:not(.web-preview) .device-details,
-.platform-windows:not(.web-preview) .device-details,
-.platform-fallback:not(.web-preview) .device-details {
+  border: 1px solid var(--floating-glass-border);
+  border-radius: var(--modal-radius-lg);
+  padding: var(--modal-padding);
   background: var(--floating-glass-bg);
   -webkit-backdrop-filter: var(--floating-glass-blur);
   backdrop-filter: var(--floating-glass-blur);
+  box-shadow: var(--floating-glass-shadow);
 }
 .device-details > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.device-details > header h2 { margin-top: 2px; font-size: 18px; }
-.device-details .icon-button { display: grid; place-items: center; }
-.device-details .icon-button svg { width: 16px; height: 16px; }
+.device-details > header h2 { margin-top: 2px; font-size: 18px; letter-spacing: -.01em; }
+.device-details .icon-button { display: grid; place-items: center; border-radius: 50%; }
+.device-details .icon-button svg { width: var(--modal-close-icon); height: var(--modal-close-icon); }
 .details-note { margin: 9px 0 11px; color: var(--muted); font-size: 10px; line-height: 1.45; }
 .capability-groups { min-height: 0; overflow-y: auto; overscroll-behavior: contain; columns: 2; column-gap: 8px; padding-right: 3px; }
 .capability-group { min-width: 0; break-inside: avoid; margin: 0 0 8px; padding: 10px; border-radius: 12px; background: var(--surface-group-bg); border: 1px solid var(--surface-group-border); }
@@ -2041,7 +2062,7 @@ body:has(.platform-fallback:not(.web-preview)) {
   height: 13px;
 }
 h2 { margin: 2px 0 0; letter-spacing: -.02em; font-size: 16px; }
-.icon-button { width: 28px; height: 28px; padding: 0; color: var(--muted); background: transparent; border: 1px solid var(--control-secondary-border); font-size: 12px; }
+.icon-button { width: var(--modal-close-size); height: var(--modal-close-size); padding: 0; color: var(--muted); background: transparent; border: 1px solid var(--control-secondary-border); font-size: 12px; }
 .icon-button:hover:not(:disabled) { color: inherit; background: var(--control-hover-bg); }
 
 /* Tooltip keeps its own glass token because it renders through a React Portal. */
@@ -2051,7 +2072,7 @@ h2 { margin: 2px 0 0; letter-spacing: -.02em; font-size: 16px; }
   z-index: 30;
   width: min(240px, 50vw, calc(100vw - 32px));
   padding: 12px;
-  border-radius: 16px;
+  border-radius: var(--modal-radius-sm);
   border: 1px solid var(--floating-glass-border);
   overflow: hidden;
   background: var(--tooltip-glass-bg);
@@ -2063,13 +2084,13 @@ h2 { margin: 2px 0 0; letter-spacing: -.02em; font-size: 16px; }
   backdrop-filter: var(--tooltip-glass-blur);
   box-shadow: var(--floating-glass-shadow);
   opacity: 0;
-  transform: translateY(4px);
-  transition: opacity .12s ease, transform .12s ease;
+  margin-top: 4px;
+  transition: opacity .12s ease, margin-top .12s ease;
   pointer-events: none;
 }
 .tooltip-content[data-show="true"] {
   opacity: 1;
-  transform: none;
+  margin-top: 0;
 }
 :root[data-theme="dark"] .tooltip-content {
   background: var(--tooltip-glass-bg);
@@ -2498,9 +2519,9 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
 /* 模态遮罩 */
 .battery-usage-modal-overlay {
   position: fixed;
-  z-index: 40;
+  z-index: var(--z-modal);
   inset: 0;
-  padding: 36px 16px 18px;
+  padding: var(--modal-backdrop-padding);
   display: grid;
   place-items: center;
   background: var(--modal-backdrop-bg);
@@ -2516,8 +2537,8 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   display: flex;
   flex-direction: column;
   border: 1px solid var(--floating-glass-border);
-  border-radius: 20px;
-  padding: 13px;
+  border-radius: var(--modal-radius-lg);
+  padding: var(--modal-padding);
   background: var(--glass-popup);
   -webkit-backdrop-filter: var(--floating-glass-blur);
   backdrop-filter: var(--floating-glass-blur);
@@ -2553,8 +2574,8 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
 }
 .battery-usage-close-icon {
   flex-shrink: 0;
-  width: 28px;
-  height: 28px;
+  width: var(--modal-close-size);
+  height: var(--modal-close-size);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -2571,7 +2592,7 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   color: inherit;
   background: var(--control-hover-bg);
 }
-.battery-usage-close-icon svg { width: 15px; height: 15px; display: block; }
+.battery-usage-close-icon svg { width: var(--modal-close-icon); height: var(--modal-close-icon); display: block; }
 
 /* 控制区：时间范围切换（设备切换已移至状态条） */
 .battery-usage-controls {
@@ -2766,11 +2787,17 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   -webkit-backdrop-filter: var(--floating-glass-blur);
   backdrop-filter: var(--floating-glass-blur);
   box-shadow: var(--floating-glass-shadow);
-  animation: battery-menu-in .14s ease;
+  animation: battery-menu-in-margin .14s ease;
 }
 @keyframes battery-menu-in {
   from { opacity: 0; transform: translateY(-4px); }
   to { opacity: 1; transform: none; }
+}
+/* 设备切换菜单入场（margin 版）：仅 opacity + margin-top，保留 4px 下拉位移，
+   避免 transform 创建 compositing layer 导致 backdrop-filter 失效。 */
+@keyframes battery-menu-in-margin {
+  from { opacity: 0; margin-top: -4px; }
+  to { opacity: 1; margin-top: 0; }
 }
 .battery-device-menu-item {
   position: relative;
@@ -3081,7 +3108,7 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   position: absolute;
   z-index: 2;
   top: 22px;
-  left: clamp(92px, var(--tooltip-x), calc(100% - 92px));
+  left: clamp(0px, calc(var(--tooltip-x) - 92px), calc(100% - 184px));
   width: min(184px, calc(100% - 18px));
   margin: 0;
   padding: 7px 9px;
@@ -3091,7 +3118,6 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   -webkit-backdrop-filter: var(--floating-glass-blur);
   backdrop-filter: var(--floating-glass-blur);
   box-shadow: var(--floating-glass-shadow);
-  transform: translateX(-50%);
   pointer-events: none;
   font-size: 10px;
   line-height: 1.25;
@@ -3140,8 +3166,10 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   position: absolute;
   z-index: 20;
   bottom: calc(100% + 5px);
-  left: 50%;
-  transform: translateX(-50%);
+  left: 0;
+  right: 0;
+  margin: 0 auto;
+  width: fit-content;
   min-width: 200px;
   max-width: 290px;
   padding: 6px 9px;
@@ -3157,11 +3185,17 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   color: var(--text);
   white-space: normal;
   pointer-events: none;
-  animation: overflow-tip-in .12s ease;
+  animation: overflow-tip-in-margin .12s ease;
 }
 @keyframes overflow-tip-in {
   from { opacity: 0; transform: translateX(-50%) translateY(2px); }
   to { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+/* 溢出提示入场（margin 版）：仅 opacity + margin-bottom，保留 2px 位移，
+   避免 transform 创建 compositing layer 导致 backdrop-filter 失效。 */
+@keyframes overflow-tip-in-margin {
+  from { opacity: 0; margin-bottom: -2px; }
+  to { opacity: 1; margin-bottom: 0; }
 }
 
 /* 洞察区说明头：标题 + 原理小字，贴在它解释的卡片旁 */
@@ -3368,14 +3402,35 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
+/* 模态弹窗专用入场动画：仅用 opacity，不含 transform，避免 transform
+   创建 compositing layer 导致 backdrop-filter 毛玻璃效果失效。 */
+@keyframes mira-modal-enter {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
 @keyframes mira-notification-enter {
   from { opacity: 0; transform: translateY(-7px) scale(.985); }
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
+/* 通知入场（margin 版）：仅 opacity + margin-top，保留 7px 下滑位移，
+   避免 transform 创建 compositing layer 导致 backdrop-filter 失效。 */
+@keyframes mira-notification-enter-margin {
+  from { opacity: 0; margin-top: -7px; }
+  to { opacity: 1; margin-top: 0; }
+}
+
 @keyframes mira-chart-tooltip-enter {
   from { opacity: 0; transform: translateX(-50%) translateY(5px) scale(.985); }
   to { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+}
+
+/* 图表 tooltip 入场（margin 版）：仅 opacity + margin-top，保留 5px 位移，
+   避免 transform 创建 compositing layer 导致 backdrop-filter 失效。 */
+@keyframes mira-chart-tooltip-enter-margin {
+  from { opacity: 0; margin-top: 5px; }
+  to { opacity: 1; margin-top: 0; }
 }
 
 @keyframes mira-icon-enter {
@@ -3743,18 +3798,18 @@ input[type="color"] {
 .device-details,
 .edit-modal,
 .battery-usage-modal {
-  animation: mira-float-enter var(--motion-slow) var(--motion-ease-out) backwards;
+  animation: mira-modal-enter var(--motion-slow) var(--motion-ease-out) backwards;
   transform-origin: 50% 42%;
 }
 .app-notification {
-  animation: mira-notification-enter var(--motion-slow) var(--motion-ease-out) backwards;
+  animation: mira-notification-enter-margin var(--motion-slow) var(--motion-ease-out) backwards;
 }
 .device-switcher-popover,
 .battery-popover,
 .tooltip-content {
   transition:
     opacity var(--motion-fast) ease-out,
-    transform var(--motion-base) var(--motion-ease-out),
+    margin-top var(--motion-base) var(--motion-ease-out),
     visibility 0s linear var(--motion-base),
     box-shadow var(--motion-base) var(--motion-ease-out);
 }
@@ -3812,7 +3867,7 @@ input[type="color"] {
   filter: saturate(1.08) brightness(1.03);
 }
 .battery-chart-tooltip {
-  animation: mira-chart-tooltip-enter var(--motion-fast) var(--motion-ease-out) backwards;
+  animation: mira-chart-tooltip-enter-margin var(--motion-fast) var(--motion-ease-out) backwards;
   transform-origin: 50% 100%;
 }
 .battery-insight-card {
