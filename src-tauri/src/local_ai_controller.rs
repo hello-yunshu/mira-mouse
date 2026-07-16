@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! 常驻式本地 AI Runtime 控制器。
 //!
-//! 总开关 `local_ai_analysis_enabled` 翻转到 on 时调用 `start()` 启动通用 rill-runtime
+//! 总开关 `local_ai_analysis_enabled` 翻转到 on 时调用 `start()` 启动当前平台的 rill-runtime
 //! 子进程并完成握手;翻转到 off 时调用 `stop()` 优雅退出。`predict()` 复用已建立的
 //! stdin/stdout 通道,避免每次预测的进程启动开销。任何 IO/解析错误或子进程意外退出
 //! 都标记 `Failed`,下次 `predict()` 在冷却窗口外自动重启。
@@ -128,20 +128,30 @@ impl LocalAiController {
             guard.state = ControllerState::Failed {
                 last_attempt: Instant::now(),
             };
-            self.emit_crash_event(CrashEvent::Failed {
-                at: Instant::now(),
-                reason: "runtime or model pack not available".into(),
-            });
+            let crash_tx = guard.crash_tx.clone();
+            drop(guard);
+            send_crash_event(
+                crash_tx,
+                CrashEvent::Failed {
+                    at: Instant::now(),
+                    reason: "runtime or model pack not available".into(),
+                },
+            );
             return Err("local AI runtime or model pack not available".to_string());
         };
         if let Err(error) = spawn_and_handshake(&installation, &mut guard) {
             guard.state = ControllerState::Failed {
                 last_attempt: Instant::now(),
             };
-            self.emit_crash_event(CrashEvent::Failed {
-                at: Instant::now(),
-                reason: error.clone(),
-            });
+            let crash_tx = guard.crash_tx.clone();
+            drop(guard);
+            send_crash_event(
+                crash_tx,
+                CrashEvent::Failed {
+                    at: Instant::now(),
+                    reason: error.clone(),
+                },
+            );
             return Err(error);
         }
         guard.state = ControllerState::Running;
@@ -329,6 +339,12 @@ impl LocalAiController {
 
     fn lock(&self) -> std::sync::MutexGuard<'_, ControllerInner> {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+fn send_crash_event(crash_tx: Option<Sender<CrashEvent>>, event: CrashEvent) {
+    if let Some(tx) = crash_tx {
+        let _ = tx.send(event);
     }
 }
 

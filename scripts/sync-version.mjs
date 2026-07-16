@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //
 // 将 [workspace.package].version（Cargo.toml 的单一真源）同步到仍需硬编码
-// 版本号的三处文件：
-//   1. handlers/mira-battery-handler/Cargo.toml（被 workspace exclude，无法用
-//      version.workspace = true）
-//   2. CITATION.cff（GitHub 学术引用元数据，YAML）
-//   3. ROADMAP.md（文档中的「当前版本」标注）
+// App 版本号的两处文件：
+//   1. CITATION.cff（GitHub 学术引用元数据，YAML）
+//   2. ROADMAP.md（文档中的「当前版本」标注）
+//
+// Mira 本地 AI handler 与模型有独立发布周期，不能在 App 版本同步时改动。
 //
 // 用法：node scripts/sync-version.mjs
 // 若所有文件已是最新则不做任何写入，退出码 0。
@@ -52,17 +52,7 @@ console.log(`syncing app version ${version} …`);
 
 let changed = false;
 
-// 1. handlers/mira-battery-handler/Cargo.toml —— [package] 块下的 version = "..."
-//    该文件被 workspace exclude，无法使用 version.workspace = true。
-changed |= await syncFile(
-  'handlers/mira-battery-handler/Cargo.toml',
-  /^(\[package\][\s\S]*?version\s*=\s*")[^"]+(")/m,
-  `$1${version}$2`,
-  'battery-handler Cargo.toml',
-  version,
-);
-
-// 2. CITATION.cff —— YAML 顶层 version: x.y.z（无引号）
+// 1. CITATION.cff —— YAML 顶层 version: x.y.z（无引号）
 changed |= await syncFile(
   'CITATION.cff',
   /^(version:\s*)\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?/m,
@@ -71,7 +61,7 @@ changed |= await syncFile(
   version,
 );
 
-// 3. ROADMAP.md —— **版本 x.y.z**
+// 2. ROADMAP.md —— **版本 x.y.z**
 changed |= await syncFile(
   'ROADMAP.md',
   /(\*\*版本\s*)\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?(\s*\*\*)/,

@@ -340,8 +340,8 @@
       "autoMac": "Menu bar background"
     },
     "receiverBattery": {
-      "label": "Include receiver battery in title",
-      "hint": "Always show all device batteries in the tray menu"
+      "label": "Show receiver battery in title",
+      "hint": "Requires “Show battery percentage”; the tray menu always shows all batteries"
     },
     "trayConnection": {
       "label": "Show connection in menu",
