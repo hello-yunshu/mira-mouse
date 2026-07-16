@@ -1757,14 +1757,14 @@ const RILL_PRODUCTION_PUBLIC_KEY_HEX: &str =
 // while all new release-index and model assets are signed by this key.
 const RILL_V2_PRODUCTION_KEY_ID: &str = "mira-rill-2026-002";
 const RILL_V2_PRODUCTION_PUBLIC_KEY_HEX: &str =
-    "1b4b25b7b42a998a25142522626a4c956a0924b0775affb3695b914595dbe73c";
+    "ae4633988fd9e02a824bb9072f1dcf470a0b1d74bbc7905aaea00a62139e1479";
 
 // Handler packages have an independent trust root from model packs and the
 // release index, so compromise or rotation of one publisher does not grant
 // authority over the other artifact class.
 const RILL_HANDLER_KEY_ID: &str = "mira-handler-2026-001";
 const RILL_HANDLER_PUBLIC_KEY_HEX: &str =
-    "1c1bfb235ec87c7cbfdddff6c8d63e5b22c28e6636beb50edc0c4603ccb7ed59";
+    "cefbe96db58196e4b3a8455f427ca75efaedacb68792ae82d7d06dd8c86f193e";
 
 // Test packages are accepted only by debug/test builds. Release builds trust only
 // the production publisher key above.
