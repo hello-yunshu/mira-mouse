@@ -809,7 +809,7 @@ body:has(.platform-fallback:not(.web-preview)) {
   max-width: min(360px, 50vw, calc(100% - 32px));
   padding: 12px 12px 12px 14px;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
   border: 1px solid var(--floating-glass-border);
