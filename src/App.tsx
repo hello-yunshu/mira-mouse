@@ -1323,9 +1323,44 @@ function ZoneRenderer({ capability, device, writeBusy, runMutation }: {
   const [activeZoneId, setActiveZoneId] = useState<string>('');
   const [editingColorZoneId, setEditingColorZoneId] = useState<string>();
 
-  if (zones.length === 0) return null;
+  // 灯光区域标题（鼠标灯光/接收器灯光）的淡入淡出状态机。
+  // Hooks 必须在条件返回之前调用，所以 activeZone 在此安全派生。
+  const activeZone = zones.length > 0 ? (zones.find((z) => z.id === activeZoneId) ?? zones[0]) : undefined;
+  const currentLabel = activeZone ? resolveLabelKey(activeZone.labelKey, device.pluginId) : '';
+  const [displayedLabel, setDisplayedLabel] = useState(currentLabel);
+  const [titlePhase, setTitlePhase] = useState<'in' | 'out' | 'waiting'>('waiting');
+  const previousLabelRef = useRef<string | undefined>(undefined);
 
-  const activeZone = zones.find((z) => z.id === activeZoneId) ?? zones[0];
+  useEffect(() => {
+    const prev = previousLabelRef.current;
+    previousLabelRef.current = currentLabel;
+    if (prev === undefined || prev === currentLabel) {
+      // 初次挂载（含 StrictMode 重复挂载）：在子块淡入动画的末尾阶段淡入标题
+      //（220ms 开始，340ms 完成，早于子块完成时间 345~390ms，让标题在子块
+      // 淡入播放完前就出现）。StrictMode 下 useEffect 执行两次，第一次会把
+      // previousLabelRef 设为 currentLabel 并被清理掉定时器，第二次 prev ===
+      // currentLabel 也走此分支，保证定时器被重新建立。
+      setDisplayedLabel(currentLabel);
+      setTitlePhase('waiting');
+      const inTimer = window.setTimeout(() => setTitlePhase('in'), 220);
+      return () => window.clearTimeout(inTimer);
+    }
+    // 切换区域：先在子块淡出的中间点淡出（90ms ≈ 子块淡入时长 180ms 的一半），
+    // 然后在子块淡入动画的末尾阶段（220ms）淡入新标题，340ms 完成。
+    setTitlePhase('out');
+    const switchTimer = window.setTimeout(() => {
+      setDisplayedLabel(currentLabel);
+      setTitlePhase('waiting');
+    }, 90);
+    const inTimer = window.setTimeout(() => setTitlePhase('in'), 220);
+    return () => {
+      window.clearTimeout(switchTimer);
+      window.clearTimeout(inTimer);
+    };
+  }, [currentLabel]);
+
+  if (zones.length === 0 || !activeZone) return null;
+
   const activeZoneIndex = Math.max(zones.findIndex((zone) => zone.id === activeZone.id), 0);
   const multipleZones = zones.length > 1;
 
@@ -1394,7 +1429,7 @@ function ZoneRenderer({ capability, device, writeBusy, runMutation }: {
       />
       <div className="lighting-sections" aria-label={i18n.t('dashboard.lightingGroups')}>
         <div className={`lighting-group lighting-group-${activeZone.id}${compactDetailGrid ? ' is-compact' : ''}`}>
-          <p className="lighting-group-title">{resolveLabelKey(activeZone.labelKey, device.pluginId)}</p>
+          <p className="lighting-group-title" data-title-phase={titlePhase}>{displayedLabel}</p>
           <div
             className={`lighting-rows${compactDetailGrid ? ' is-compact' : ''}`}
             style={{ gridTemplateColumns: `repeat(${Math.max(visibleFields.length, 1)}, minmax(0, 1fr))` }}
