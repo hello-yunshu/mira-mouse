@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // 插件适配层：声明式 capability metadata 解析纯函数。
 // 此模块不含任何插件特定的字符串常量，所有插件知识均从 capability metadata 声明字段读取。
-import type { DeviceState, PluginCapability, PluginField, PluginFieldOption, PluginMutation, PluginStageLayout, PluginStateMapping, PluginStatusDisplay, PluginSwitch, PluginVisibleWhen, PluginZone, RangeSpec } from './types';
+import type { DeviceState, DpiStage, PluginCapability, PluginField, PluginFieldOption, PluginMutation, PluginStageLayout, PluginStateMapping, PluginStatusDisplay, PluginSwitch, PluginVisibleWhen, PluginZone, RangeSpec } from './types';
 import { resolveLabelKey, resolveRuntimeText } from './i18n';
 
 export const MAX_CONTROL_GROUPS = 6;
@@ -49,6 +49,47 @@ export function readPath(device: DeviceState, path: string): unknown {
     }
   }
   return current;
+}
+
+/// 通用路径写入函数。语义与 readPath 对称：
+/// - 'state.X' → device.state.X
+/// - 'capabilities.Y.Z' → device.capabilities.Y.Z
+/// - 'batteries.0.percentage' → device.batteries[0].percentage
+/// - 其他前缀 → device 顶层属性
+/// 路径中任何中间节点为 null/非对象/数组越界时静默返回（不抛错）。
+export function writePath(device: DeviceState, path: string, value: unknown): void {
+  const parts = path.split('.');
+  if (parts.length === 0) return;
+  const head = parts[0];
+  let root: unknown;
+  if (head === 'state') root = device.state;
+  else if (head === 'capabilities') root = device.capabilities;
+  else if (head === 'batteries') root = device.batteries;
+  else root = (device as unknown as Record<string, unknown>)[head];
+
+  let current: unknown = root;
+  for (let i = 1; i < parts.length - 1; i++) {
+    if (current == null) return;
+    const part = parts[i];
+    if (Array.isArray(current)) {
+      const idx = Number(part);
+      if (!Number.isInteger(idx)) return;
+      current = current[idx];
+    } else if (typeof current === 'object') {
+      current = (current as Record<string, unknown>)[part];
+    } else {
+      return;
+    }
+  }
+  const lastPart = parts[parts.length - 1];
+  if (current == null) return;
+  if (Array.isArray(current)) {
+    const idx = Number(lastPart);
+    if (!Number.isInteger(idx)) return;
+    current[idx] = value;
+  } else if (typeof current === 'object') {
+    (current as Record<string, unknown>)[lastPart] = value;
+  }
 }
 
 /**
@@ -287,6 +328,95 @@ export function resolveLightingRoles(capabilities: PluginCapability[], writableM
     }
   }
   return roles;
+}
+
+/// 演示模式 mutation 模拟器。
+/// 深拷贝 device，遍历 pluginCapabilities 找到匹配 mutation 的可写字段，
+/// 通过 field.source 写入新值，并利用 stateMapping 同步 state.* 与 capabilities.*
+/// 两侧镜像字段，确保 UI 后续读取任一端都看到一致的演示状态。
+/// stageLayout（DPI 分档）单独处理 active/value 的语义性写入。
+/// 未知 mutation 静默返回原状态（不抛错），符合「演示模式不必报错」原则。
+export function simulateDemoMutation(
+  device: DeviceState,
+  mutation: string,
+  params: Record<string, unknown>,
+): DeviceState {
+  const next: DeviceState = structuredClone(device);
+  const stateMapping = resolveStateMapping(next.pluginCapabilities);
+
+  // 反向索引：snapshot path → state field 名
+  const snapshotToStateField: Record<string, string> = {};
+  for (const [field, source] of Object.entries(stateMapping)) {
+    snapshotToStateField[source] = field;
+  }
+
+  /// 同时写入 state.* 与对应 snapshot 路径，保持两端一致。
+  const writeSynced = (path: string, value: unknown) => {
+    writePath(next, path, value);
+    if (path.startsWith('state.')) {
+      const field = path.slice('state.'.length);
+      const snapshotPath = stateMapping[field];
+      if (snapshotPath) writePath(next, snapshotPath, value);
+    } else {
+      // path 是 snapshot 路径（capabilities.* 或 batteries.* 等），
+      // 同步写入对应的 state 字段。
+      const stateField = snapshotToStateField[path];
+      if (stateField) next.state[stateField] = value;
+    }
+  };
+
+  for (const capability of next.pluginCapabilities) {
+    // 1) stageLayout（DPI 分档）的特殊语义写入
+    const layout = capability.metadata.stageLayout;
+    if (layout) {
+      const selectMutation = resolveMutation(layout.selectMutation, next.writableMutations);
+      const setMutation = resolveMutation(layout.setMutation, next.writableMutations);
+
+      if (selectMutation === mutation) {
+        const selectParam = layout.selectParam ?? 'value';
+        const stageNumber = Number(params[selectParam]);
+        const stages = readPath(next, layout.dotsSource) as DpiStage[] | undefined;
+        if (stages && Number.isInteger(stageNumber) && stageNumber >= 1 && stageNumber <= stages.length) {
+          stages.forEach((stage, i) => { stage.active = (i + 1) === stageNumber; });
+        }
+        continue;
+      }
+
+      if (setMutation === mutation) {
+        const stageParam = layout.stageParam ?? 'stage';
+        const valueParam = layout.valueParam ?? 'value';
+        const stageNumber = Number(params[stageParam]);
+        const newValue = Number(params[valueParam]);
+        const stages = readPath(next, layout.valueSource) as DpiStage[] | undefined;
+        if (stages && Number.isInteger(stageNumber) && stageNumber >= 1 && stageNumber <= stages.length) {
+          stages[stageNumber - 1].value = newValue;
+        }
+        continue;
+      }
+    }
+
+    // 2) 常规字段：从 zones[].fields 或 metadata.fields 收集
+    const fields: PluginField[] = [];
+    if (capability.control === 'LightingZone') {
+      for (const zone of (capability.metadata.zones ?? [])) {
+        fields.push(...zone.fields);
+      }
+    } else {
+      fields.push(...(capability.metadata.fields ?? []));
+    }
+
+    for (const field of fields) {
+      const fieldMutation = resolveMutation(field.mutation, next.writableMutations);
+      if (fieldMutation !== mutation) continue;
+      const paramKey = field.param ?? 'value';
+      const paramValue = params[paramKey];
+      if (paramValue === undefined) continue;
+      if (!field.source) continue;
+      writeSynced(field.source, paramValue);
+    }
+  }
+
+  return next;
 }
 
 export type { DeviceState };
