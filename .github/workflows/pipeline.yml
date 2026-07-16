@@ -411,7 +411,7 @@ jobs:
         run: |
           set -euo pipefail
           rustup toolchain install stable --profile minimal
-          RUNTIME_VERSION=$(jq -r '.packages[] | select(.name == "rill-runtime") | .version' Cargo.lock)
+          RUNTIME_VERSION=$(sed -n 's/^const RILL_RUNTIME_VERSION: &str = "\([^"]*\)";$/\1/p' xtask/src/main.rs)
           test -n "$RUNTIME_VERSION"
           node scripts/build-local-ai-release-index.mjs publish-assets "$RUNTIME_VERSION" "$VERSION" "$VERSION" "$TAG" local-ai-index-payload.json
           RUSTUP_TOOLCHAIN=stable cargo run --release --manifest-path RillML/crates/rill-runtime/Cargo.toml \
