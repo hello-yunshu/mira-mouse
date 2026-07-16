@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
 # Install on macOS
 
-The community DMG is published on the [GitHub Releases](https://github.com/hello-yunshu/mira-mouse/releases) page with the stable name `Mira_macOS_<version>_universal.dmg` (universal binary covering Apple silicon and Intel).
+The community DMG is published on the [GitHub Releases](https://github.com/hello-yunshu/mira-mouse/releases) page with the stable name `Mira_macOS_<version>_aarch64.dmg`. Mira for macOS supports Apple Silicon (ARM64) only; no Intel build is provided.
 
 ## Option A: Homebrew (recommended)
 
@@ -20,7 +20,7 @@ See [install-homebrew.md](install-homebrew.md) for details on the tap, the unsig
 
 ## Option B: Direct DMG download
 
-1. Download `Mira_macOS_<version>_universal.dmg` from the latest release.
+1. Download `Mira_macOS_<version>_aarch64.dmg` from the latest release.
 2. Verify the SHA-256 published next to the asset on the release page.
 3. Mount the DMG and drag `Mira.app` to `/Applications`.
 

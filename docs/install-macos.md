@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
 # 在 macOS 上安装
 
-社区 DMG 发布在 [GitHub Releases](https://github.com/hello-yunshu/mira-mouse/releases) 页面，文件名固定为 `Mira_macOS_<version>_universal.dmg`（universal 二进制，同时覆盖 Apple silicon 与 Intel）。
+社区 DMG 发布在 [GitHub Releases](https://github.com/hello-yunshu/mira-mouse/releases) 页面，文件名固定为 `Mira_macOS_<version>_aarch64.dmg`。Mira 的 macOS 版本仅支持 Apple Silicon（ARM64），不提供 Intel 构建。
 
 ## 方案 A：Homebrew（推荐）
 
@@ -20,7 +20,7 @@ brew upgrade --cask mira
 
 ## 方案 B：直接下载 DMG
 
-1. 从最新 release 下载 `Mira_macOS_<version>_universal.dmg`。
+1. 从最新 release 下载 `Mira_macOS_<version>_aarch64.dmg`。
 2. 校验 release 页面上资产旁公布的 SHA-256。
 3. 挂载 DMG，将 `Mira.app` 拖入 `/Applications`。
 

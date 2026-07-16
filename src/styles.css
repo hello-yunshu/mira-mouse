@@ -1048,10 +1048,242 @@ body:has(.platform-fallback:not(.web-preview)) {
   place-items: center;
   text-align: center;
 }
+.control-stage-layers {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+}
+.control-stage-content {
+  grid-area: 1 / 1;
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+}
+.shared-control-metric,
+.shared-control-context,
+.shared-control-surface {
+  --shared-geometry-duration: 0ms;
+  position: absolute;
+  top: 0;
+  left: 0;
+  opacity: 1;
+  will-change: transform, width, height;
+}
+.shared-control-metric[data-positioned="false"],
+.shared-control-context[data-positioned="false"],
+.shared-control-surface[data-positioned="false"],
+.shared-control-metric[data-visible="false"],
+.shared-control-context[data-visible="false"],
+.shared-control-surface[data-visible="false"],
+.shared-control-metric[data-repositioning="true"],
+.shared-control-context[data-repositioning="true"],
+.shared-control-surface[data-repositioning="true"] {
+  opacity: 0;
+}
+.shared-control-metric[data-geometry-ready="true"] {
+  --shared-geometry-duration: 340ms;
+}
+.shared-control-metric[data-geometry-ready="true"][data-sync="surface"] {
+  --shared-geometry-duration: 320ms;
+}
+.shared-control-surface[data-geometry-ready="true"] {
+  --shared-geometry-duration: 320ms;
+}
+.shared-control-context[data-geometry-ready="true"] {
+  --shared-geometry-duration: var(--context-companion-duration);
+}
+.shared-control-context {
+  --context-enter-delay: 120ms;
+  --context-motion-duration: 200ms;
+  --context-motion-offset: -5px;
+  --context-companion-duration: 320ms;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  transition:
+    opacity var(--context-motion-duration) cubic-bezier(.22, .55, .3, 1) var(--context-enter-delay),
+    transform var(--shared-geometry-duration) var(--motion-ease-standard),
+    width var(--shared-geometry-duration) var(--motion-ease-standard),
+    height var(--shared-geometry-duration) var(--motion-ease-standard);
+}
+.shared-control-context[data-sync="metric"] {
+  --context-enter-delay: 140ms;
+  --context-motion-offset: -5px;
+  --context-companion-duration: 340ms;
+}
+.shared-control-context[data-sync="surface"] {
+  --context-enter-delay: 120ms;
+  --context-motion-offset: -5px;
+  --context-companion-duration: 320ms;
+}
+.shared-control-context-content {
+  display: grid;
+  justify-items: center;
+  gap: 2px;
+  transform: translateY(0);
+  transition:
+    transform var(--context-motion-duration) cubic-bezier(.22, .55, .3, 1) var(--context-enter-delay);
+}
+.shared-control-context[data-visible="false"] {
+  transition-delay: 0ms;
+}
+.shared-control-context[data-visible="false"] .shared-control-context-content {
+  transform: translateY(var(--context-motion-offset));
+  transition-delay: 0ms;
+}
+.shared-control-context-content > svg {
+  width: 28px;
+  height: 28px;
+  color: var(--accent);
+}
+.shared-control-context-content > span {
+  color: var(--muted);
+  font-size: 12px;
+}
+.shared-control-metric {
+  --metric-enter-delay: 140ms;
+  --metric-visibility-duration: 200ms;
+  z-index: 3;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  transition:
+    opacity var(--metric-visibility-duration) cubic-bezier(.22, .55, .3, 1) var(--metric-enter-delay),
+    transform var(--shared-geometry-duration) cubic-bezier(.32, .72, 0, 1),
+    width var(--shared-geometry-duration) cubic-bezier(.32, .72, 0, 1),
+    height var(--shared-geometry-duration) cubic-bezier(.32, .72, 0, 1);
+}
+.shared-control-metric[data-sync="surface"] {
+  --metric-enter-delay: 120ms;
+}
+.shared-control-metric[data-visible="false"] {
+  transition-delay: 0ms;
+}
+.shared-control-metric-value {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: inline-grid;
+  place-items: center;
+  align-items: end;
+  perspective: 240px;
+  transform: translateY(0);
+  transition:
+    transform var(--metric-visibility-duration) cubic-bezier(.22, .55, .3, 1) var(--metric-enter-delay);
+}
+.shared-control-metric[data-visible="false"] .shared-control-metric-value {
+  transform: translateY(-5px);
+  transition-delay: 0ms;
+}
+.shared-control-metric-face {
+  grid-area: 1 / 1;
+  position: relative;
+  display: inline-grid;
+  justify-self: center;
+  align-self: center;
+  justify-items: center;
+  align-items: end;
+  opacity: 1;
+  transform: translateY(0) rotateX(0deg) scale(1);
+  transform-origin: 50% 55%;
+  backface-visibility: hidden;
+  will-change: opacity, transform;
+  transition:
+    opacity 190ms var(--motion-ease-standard),
+    transform 280ms cubic-bezier(.32, .72, 0, 1);
+}
+.shared-control-metric-face.is-next {
+  opacity: 0;
+  transform: translateY(0) rotateX(0deg) scale(1);
+}
+.shared-control-metric-value.is-transitioning[data-transition="crossfade"] .shared-control-metric-face.is-current {
+  opacity: 0;
+  transform: scale(.985);
+}
+.shared-control-metric-value.is-transitioning[data-transition="crossfade"] .shared-control-metric-face.is-next {
+  opacity: 1;
+  transform: translateY(0) rotateX(0deg) scale(1);
+}
+.shared-control-metric-value[data-transition="flip"] .shared-control-metric-face.is-next {
+  transform: translateY(-24%) rotateX(22deg) scale(.985);
+}
+.shared-control-metric-value.is-transitioning[data-transition="flip"] .shared-control-metric-face.is-current {
+  opacity: 0;
+  transform: translateY(24%) rotateX(-18deg) scale(.985);
+}
+.shared-control-metric-value.is-transitioning[data-transition="flip"] .shared-control-metric-face.is-next {
+  opacity: 1;
+  transform: translateY(0) rotateX(0deg) scale(1);
+}
+.shared-control-metric-text {
+  color: var(--text);
+  font-size: 28px;
+  line-height: .98;
+  letter-spacing: -.035em;
+  font-weight: 720;
+}
+.shared-control-metric-face[data-variant="dpi"] .shared-control-metric-text {
+  font-size: 36px;
+  letter-spacing: -.05em;
+}
+.shared-control-metric-face > em {
+  position: absolute;
+  left: 100%;
+  bottom: 4px;
+  margin-left: 5px;
+  padding-bottom: 3px;
+  color: var(--muted);
+  font-size: 13px;
+  font-style: normal;
+  font-weight: 650;
+  white-space: nowrap;
+}
+.shared-control-surface {
+  z-index: 0;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: var(--surface-group-bg);
+  pointer-events: none;
+  transition:
+    opacity var(--motion-fast) var(--motion-ease-standard),
+    transform var(--shared-geometry-duration) cubic-bezier(.32, .72, 0, 1),
+    width var(--shared-geometry-duration) cubic-bezier(.32, .72, 0, 1),
+    height var(--shared-geometry-duration) cubic-bezier(.32, .72, 0, 1),
+    border-color var(--motion-base) var(--motion-ease-standard),
+    border-radius var(--motion-base) var(--motion-ease-standard);
+}
+.shared-control-surface[data-kind="lighting"] {
+  border-color: var(--surface-group-border);
+}
+.control-stage.has-shared-metric :is(.primary-reading, .metric-reading-value) > * {
+  visibility: hidden;
+}
+.control-stage.has-shared-context .metric-reading-heading {
+  opacity: 0;
+  animation: none;
+}
+.control-stage.has-shared-surface .metric-reading > .capability-summary,
+.control-stage.has-shared-surface .lighting-group {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
 .control-stage.has-preview-message {
   grid-template-rows: var(--control-stage-badge-row) minmax(0, 1fr);
   row-gap: 2px;
   place-items: stretch center;
+}
+.control-stage.has-preview-message .control-stage-layers {
+  grid-row: 2;
+  align-self: stretch;
 }
 .control-reading {
   width: 100%;
@@ -1061,14 +1293,11 @@ body:has(.platform-fallback:not(.web-preview)) {
   justify-items: center;
   align-content: center;
 }
-.control-stage.has-preview-message .control-reading {
-  grid-row: 2;
-  align-self: stretch;
-}
+.control-stage.has-preview-message .control-reading { align-self: stretch; }
 .dpi-reading { grid-template-columns: 1fr; gap: 12px; }
 .primary-reading { display: inline-grid; position: relative; }
 .primary-reading strong { font-size: 36px; line-height: .98; letter-spacing: -.05em; font-weight: 720; }
-.primary-reading em { position: absolute; left: 100%; bottom: 4px; margin-left: -6px; color: var(--muted); font-size: 13px; font-style: normal; font-weight: 650; padding-bottom: 4px; white-space: nowrap; }
+.primary-reading em { position: absolute; left: 100%; bottom: 4px; margin-left: 5px; color: var(--muted); font-size: 13px; font-style: normal; font-weight: 650; padding-bottom: 4px; white-space: nowrap; }
 .editable-reading {
   padding: 4px 12px;
   color: inherit;
@@ -1094,7 +1323,15 @@ body:has(.platform-fallback:not(.web-preview)) {
   right: 24px;
   top: 12px;
   height: 1px;
-  background: rgb(113 107 128 / 23%);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgb(113 107 128 / 23%) 8%,
+    rgb(113 107 128 / 23%) 92%,
+    transparent
+  );
+  transform-origin: left center;
+  animation: mira-dpi-track-draw 260ms cubic-bezier(.22, .55, .3, 1) 30ms both;
 }
 .dpi-stage-placeholders,
 .dpi-stage-values {
@@ -1125,6 +1362,7 @@ body:has(.platform-fallback:not(.web-preview)) {
   display: grid;
   justify-items: center;
   gap: 6px;
+  animation: mira-dpi-stage-awaken 230ms cubic-bezier(.22, .55, .3, 1) var(--dpi-stage-delay, 60ms) both;
 }
 .dpi-stage-placeholder {
   position: relative;
@@ -1160,17 +1398,23 @@ body:has(.platform-fallback:not(.web-preview)) {
   --stage-source-color: var(--accent);
   --stage-color: color-mix(in oklch, var(--stage-source-color) 62%, #e8e3eb);
   display: block;
-  width: 100%;
-  height: 100%;
-  border: 5px solid rgb(255 255 255 / 48%);
+  width: 20px;
+  height: 20px;
+  border: 4px solid rgb(255 255 255 / 48%);
   border-radius: 50%;
   background: var(--stage-color);
   box-shadow: 0 0 0 1px color-mix(in oklch, var(--stage-color), transparent 58%);
-  transition: transform .2s ease, box-shadow .2s ease;
+  transition:
+    transform 220ms cubic-bezier(.22, .55, .3, 1),
+    box-shadow 220ms var(--motion-ease-standard);
 }
 .dpi-stage-dot.active i {
-  transform: scale(1.34);
-  box-shadow: 0 0 0 2px rgb(255 255 255 / 68%), 0 0 0 5px color-mix(in oklch, var(--stage-color), transparent 58%), 0 7px 18px color-mix(in oklch, var(--stage-color), transparent 42%);
+  transform: scale(1.18);
+  box-shadow:
+    0 0 0 2px rgb(255 255 255 / 68%),
+    0 0 0 5px color-mix(in oklch, var(--stage-color), transparent 62%),
+    0 6px 16px color-mix(in oklch, var(--stage-color), transparent 48%);
+  animation: mira-dpi-active-focus 250ms cubic-bezier(.22, .55, .3, 1) calc(var(--dpi-stage-delay, 60ms) + 110ms) both;
 }
 .dpi-stage-value {
   max-width: 100%;
@@ -1234,6 +1478,14 @@ body:has(.platform-fallback:not(.web-preview)) {
 }
 .mode-reading > svg { width: 28px; height: 28px; color: var(--accent); margin-bottom: 2px; }
 .mode-reading > span { color: var(--muted); font-size: 12px; }
+.metric-reading-heading {
+  display: grid;
+  justify-items: center;
+  gap: 2px;
+  transform-origin: center;
+}
+.metric-reading-heading > svg { width: 28px; height: 28px; color: var(--accent); }
+.metric-reading-heading > span { color: var(--muted); font-size: 12px; }
 .polling-reading,
 .metric-reading { grid-template-columns: 1fr; gap: 10px; }
 .polling-rate,
@@ -1241,7 +1493,7 @@ body:has(.platform-fallback:not(.web-preview)) {
 .polling-rate strong,
 .metric-reading-value strong { font-size: 28px; line-height: .98; letter-spacing: -.035em; font-weight: 720; }
 .polling-rate em,
-.metric-reading-value em { position: absolute; left: 100%; bottom: 4px; margin-left: -6px; color: var(--muted); font-size: 13px; font-style: normal; font-weight: 650; padding-bottom: 3px; white-space: nowrap; }
+.metric-reading-value em { position: absolute; left: 100%; bottom: 4px; margin-left: 5px; color: var(--muted); font-size: 13px; font-style: normal; font-weight: 650; padding-bottom: 3px; white-space: nowrap; }
 .mode-reading > p { max-width: 100%; margin: 4px 0 0; color: var(--muted); font-size: 11px; line-height: 1.45; }
 .plugin-control-reading { justify-content: center; }
 .plugin-segmented {
@@ -1361,10 +1613,21 @@ body:has(.platform-fallback:not(.web-preview)) {
   max-width: 320px;
   height: 12px;
   margin: 6px 0 2px;
+  padding: 0;
+  border: 0;
   border-radius: 999px;
-  background: var(--light-color);
+  appearance: none;
+  background-color: var(--light-color);
   box-shadow: 0 5px 18px color-mix(in oklch, var(--light-color), transparent 55%);
+  cursor: pointer;
+  transition:
+    background-color var(--motion-slow) var(--motion-ease-standard),
+    box-shadow var(--motion-slow) var(--motion-ease-out);
 }
+.lighting-swatch:hover:not(:disabled),
+.lighting-swatch:active:not(:disabled) { background-color: var(--light-color); transform: none; }
+.lighting-swatch:focus-visible { outline: 2px solid color-mix(in oklch, var(--light-color), white 24%); outline-offset: 3px; }
+.lighting-swatch:disabled { cursor: default; opacity: 1; }
 .lighting-sections { width: 100%; max-width: 340px; margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
 .lighting-sub-tabs {
   width: 100%;
@@ -1396,28 +1659,41 @@ body:has(.platform-fallback:not(.web-preview)) {
   padding: 0 12px;
   border-radius: 999px;
   cursor: pointer;
-  transition: background .18s ease, color .18s ease;
+  transition: color var(--motion-fast) var(--motion-ease-standard);
 }
 .lighting-sub-tabs button.active {
   color: #fff;
-  background: linear-gradient(115deg, color-mix(in oklch, var(--lighting-tab-accent, var(--accent)), #8fa8e4 36%), color-mix(in oklch, var(--lighting-tab-accent, var(--accent)), #d67fb2 28%));
-  box-shadow: 0 7px 20px color-mix(in oklch, var(--lighting-tab-accent, var(--accent)), transparent 76%);
+  background: transparent;
+  box-shadow: none;
 }
 .lighting-sub-tabs button:not(.active):hover {
   color: inherit;
   background: var(--control-hover-bg);
 }
 .lighting-group {
+  height: 90px;
   padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
   border-radius: 12px;
   background: var(--surface-group-bg);
   border: 1px solid var(--surface-group-border);
 }
 .lighting-group-title { margin: 0 0 6px; font-size: 11px; font-weight: 650; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
 .lighting-rows {
+  flex: 1;
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
   gap: 6px;
+}
+.lighting-row-slot {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+}
+.lighting-row-slot > .lighting-row {
+  width: 100%;
+  height: 100%;
 }
 .lighting-row {
   min-height: 52px;
@@ -1654,7 +1930,7 @@ body:has(.platform-fallback:not(.web-preview)) {
   width: 100%;
   height: 100%;
 }
-.status-strip span { min-width: 0; display: flex; flex-direction: column; gap: 1px; font-size: 9px; }
+.status-strip span { min-width: 0; display: flex; flex-direction: column; gap: 1px; font-size: 10px; }
 .status-strip strong { color: inherit; font-size: 12px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .status-strip i {
   --light-color: var(--accent);
@@ -3107,6 +3383,48 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   to { opacity: 1; transform: scale(1); }
 }
 
+@keyframes mira-control-detail-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes mira-control-context-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes mira-control-secondary-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes mira-dpi-track-draw {
+  from { opacity: 0; transform: scaleX(0); }
+  to { opacity: 1; transform: scaleX(1); }
+}
+
+@keyframes mira-dpi-stage-awaken {
+  from { opacity: 0; transform: translateY(3px) scale(.96); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes mira-dpi-active-focus {
+  from {
+    transform: scale(.96);
+    box-shadow:
+      0 0 0 1px rgb(255 255 255 / 48%),
+      0 0 0 1px color-mix(in oklch, var(--stage-color), transparent 72%),
+      0 2px 6px color-mix(in oklch, var(--stage-color), transparent 72%);
+  }
+  to {
+    transform: scale(1.18);
+    box-shadow:
+      0 0 0 2px rgb(255 255 255 / 68%),
+      0 0 0 5px color-mix(in oklch, var(--stage-color), transparent 62%),
+      0 6px 16px color-mix(in oklch, var(--stage-color), transparent 48%);
+  }
+}
+
 @keyframes mira-placeholder-breathe {
   from { opacity: .42; }
   to { opacity: .58; }
@@ -3226,6 +3544,20 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   filter: blur(0) saturate(1);
 }
 
+.control-stage-content .metric-reading-heading {
+  animation: mira-control-context-in var(--motion-base) var(--motion-ease-out) both;
+}
+.control-stage-content .lighting-sub-tabs {
+  animation: mira-control-detail-in var(--motion-base) var(--motion-ease-out) 35ms both;
+}
+.control-stage-content .lighting-swatch {
+  animation: mira-control-detail-in var(--motion-base) var(--motion-ease-out) 65ms both;
+}
+.control-stage-content .secondary-control-item {
+  animation:
+    mira-control-secondary-in 180ms var(--motion-ease-standard) var(--control-detail-delay, 165ms) both;
+}
+
 .settings-page > header,
 .settings-page > .sub-nav,
 .settings-page > .card,
@@ -3245,7 +3577,9 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
 .about-page > .card:nth-of-type(n+3),
 .about-page > section:nth-of-type(n+3) { animation-delay: 95ms; }
 
-/* Navigation and segmented controls use color/shape continuity, not travel. */
+/* Navigation uses color/shape continuity. Segmented controls below share one
+   travelling selection layer so every single-row slider explains state the
+   same way without duplicating animation geometry. */
 .nav-link,
 .sub-nav-link,
 .control-tabs button,
@@ -3286,6 +3620,46 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
 .nav-exit::after { display: none; }
 .control-tabs button::after { display: none; }
 .battery-range-toggle button::after { display: none; }
+
+.segmented-slider {
+  position: relative;
+  isolation: isolate;
+}
+.segmented-slider::before {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  top: var(--segmented-indicator-inset, 3px);
+  bottom: var(--segmented-indicator-inset, 3px);
+  left: var(--segmented-indicator-left, 3px);
+  width: var(--segmented-indicator-width, calc(50% - 4.5px));
+  border-radius: var(--segmented-indicator-radius, 999px);
+  background-color: var(--segmented-indicator-accent, var(--accent));
+  background-image: linear-gradient(115deg, rgb(143 168 228 / 30%), rgb(214 127 178 / 22%));
+  box-shadow: 0 7px 20px color-mix(in oklch, var(--segmented-indicator-accent, var(--accent)), transparent 76%);
+  pointer-events: none;
+  transition:
+    left var(--motion-slow) var(--motion-ease-out),
+    width var(--motion-base) var(--motion-ease-out),
+    background-color var(--motion-base) var(--motion-ease-standard),
+    box-shadow var(--motion-base) var(--motion-ease-out);
+}
+.segmented-slider > button {
+  position: relative;
+  z-index: 1;
+}
+.segmented-slider > button.active {
+  background: transparent;
+  box-shadow: none;
+}
+.control-tabs,
+.lighting-sub-tabs,
+.battery-range-toggle {
+  --segmented-indicator-radius: 999px;
+}
+.plugin-segmented {
+  --segmented-indicator-radius: 12px;
+}
 
 /* Frequent controls feel physical without looking springy or playful. */
 button,

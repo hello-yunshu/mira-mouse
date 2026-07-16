@@ -500,10 +500,10 @@ describe('real device snapshot mapping', () => {
 
     fireEvent.click(screen.getByRole('tab', { name: '灯光' }));
     const lightingTabs = screen.getByRole('tablist', { name: '灯光对象' });
-    expect(lightingTabs.style.getPropertyValue('--lighting-tab-accent')).toBe('var(--accent)');
+    expect(lightingTabs.style.getPropertyValue('--segmented-indicator-accent')).toBe('var(--accent)');
 
     fireEvent.click(screen.getByRole('tab', { name: '接收器灯光' }));
-    expect(lightingTabs.style.getPropertyValue('--lighting-tab-accent')).toBe('#00FF00');
+    expect(lightingTabs.style.getPropertyValue('--segmented-indicator-accent')).toBe('#00FF00');
     expect(document.documentElement.style.getPropertyValue('--accent')).toBe(themeAccent('#CC2244'));
   });
 
@@ -894,9 +894,9 @@ describe('real device snapshot mapping', () => {
     await screen.findByRole('heading', { name: 'No Polling Mouse' });
     fireEvent.click(screen.getByRole('tab', { name: '回报率' }));
     // 未报告时显示"未报告"
-    expect(screen.getByText('未报告')).toBeInTheDocument();
+    expect(screen.getAllByText('未报告')).not.toHaveLength(0);
     expect(document.querySelector('.metric-reading')).toBeInTheDocument();
-    expect(screen.getByText('当前回报率')).toBeInTheDocument();
+    expect(screen.getAllByText('当前回报率')).not.toHaveLength(0);
   });
 
   it('uses plugin locale labels when available', async () => {

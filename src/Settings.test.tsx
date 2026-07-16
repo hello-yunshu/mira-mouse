@@ -89,7 +89,7 @@ describe('SettingsPage', () => {
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('settings_set', expect.objectContaining({
       settings: expect.objectContaining({ trayIconColor: 'black' }),
     })));
-    fireEvent.click(screen.getByRole('switch', { name: '标题附带接收器电量' }));
+    fireEvent.click(screen.getByRole('switch', { name: '标题显示接收器电量' }));
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('settings_set', expect.objectContaining({
       settings: expect.objectContaining({ trayIncludeReceiverBattery: true }),
     })));

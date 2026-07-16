@@ -118,7 +118,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "mira-battery-handler"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "mira-local-ai",
  "mira-protocol",
@@ -128,7 +128,7 @@ dependencies = [
 
 [[package]]
 name = "mira-local-ai"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "chrono",
  "mira-protocol",
@@ -138,7 +138,7 @@ dependencies = [
 
 [[package]]
 name = "mira-protocol"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "serde",
  "serde_json",

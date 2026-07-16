@@ -1,0 +1,312 @@
+name: Sync Latest Rill Runtime
+
+on:
+  schedule:
+    - cron: '23 */6 * * *'
+  repository_dispatch:
+    types: [rill-runtime-released]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: local-ai-release
+  cancel-in-progress: false
+
+env:
+  MIRA_INDEX_KEY_ID: mira-rill-2026-002
+  MIRA_INDEX_PUBLIC_KEY_HEX: ae4633988fd9e02a824bb9072f1dcf470a0b1d74bbc7905aaea00a62139e1479
+  MODEL_KEY: mira-rill-2026-002=ae4633988fd9e02a824bb9072f1dcf470a0b1d74bbc7905aaea00a62139e1479
+  HANDLER_KEY: mira-handler-2026-001=cefbe96db58196e4b3a8455f427ca75efaedacb68792ae82d7d06dd8c86f193e
+
+jobs:
+  prepare:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    outputs:
+      bootstrap: ${{ steps.current.outputs.bootstrap }}
+      current-version: ${{ steps.plan.outputs.current-version }}
+      latest-version: ${{ steps.plan.outputs.latest-version }}
+      latest-tag: ${{ steps.plan.outputs.latest-tag }}
+      update-available: ${{ steps.plan.outputs.update-available }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with: { node-version: 22 }
+
+      - name: Resolve and verify latest signed Rill release
+        id: latest
+        run: |
+          mkdir -p artifacts
+          node scripts/resolve-latest-rill-release.mjs \
+            --output artifacts/rill-stable-index.json
+
+      - name: Download current Mira stable index
+        id: current
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view local-ai-stable --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release download local-ai-stable \
+              --repo "$GITHUB_REPOSITORY" \
+              --pattern local-ai-stable-index.json \
+              --dir artifacts
+            echo "bootstrap=false" >> "$GITHUB_OUTPUT"
+          else
+            gh release download \
+              --repo "$GITHUB_REPOSITORY" \
+              --pattern local-ai-stable-index.json \
+              --dir artifacts
+            echo "bootstrap=true" >> "$GITHUB_OUTPUT"
+          fi
+          node scripts/inspect-mira-local-ai-index.mjs \
+            artifacts/local-ai-stable-index.json
+
+      - name: Build candidate Mira index payload
+        id: plan
+        run: |
+          node scripts/build-rill-runtime-release-index.mjs \
+            artifacts/local-ai-stable-index.json \
+            artifacts/rill-stable-index.json \
+            artifacts/local-ai-index-payload.json
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rill-runtime-sync-metadata
+          path: artifacts
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Job summary
+        run: |
+          {
+            echo "## Rill Runtime sync plan"
+            echo ""
+            echo "- Current: ${{ steps.plan.outputs.current-version }}"
+            echo "- Latest signed stable: ${{ steps.plan.outputs.latest-version }}"
+            echo "- Runtime update: ${{ steps.plan.outputs.update-available }}"
+            echo "- Stable pointer bootstrap: ${{ steps.current.outputs.bootstrap }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  probe:
+    needs: prepare
+    if: needs.prepare.outputs.update-available == 'true' || needs.prepare.outputs.bootstrap == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target-os: macos
+            target-arch: aarch64
+            executable: rill-runtime
+          - os: ubuntu-22.04
+            target-os: linux
+            target-arch: x86_64
+            executable: rill-runtime
+          - os: windows-2022
+            target-os: windows
+            target-arch: x86_64
+            executable: rill-runtime.exe
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with: { node-version: 22 }
+      - uses: actions/download-artifact@v8
+        with:
+          name: rill-runtime-sync-metadata
+          path: artifacts
+
+      - name: Download the signed deployment combination
+        shell: bash
+        env:
+          TARGET_OS: ${{ matrix.target-os }}
+          TARGET_ARCH: ${{ matrix.target-arch }}
+          EXECUTABLE: ${{ matrix.executable }}
+        run: |
+          set -euo pipefail
+          rill_index=artifacts/rill-stable-index.json
+          mira_index=artifacts/local-ai-stable-index.json
+          runtime_url=$(jq -r --arg os "$TARGET_OS" --arg arch "$TARGET_ARCH" '.payload.artifacts[] | select(.kind == "runtime" and .id == "rill-runtime" and .targetOs == $os and .targetArch == $arch) | .url' "$rill_index")
+          runtime_sha=$(jq -r --arg os "$TARGET_OS" --arg arch "$TARGET_ARCH" '.payload.artifacts[] | select(.kind == "runtime" and .id == "rill-runtime" and .targetOs == $os and .targetArch == $arch) | .sha256' "$rill_index")
+          runtime_size=$(jq -r --arg os "$TARGET_OS" --arg arch "$TARGET_ARCH" '.payload.artifacts[] | select(.kind == "runtime" and .id == "rill-runtime" and .targetOs == $os and .targetArch == $arch) | .size' "$rill_index")
+          model_url=$(jq -r '.payload.artifacts[] | select(.kind == "model" and .id == "mira-battery-model") | .url' "$mira_index")
+          model_sha=$(jq -r '.payload.artifacts[] | select(.kind == "model" and .id == "mira-battery-model") | .sha256' "$mira_index")
+          model_size=$(jq -r '.payload.artifacts[] | select(.kind == "model" and .id == "mira-battery-model") | .size' "$mira_index")
+          handler_url=$(jq -r '.payload.artifacts[] | select(.kind == "handler" and .id == "mira.battery.handler") | .url' "$mira_index")
+          handler_sha=$(jq -r '.payload.artifacts[] | select(.kind == "handler" and .id == "mira.battery.handler") | .sha256' "$mira_index")
+          handler_size=$(jq -r '.payload.artifacts[] | select(.kind == "handler" and .id == "mira.battery.handler") | .size' "$mira_index")
+          curl --fail --location --retry 3 --output "artifacts/$EXECUTABLE" "$runtime_url"
+          curl --fail --location --retry 3 --output artifacts/model.rillpack "$model_url"
+          curl --fail --location --retry 3 --output artifacts/handler.rillhandler "$handler_url"
+          RUNTIME_SHA="$runtime_sha" RUNTIME_SIZE="$runtime_size" \
+          MODEL_SHA="$model_sha" MODEL_SIZE="$model_size" \
+          HANDLER_SHA="$handler_sha" HANDLER_SIZE="$handler_size" \
+          EXECUTABLE="$EXECUTABLE" node --input-type=module <<'NODE'
+          import { createHash } from 'node:crypto';
+          import { readFileSync } from 'node:fs';
+          for (const [file, sha, size] of [
+            [`artifacts/${process.env.EXECUTABLE}`, process.env.RUNTIME_SHA, process.env.RUNTIME_SIZE],
+            ['artifacts/model.rillpack', process.env.MODEL_SHA, process.env.MODEL_SIZE],
+            ['artifacts/handler.rillhandler', process.env.HANDLER_SHA, process.env.HANDLER_SIZE],
+          ]) {
+            const bytes = readFileSync(file);
+            if (bytes.length !== Number(size)) throw new Error(`${file} size mismatch`);
+            const actual = createHash('sha256').update(bytes).digest('hex');
+            if (actual !== sha) throw new Error(`${file} SHA-256 mismatch`);
+          }
+          NODE
+          chmod 755 "artifacts/$EXECUTABLE"
+
+      - name: Verify macOS code signature
+        if: runner.os == 'macOS'
+        run: codesign --verify --strict --verbose=2 artifacts/${{ matrix.executable }}
+
+      - name: Probe Runtime, model and handler
+        shell: bash
+        env:
+          EXECUTABLE: ${{ matrix.executable }}
+          EXPECTED_RUNTIME: ${{ needs.prepare.outputs.latest-version }}
+        run: |
+          set -euo pipefail
+          client_version=$(node scripts/app-version.mjs)
+          handshake=$(jq -nc --arg version "$client_version" '{
+            method: "handshake",
+            requestId: "rill-sync-handshake",
+            apiVersion: 2,
+            clientName: "mira-rill-sync",
+            clientVersion: $version
+          }')
+          invoke=$(jq -nc '{
+            method: "invoke",
+            requestId: "rill-sync-invoke",
+            apiVersion: 2,
+            capability: "batteryUsage",
+            input: {
+              nowUnixMs: 1784080800000,
+              nowTimezoneOffsetMinutes: 480,
+              samples: [{
+                atUnixMs: 1784077200000,
+                timezoneOffsetMinutes: 480,
+                percentage: 80,
+                charging: false
+              }]
+            }
+          }')
+          responses=artifacts/runtime-responses.jsonl
+          printf '%s\n' "$handshake" "$invoke" \
+          | "artifacts/$EXECUTABLE" serve \
+              --pack artifacts/model.rillpack \
+              --handler artifacts/handler.rillhandler \
+              --trust-key "$MODEL_KEY" \
+              --handler-trust-key "$HANDLER_KEY" \
+          > "$responses"
+          test "$(wc -l < "$responses" | tr -d ' ')" = 2
+          sed -n '1p' "$responses" | jq -e --arg runtime "$EXPECTED_RUNTIME" '
+            .kind == "handshake" and
+            .runtimeVersion == $runtime and
+            .modelPackId == "mira-battery-model" and
+            .handlerId == "mira.battery.handler" and
+            .handlerApiVersion == 1 and
+            (.effectiveCapabilities | index("batteryUsage")) != null
+          '
+          sed -n '2p' "$responses" \
+          | jq -e '.kind == "result" and .requestId == "rill-sync-invoke"'
+
+  publish:
+    needs: [prepare, probe]
+    if: >-
+      ${{ always() && needs.prepare.result == 'success' &&
+          (needs.prepare.outputs.update-available == 'true' || needs.prepare.outputs.bootstrap == 'true') &&
+          needs.probe.result == 'success' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: rill-runtime-sync-metadata
+          path: artifacts
+
+      - name: Checkout the verified Rill release tools
+        uses: actions/checkout@v7
+        with:
+          repository: hello-yunshu/rill-ml
+          ref: ${{ needs.prepare.outputs.latest-tag }}
+          path: RillML
+
+      - name: Sign and verify updated Mira stable index
+        env:
+          RILL_SIGNING_KEY_HEX: ${{ secrets.RILL_V2_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$RILL_SIGNING_KEY_HEX"
+          rustup toolchain install stable --profile minimal
+          cargo run --release --manifest-path RillML/crates/rill-runtime/Cargo.toml \
+            --bin rill-pack -- sign-index \
+            --payload artifacts/local-ai-index-payload.json \
+            --output artifacts/next-local-ai-stable-index.json
+          cargo run --release --manifest-path RillML/crates/rill-runtime/Cargo.toml \
+            --bin rill-pack -- verify-index \
+            --index artifacts/next-local-ai-stable-index.json \
+            --key-id "$MIRA_INDEX_KEY_ID" \
+            --public-key-hex "$MIRA_INDEX_PUBLIC_KEY_HEX"
+
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: artifacts/next-local-ai-stable-index.json
+
+      - name: Publish immutable Runtime adoption record
+        if: needs.prepare.outputs.update-available == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.latest-version }}
+        run: |
+          set -euo pipefail
+          tag="local-ai-runtime-v$VERSION"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Immutable Runtime adoption release $tag already exists" >&2
+            exit 1
+          fi
+          gh release create "$tag" \
+            artifacts/next-local-ai-stable-index.json \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            --title "Mira adopts Rill Runtime $VERSION" \
+            --notes "Verified cross-platform adoption of the signed Rill $VERSION Runtime release. Runtime binaries remain hosted by rill-ml."
+
+      - name: Move dedicated stable pointer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if ! gh release view local-ai-stable --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create local-ai-stable \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --prerelease \
+              --title "Mira Local AI stable index" \
+              --notes "Machine-readable signed pointer for independently updated local AI artifacts."
+          fi
+          cp artifacts/next-local-ai-stable-index.json artifacts/local-ai-stable-index.json
+          gh release upload local-ai-stable \
+            artifacts/local-ai-stable-index.json \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
+
+      - name: Job summary
+        run: |
+          {
+            echo "## Rill Runtime sync"
+            echo ""
+            echo "- Runtime: ${{ needs.prepare.outputs.latest-version }}"
+            echo "- Updated: ${{ needs.prepare.outputs.update-available }}"
+            echo "- Bootstrapped pointer: ${{ needs.prepare.outputs.bootstrap }}"
+            echo "- Download origin: hello-yunshu/rill-ml releases"
+          } >> "$GITHUB_STEP_SUMMARY"
