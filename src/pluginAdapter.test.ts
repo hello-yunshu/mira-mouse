@@ -15,7 +15,9 @@ import {
   resolveSwitchState,
   resolveVisibleWhen,
   resolveZones,
+  simulateDemoMutation,
 } from './pluginAdapter';
+import { MOCK_DEVICE } from './mock';
 import type { DeviceState, PluginCapability, PluginField } from './types';
 
 function makeDevice(state: Record<string, unknown> = {}, overrides: Partial<DeviceState> = {}): DeviceState {
@@ -571,5 +573,76 @@ describe('resolveStateMapping', () => {
       { id: 'dpi', control: 'DpiStages', labelKey: 'dpi', readOnly: false, metadata: {} },
     ];
     expect(resolveStateMapping(caps)).toEqual({});
+  });
+});
+
+describe('simulateDemoMutation', () => {
+  it('set-active-dpi-stage activates the requested stage number', () => {
+    const next = simulateDemoMutation(MOCK_DEVICE, 'set-active-dpi-stage', { value: 3 });
+    const stages = next.state.dpiStages as { active: boolean }[];
+    expect(stages[2].active).toBe(true);
+    expect(stages.filter((s) => s.active)).toHaveLength(1);
+  });
+
+  it('set-dpi-stage-value updates the value of the requested stage', () => {
+    const next = simulateDemoMutation(MOCK_DEVICE, 'set-dpi-stage-value', { stage: 2, value: 2000 });
+    const stages = next.state.dpiStages as { value: number }[];
+    expect(stages[1].value).toBe(2000);
+  });
+
+  it('set-polling-rate updates state.pollingRate (the field source the UI reads)', () => {
+    const next = simulateDemoMutation(MOCK_DEVICE, 'set-polling-rate', { value: 2000 });
+    expect(next.state.pollingRate).toBe(2000);
+  });
+
+  it('set-mouse-lighting color syncs state.mouseLightColor and capabilities.mouseLighting.color', () => {
+    const next = simulateDemoMutation(MOCK_DEVICE, 'set-mouse-lighting', { color: '#ff0000' });
+    expect(next.state.mouseLightColor).toBe('#ff0000');
+    expect((next.capabilities.mouseLighting as { color: string }).color).toBe('#ff0000');
+  });
+
+  it('set-mouse-lighting enabled=false syncs state.mouseLightEnabled and capabilities.settings.mouseLightEnabled', () => {
+    const next = simulateDemoMutation(MOCK_DEVICE, 'set-mouse-lighting', { enabled: false });
+    expect(next.state.mouseLightEnabled).toBe(false);
+    expect((next.capabilities.settings as { mouseLightEnabled: boolean }).mouseLightEnabled).toBe(false);
+  });
+
+  it('set-receiver-lighting updates effect/speed/brightness/color/option sync', () => {
+    const next = simulateDemoMutation(MOCK_DEVICE, 'set-receiver-lighting', {
+      effect: 1,
+      speed: 5,
+      brightness: 80,
+      color: '#00ff00',
+      option: 2,
+    });
+    expect(next.state.receiverLightEffect).toBe(1);
+    expect(next.state.receiverLightSpeed).toBe(5);
+    expect(next.state.receiverLightBrightness).toBe(80);
+    expect(next.state.receiverLightColor).toBe('#00ff00');
+    const receiverLighting = next.capabilities.receiverLighting as {
+      effect: number; speed: number; brightness: number; color: string; option: number;
+    };
+    expect(receiverLighting.effect).toBe(1);
+    expect(receiverLighting.speed).toBe(5);
+    expect(receiverLighting.brightness).toBe(80);
+    expect(receiverLighting.color).toBe('#00ff00');
+    expect(receiverLighting.option).toBe(2);
+  });
+
+  it('set-sleep syncs both state.wirelessSleepValue and capabilities.settings.wirelessSleepValue', () => {
+    const next = simulateDemoMutation(MOCK_DEVICE, 'set-sleep', { value: 600 });
+    expect(next.state.wirelessSleepValue).toBe(600);
+    expect((next.capabilities.settings as { wirelessSleepValue: number }).wirelessSleepValue).toBe(600);
+  });
+
+  it('returns device deeply equal to input for unknown mutation', () => {
+    const next = simulateDemoMutation(MOCK_DEVICE, 'unknown-mutation', { value: 1 });
+    expect(next).toEqual(MOCK_DEVICE);
+  });
+
+  it('does not mutate the original device (immutability)', () => {
+    const before = (MOCK_DEVICE.state.pollingRate as number);
+    simulateDemoMutation(MOCK_DEVICE, 'set-polling-rate', { value: 9999 });
+    expect(MOCK_DEVICE.state.pollingRate).toBe(before);
   });
 });

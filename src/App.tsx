@@ -46,6 +46,7 @@ import {
   resolveSwitchState,
   resolveVisibleWhen,
   resolveZones,
+  simulateDemoMutation,
 } from './pluginAdapter';
 import { onAppNotification, notifyError, notifySuccess, type AppNotification } from './notify';
 import { relaunchAfterUpdate, startAutomaticAppUpdateCheck } from './updater';
@@ -1819,6 +1820,7 @@ function Dashboard({
   onDeviceSelect,
   onOpenBatteryUsage,
   pluginLocaleRevision,
+  demoMode,
 }: {
   device: DeviceState;
   deviceEntries: DeviceSnapshotEntry[];
@@ -1826,6 +1828,7 @@ function Dashboard({
   onDeviceSelect: (deviceKey: string) => void;
   onOpenBatteryUsage: () => void;
   pluginLocaleRevision: number;
+  demoMode: boolean;
 }) {
   const { t } = useTranslation();
   const [mode, setMode] = useState<ControlMode>('');
@@ -1869,6 +1872,15 @@ function Dashboard({
     setWriteBusy(true);
     setPreviewMessage(i18n.t('dashboard.writing'));
     try {
+      if (demoMode) {
+        // 演示模式：直接在前端模拟写入，不调用 Tauri device_mutate。
+        // 参数变化立即反映在 UI 上，并保留「搞定啦」成功通知。
+        const nextDevice = simulateDemoMutation(device, mutation, params);
+        onDeviceChange(nextDevice);
+        setPreviewMessage('');
+        notifySuccess(i18n.t('dashboard.writeConfirmed'));
+        return;
+      }
       const snapshot = await invoke<DeviceSnapshot>('device_mutate', { mutation, params });
       onDeviceChange(snapshotToState(snapshot));
       setPreviewMessage('');
@@ -2472,7 +2484,7 @@ export default function App() {
       <button className={`nav-link nav-about ${view === 'about' ? 'active' : ''}`} onClick={() => setView('about')} aria-label={t('nav.about')}><Info weight="regular" /></button>
       {demoMode && <button className="nav-link nav-exit" onClick={exitDemo} aria-label={t('nav.exitDemo')} title={t('nav.exitDemo')}><SignOut weight="regular" /></button>}
     </div>
-    {view === 'dashboard' && (device ? <Dashboard device={device} deviceEntries={deviceEntries} onDeviceChange={setDevice} onDeviceSelect={selectDevice} onOpenBatteryUsage={openBatteryUsage} pluginLocaleRevision={pluginLocaleRevision} /> : <EmptyState onRefresh={() => { setDemoMode(false); setDevice(undefined); setDeviceEntries([]); deviceEntriesRef.current = []; setRefreshNonce((value) => value + 1); invoke('device_refresh').catch(() => {}); }} onDemo={() => { setDemoMode(true); setDevice(MOCK_DEVICE); setDeviceEntries(MOCK_DEVICE_ENTRIES); deviceEntriesRef.current = MOCK_DEVICE_ENTRIES; }} onOpenSettings={() => setView('settings')} />)}
+    {view === 'dashboard' && (device ? <Dashboard device={device} deviceEntries={deviceEntries} onDeviceChange={setDevice} onDeviceSelect={selectDevice} onOpenBatteryUsage={openBatteryUsage} pluginLocaleRevision={pluginLocaleRevision} demoMode={demoMode} /> : <EmptyState onRefresh={() => { setDemoMode(false); setDevice(undefined); setDeviceEntries([]); deviceEntriesRef.current = []; setRefreshNonce((value) => value + 1); invoke('device_refresh').catch(() => {}); }} onDemo={() => { setDemoMode(true); setDevice(MOCK_DEVICE); setDeviceEntries(MOCK_DEVICE_ENTRIES); deviceEntriesRef.current = MOCK_DEVICE_ENTRIES; }} onOpenSettings={() => setView('settings')} />)}
     {view === 'settings' && <SettingsPage previewMode={pureWeb} focusPluginUpdateToken={settingsPluginFocusToken} onNavigateAbout={() => setView('about')} onOpenBatteryUsage={openBatteryUsage} onBatteryUsageSettingsChange={syncBatteryUsageSettings} onThemeChange={setTheme} pluginCapabilities={device?.pluginCapabilities ?? []} writableMutations={device?.writableMutations ?? []} />}
     {view === 'about' && <AboutPage previewMode={pureWeb} focusUpdateToken={aboutFocusToken} onBack={() => setView('settings')} />}
     <BatteryUsageModal
