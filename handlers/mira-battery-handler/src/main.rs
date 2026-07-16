@@ -14,6 +14,10 @@ wit_bindgen::generate!({
 
 const HANDLER_ID: &str = "mira.battery.handler";
 const HANDLER_API_VERSION: u32 = 1;
+const HANDLER_VERSION: &str = match option_env!("MIRA_HANDLER_VERSION") {
+    Some(version) => version,
+    None => env!("CARGO_PKG_VERSION"),
+};
 
 static MODEL: OnceLock<BatteryModelConfig> = OnceLock::new();
 
@@ -23,7 +27,7 @@ impl Guest for MiraBatteryHandler {
     fn metadata() -> HandlerMetadata {
         HandlerMetadata {
             id: HANDLER_ID.into(),
-            version: env!("CARGO_PKG_VERSION").into(),
+            version: HANDLER_VERSION.into(),
             api_version: HANDLER_API_VERSION,
             capabilities: vec![BATTERY_USAGE_CAPABILITY.into()],
         }

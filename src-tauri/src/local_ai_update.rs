@@ -35,8 +35,13 @@ use crate::{
     RILL_V2_PRODUCTION_KEY_ID, RILL_V2_PRODUCTION_PUBLIC_KEY_HEX,
 };
 
-const RELEASE_INDEX_URL: &str =
-    "https://github.com/hello-yunshu/mira-mouse/releases/latest/download/local-ai-stable-index.json";
+const RELEASE_INDEX_URLS: &[&str] = &[
+    "https://github.com/hello-yunshu/mira-mouse/releases/download/local-ai-stable/local-ai-stable-index.json",
+    // Bootstrap/failover for clients released before the dedicated pointer
+    // existed. Only transport failures fall through; a fetched but invalid
+    // signed index is always rejected.
+    "https://github.com/hello-yunshu/mira-mouse/releases/latest/download/local-ai-stable-index.json",
+];
 const TRUSTED_RELEASE_PREFIXES: &[&str] = &[
     "https://github.com/hello-yunshu/mira-mouse/releases/download/",
     "https://github.com/hello-yunshu/rill-ml/releases/download/",
@@ -335,11 +340,24 @@ fn is_newer(available: &str, current: Option<&str>) -> Result<bool, String> {
 }
 
 fn fetch_and_verify_index() -> Result<SignedReleaseIndex, String> {
-    let bytes = fetch_bounded(RELEASE_INDEX_URL, MAX_INDEX_BYTES)?;
-    let index: SignedReleaseIndex = serde_json::from_slice(&bytes)
-        .map_err(|error| format!("parse local AI release index: {error}"))?;
-    verify_index(&index)?;
-    Ok(index)
+    let mut transport_errors = Vec::new();
+    for url in RELEASE_INDEX_URLS {
+        let bytes = match fetch_bounded(url, MAX_INDEX_BYTES) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                transport_errors.push(format!("{url}: {error}"));
+                continue;
+            }
+        };
+        let index: SignedReleaseIndex = serde_json::from_slice(&bytes)
+            .map_err(|error| format!("parse local AI release index from {url}: {error}"))?;
+        verify_index(&index)?;
+        return Ok(index);
+    }
+    Err(format!(
+        "fetch local AI release index: {}",
+        transport_errors.join("; ")
+    ))
 }
 
 fn verify_index(index: &SignedReleaseIndex) -> Result<(), String> {
@@ -891,7 +909,7 @@ mod tests {
             target_os: None,
             target_arch: None,
             handler_api_version: Some(HANDLER_API_VERSION),
-            min_runtime_version: Some("0.7.0".into()),
+            min_runtime_version: Some("0.7.1".into()),
             url: format!(
                 "{}local-ai-v{version}/handler.rillhandler",
                 TRUSTED_RELEASE_PREFIXES[0]
@@ -930,7 +948,7 @@ mod tests {
 
     #[test]
     fn independent_versions_never_downgrade() {
-        let runtime = runtime_artifact("0.7.0");
+        let runtime = runtime_artifact("0.7.1");
         let model = model_artifact("0.8.2");
         let handler = handler_artifact("0.8.2");
         let plan = update_plan(
@@ -943,11 +961,11 @@ mod tests {
 
     #[test]
     fn handler_can_update_without_runtime_or_model() {
-        let runtime = runtime_artifact("0.7.0");
+        let runtime = runtime_artifact("0.7.1");
         let model = model_artifact("0.8.2");
         let handler = handler_artifact("0.9.0");
         let info = update_info(
-            &current("0.7.0", "0.8.2", "0.8.2"),
+            &current("0.7.1", "0.8.2", "0.8.2"),
             selected(&runtime, &model, &handler),
         )
         .unwrap();
@@ -963,7 +981,7 @@ mod tests {
             generated_at: "2026-07-15T00:00:00Z".into(),
             publisher_key_id: RILL_V2_PRODUCTION_KEY_ID.into(),
             artifacts: vec![
-                runtime_artifact("0.7.0"),
+                runtime_artifact("0.7.1"),
                 model_artifact("0.8.2"),
                 handler_artifact("0.8.2"),
             ],
@@ -978,7 +996,7 @@ mod tests {
     fn incompatible_handler_runtime_pair_is_rejected() {
         let mut handler = handler_artifact("0.8.2");
         handler.min_runtime_version = Some("0.8.0".into());
-        assert!(validate_handler_runtime_compatibility(&handler, "0.7.0").is_err());
+        assert!(validate_handler_runtime_compatibility(&handler, "0.7.1").is_err());
     }
 
     #[test]
@@ -989,7 +1007,7 @@ mod tests {
             channel: "stable".into(),
             generated_at: "2026-07-15T00:00:00Z".into(),
             publisher_key_id: "test".into(),
-            artifacts: vec![runtime_artifact("0.7.0")],
+            artifacts: vec![runtime_artifact("0.7.1")],
         };
         let canonical = canonical_json(&payload).unwrap();
         let signature = signing.sign(&canonical);
@@ -1024,6 +1042,8 @@ mod tests {
     fn release_contract_uses_mira_origin_and_rill_index_key() {
         assert!(TRUSTED_RELEASE_PREFIXES[0].contains("/hello-yunshu/mira-mouse/"));
         assert!(TRUSTED_RELEASE_PREFIXES[1].contains("/hello-yunshu/rill-ml/"));
+        assert!(RELEASE_INDEX_URLS[0].contains("/releases/download/local-ai-stable/"));
+        assert!(RELEASE_INDEX_URLS[1].contains("/releases/latest/"));
         assert_eq!(RILL_V2_PRODUCTION_KEY_ID, "mira-rill-2026-002");
         assert_ne!(RILL_V2_PRODUCTION_KEY_ID, crate::PRODUCTION_KEY_ID);
     }

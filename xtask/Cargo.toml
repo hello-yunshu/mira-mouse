@@ -9,9 +9,12 @@ rust-version.workspace = true
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+ed25519-dalek.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 hex.workspace = true
 reqwest.workspace = true
+rill-runtime-protocol.workspace = true
+semver.workspace = true
 zip.workspace = true

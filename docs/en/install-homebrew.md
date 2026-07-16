@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
 # Install via Homebrew (macOS)
 
-Mira is distributed as a Homebrew Cask through a self-hosted tap at [`hello-yunshu/homebrew-mira`](https://github.com/hello-yunshu/homebrew-mira). The Cask wraps the unsigned community DMG published on the main repository's GitHub Releases page.
+Mira is distributed as a Homebrew Cask through a self-hosted tap at [`hello-yunshu/homebrew-mira`](https://github.com/hello-yunshu/homebrew-mira). The Cask wraps the unsigned Apple Silicon (ARM64) community DMG published on the main repository's GitHub Releases page. Intel Macs are not supported.
 
 ## Install
 
@@ -51,7 +51,7 @@ brew install --cask --no-quarantine mira
 
 ## Verify the SHA-256
 
-The Cask pins the SHA-256 of `Mira_macOS_<version>_universal.dmg`. Homebrew verifies it automatically during install. To check it manually:
+The Cask pins the SHA-256 of `Mira_macOS_<version>_aarch64.dmg`. Homebrew verifies it automatically during install. To check it manually:
 
 ```bash
 brew info --cask mira
@@ -78,7 +78,7 @@ If the CI job is unavailable, a maintainer can update the tap by hand:
 git clone https://github.com/hello-yunshu/homebrew-mira.git
 cd homebrew-mira
 VERSION=0.5.2  # replace with the target version
-SHA256=$(curl -sSL "https://github.com/hello-yunshu/mira-mouse/releases/download/app/v${VERSION}/Mira_macOS_${VERSION}_universal.dmg" | shasum -a 256 | awk '{print $1}')
+SHA256=$(curl -sSL "https://github.com/hello-yunshu/mira-mouse/releases/download/app/v${VERSION}/Mira_macOS_${VERSION}_aarch64.dmg" | shasum -a 256 | awk '{print $1}')
 sed -i.bak -e "s/^  version .*/  version \"${VERSION}\"/" \
            -e "s/^  sha256 .*/  sha256 \"${SHA256}\"/" Casks/mira.rb
 rm Casks/mira.rb.bak

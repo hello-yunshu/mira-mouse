@@ -11,10 +11,12 @@ cask "mira" do
   version "__VERSION__"
   sha256 "__SHA256__"
 
-  url "https://github.com/hello-yunshu/mira-mouse/releases/download/app/v#{version}/Mira_macOS_#{version}_universal.dmg"
+  url "https://github.com/hello-yunshu/mira-mouse/releases/download/app/v#{version}/Mira_macOS_#{version}_aarch64.dmg"
   name "Mira"
   desc "Plugin-driven mouse settings client"
   homepage "https://github.com/hello-yunshu/mira-mouse"
+
+  depends_on arch: :arm64
 
   app "Mira.app"
 
