@@ -168,12 +168,12 @@ jobs:
             --bin rill-pack -- verify \
             --pack src-tauri/resources/local-ai/model.rillpack \
             --key-id mira-rill-2026-002 \
-            --public-key-hex 1b4b25b7b42a998a25142522626a4c956a0924b0775affb3695b914595dbe73c
+            --public-key-hex ae4633988fd9e02a824bb9072f1dcf470a0b1d74bbc7905aaea00a62139e1479
           cargo run --release --manifest-path RillML/crates/rill-runtime/Cargo.toml \
             --bin rill-pack -- inspect-handler \
             --handler src-tauri/resources/local-ai/handler.rillhandler \
             --key-id mira-handler-2026-001 \
-            --public-key-hex 1c1bfb235ec87c7cbfdddff6c8d63e5b22c28e6636beb50edc0c4603ccb7ed59
+            --public-key-hex cefbe96db58196e4b3a8455f427ca75efaedacb68792ae82d7d06dd8c86f193e
       - name: Download Rill runtime sidecar
         shell: bash
         run: |
