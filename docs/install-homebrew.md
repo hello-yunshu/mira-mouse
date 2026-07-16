@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
 # 通过 Homebrew 安装（macOS）
 
-Mira 通过自托管的 tap [`hello-yunshu/homebrew-mira`](https://github.com/hello-yunshu/homebrew-mira) 以 Homebrew Cask 形式分发。该 Cask 封装了主仓库 GitHub Releases 页面上发布的未签名社区 DMG。
+Mira 通过自托管的 tap [`hello-yunshu/homebrew-mira`](https://github.com/hello-yunshu/homebrew-mira) 以 Homebrew Cask 形式分发。该 Cask 封装了主仓库 GitHub Releases 页面上发布的未签名 Apple Silicon（ARM64）社区 DMG，不支持 Intel Mac。
 
 ## 安装
 
@@ -51,7 +51,7 @@ brew install --cask --no-quarantine mira
 
 ## 校验 SHA-256
 
-Cask 锁定了 `Mira_macOS_<version>_universal.dmg` 的 SHA-256。Homebrew 会在安装时自动校验。如需手动核对：
+Cask 锁定了 `Mira_macOS_<version>_aarch64.dmg` 的 SHA-256。Homebrew 会在安装时自动校验。如需手动核对：
 
 ```bash
 brew info --cask mira
@@ -78,7 +78,7 @@ shasum -a 256 /Applications/Mira.app/..  # 与 brew info 输出的值对比
 git clone https://github.com/hello-yunshu/homebrew-mira.git
 cd homebrew-mira
 VERSION=0.5.2  # 替换为目标版本
-SHA256=$(curl -sSL "https://github.com/hello-yunshu/mira-mouse/releases/download/app/v${VERSION}/Mira_macOS_${VERSION}_universal.dmg" | shasum -a 256 | awk '{print $1}')
+SHA256=$(curl -sSL "https://github.com/hello-yunshu/mira-mouse/releases/download/app/v${VERSION}/Mira_macOS_${VERSION}_aarch64.dmg" | shasum -a 256 | awk '{print $1}')
 sed -i.bak -e "s/^  version .*/  version \"${VERSION}\"/" \
            -e "s/^  sha256 .*/  sha256 \"${SHA256}\"/" Casks/mira.rb
 rm Casks/mira.rb.bak

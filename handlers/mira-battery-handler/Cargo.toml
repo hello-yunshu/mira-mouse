@@ -1,6 +1,6 @@
 [package]
 name = "mira-battery-handler"
-version = "0.8.2"
+version = "0.8.3"
 edition = "2021"
 publish = false
 description = "Mira battery prediction handler for the generic Rill runtime."

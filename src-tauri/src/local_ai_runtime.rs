@@ -282,7 +282,7 @@ mod tests {
         let handshake = RuntimeResponseV2::Handshake {
             request_id: "mira-handshake".into(),
             api_version: RUNTIME_API_VERSION,
-            runtime_version: "0.7.0".into(),
+            runtime_version: "0.7.1".into(),
             model_pack_id: "mira.battery.default".into(),
             model_pack_version: "0.5.0".into(),
             capabilities: vec![BATTERY_USAGE_CAPABILITY.into()],

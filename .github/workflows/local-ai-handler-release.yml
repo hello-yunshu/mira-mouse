@@ -1,0 +1,312 @@
+name: Publish Local AI Handler
+
+on:
+  workflow_dispatch:
+    inputs:
+      handler-version:
+        description: 'New Mira handler version (stable semver, e.g. 0.8.3)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: local-ai-release
+  cancel-in-progress: false
+
+env:
+  MIRA_INDEX_KEY_ID: mira-rill-2026-002
+  MIRA_INDEX_PUBLIC_KEY_HEX: ae4633988fd9e02a824bb9072f1dcf470a0b1d74bbc7905aaea00a62139e1479
+  HANDLER_KEY_ID: mira-handler-2026-001
+  HANDLER_PUBLIC_KEY_HEX: cefbe96db58196e4b3a8455f427ca75efaedacb68792ae82d7d06dd8c86f193e
+
+jobs:
+  publish-handler:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust, Node and WASM tooling
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - run: |
+          rustup toolchain install stable --profile minimal
+          rustup target add --toolchain stable wasm32-unknown-unknown
+          cargo install wasm-tools --locked
+
+      - name: Validate release metadata
+        id: meta
+        env:
+          VERSION: ${{ inputs.handler-version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          manifest_version=$(node -p "require('./handlers/mira-battery-handler/manifest.template.json').version")
+          min_runtime_version=$(node -p "require('./handlers/mira-battery-handler/manifest.template.json').minRuntimeVersion")
+          cargo_version=$(sed -n 's/^version = "\([^"]*\)"$/\1/p' handlers/mira-battery-handler/Cargo.toml | head -n1)
+          test "$VERSION" = "$manifest_version"
+          test "$VERSION" = "$cargo_version"
+          [[ "$min_runtime_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          {
+            echo "version=$VERSION"
+            echo "min-runtime-version=$min_runtime_version"
+            echo "tag=local-ai-handler-v$VERSION"
+            echo "asset=mira-battery-handler-$VERSION.rillhandler"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Refuse an existing immutable handler release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Handler release $TAG already exists and is immutable" >&2
+            exit 1
+          fi
+
+      - name: Download and verify current stable deployment index
+        id: deployment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/current
+          if gh release view local-ai-stable --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release download local-ai-stable \
+              --repo "$GITHUB_REPOSITORY" \
+              --pattern local-ai-stable-index.json \
+              --dir artifacts/current
+          else
+            gh release download \
+              --repo "$GITHUB_REPOSITORY" \
+              --pattern local-ai-stable-index.json \
+              --dir artifacts/current
+          fi
+          node scripts/inspect-mira-local-ai-index.mjs \
+            artifacts/current/local-ai-stable-index.json
+
+      - name: Checkout Rill source matching the active Runtime
+        uses: actions/checkout@v7
+        with:
+          repository: hello-yunshu/rill-ml
+          ref: ${{ steps.deployment.outputs.runtime-tag }}
+          path: RillML
+
+      - name: Cache cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin/wasm-tools
+            target
+            handlers/mira-battery-handler/target
+          key: cargo-handler-release-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-handler-release-${{ runner.os }}-
+            cargo-rust-${{ runner.os }}-
+
+      - name: Build Mira WASM handler component
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          MIRA_HANDLER_VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          cargo build --locked --release \
+            --manifest-path handlers/mira-battery-handler/Cargo.toml \
+            --target wasm32-unknown-unknown
+          wasm-tools component new \
+            handlers/mira-battery-handler/target/wasm32-unknown-unknown/release/mira-battery-handler.wasm \
+            -o artifacts/mira-battery-handler.component.wasm
+          node scripts/build-handler-manifest.mjs \
+            handlers/mira-battery-handler/manifest.template.json \
+            artifacts/mira-battery-handler.component.wasm \
+            "$VERSION" \
+            artifacts/handler-manifest.json
+
+      - name: Sign and verify handler package
+        env:
+          RILL_SIGNING_KEY_HEX: ${{ secrets.HANDLER_SIGNING_KEY }}
+          ASSET: ${{ steps.meta.outputs.asset }}
+        run: |
+          set -euo pipefail
+          test -n "$RILL_SIGNING_KEY_HEX"
+          cargo run --release --manifest-path RillML/crates/rill-runtime/Cargo.toml \
+            --bin rill-pack -- create-handler \
+            --manifest artifacts/handler-manifest.json \
+            --module artifacts/mira-battery-handler.component.wasm \
+            --output "artifacts/$ASSET"
+          cargo run --release --manifest-path RillML/crates/rill-runtime/Cargo.toml \
+            --bin rill-pack -- inspect-handler \
+            --handler "artifacts/$ASSET" \
+            --key-id "$HANDLER_KEY_ID" \
+            --public-key-hex "$HANDLER_PUBLIC_KEY_HEX" \
+            > artifacts/handler-inspection.json
+          jq -e \
+            --arg version "${{ steps.meta.outputs.version }}" \
+            --arg minimum "${{ steps.meta.outputs.min-runtime-version }}" '
+            .id == "mira.battery.handler" and
+            .version == $version and
+            .publisherKeyId == "mira-handler-2026-001" and
+            .handlerApiVersion == 1 and
+            .minRuntimeVersion == $minimum and
+            .signatureVerified == true
+          ' artifacts/handler-inspection.json
+
+      - name: Probe the real Runtime, model and new handler combination
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          ASSET: ${{ steps.meta.outputs.asset }}
+        run: |
+          set -euo pipefail
+          index=artifacts/current/local-ai-stable-index.json
+          runtime_url=$(jq -r '.payload.artifacts[] | select(.kind == "runtime" and .id == "rill-runtime" and .targetOs == "linux" and .targetArch == "x86_64") | .url' "$index")
+          runtime_version=$(jq -r '.payload.artifacts[] | select(.kind == "runtime" and .id == "rill-runtime" and .targetOs == "linux" and .targetArch == "x86_64") | .version' "$index")
+          runtime_sha=$(jq -r '.payload.artifacts[] | select(.kind == "runtime" and .id == "rill-runtime" and .targetOs == "linux" and .targetArch == "x86_64") | .sha256' "$index")
+          runtime_size=$(jq -r '.payload.artifacts[] | select(.kind == "runtime" and .id == "rill-runtime" and .targetOs == "linux" and .targetArch == "x86_64") | .size' "$index")
+          model_url=$(jq -r '.payload.artifacts[] | select(.kind == "model" and .id == "mira-battery-model") | .url' "$index")
+          model_sha=$(jq -r '.payload.artifacts[] | select(.kind == "model" and .id == "mira-battery-model") | .sha256' "$index")
+          model_size=$(jq -r '.payload.artifacts[] | select(.kind == "model" and .id == "mira-battery-model") | .size' "$index")
+          for value in "$runtime_url" "$runtime_version" "$runtime_sha" "$runtime_size" "$model_url" "$model_sha" "$model_size"; do
+            test -n "$value"
+            test "$value" != null
+          done
+          curl --fail --location --retry 3 --output artifacts/rill-runtime "$runtime_url"
+          curl --fail --location --retry 3 --output artifacts/current-model.rillpack "$model_url"
+          test "$(stat -c %s artifacts/rill-runtime)" = "$runtime_size"
+          test "$(stat -c %s artifacts/current-model.rillpack)" = "$model_size"
+          echo "$runtime_sha  artifacts/rill-runtime" | sha256sum --check --strict
+          echo "$model_sha  artifacts/current-model.rillpack" | sha256sum --check --strict
+          chmod 755 artifacts/rill-runtime
+          client_version=$(node scripts/app-version.mjs)
+          handshake_request=$(jq -nc --arg version "$client_version" '{
+            method: "handshake",
+            requestId: "handler-release-handshake",
+            apiVersion: 2,
+            clientName: "mira-handler-release",
+            clientVersion: $version
+          }')
+          invoke_request=$(jq -nc '{
+            method: "invoke",
+            requestId: "handler-release-invoke",
+            apiVersion: 2,
+            capability: "batteryUsage",
+            input: {
+              nowUnixMs: 1784080800000,
+              nowTimezoneOffsetMinutes: 480,
+              samples: [{
+                atUnixMs: 1784077200000,
+                timezoneOffsetMinutes: 480,
+                percentage: 80,
+                charging: false
+              }]
+            }
+          }')
+          responses=artifacts/handler-responses.jsonl
+          printf '%s\n' "$handshake_request" "$invoke_request" \
+          | artifacts/rill-runtime serve \
+              --pack artifacts/current-model.rillpack \
+              --handler "artifacts/$ASSET" \
+              --trust-key "$MIRA_INDEX_KEY_ID=$MIRA_INDEX_PUBLIC_KEY_HEX" \
+              --handler-trust-key "$HANDLER_KEY_ID=$HANDLER_PUBLIC_KEY_HEX" \
+          > "$responses"
+          test "$(wc -l < "$responses" | tr -d ' ')" = 2
+          sed -n '1p' "$responses" | jq -e --arg version "$VERSION" --arg runtime "$runtime_version" '
+            .kind == "handshake" and
+            .runtimeVersion == $runtime and
+            .modelPackId == "mira-battery-model" and
+            .handlerId == "mira.battery.handler" and
+            .handlerVersion == $version and
+            .handlerApiVersion == 1 and
+            (.effectiveCapabilities | index("batteryUsage")) != null
+          '
+          sed -n '2p' "$responses" \
+          | jq -e '.kind == "result" and .requestId == "handler-release-invoke"'
+
+      - name: Build, sign and verify next stable index
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          ASSET: ${{ steps.meta.outputs.asset }}
+          RILL_SIGNING_KEY_HEX: ${{ secrets.RILL_V2_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$RILL_SIGNING_KEY_HEX"
+          node scripts/build-handler-release-index.mjs \
+            artifacts/current/local-ai-stable-index.json \
+            "artifacts/$ASSET" \
+            "$VERSION" \
+            "$TAG" \
+            artifacts/local-ai-index-payload.json
+          cargo run --release --manifest-path RillML/crates/rill-runtime/Cargo.toml \
+            --bin rill-pack -- sign-index \
+            --payload artifacts/local-ai-index-payload.json \
+            --output artifacts/local-ai-stable-index.json
+          cargo run --release --manifest-path RillML/crates/rill-runtime/Cargo.toml \
+            --bin rill-pack -- verify-index \
+            --index artifacts/local-ai-stable-index.json \
+            --key-id "$MIRA_INDEX_KEY_ID" \
+            --public-key-hex "$MIRA_INDEX_PUBLIC_KEY_HEX"
+
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: |
+            artifacts/${{ steps.meta.outputs.asset }}
+            artifacts/local-ai-stable-index.json
+
+      - name: Publish immutable handler release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          ASSET: ${{ steps.meta.outputs.asset }}
+          MIN_RUNTIME_VERSION: ${{ steps.meta.outputs.min-runtime-version }}
+          CURRENT_RUNTIME_VERSION: ${{ steps.deployment.outputs.runtime-version }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" \
+            "artifacts/$ASSET" \
+            artifacts/local-ai-stable-index.json \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            --title "Mira Local AI Handler $VERSION" \
+            --notes "Mira-owned battery handler update. Requires Rill runtime $MIN_RUNTIME_VERSION or newer; validated with the active $CURRENT_RUNTIME_VERSION runtime."
+
+      - name: Move dedicated stable pointer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if ! gh release view local-ai-stable --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create local-ai-stable \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --prerelease \
+              --title "Mira Local AI stable index" \
+              --notes "Machine-readable signed pointer for independently updated local AI artifacts."
+          fi
+          gh release upload local-ai-stable \
+            artifacts/local-ai-stable-index.json \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
+
+      - name: Job summary
+        run: |
+          {
+            echo "## Mira handler release"
+            echo ""
+            echo "- Handler: ${{ steps.meta.outputs.version }}"
+            echo "- Rill minimum: ${{ steps.meta.outputs.min-runtime-version }}"
+            echo "- Validated Runtime: ${{ steps.deployment.outputs.runtime-version }}"
+            echo "- Immutable tag: ${{ steps.meta.outputs.tag }}"
+            echo "- Stable pointer: local-ai-stable"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -89,13 +89,29 @@ jobs:
       - name: Verify plugin lock against published release assets
         run: cargo run --package xtask -- plugins check-lock
 
+  rill-release:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.rill.outputs.version }}
+      tag: ${{ steps.rill.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with: { node-version: 22 }
+      - name: Resolve and verify latest signed Rill stable release
+        id: rill
+        run: node scripts/resolve-latest-rill-release.mjs
+
   model-pack:
     # Release/dispatch builds always need the signed pack. Same-repository PRs
     # can use the repository secret as well; fork PRs skip packaging entirely
     # instead of publishing an artifact with the zero-byte source placeholder.
-    if: ${{ always() && needs.rust.result != 'failure' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-    needs: [rust]
+    if: ${{ always() && needs.rust.result != 'failure' && needs.rill-release.result == 'success' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    needs: [rust, rill-release]
     uses: ./.github/workflows/model-pack.yml
+    with:
+      rill-version: ${{ needs.rill-release.outputs.version }}
     permissions:
       contents: read
     secrets:
@@ -103,8 +119,8 @@ jobs:
       HANDLER_SIGNING_KEY: ${{ secrets.HANDLER_SIGNING_KEY }}
 
   tauri-bundle:
-    needs: [frontend, rust, configuration, plugin-lock, model-pack]
-    if: ${{ !cancelled() && needs.frontend.result != 'failure' && needs.rust.result != 'failure' && needs.configuration.result != 'failure' && needs.plugin-lock.result != 'failure' && needs.model-pack.result == 'success' }}
+    needs: [frontend, rust, configuration, plugin-lock, model-pack, rill-release]
+    if: ${{ !cancelled() && needs.frontend.result != 'failure' && needs.rust.result != 'failure' && needs.configuration.result != 'failure' && needs.plugin-lock.result != 'failure' && needs.model-pack.result == 'success' && needs.rill-release.result == 'success' }}
     strategy:
       fail-fast: false
       matrix:
@@ -128,7 +144,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           repository: hello-yunshu/rill-ml
-          ref: v0.7.1
+          ref: ${{ needs.rill-release.outputs.tag }}
           path: RillML
       - uses: actions/setup-node@v6
         with: { node-version: 22, cache: npm }
@@ -177,17 +193,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ "$RUNNER_OS" = "macOS" ]; then
-            cargo run --package xtask -- dist-sidecar --target aarch64-apple-darwin
-            cargo run --package xtask -- dist-sidecar --target x86_64-apple-darwin
-            lipo -create \
-              src-tauri/binaries/rill-runtime-aarch64-apple-darwin \
-              src-tauri/binaries/rill-runtime-x86_64-apple-darwin \
-              -output src-tauri/binaries/rill-runtime-universal-apple-darwin
-            /usr/bin/codesign --force --sign - src-tauri/binaries/rill-runtime-universal-apple-darwin
-          else
-            cargo run --package xtask -- dist-sidecar --target ${{ matrix.target }}
-          fi
+          cargo run --package xtask -- dist-sidecar \
+            --target ${{ matrix.target }} \
+            --version ${{ needs.rill-release.outputs.version }}
       - run: cargo run --package xtask -- plugins sync --locked
       - name: Clean stale bundle outputs
         # 清掉 cargo cache 里残留的旧版本 bundle 产物，避免旧版本文件被 upload-artifact 的 glob 命中后混入新 release
@@ -207,11 +215,11 @@ jobs:
             echo "Release build: signed, updater artifacts"
             case "$RUNNER_OS" in
               macOS)
-                rustup target add aarch64-apple-darwin x86_64-apple-darwin
+                rustup target add aarch64-apple-darwin
                 # --bundles app,dmg: app 是 updater-enabled target（触发 .app.tar.gz + .sig 生成），
                 # dmg 是最终分发产物（基于 .app 打包，使用 tauri.conf.json > bundle.macOS.dmg 配置）。
                 # 注意: 单独 --bundles dmg 不触发 updater artifacts（dmg 不在 updater-enabled 列表）。
-                npm exec tauri build -- --target universal-apple-darwin --bundles app,dmg --config '{"bundle":{"createUpdaterArtifacts":true}}'
+                npm exec tauri build -- --target aarch64-apple-darwin --bundles app,dmg --config '{"bundle":{"createUpdaterArtifacts":true}}'
                 ;;
               Windows)
                 npm exec tauri build -- --bundles nsis --config '{"bundle":{"createUpdaterArtifacts":true}}'
@@ -221,12 +229,26 @@ jobs:
                 ;;
             esac
           fi
+      - name: Verify macOS bundled sidecar
+        if: runner.os == 'macOS' && github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          app_path=$(find target -type d -path '*/bundle/macos/Mira.app' -print -quit)
+          test -n "$app_path"
+          executable="$app_path/Contents/MacOS/mira"
+          sidecar="$app_path/Contents/MacOS/rill-runtime"
+          test -x "$executable"
+          test -x "$sidecar"
+          test "$(lipo -archs "$executable")" = "arm64"
+          test "$(lipo -archs "$sidecar")" = "arm64"
+          /usr/bin/codesign --verify --strict "$executable"
+          /usr/bin/codesign --verify --strict "$sidecar"
       - name: Upload bundle artifact
         uses: actions/upload-artifact@v7
         with:
           name: mira-bundle-${{ matrix.os }}
           path: |
-            target/**/bundle/**/*_universal.dmg
             target/**/bundle/**/*_aarch64.dmg
             target/**/bundle/**/*.app.tar.gz
             target/**/bundle/**/*.app.tar.gz.sig
@@ -245,21 +267,23 @@ jobs:
           fi
 
   release-publish:
-    needs: [tauri-bundle, model-pack]
+    needs: [tauri-bundle, model-pack, rill-release]
     if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-22.04
     timeout-minutes: 25
     permissions: { contents: write, id-token: write, attestations: write }
     environment: release
     concurrency:
-      group: app-release
+      # Shared with the handler-only workflow so both writers serialize updates
+      # to the signed local-ai-stable pointer.
+      group: local-ai-release
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v7
       - uses: actions/checkout@v7
         with:
           repository: hello-yunshu/rill-ml
-          ref: v0.7.1
+          ref: ${{ needs.rill-release.outputs.tag }}
           path: RillML
       - uses: actions/download-artifact@v8
         with:
@@ -282,7 +306,8 @@ jobs:
           current_version=$(node scripts/app-version.mjs)
           if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
             if [ "$OVERWRITE" = "true" ]; then
-              tag=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null || echo "")
+              tag=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName \
+                --jq '[.[] | select(.tagName | startswith("app/v"))][0].tagName' 2>/dev/null || echo "")
               test -n "$tag" || { echo "No existing release to overwrite"; exit 1; }
               version="${tag#app/v}"
               test "$version" = "$current_version" || {
@@ -295,7 +320,8 @@ jobs:
               test "$version" = "$current_version"
             fi
           else
-            latest_tag=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null || echo "")
+            latest_tag=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName \
+              --jq '[.[] | select(.tagName | startswith("app/v"))][0].tagName' 2>/dev/null || echo "")
             if [ -z "$latest_tag" ]; then
               tag="app/v$current_version"
               version="$current_version"
@@ -326,14 +352,14 @@ jobs:
           PUB_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           mkdir publish-assets
           find release-assets -type f \( \
-            -name '*_universal.dmg' -o -name '*.app.tar.gz' -o -name '*.app.tar.gz.sig' -o \
+            -name '*_aarch64.dmg' -o -name '*.app.tar.gz' -o -name '*.app.tar.gz.sig' -o \
             -name '*-setup.exe' -o -name '*-setup.exe.sig' -o \
             -name '*.AppImage' -o -name '*.AppImage.sig' \
           \) -exec cp {} publish-assets/ \;
           find release-assets/local-ai-packs -type f \( -name 'model.rillpack' -o -name 'handler.rillhandler' \) -exec cp {} publish-assets/ \;
           (
             cd publish-assets
-            # macOS: DMG 自带版本号（Mira_<v>_universal.dmg），仅替换前缀；
+            # macOS: DMG 自带版本号和 ARM64 后缀，仅替换前缀；
             # .app.tar.gz / .sig 默认不带版本号，需手动注入 $VERSION 以保持命名一致性
             for f in *.dmg *.app.tar.gz *.app.tar.gz.sig; do
               [ -f "$f" ] || continue
@@ -384,7 +410,6 @@ jobs:
             "pub_date": "$PUB_DATE",
             "platforms": {
               "darwin-aarch64": { "signature": "$MAC_SIG", "url": "$MAC_URL_HEY" },
-              "darwin-x86_64": { "signature": "$MAC_SIG", "url": "$MAC_URL_HEY" },
               "linux-x86_64": { "signature": "$LINUX_SIG", "url": "$LINUX_URL_HEY" },
               "windows-x86_64": { "signature": "$WIN_SIG", "url": "$WIN_URL_HEY" }
             }
@@ -397,7 +422,6 @@ jobs:
             "pub_date": "$PUB_DATE",
             "platforms": {
               "darwin-aarch64": { "signature": "$MAC_SIG", "url": "${CN_PROXY}${MAC_URL}" },
-              "darwin-x86_64": { "signature": "$MAC_SIG", "url": "${CN_PROXY}${MAC_URL}" },
               "linux-x86_64": { "signature": "$LINUX_SIG", "url": "${CN_PROXY}${LINUX_URL}" },
               "windows-x86_64": { "signature": "$WIN_SIG", "url": "${CN_PROXY}${WIN_URL}" }
             }
@@ -405,15 +429,37 @@ jobs:
           EOF
       - name: Generate and sign local AI stable index
         env:
+          GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.meta.outputs.tag }}
-          VERSION: ${{ steps.meta.outputs.version }}
+          MODEL_VERSION: ${{ needs.model-pack.outputs.model-version }}
+          HANDLER_VERSION: ${{ needs.model-pack.outputs.handler-version }}
           RILL_SIGNING_KEY_HEX: ${{ secrets.RILL_V2_SIGNING_KEY }}
         run: |
           set -euo pipefail
           rustup toolchain install stable --profile minimal
-          RUNTIME_VERSION=$(sed -n 's/^const RILL_RUNTIME_VERSION: &str = "\([^"]*\)";$/\1/p' xtask/src/main.rs)
+          RUNTIME_VERSION='${{ needs.rill-release.outputs.version }}'
           test -n "$RUNTIME_VERSION"
-          node scripts/build-local-ai-release-index.mjs publish-assets "$RUNTIME_VERSION" "$VERSION" "$VERSION" "$TAG" local-ai-index-payload.json
+          current_index=()
+          mkdir -p current-local-ai-index
+          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/local-ai-stable" \
+            >/dev/null 2>current-local-ai-index/release-query.err; then
+            gh release download local-ai-stable \
+              --repo "$GITHUB_REPOSITORY" \
+              --pattern local-ai-stable-index.json \
+              --dir current-local-ai-index
+            RUSTUP_TOOLCHAIN=stable cargo run --release --manifest-path RillML/crates/rill-runtime/Cargo.toml \
+              --bin rill-pack -- verify-index \
+              --index current-local-ai-index/local-ai-stable-index.json \
+              --key-id mira-rill-2026-002 \
+              --public-key-hex ae4633988fd9e02a824bb9072f1dcf470a0b1d74bbc7905aaea00a62139e1479
+            current_index+=(current-local-ai-index/local-ai-stable-index.json)
+          elif ! grep -q 'HTTP 404' current-local-ai-index/release-query.err; then
+            cat current-local-ai-index/release-query.err >&2
+            exit 1
+          fi
+          node scripts/build-local-ai-release-index.mjs \
+            publish-assets "$RUNTIME_VERSION" "$MODEL_VERSION" "$HANDLER_VERSION" "$TAG" \
+            local-ai-index-payload.json "${current_index[@]}"
           RUSTUP_TOOLCHAIN=stable cargo run --release --manifest-path RillML/crates/rill-runtime/Cargo.toml \
             --bin rill-pack -- sign-index \
             --payload local-ai-index-payload.json \
@@ -453,6 +499,24 @@ jobs:
               --title "Mira $VERSION" \
               --notes-file release-notes.md
           fi
+      - name: Move dedicated local AI stable pointer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if ! gh release view local-ai-stable --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create local-ai-stable \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$TARGET" \
+              --prerelease \
+              --title "Mira Local AI stable index" \
+              --notes "Machine-readable signed pointer for independently updated local AI artifacts."
+          fi
+          gh release upload local-ai-stable \
+            local-ai-stable-index.json \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
 
   homebrew-tap:
     needs: [release-publish]
@@ -479,7 +543,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          tag=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 --json tagName --jq '.[0].tagName')
+          tag=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName \
+            --jq '[.[] | select(.tagName | startswith("app/v"))][0].tagName')
+          test -n "$tag"
           version="${tag#app/v}"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
@@ -494,8 +560,8 @@ jobs:
           set -euo pipefail
           mkdir -p artifacts
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
-            --pattern "Mira_macOS_${VERSION}_universal.dmg" --dir artifacts
-          dmg="artifacts/Mira_macOS_${VERSION}_universal.dmg"
+            --pattern "Mira_macOS_${VERSION}_aarch64.dmg" --dir artifacts
+          dmg="artifacts/Mira_macOS_${VERSION}_aarch64.dmg"
           test -f "$dmg"
           sha=$(sha256sum "$dmg" | awk '{print $1}')
           echo "sha256=$sha" >> "$GITHUB_OUTPUT"

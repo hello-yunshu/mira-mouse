@@ -4,9 +4,20 @@ on:
   workflow_call:
     inputs:
       pack-version:
-        description: 'Mira model/handler version (defaults to app version)'
+        description: 'Optional assertion; must equal both checked-in model and handler versions'
         required: false
         type: string
+      rill-version:
+        description: 'Optional verified Rill release snapshot; defaults to latest stable'
+        required: false
+        type: string
+    outputs:
+      model-version:
+        description: 'Signed model version'
+        value: ${{ jobs.build-local-ai-packs.outputs.model-version }}
+      handler-version:
+        description: 'Signed handler version'
+        value: ${{ jobs.build-local-ai-packs.outputs.handler-version }}
     secrets:
       RILL_V2_SIGNING_KEY:
         description: 'Ed25519 seed for the Rill v2 model pack and release index'
@@ -17,8 +28,8 @@ on:
   workflow_dispatch:
     inputs:
       pack-version:
-        description: 'Model and handler version (e.g. 0.8.2)'
-        required: true
+        description: 'Optional assertion matching checked-in model and handler versions'
+        required: false
         type: string
 
 permissions:
@@ -33,16 +44,27 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     outputs:
-      pack-version: ${{ steps.meta.outputs.pack-version }}
+      model-version: ${{ steps.meta.outputs.model-version }}
+      handler-version: ${{ steps.meta.outputs.handler-version }}
       model-sha256: ${{ steps.sha.outputs.model-sha256 }}
       handler-sha256: ${{ steps.sha.outputs.handler-sha256 }}
     steps:
       - uses: actions/checkout@v7
-      - name: Checkout Rill 0.7.1 source (for rill-pack tool)
+      - name: Resolve latest signed Rill stable release
+        id: rill
+        env:
+          RILL_VERSION: ${{ inputs.rill-version }}
+        run: |
+          if [ -n "$RILL_VERSION" ]; then
+            node scripts/resolve-latest-rill-release.mjs --version "$RILL_VERSION"
+          else
+            node scripts/resolve-latest-rill-release.mjs
+          fi
+      - name: Checkout resolved Rill source (for rill-pack tool)
         uses: actions/checkout@v7
         with:
           repository: hello-yunshu/rill-ml
-          ref: v0.7.1
+          ref: ${{ steps.rill.outputs.tag }}
           path: RillML
 
       - name: Install Rust and WASM tooling
@@ -65,17 +87,25 @@ jobs:
             cargo-local-ai-packs-${{ runner.os }}-
             cargo-rust-${{ runner.os }}-
 
-      - name: Resolve pack version
+      - name: Resolve independent model and handler versions
         id: meta
+        env:
+          ASSERTED_VERSION: ${{ inputs.pack-version }}
         shell: bash
         run: |
           set -euo pipefail
-          if [ -n "${{ inputs.pack-version }}" ]; then
-            version="${{ inputs.pack-version }}"
-          else
-            version=$(node scripts/app-version.mjs)
+          model_version=$(node -p "require('./local-ai/model-manifest.json').version")
+          handler_manifest_version=$(node -p "require('./handlers/mira-battery-handler/manifest.template.json').version")
+          handler_cargo_version=$(sed -n 's/^version = "\([^"]*\)"$/\1/p' handlers/mira-battery-handler/Cargo.toml | head -n1)
+          test -n "$model_version"
+          test -n "$handler_manifest_version"
+          test "$handler_manifest_version" = "$handler_cargo_version"
+          if [ -n "$ASSERTED_VERSION" ]; then
+            test "$ASSERTED_VERSION" = "$model_version"
+            test "$ASSERTED_VERSION" = "$handler_manifest_version"
           fi
-          echo "pack-version=$version" >> "$GITHUB_OUTPUT"
+          echo "model-version=$model_version" >> "$GITHUB_OUTPUT"
+          echo "handler-version=$handler_manifest_version" >> "$GITHUB_OUTPUT"
 
       - name: Build signed model pack
         env:
@@ -84,7 +114,7 @@ jobs:
           set -euo pipefail
           mkdir -p artifacts
           node scripts/build-model-manifest.mjs \
-            local-ai/model-manifest.json "${{ steps.meta.outputs.pack-version }}" \
+            local-ai/model-manifest.json "${{ steps.meta.outputs.model-version }}" \
             artifacts/model-manifest.json
           cargo run --release --manifest-path RillML/crates/rill-runtime/Cargo.toml \
             --bin rill-pack -- create \
@@ -93,6 +123,8 @@ jobs:
             --output artifacts/model.rillpack
 
       - name: Build WASM handler component
+        env:
+          MIRA_HANDLER_VERSION: ${{ steps.meta.outputs.handler-version }}
         run: |
           set -euo pipefail
           cargo build --locked --release \
@@ -104,7 +136,7 @@ jobs:
           node scripts/build-handler-manifest.mjs \
             handlers/mira-battery-handler/manifest.template.json \
             artifacts/mira-battery-handler.component.wasm \
-            "${{ steps.meta.outputs.pack-version }}" \
+            "${{ steps.meta.outputs.handler-version }}" \
             artifacts/handler-manifest.json
 
       - name: Sign handler pack with its independent key
@@ -154,9 +186,11 @@ jobs:
           {
             echo "## Local AI Pack Summary"
             echo ""
-            echo "- Version: ${{ steps.meta.outputs.pack-version }}"
+            echo "- Model version: ${{ steps.meta.outputs.model-version }}"
+            echo "- Handler version: ${{ steps.meta.outputs.handler-version }}"
             echo "- Model SHA-256: ${{ steps.sha.outputs.model-sha256 }}"
             echo "- Handler SHA-256: ${{ steps.sha.outputs.handler-sha256 }}"
+            echo "- Rill release: ${{ steps.rill.outputs.version }}"
             echo "- Rill handler ABI: 1"
             echo "- Rill runtime IPC: 2"
           } >> "$GITHUB_STEP_SUMMARY"

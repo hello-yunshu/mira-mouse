@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use rill_runtime_protocol::{
+    ReleaseArtifactKind, SignedReleaseIndex, RUNTIME_API_VERSION, RUNTIME_ARTIFACT_ID,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -12,8 +16,12 @@ use zip::ZipArchive;
 const MAX_PLUGIN_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_INDEX_BYTES: u64 = 1024 * 1024;
 const MAX_RUNTIME_BYTES: u64 = 64 * 1024 * 1024;
-const RILL_RUNTIME_VERSION: &str = "0.7.1";
 const RILL_ML_RELEASE_BASE: &str = "https://github.com/hello-yunshu/rill-ml/releases/download";
+const RILL_ML_LATEST_INDEX_URL: &str =
+    "https://github.com/hello-yunshu/rill-ml/releases/latest/download/stable-index.json";
+const RILL_INDEX_PUBLISHER_KEY_ID: &str = "rillml-examples-2026-001";
+const RILL_INDEX_PUBLIC_KEY_HEX: &str =
+    "29fd1fc2f22bd7e405aec167ff0a0d8de791f011c415075d4c5f9f64fd93fc2e";
 
 #[derive(Parser)]
 struct Cli {
@@ -36,6 +44,9 @@ enum Command {
         /// 下载目标，缺省为 host target。
         #[arg(long)]
         target: Option<String>,
+        /// 固定到指定稳定版本；缺省时解析 Rill 最新签名 stable index。
+        #[arg(long)]
+        version: Option<String>,
         /// 保留兼容性参数（预编译二进制始终为 release）。
         #[arg(long, default_value_t = true)]
         release: bool,
@@ -131,7 +142,11 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
-        Command::DistSidecar { target, release } => dist_sidecar(target.as_deref(), release),
+        Command::DistSidecar {
+            target,
+            version,
+            release,
+        } => dist_sidecar(target.as_deref(), version.as_deref(), release),
     }
 }
 
@@ -317,27 +332,43 @@ fn release_asset_url_parts(repository: &str, release_tag: &str, asset: &str) -> 
 }
 
 fn download_bounded(url: &str, max_bytes: u64) -> Result<Vec<u8>> {
-    let response = reqwest::blocking::Client::builder()
+    let client = reqwest::blocking::Client::builder()
         .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(60))
-        .user_agent("mira-xtask-plugin-sync/0.1")
-        .build()?
-        .get(url)
-        .send()
-        .with_context(|| format!("download {url}"))?
-        .error_for_status()
-        .with_context(|| format!("download {url}"))?;
-    if response
-        .content_length()
-        .is_some_and(|length| length > max_bytes)
-    {
-        bail!("download exceeds {max_bytes} byte limit");
+        .timeout(Duration::from_secs(180))
+        .user_agent("mira-xtask-release-fetch/1")
+        .build()?;
+    let mut last_error = None;
+    for attempt in 1..=3 {
+        let response = client
+            .get(url)
+            .send()
+            .and_then(|response| response.error_for_status());
+        match response {
+            Ok(response) => {
+                if response
+                    .content_length()
+                    .is_some_and(|length| length > max_bytes)
+                {
+                    bail!("download exceeds {max_bytes} byte limit");
+                }
+                match response.bytes() {
+                    Ok(bytes) => {
+                        if bytes.len() as u64 > max_bytes {
+                            bail!("download exceeds {max_bytes} byte limit");
+                        }
+                        return Ok(bytes.to_vec());
+                    }
+                    Err(error) => last_error = Some(anyhow::Error::new(error)),
+                }
+            }
+            Err(error) => last_error = Some(anyhow::Error::new(error)),
+        }
+        if attempt < 3 {
+            std::thread::sleep(Duration::from_millis(500 * attempt));
+        }
     }
-    let bytes = response.bytes().context("read plugin download")?;
-    if bytes.len() as u64 > max_bytes {
-        bail!("download exceeds {max_bytes} byte limit");
-    }
-    Ok(bytes.to_vec())
+    Err(last_error.context("download failed without an error")?)
+        .with_context(|| format!("download {url} after 3 attempts"))
 }
 
 fn download_text(url: &str) -> Result<String> {
@@ -507,7 +538,7 @@ fn encode_path_segment(value: &str) -> String {
 /// 按 Tauri sidecar 约定拷到 `src-tauri/binaries/`。Tauri `externalBin` 要求文件名形如
 /// `rill-runtime-<target-triple>[.exe]`，
 /// 其中 target-triple 必须与构建 Tauri 应用时使用的 `--target` 一致。
-fn dist_sidecar(target: Option<&str>, _release: bool) -> Result<()> {
+fn dist_sidecar(target: Option<&str>, version: Option<&str>, _release: bool) -> Result<()> {
     let target_triple = match target {
         Some(t) => t.to_string(),
         None => host_target_triple()?,
@@ -531,9 +562,15 @@ fn dist_sidecar(target: Option<&str>, _release: bool) -> Result<()> {
     fs::create_dir_all(&dest_dir)?;
 
     let (target_os, target_arch) = rill_ml_platform(&target_triple)?;
-    let bytes = download_runtime_binary(target_os, target_arch)?;
+    let (runtime_version, bytes) = download_runtime_binary(target_os, target_arch, version)?;
     let dest = dest_dir.join(&binary_name);
     fs::write(&dest, &bytes).with_context(|| format!("write sidecar to {}", dest.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&dest, fs::Permissions::from_mode(0o755))
+            .with_context(|| format!("make sidecar executable at {}", dest.display()))?;
+    }
     #[cfg(target_os = "macos")]
     if target_triple.contains("apple-darwin") {
         let status = StdCommand::new("/usr/bin/codesign")
@@ -546,7 +583,8 @@ fn dist_sidecar(target: Option<&str>, _release: bool) -> Result<()> {
         }
     }
     println!(
-        "dist-sidecar: downloaded {} → {}",
+        "dist-sidecar: downloaded Rill {} for {} → {}",
+        runtime_version,
         target_triple,
         dest.display()
     );
@@ -557,7 +595,6 @@ fn dist_sidecar(target: Option<&str>, _release: bool) -> Result<()> {
 fn rill_ml_platform(target_triple: &str) -> Result<(&'static str, &'static str)> {
     match target_triple {
         "aarch64-apple-darwin" => Ok(("macos", "aarch64")),
-        "x86_64-apple-darwin" => Ok(("macos", "x86_64")),
         "x86_64-unknown-linux-gnu" => Ok(("linux", "x86_64")),
         "x86_64-pc-windows-msvc" => Ok(("windows", "x86_64")),
         other => bail!("unsupported target triple for rill-runtime download: {other}"),
@@ -565,61 +602,133 @@ fn rill_ml_platform(target_triple: &str) -> Result<(&'static str, &'static str)>
 }
 
 /// 从 rill-ml releases 下载 stable-index.json 并解析为 JSON。
-fn fetch_rill_ml_index() -> Result<serde_json::Value> {
-    let url = format!("{RILL_ML_RELEASE_BASE}/v{RILL_RUNTIME_VERSION}/stable-index.json");
+fn fetch_rill_ml_index(version: Option<&str>) -> Result<SignedReleaseIndex> {
+    if let Some(version) = version {
+        parse_stable_semver(version, "requested Rill runtime version")?;
+    }
+    let url = version
+        .map(|version| format!("{RILL_ML_RELEASE_BASE}/v{version}/stable-index.json"))
+        .unwrap_or_else(|| RILL_ML_LATEST_INDEX_URL.to_string());
     let bytes = download_bounded(&url, MAX_INDEX_BYTES)?;
-    serde_json::from_slice(&bytes).context("parse rill-ml stable-index.json")
+    let index: SignedReleaseIndex =
+        serde_json::from_slice(&bytes).context("parse rill-ml stable-index.json")?;
+    verify_rill_ml_index(&index)?;
+    Ok(index)
+}
+
+fn verify_rill_ml_index(index: &SignedReleaseIndex) -> Result<()> {
+    index
+        .payload
+        .validate_shape()
+        .map_err(anyhow::Error::msg)
+        .context("invalid rill-ml stable-index.json")?;
+    if index.payload.publisher_key_id != RILL_INDEX_PUBLISHER_KEY_ID {
+        bail!("rill-ml stable-index.json uses an untrusted publisher");
+    }
+    let public_key: [u8; 32] = hex::decode(RILL_INDEX_PUBLIC_KEY_HEX)?
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("invalid Rill index public key length"))?;
+    let verifying_key = VerifyingKey::from_bytes(&public_key)?;
+    let signature_bytes = hex::decode(&index.signature)
+        .context("invalid rill-ml stable-index.json signature encoding")?;
+    let signature = Signature::from_slice(&signature_bytes)
+        .context("invalid rill-ml stable-index.json signature length")?;
+    verifying_key
+        .verify(&canonical_json(&index.payload)?, &signature)
+        .context("rill-ml stable-index.json signature verification failed")
+}
+
+fn canonical_json<T: Serialize>(value: &T) -> Result<Vec<u8>> {
+    fn sort(value: serde_json::Value) -> serde_json::Value {
+        match value {
+            serde_json::Value::Object(map) => serde_json::Value::Object(
+                map.into_iter()
+                    .map(|(key, value)| (key, sort(value)))
+                    .collect(),
+            ),
+            serde_json::Value::Array(items) => {
+                serde_json::Value::Array(items.into_iter().map(sort).collect())
+            }
+            other => other,
+        }
+    }
+    let value = serde_json::to_value(value).context("encode Rill release index")?;
+    serde_json::to_vec(&sort(value)).context("canonicalize Rill release index")
 }
 
 /// 在 rill-ml stable-index.json 中查找指定平台的 runtime artifact。
 struct RuntimeArtifactInfo {
+    version: String,
     url: String,
     sha256: String,
     size: u64,
 }
 
 fn find_runtime_artifact(
-    index: &serde_json::Value,
+    index: &SignedReleaseIndex,
     target_os: &str,
     target_arch: &str,
+    requested_version: Option<&str>,
 ) -> Result<RuntimeArtifactInfo> {
-    let artifacts = index
-        .get("payload")
-        .and_then(|p| p.get("artifacts"))
-        .and_then(|a| a.as_array())
-        .context("stable-index.json missing payload.artifacts")?;
-    for artifact in artifacts {
-        let kind = artifact.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-        let id = artifact.get("id").and_then(|v| v.as_str()).unwrap_or("");
-        let os = artifact.get("targetOs").and_then(|v| v.as_str());
-        let arch = artifact.get("targetArch").and_then(|v| v.as_str());
-        if kind == "runtime"
-            && id == "rill-runtime"
-            && os == Some(target_os)
-            && arch == Some(target_arch)
+    let runtime_versions = index
+        .payload
+        .artifacts
+        .iter()
+        .filter(|artifact| {
+            artifact.kind == ReleaseArtifactKind::Runtime && artifact.id == RUNTIME_ARTIFACT_ID
+        })
+        .map(|artifact| artifact.version.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    if runtime_versions.len() != 1 {
+        bail!("rill-ml stable-index.json mixes runtime versions");
+    }
+    let runtime_version = *runtime_versions
+        .first()
+        .context("rill-ml stable-index.json has no runtime artifacts")?;
+    parse_stable_semver(runtime_version, "Rill runtime version")?;
+    if requested_version.is_some_and(|requested| requested != runtime_version) {
+        bail!("requested Rill runtime version does not match its signed index");
+    }
+    for artifact in &index.payload.artifacts {
+        if artifact.kind == ReleaseArtifactKind::Runtime
+            && artifact.id == RUNTIME_ARTIFACT_ID
+            && artifact.target_os.as_deref() == Some(target_os)
+            && artifact.target_arch.as_deref() == Some(target_arch)
         {
+            let expected_prefix = format!("{RILL_ML_RELEASE_BASE}/v{runtime_version}/");
+            if artifact.version != runtime_version
+                || artifact.runtime_api_version != RUNTIME_API_VERSION
+                || !artifact.url.starts_with(&expected_prefix)
+            {
+                bail!("runtime artifact contract mismatch for {target_os}-{target_arch}");
+            }
             return Ok(RuntimeArtifactInfo {
-                url: artifact
-                    .get("url")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-                sha256: artifact
-                    .get("sha256")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-                size: artifact.get("size").and_then(|v| v.as_u64()).unwrap_or(0),
+                version: runtime_version.to_string(),
+                url: artifact.url.clone(),
+                sha256: artifact.sha256.clone(),
+                size: artifact.size,
             });
         }
     }
     bail!("runtime artifact for {target_os}-{target_arch} not found in rill-ml stable-index.json");
 }
 
+fn parse_stable_semver(value: &str, label: &str) -> Result<semver::Version> {
+    let version = semver::Version::parse(value).with_context(|| format!("invalid {label}"))?;
+    if !version.pre.is_empty() || !version.build.is_empty() {
+        bail!("{label} must be a stable semantic version");
+    }
+    Ok(version)
+}
+
 /// 下载指定平台的 rill-runtime 预编译二进制，并通过 stable-index.json 校验 SHA-256 和大小。
-fn download_runtime_binary(target_os: &str, target_arch: &str) -> Result<Vec<u8>> {
-    let index = fetch_rill_ml_index()?;
-    let artifact = find_runtime_artifact(&index, target_os, target_arch)?;
+fn download_runtime_binary(
+    target_os: &str,
+    target_arch: &str,
+    version: Option<&str>,
+) -> Result<(String, Vec<u8>)> {
+    let index = fetch_rill_ml_index(version)?;
+    let artifact = find_runtime_artifact(&index, target_os, target_arch, version)?;
     if artifact.size == 0 || artifact.size > MAX_RUNTIME_BYTES {
         bail!(
             "runtime binary size {} is invalid or exceeds the {} byte limit",
@@ -643,7 +752,7 @@ fn download_runtime_binary(target_os: &str, target_arch: &str) -> Result<Vec<u8>
             actual
         );
     }
-    Ok(bytes)
+    Ok((artifact.version, bytes))
 }
 
 /// 通过 `rustc -vV` 解析 host target triple。

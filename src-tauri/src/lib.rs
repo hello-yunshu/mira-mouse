@@ -869,7 +869,7 @@ struct SessionState {
     /// 已通知不可用能力的设备路径集合，避免同一设备重复通知。
     /// 设备断开时由 clear_snapshots 清空。
     notified_unavailable_capabilities: Mutex<BTreeSet<String>>,
-    /// 本地 AI 常驻子进程控制器。开关 on 时持有通用 rill-runtime 子进程,
+    /// 本地 AI 常驻子进程控制器。开关 on 时持有当前平台的 rill-runtime 子进程,
     /// off 时优雅退出。predict_batteries 通过此字段发送请求。
     local_ai_controller: local_ai_controller::LocalAiController,
     /// 自动回滚 supervisor 写入的状态标识(`autoRolledBack`/`autoDisabled`),
@@ -8023,6 +8023,17 @@ fn settings_get(app: tauri::AppHandle) -> Result<AppSettings, String> {
     Ok(cached_settings(&app))
 }
 
+fn start_local_ai_in_background(app: AppHandle) {
+    std::thread::spawn(move || {
+        if !cached_settings(&app).local_ai_analysis_enabled {
+            return;
+        }
+        if let Err(error) = app.state::<SessionState>().local_ai_controller.start(&app) {
+            eprintln!("[mira] local AI startup unavailable: {error}");
+        }
+    });
+}
+
 #[tauri::command]
 fn settings_set(app: tauri::AppHandle, settings: AppSettings) -> Result<AppSettings, String> {
     let settings = settings.normalized();
@@ -8087,12 +8098,11 @@ fn settings_set(app: tauri::AppHandle, settings: AppSettings) -> Result<AppSetti
         request_night_mode_eval(&app.state::<SessionState>());
     }
     if local_ai_toggle {
-        let controller = app.state::<SessionState>();
         if settings.local_ai_analysis_enabled {
-            // 启动失败不阻塞设置写入:controller 内部标记 Failed,后续 predict 自动重启。
-            let _ = controller.local_ai_controller.start(&app);
+            // Rill 启动与握手必须留在后台，不能阻塞设置保存或主界面事件循环。
+            start_local_ai_in_background(app.clone());
         } else {
-            controller.local_ai_controller.stop();
+            app.state::<SessionState>().local_ai_controller.stop();
         }
     }
     Ok(settings)
@@ -9392,18 +9402,6 @@ pub fn run() {
                 );
             }
 
-            if startup_settings.local_ai_analysis_enabled {
-                if let Err(error) = app
-                    .state::<SessionState>()
-                    .local_ai_controller
-                    .start(app.handle())
-                {
-                    // AI is an optional accelerator; a missing/invalid bundle must not block
-                    // app startup. The controller records Failed and will retry after cooldown.
-                    eprintln!("[mira] local AI startup unavailable: {error}");
-                }
-            }
-
             // macOS native Vibrancy backdrop.
             // Sidebar 材质提供类似 Finder/Mail 侧边栏的明显毛玻璃效果；
             // UnderWindowBackground 过于微妙，在纯色壁纸下几乎不可见。
@@ -9587,6 +9585,12 @@ pub fn run() {
                     }
                     let _ = window.set_focus();
                 }
+            }
+            if startup_settings.local_ai_analysis_enabled {
+                // The optional Rill sidecar starts only after Mira's window, tray, and
+                // background services are ready. A broken sidecar must never make the
+                // application appear unable to launch.
+                start_local_ai_in_background(app.handle().clone());
             }
             Ok(())
         })

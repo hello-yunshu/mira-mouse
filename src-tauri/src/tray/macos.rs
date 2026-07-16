@@ -43,7 +43,7 @@ use objc2::{
 };
 use objc2_app_kit::{
     NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
-    NSImage, NSMenu, NSMenuItem, NSStatusBar, NSStatusItem, NSView,
+    NSCellImagePosition, NSImage, NSMenu, NSMenuItem, NSStatusBar, NSStatusItem, NSView,
 };
 use objc2_foundation::{NSArray, NSData, NSPoint, NSRect, NSSize, NSString};
 
@@ -340,6 +340,13 @@ impl MacNativeTrayController {
                 // the 28pt custom icon view instead of centering underneath it.
                 let _: () = msg_send![&*button, setAlignment: 1isize];
             }
+            // 图标由 MiraStatusView 自绘，NSStatusBarButton 的原生布局并不知道
+            // 左侧已有 28pt 内容。放置同尺寸透明图像作为布局占位，使 AppKit
+            // 把百分比标题排在图标右侧，而不是在整个按钮内居中并与图标重叠。
+            let layout_spacer = NSImage::initWithSize(NSImage::alloc(), NSSize::new(28.0, 20.0));
+            button.setImage(Some(&layout_spacer));
+            button.setImagePosition(NSCellImagePosition::ImageLeft);
+            button.setImageHugsTitle(false);
             button
                 .as_super()
                 .as_super()
@@ -554,12 +561,8 @@ impl MacNativeTrayController {
                     view.set_images(Some(image.clone()), Some(image), false);
                 }
             }
-            if let Some(button) = item.button(mtm) {
-                // MiraStatusView is the single dynamic drawing surface. Leaving
-                // the same image on NSStatusBarButton doubles its translucent
-                // pixels and makes the charging bolt/halo look heavier.
-                button.setImage(None);
-            }
+            // NSStatusBarButton 上保留的只是透明布局占位图；实际动态图标只由
+            // MiraStatusView 绘制，因此不会叠加半透明像素或加重充电闪电。
             self.last_cache_key = Some(cache_key);
         }
 
