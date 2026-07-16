@@ -28,9 +28,9 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "bitflags"
-version = "2.13.0"
+version = "2.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b4388bee8683e3d04af747c73422af53102d2bd24d9eadb6cbc100baef4b43f8"
+checksum = "b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da"
 
 [[package]]
 name = "cfg-if"
@@ -128,7 +128,7 @@ dependencies = [
 
 [[package]]
 name = "mira-local-ai"
-version = "0.8.3"
+version = "0.8.6"
 dependencies = [
  "chrono",
  "mira-protocol",
@@ -138,7 +138,7 @@ dependencies = [
 
 [[package]]
 name = "mira-protocol"
-version = "0.8.3"
+version = "0.8.6"
 dependencies = [
  "serde",
  "serde_json",
@@ -189,9 +189,9 @@ dependencies = [
 
 [[package]]
 name = "rill-ml"
-version = "0.7.1"
+version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3cafc56c74038070ac02686a2072a5be76130d5d5136f073c08722078e3cca13"
+checksum = "e8b71cbc761f5b7f3bcb10683df12c063b6bf039d5275f7aee31a9c43035338a"
 dependencies = [
  "thiserror 1.0.69",
 ]
