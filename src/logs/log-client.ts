@@ -15,7 +15,6 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type {
   DeleteResult,
   DeleteScope,
-  DiagnosticsContext,
   ExportOutcomeDto,
   ExportScope,
   LogBatchEvent,
@@ -170,12 +169,9 @@ export class LogClient {
     return invoke<ExportOutcomeDto>('log_export', { scope, path });
   }
 
-  /** 导出诊断包 ZIP。`path` 由前端通过保存对话框获取。 */
-  async exportDiagnosticsBundle(
-    ctx: DiagnosticsContext,
-    path: string,
-  ): Promise<ExportOutcomeDto> {
-    return invoke<ExportOutcomeDto>('log_export_diagnostics_bundle', { ctx, path });
+  /** 导出诊断包 ZIP。`path` 由前端通过保存对话框获取。诊断上下文由后端收集。 */
+  async exportDiagnosticsBundle(path: string): Promise<ExportOutcomeDto> {
+    return invoke<ExportOutcomeDto>('log_export_diagnostics_bundle', { path });
   }
 
   /** 打开日志目录。 */

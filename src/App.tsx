@@ -24,7 +24,6 @@ import { applyTheme, pastelDisplayColor } from './theme';
 import i18n, { applyLanguage, loadPluginLocales, resolveLabelKey } from './i18n';
 import { SettingsPage } from './Settings';
 import { AboutPage } from './About';
-import { LogPage } from './logs/LogPage';
 import { BatteryUsageModal } from './BatteryUsage';
 import { BatteryLevelIcon } from './BatteryLevelIcon';
 import type { AboutInfo, AppSettings, DeviceSnapshot, DeviceSnapshotEntry, DeviceState, DpiStage, PluginCapability, PluginCapabilityPlacement, PluginField, PluginFieldFormat, RangeSpec, ThemeMode } from './types';
@@ -54,9 +53,10 @@ import { relaunchAfterUpdate, startAutomaticAppUpdateCheck } from './updater';
 import { startAutomaticPluginUpdateCheck } from './plugin-updater';
 import { LOCAL_AI_FEATURE, localAiFeatureEnabled } from './localAi';
 import { segmentedIndicatorStyle } from './segmentedControl';
+import { Modal, OverlayPortal, useHasOpenModal } from './overlay';
 import './styles.css';
 
-type View = 'dashboard' | 'settings' | 'about' | 'logs';
+type View = 'dashboard' | 'settings' | 'about';
 type ControlMode = string;
 
 function isWindowsPlatform(): boolean {
@@ -579,18 +579,16 @@ interface EditModalProps {
 }
 
 function EditModal({ title, children, submitLabel = i18n.t('common.apply'), submitDisabled, onClose, onSubmit }: EditModalProps) {
-  useEffect(() => {
-    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', closeOnEscape);
-    return () => window.removeEventListener('keydown', closeOnEscape);
-  }, [onClose]);
   return (
-    <div className="edit-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+    <Modal
+      open
+      title={title}
+      size="small"
+      className="edit-modal"
+      backdropClassName="edit-modal-backdrop"
+      onClose={onClose}
+    >
       <form
-        className="edit-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-label={title}
         onSubmit={(event) => { event.preventDefault(); onSubmit(); }}
       >
         <header>
@@ -602,7 +600,7 @@ function EditModal({ title, children, submitLabel = i18n.t('common.apply'), subm
           <button type="submit" disabled={submitDisabled}>{submitLabel}</button>
         </footer>
       </form>
-    </div>
+    </Modal>
   );
 }
 
@@ -1563,14 +1561,16 @@ function DeviceDetails({ device, onClose }: { device: DeviceState; onClose: () =
   const groups = Object.entries(device.capabilities)
     .filter(([, fields]) => fields && Object.keys(fields).length > 0)
     .sort(([a], [b]) => (detailOrder.get(a) ?? 10_000) - (detailOrder.get(b) ?? 10_000));
-  useEffect(() => {
-    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', closeOnEscape);
-    return () => window.removeEventListener('keydown', closeOnEscape);
-  }, [onClose]);
   return (
-    <div className="details-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      <section className="device-details" role="dialog" aria-modal="true" aria-labelledby="device-details-title">
+    <Modal
+      open
+      title={i18n.t('dashboard.allReadInfo')}
+      size="medium"
+      className="device-details"
+      backdropClassName="details-backdrop"
+      onClose={onClose}
+    >
+      <section aria-labelledby="device-details-title">
         <header>
           <div><p className="eyebrow">{i18n.t('dashboard.readonlyReport')}</p><h2 id="device-details-title">{i18n.t('dashboard.allReadInfo')}</h2></div>
           <button className="icon-button" onClick={onClose} aria-label={i18n.t('dashboard.closeDeviceDetails')}><X weight="regular" /></button>
@@ -1595,7 +1595,7 @@ function DeviceDetails({ device, onClose }: { device: DeviceState; onClose: () =
           )) : <p className="setting-hint">{i18n.t('dashboard.noCapabilities')}</p>}
         </div>
       </section>
-    </div>
+    </Modal>
   );
 }
 
@@ -2263,6 +2263,9 @@ export default function App() {
   const macPlatform = isMacPlatform();
   const windowsWebPreview = isWindowsWebPreview();
   const fallbackPlatform = !pureWeb && !windowsPlatform && !macPlatform;
+  // Modal 打开期间禁用通知的跳转 / 打开行为（通知本身仍可见、可关闭）。
+  const modalOpen = useHasOpenModal();
+  const notificationActionEnabled = !modalOpen;
   const exitDemo = useCallback(() => {
     setDemoMode(false);
     setDevice(undefined);
@@ -2487,8 +2490,7 @@ export default function App() {
     </div>
     {view === 'dashboard' && (device ? <Dashboard device={device} deviceEntries={deviceEntries} onDeviceChange={setDevice} onDeviceSelect={selectDevice} onOpenBatteryUsage={openBatteryUsage} pluginLocaleRevision={pluginLocaleRevision} demoMode={demoMode} /> : <EmptyState onRefresh={() => { setDemoMode(false); setDevice(undefined); setDeviceEntries([]); deviceEntriesRef.current = []; setRefreshNonce((value) => value + 1); invoke('device_refresh').catch(() => {}); }} onDemo={() => { setDemoMode(true); setDevice(MOCK_DEVICE); setDeviceEntries(MOCK_DEVICE_ENTRIES); deviceEntriesRef.current = MOCK_DEVICE_ENTRIES; }} onOpenSettings={() => setView('settings')} />)}
     {view === 'settings' && <SettingsPage previewMode={pureWeb} focusPluginUpdateToken={settingsPluginFocusToken} onNavigateAbout={() => setView('about')} onOpenBatteryUsage={openBatteryUsage} onBatteryUsageSettingsChange={syncBatteryUsageSettings} onThemeChange={setTheme} pluginCapabilities={device?.pluginCapabilities ?? []} writableMutations={device?.writableMutations ?? []} />}
-    {view === 'about' && <AboutPage previewMode={pureWeb} focusUpdateToken={aboutFocusToken} onBack={() => setView('settings')} onOpenLogs={() => setView('logs')} />}
-    {view === 'logs' && <LogPage onBack={() => setView('about')} />}
+    {view === 'about' && <AboutPage previewMode={pureWeb} focusUpdateToken={aboutFocusToken} onBack={() => setView('settings')} />}
     <BatteryUsageModal
       key={batteryUsageSession}
       open={showBatteryUsage}
@@ -2500,15 +2502,30 @@ export default function App() {
       preferredComponentId={selectedBatteryUsageTarget?.componentId}
     />
     {appNotification && (
-      <aside
-        className={`app-notification ${appNotification.kind} ${appNotification.action ? 'actionable' : ''}`}
-        role={appNotification.kind === 'error' ? 'alert' : 'status'}
-        aria-live={appNotification.kind === 'error' ? 'assertive' : 'polite'}
-        onClick={appNotification.action === 'about-update' ? openAboutUpdate : appNotification.action === 'settings-plugin-update' ? openSettingsPluginUpdate : appNotification.action === 'battery-usage' ? openBatteryUsage : appNotification.action === 'relaunch' ? () => void relaunchAfterUpdate() : undefined}
-      >
-        <div><strong>{appNotification.title}</strong>{appNotification.body && <p>{appNotification.body}</p>}</div>
-        <button type="button" onClick={(event) => { event.stopPropagation(); setAppNotification(undefined); }} aria-label={t('dashboard.closeNotification')}><X weight="bold" /></button>
-      </aside>
+      <OverlayPortal>
+        <aside
+          className={`app-notification ${appNotification.kind} ${appNotification.action && notificationActionEnabled ? 'actionable' : ''}`}
+          role={appNotification.kind === 'error' ? 'alert' : 'status'}
+          aria-live={appNotification.kind === 'error' ? 'assertive' : 'polite'}
+          data-action-disabled={!notificationActionEnabled ? 'true' : undefined}
+          onClick={
+            appNotification.action && notificationActionEnabled
+              ? appNotification.action === 'about-update'
+                ? openAboutUpdate
+                : appNotification.action === 'settings-plugin-update'
+                  ? openSettingsPluginUpdate
+                  : appNotification.action === 'battery-usage'
+                    ? openBatteryUsage
+                    : appNotification.action === 'relaunch'
+                      ? () => void relaunchAfterUpdate()
+                      : undefined
+              : undefined
+          }
+        >
+          <div><strong>{appNotification.title}</strong>{appNotification.body && <p>{appNotification.body}</p>}</div>
+          <button type="button" onClick={(event) => { event.stopPropagation(); setAppNotification(undefined); }} aria-label={t('dashboard.closeNotification')}><X weight="bold" /></button>
+        </aside>
+      </OverlayPortal>
     )}
   </div>;
 }

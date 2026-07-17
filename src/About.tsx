@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { ExternalLink } from './ExternalLink';
 import type { AboutInfo } from './types';
 import { notifyError } from './notify';
-import { extractChannel, exportDiagnostics } from './plugin-utils';
+import { extractChannel } from './plugin-utils';
 import {
   appUpdateState,
   checkForAppUpdate,
@@ -15,7 +15,7 @@ import {
   type AppUpdateState,
 } from './updater';
 
-export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0, onOpenLogs }: { onBack: () => void; previewMode?: boolean; focusUpdateToken?: number; onOpenLogs?: () => void }) {
+export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0 }: { onBack: () => void; previewMode?: boolean; focusUpdateToken?: number }) {
   const { t } = useTranslation();
   const PREVIEW_INFO: AboutInfo = {
     name: 'Mira Mouse',
@@ -40,7 +40,6 @@ export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0, o
   const [info, setInfo] = useState<AboutInfo | null>(previewMode ? PREVIEW_INFO : null);
   const [error, setError] = useState<string>('');
   const [update, setUpdate] = useState<AppUpdateState>(appUpdateState());
-  const [diagnostics, setDiagnostics] = useState<string>('');
 
   useEffect(() => {
     if (previewMode) return;
@@ -77,15 +76,6 @@ export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0, o
     } catch (err) {
       notifyError(t('notification.installUpdateFailed'), String(err));
     }
-  }
-
-  async function handleExportDiagnostics() {
-    if (previewMode) {
-      setDiagnostics(JSON.stringify({ mode: 'web-preview', privacy: 'sanitized' }, null, 2));
-      return;
-    }
-    const result = await exportDiagnostics();
-    if (result !== undefined) setDiagnostics(result);
   }
 
   if (error) {
@@ -134,15 +124,6 @@ export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0, o
         <p className="disclaimer">
           {t('about.disclaimer')}
         </p>
-      </section>
-
-      <section className="card about-section about-logs-card">
-        <div className="card-title"><h2>{t('logs.title')}</h2></div>
-        <p className="setting-hint">{t('logs.cardHint')}</p>
-        <p className="setting-hint">{t('logs.cardPrivacy')}</p>
-        <div className="contact-links">
-          <button className="primary" onClick={() => onOpenLogs?.()} disabled={!onOpenLogs}>{t('logs.openButton')}</button>
-        </div>
       </section>
 
       <section className="card about-section">
@@ -206,7 +187,7 @@ export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0, o
           <div className="card-title"><h2>{t('about.section.contact')}</h2></div>
           {contact.developerName && <p className="setting-hint">{t('about.developer', { name: contact.developerName })}</p>}
           {contact.copyright && <p className="setting-hint">{t('about.copyright', { name: contact.copyright })}</p>}
-          <div className="contact-links">
+          <div className="contact-links align-start">
             {contact.github && <ExternalLink className="secondary" href={contact.github} errorTitle={linkError}>GitHub</ExternalLink>}
             {contact.x && <ExternalLink className="secondary" href={contact.x} errorTitle={linkError}>X</ExternalLink>}
             {contact.telegram && <ExternalLink className="secondary" href={contact.telegram} errorTitle={linkError}>Telegram</ExternalLink>}
@@ -223,7 +204,7 @@ export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0, o
         </p>
         {info.updaterActive && (
           <>
-            <div className="contact-links">
+            <div className="contact-links align-start">
               <button className="secondary" onClick={checkForUpdates} disabled={update.phase === 'checking' || update.phase === 'downloading'}>
                 {update.phase === 'checking' ? t('about.updateChecking') : t('about.updateCheck')}
               </button>
@@ -259,7 +240,7 @@ export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0, o
         <p className="setting-hint">
           {t('about.licenseHint')}
         </p>
-        <div className="contact-links">
+        <div className="contact-links align-start">
           {repositoryUrl ? (
             <ExternalLink className="secondary" href={`${repositoryUrl}/blob/main/LICENSE`} errorTitle={linkError}>{t('about.viewLicense')}</ExternalLink>
           ) : (
@@ -275,15 +256,7 @@ export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0, o
 
       <section className="card about-section">
         <div className="card-title"><h2>{t('about.section.privacy')}</h2></div>
-        <p className="setting-hint">
-          {t('about.privacyHint')}
-        </p>
-        <div className="contact-links">
-          <button className="secondary" onClick={handleExportDiagnostics}>{t('about.exportDiagnostics')}</button>
-        </div>
-        {diagnostics && (
-          <pre className="diagnostics-output">{diagnostics}</pre>
-        )}
+        <p className="setting-hint">{t('about.privacyHint')}</p>
       </section>
 
       <section className="card about-section">
@@ -291,7 +264,7 @@ export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0, o
         <p className="setting-hint">
           {t('about.reportIssueHint')}
         </p>
-        <div className="contact-links">
+        <div className="contact-links align-start">
           {repositoryUrl ? (
             <ExternalLink className="secondary" href={`${repositoryUrl}/issues/new/choose`} errorTitle={linkError}>{t('about.reportIssue')}</ExternalLink>
           ) : (

@@ -312,7 +312,7 @@ describe('real device snapshot mapping', () => {
       },
     }));
     const gridSnapshot: DeviceSnapshot = {
-      displayName: 'Grid Mouse', connection: 'virtual', charging: false, batteries: [],
+      displayName: 'Grid Mouse', connection: 'virtual', batteryPercent: 80, charging: false, batteries: [],
       capabilities: {}, pluginCapabilities: capabilities, writableMutations: [], evidence: 'fixture-verified',
     };
     invokeMock.mockImplementation((command: string) => {
@@ -893,7 +893,8 @@ describe('real device snapshot mapping', () => {
     render(<App />);
     await screen.findByRole('heading', { name: 'No Polling Mouse' });
     fireEvent.click(screen.getByRole('tab', { name: '回报率' }));
-    // 未报告时显示"未报告"
+    // 未报告时显示 i18n 的 "未报告" 文案（与 DPI 分支一致：
+    // 仅当 capability 处于 runtime pending 时才显示 "—"，真正未上报走 notReported）
     expect(screen.getAllByText('未报告')).not.toHaveLength(0);
     expect(document.querySelector('.metric-reading')).toBeInTheDocument();
     expect(screen.getAllByText('当前回报率')).not.toHaveLength(0);
