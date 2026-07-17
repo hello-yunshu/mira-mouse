@@ -31,7 +31,6 @@ const MAX_BATCH_INTERVAL: Duration = Duration::from_millis(100);
 #[derive(Clone)]
 pub struct FrontendEmitter {
     tx: Sender<EmitterMessage>,
-    subscriber_count: Arc<AtomicU32>,
 }
 
 enum EmitterMessage {
@@ -40,6 +39,8 @@ enum EmitterMessage {
     Unsubscribe,
     /// 请求 emit 当前累积批次（用于导出/状态查询后立即同步）。
     Flush,
+    /// 预留：优雅关闭。生产退出走 flush；供 shutdown() 与 run_emitter 退出循环使用。
+    #[allow(dead_code)]
     Shutdown,
 }
 
@@ -57,13 +58,7 @@ impl FrontendEmitter {
             })
             .expect("spawn mira-log-emitter");
 
-        (
-            Self {
-                tx,
-                subscriber_count,
-            },
-            join,
-        )
+        (Self { tx }, join)
     }
 
     /// 投递一条日志。无订阅者时会被 emitter 线程直接丢弃。
@@ -86,14 +81,10 @@ impl FrontendEmitter {
         let _ = self.tx.send(EmitterMessage::Flush);
     }
 
-    /// 关闭 emitter 线程。drop 后 Shutdown 消息会被处理。
+    /// 关闭 emitter 线程。生产退出走 flush（见 lib.rs ExitRequested）；此方法预留给优雅关闭与测试清理。
+    #[allow(dead_code)]
     pub fn shutdown(&self) {
         let _ = self.tx.send(EmitterMessage::Shutdown);
-    }
-
-    /// 当前活动订阅者数。仅用于诊断展示。
-    pub fn subscriber_count(&self) -> u32 {
-        self.subscriber_count.load(Ordering::Relaxed)
     }
 }
 
@@ -118,9 +109,7 @@ fn run_emitter(rx: Receiver<EmitterMessage>, app_handle: AppHandle, count: Arc<A
                 // 仅在至少一个订阅者时累积，避免无意义 emit。
                 if count.load(Ordering::Relaxed) > 0 {
                     batch.push(entry);
-                    if batch.len() >= MAX_BATCH_SIZE
-                        || last_flush.elapsed() >= MAX_BATCH_INTERVAL
-                    {
+                    if batch.len() >= MAX_BATCH_SIZE || last_flush.elapsed() >= MAX_BATCH_INTERVAL {
                         flush_batch(&app_handle, &mut batch);
                         last_flush = Instant::now();
                     }

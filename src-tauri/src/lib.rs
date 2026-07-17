@@ -4855,10 +4855,8 @@ fn load_bundled_plugin_devices(
             match result {
                 Ok(plugin) => Some(plugin),
                 Err(error) => {
-                    app.state::<SessionState>().log_error(
-                        "plugin::load",
-                        format!("plugin load failed: {error}"),
-                    );
+                    app.state::<SessionState>()
+                        .log_error("plugin::load", format!("plugin load failed: {error}"));
                     None
                 }
             }
@@ -4949,10 +4947,9 @@ fn load_bundled_plugin_devices(
                             plugins.push(installed);
                         }
                     }
-                    Err(error) => app.state::<SessionState>().log_warn(
-                        "plugin::load",
-                        format!("installed plugin ignored: {error}"),
-                    ),
+                    Err(error) => app
+                        .state::<SessionState>()
+                        .log_warn("plugin::load", format!("installed plugin ignored: {error}")),
                 }
             }
         }
@@ -7346,6 +7343,8 @@ async fn device_mutate(
     // HID 写入/回读是阻塞式调用，必须放在独立线程中执行，否则主线程会被卡死。
     let (tx, rx) = std::sync::mpsc::channel();
     let worker_app = app.clone();
+    // mutation 会被 move 进 worker 线程，克隆一份用于超时/断开路径的日志。
+    let mutation_label = mutation.clone();
     std::thread::spawn(move || {
         let result = device_mutate_blocking(&worker_app, &mutation, &params);
         let _ = tx.send(result);
@@ -7353,15 +7352,41 @@ async fn device_mutate(
     match rx.recv_timeout(std::time::Duration::from_secs(30)) {
         Ok(result) => result,
         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            app.state::<SessionState>()
+                .log_warn("device::mutate", format!("timeout: {mutation_label}"));
             Err(tr_device_write_timeout(lang).into())
         }
         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            app.state::<SessionState>().log_error(
+                "device::mutate",
+                format!("worker thread disconnected: {mutation_label}"),
+            );
             Err(tr_device_write_thread_failed(lang).into())
         }
     }
 }
 
 fn device_mutate_blocking(
+    app: &tauri::AppHandle,
+    mutation: &str,
+    params: &serde_json::Map<String, serde_json::Value>,
+) -> Result<DeviceSnapshot, String> {
+    // 日志包装器：在锁外记录 attempt / succeeded / failed，
+    // 避免在 device_mutate_blocking_impl 的锁作用域内调用日志服务。
+    // 所有调用点（device_mutate 命令、夜间模式、配置导入）自动获益。
+    let state = app.state::<SessionState>();
+    let param_keys: Vec<&str> = params.keys().map(|k| k.as_str()).collect();
+    let summary = format!("{} [{}]", mutation, param_keys.join(","));
+    state.log_info("device::mutate", format!("attempt: {summary}"));
+    let result = device_mutate_blocking_impl(app, mutation, params);
+    match &result {
+        Ok(_) => state.log_info("device::mutate", format!("succeeded: {summary}")),
+        Err(err) => state.log_warn("device::mutate", format!("failed: {summary}: {err}")),
+    }
+    result
+}
+
+fn device_mutate_blocking_impl(
     app: &tauri::AppHandle,
     mutation: &str,
     params: &serde_json::Map<String, serde_json::Value>,
@@ -9470,23 +9495,16 @@ pub fn run() {
             // 初始化统一日志服务：在所有其他子系统之前，让后续关键事件可被记录。
             // 失败不阻塞启动：LogService 内部已有降级路径。
             {
-                let log_dir = app
-                    .path()
-                    .app_log_dir()
-                    .unwrap_or_else(|_| {
-                        app.path()
-                            .app_config_dir()
-                            .unwrap_or_else(|_| std::env::temp_dir())
-                            .join("logs")
-                    });
+                let log_dir = app.path().app_log_dir().unwrap_or_else(|_| {
+                    app.path()
+                        .app_config_dir()
+                        .unwrap_or_else(|_| std::env::temp_dir())
+                        .join("logs")
+                });
                 let session_id = logging::new_session_id();
                 let redactor = logging::redaction::Redactor::default();
-                let (service, _handles) = logging::LogService::new(
-                    session_id,
-                    log_dir,
-                    redactor,
-                    app.handle().clone(),
-                );
+                let service =
+                    logging::LogService::new(session_id, log_dir, redactor, app.handle().clone());
                 service.info(
                     "app::startup",
                     format!(
@@ -9783,6 +9801,20 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("Mira application runtime failed")
         .run(|app_handle, event| {
+            // 应用退出时 flush 日志，确保 BufWriter 缓冲的日志落盘。
+            // 不 flush 会导致磁盘日志文件 0 字节（内存 buffer 仍有数据，
+            // 但持久化丢失）。matches! 只借用 event，不影响后续 match。
+            if matches!(event, tauri::RunEvent::ExitRequested { .. }) {
+                if let Some(svc) = app_handle
+                    .state::<SessionState>()
+                    .log_service
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                {
+                    svc.flush();
+                }
+            }
             // macOS: 用户点击 Dock 图标时恢复窗口（窗口被隐藏到托盘后，
             // Dock 图标在 Accessory 策略下不可见，但 Regular 状态下仍可点击）。
             // RunEvent::Reopen 是 macOS 专有变体，必须用 cfg 门控，

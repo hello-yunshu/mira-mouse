@@ -31,9 +31,11 @@ use rill_runtime_protocol::{
 use tauri::AppHandle;
 
 use crate::{
-    battery_history::BatterySample, local_ai_runtime, local_ai_runtime::RuntimeInstallation,
-    logging::{self, LogService},
+    battery_history::BatterySample,
+    local_ai_runtime,
+    local_ai_runtime::RuntimeInstallation,
     logging::model::{LogInput, LogLevel, LogSource},
+    logging::LogService,
 };
 
 /// 单次请求/响应超时。与原 `predict_batteries` 的 RUNTIME_TIMEOUT 保持一致。
@@ -124,14 +126,6 @@ impl LocalAiController {
         guard.log_service = Some(svc);
     }
 
-    /// 通过统一日志服务写入一条 local-ai 来源日志。未注入时静默丢弃。
-    fn log(&self, level: LogLevel, target: &str, message: impl Into<String>) {
-        let guard = self.lock();
-        if let Some(svc) = guard.log_service.as_ref() {
-            svc.write(LogInput::new(level, LogSource::LocalAi, target, message));
-        }
-    }
-
     /// 通过统一日志服务写入一条 local-ai 来源日志,复用已有 guard(避免重锁)。
     fn log_with_guard(
         guard: &std::sync::MutexGuard<'_, ControllerInner>,
@@ -159,7 +153,12 @@ impl LocalAiController {
         if matches!(guard.state, ControllerState::Running) && guard.running.is_some() {
             return Ok(());
         }
-        Self::log_with_guard(&guard, LogLevel::Info, "local_ai::lifecycle", "local AI starting");
+        Self::log_with_guard(
+            &guard,
+            LogLevel::Info,
+            "local_ai::lifecycle",
+            "local AI starting",
+        );
         let Some(installation) = local_ai_runtime::resolve_installation(app) else {
             guard.state = ControllerState::Failed {
                 last_attempt: Instant::now(),
@@ -219,7 +218,12 @@ impl LocalAiController {
             guard.state = ControllerState::Stopped;
             return;
         };
-        Self::log_with_guard(&guard, LogLevel::Info, "local_ai::lifecycle", "local AI stopping");
+        Self::log_with_guard(
+            &guard,
+            LogLevel::Info,
+            "local_ai::lifecycle",
+            "local AI stopping",
+        );
         // drop stdin 触发 EOF,rill-runtime 的 BufReader::read_until 返回 0 退出主循环。
         drop(runtime.stdin);
         let status = runtime.child.wait_timeout(STOP_GRACE);
@@ -401,9 +405,7 @@ impl LocalAiController {
                 &guard,
                 LogLevel::Warn,
                 "local_ai::predict",
-                format!(
-                    "prediction batch returned no estimates for {batch_count} devices"
-                ),
+                format!("prediction batch returned no estimates for {batch_count} devices"),
             );
         }
         drop(guard);
@@ -629,9 +631,7 @@ fn spawn_and_handshake(
                     LogLevel::Warn,
                     LogSource::LocalAi,
                     "local_ai::stderr",
-                    format!(
-                        "stderr rate limit: {suppressed_count} additional lines suppressed"
-                    ),
+                    format!("stderr rate limit: {suppressed_count} additional lines suppressed"),
                 ));
             }
         }
