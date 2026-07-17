@@ -18,6 +18,8 @@ import { notifyError, notifySuccess } from './notify';
 import { BatteryLevelIcon } from './BatteryLevelIcon';
 import { LOCAL_AI_FEATURE, localAiFeatureEnabled } from './localAi';
 import { segmentedIndicatorStyle } from './segmentedControl';
+import { Modal } from './overlay';
+import { Tooltip } from './Tooltip';
 
 // ─── 工具函数 ───────────────────────────────────────────────────────────────
 
@@ -93,27 +95,32 @@ function formatInsightMessage(insight: BatteryInsight, t: (key: string, options?
 }
 
 // ─── 溢出文字弹窗 ───────────────────────────────────────────────────────────
-// 检测单行/多行文字是否溢出容器，hover 时显示完整内容的毛玻璃弹窗。
+// 检测单行/多行文字是否溢出容器，溢出时复用统一 Tooltip 显示完整内容。
+// Tooltip 通过 OverlayPortal 渲染到顶层 #mira-overlay-root，避免被祖先
+// overflow: hidden / overflow-y: auto 裁切。
 function OverflowTip({ text, className, multiline }: { text: string; className?: string; multiline?: boolean }) {
   const ref = useRef<HTMLSpanElement>(null);
-  const [show, setShow] = useState(false);
+  const [overflowed, setOverflowed] = useState(false);
 
-  const check = () => {
-    const el = ref.current;
-    if (!el) return false;
-    return multiline ? el.scrollHeight > el.clientHeight : el.scrollWidth > el.clientWidth;
-  };
+  const checkOverflow = useCallback(() => {
+    const element = ref.current;
+    if (!element) return;
+    setOverflowed(
+      multiline
+        ? element.scrollHeight > element.clientHeight
+        : element.scrollWidth > element.clientWidth,
+    );
+  }, [multiline]);
 
-  return (
-    <span
-      className={`overflow-tip-host${multiline ? ' multiline' : ''}`}
-      onMouseEnter={() => { if (check()) setShow(true); }}
-      onMouseLeave={() => setShow(false)}
-    >
-      <span ref={ref} className={className}>{text}</span>
-      {show && <span className="overflow-tip" role="tooltip">{text}</span>}
-    </span>
-  );
+  useEffect(() => {
+    checkOverflow();
+    const observer = new ResizeObserver(checkOverflow);
+    if (ref.current) observer.observe(ref.current);
+    return () => observer.disconnect();
+  }, [checkOverflow]);
+
+  const content = <span ref={ref} className={className}>{text}</span>;
+  return overflowed ? <Tooltip label={text}>{content}</Tooltip> : content;
 }
 
 // ─── SVG 图表 ───────────────────────────────────────────────────────────────
@@ -993,32 +1000,52 @@ export function BatteryUsageModal({
 
   if (!open) return null;
 
+  const modalTitle = t('batteryUsage.title');
+
   // 功能关闭。
   if (!historyEnabled) {
     return (
-      <div className="battery-usage-modal-overlay" onClick={onClose}>
-        <div className="battery-usage-modal" onClick={(e) => e.stopPropagation()}>
-          <BatteryHistoryDisabledState onClose={onClose} />
-        </div>
-      </div>
+      <Modal
+        open={open}
+        title={modalTitle}
+        size="large"
+        className="battery-usage-modal"
+        backdropClassName="battery-usage-modal-overlay"
+        onClose={onClose}
+      >
+        <BatteryHistoryDisabledState onClose={onClose} />
+      </Modal>
     );
   }
 
   // 设备不支持电量上报。
   if (!hasBattery && !pureWeb) {
     return (
-      <div className="battery-usage-modal-overlay" onClick={onClose}>
-        <div className="battery-usage-modal" onClick={(e) => e.stopPropagation()}>
-          <BatteryHistoryUnsupportedState onClose={onClose} />
-        </div>
-      </div>
+      <Modal
+        open={open}
+        title={modalTitle}
+        size="large"
+        className="battery-usage-modal"
+        backdropClassName="battery-usage-modal-overlay"
+        onClose={onClose}
+      >
+        <BatteryHistoryUnsupportedState onClose={onClose} />
+      </Modal>
     );
   }
 
   return (
-    <div className="battery-usage-modal-overlay" onClick={onClose}>
-      <div className="battery-usage-modal" onClick={(e) => e.stopPropagation()}>
-        {/* 标题区 */}
+    <Modal
+      open={open}
+      title={modalTitle}
+      size="large"
+      className="battery-usage-modal"
+      backdropClassName="battery-usage-modal-overlay"
+      onClose={onClose}
+    >
+      {/* 布局容器：标题区固定，内容区滚动 */}
+      <div className="battery-usage-modal-layout">
+        {/* 标题区（固定不滚动） */}
         <div className="battery-usage-header">
           <div className="battery-usage-title-wrap">
             <h2>{t('batteryUsage.title')}</h2>
@@ -1031,93 +1058,96 @@ export function BatteryUsageModal({
           </button>
         </div>
 
-        {/* 无数据空状态 */}
-        {!loading && (!response || response.devices.length === 0) ? (
-          <BatteryHistoryEmptyState onClose={onClose} />
-        ) : (
-          <>
-            {/* 时间范围切换 */}
-            <div className="battery-usage-controls">
-              <div
-                className="battery-range-toggle segmented-slider"
-                role="tablist"
-                data-active-index={range === '24h' ? 0 : 1}
-                style={segmentedIndicatorStyle(2, range === '24h' ? 0 : 1)}
-              >
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={range === '24h'}
-                  className={range === '24h' ? 'active' : ''}
-                  onClick={() => setRange('24h')}
+        {/* 滚动区域：内容超出时仅此区域滚动 */}
+        <div className="battery-usage-scroll-region">
+          {/* 无数据空状态 */}
+          {!loading && (!response || response.devices.length === 0) ? (
+            <BatteryHistoryEmptyState onClose={onClose} />
+          ) : (
+            <>
+              {/* 时间范围切换 */}
+              <div className="battery-usage-controls">
+                <div
+                  className="battery-range-toggle segmented-slider"
+                  role="tablist"
+                  data-active-index={range === '24h' ? 0 : 1}
+                  style={segmentedIndicatorStyle(2, range === '24h' ? 0 : 1)}
                 >
-                  {t('batteryUsage.range24h')}
-                </button>
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={range === '10d'}
-                  className={range === '10d' ? 'active' : ''}
-                  onClick={() => setRange('10d')}
-                >
-                  {t('batteryUsage.range10d')}
-                </button>
-              </div>
-            </div>
-
-            {/* 设备状态条：多设备时点击可切换 */}
-            <BatteryUsageStatusStrip
-              device={selectedDevice}
-              devices={response?.devices ?? []}
-              insights={selectedInsights}
-              onSelectDevice={setSelectedDeviceKey}
-            />
-            <BatteryUsageSummary
-              device={selectedDevice}
-              insights={selectedInsights}
-              range={displayedRange}
-            />
-
-            {/* 图表 */}
-            {selectedSeries && (
-              <BatteryUsageChart
-                points={selectedSeries.points}
-                range={displayedRange}
-                generatedAt={response?.generatedAt}
-              />
-            )}
-
-            {/* 洞察 */}
-            <BatteryInsightCards
-              insights={selectedInsights}
-              aiAnalysisEnabled={aiAnalysisEnabled}
-            />
-
-            {/* 操作区 */}
-            <div className="battery-history-actions">
-              {confirmingClear ? (
-                <div className="clear-confirm-bar">
-                  <span>{t('batteryUsage.clearConfirm')}</span>
-                  <button className="danger" onClick={handleClear}>{t('batteryUsage.clearHistoryConfirm')}</button>
-                  <button onClick={() => setConfirmingClear(false)}>{t('common.cancel')}</button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={range === '24h'}
+                    className={range === '24h' ? 'active' : ''}
+                    onClick={() => setRange('24h')}
+                  >
+                    {t('batteryUsage.range24h')}
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={range === '10d'}
+                    className={range === '10d' ? 'active' : ''}
+                    onClick={() => setRange('10d')}
+                  >
+                    {t('batteryUsage.range10d')}
+                  </button>
                 </div>
-              ) : (
-                <>
-                  <button className="action-btn" onClick={() => setConfirmingClear(true)}>
-                    <Trash weight="regular" /> {t('batteryUsage.clearHistory')}
-                  </button>
-                  <button className="action-btn" onClick={() => handleExport('json')}>
-                    <Download weight="regular" /> {t('batteryUsage.exportJson')}
-                  </button>
-                  <button className="action-btn" onClick={() => handleExport('csv')}>
-                    <Download weight="regular" /> {t('batteryUsage.exportCsv')}
-                  </button>
-                </>
+              </div>
+
+              {/* 设备状态条：多设备时点击可切换 */}
+              <BatteryUsageStatusStrip
+                device={selectedDevice}
+                devices={response?.devices ?? []}
+                insights={selectedInsights}
+                onSelectDevice={setSelectedDeviceKey}
+              />
+              <BatteryUsageSummary
+                device={selectedDevice}
+                insights={selectedInsights}
+                range={displayedRange}
+              />
+
+              {/* 图表 */}
+              {selectedSeries && (
+                <BatteryUsageChart
+                  points={selectedSeries.points}
+                  range={displayedRange}
+                  generatedAt={response?.generatedAt}
+                />
               )}
-            </div>
-          </>
-        )}
+
+              {/* 洞察 */}
+              <BatteryInsightCards
+                insights={selectedInsights}
+                aiAnalysisEnabled={aiAnalysisEnabled}
+              />
+
+              {/* 操作区 */}
+              <div className="battery-history-actions">
+                {confirmingClear ? (
+                  <div className="clear-confirm-bar">
+                    <span>{t('batteryUsage.clearConfirm')}</span>
+                    <button className="danger" onClick={handleClear}>{t('batteryUsage.clearHistoryConfirm')}</button>
+                    <button onClick={() => setConfirmingClear(false)}>{t('common.cancel')}</button>
+                  </div>
+                ) : (
+                  <>
+                    <button className="action-btn" onClick={() => setConfirmingClear(true)}>
+                      <Trash weight="regular" /> {t('batteryUsage.clearHistory')}
+                    </button>
+                    <button className="action-btn" onClick={() => handleExport('json')}>
+                      <Download weight="regular" /> {t('batteryUsage.exportJson')}
+                    </button>
+                    <button className="action-btn" onClick={() => handleExport('csv')}>
+                      <Download weight="regular" /> {t('batteryUsage.exportCsv')}
+                    </button>
+                  </>
+                )}
+              </div>
+            </>
+          )}
+        </div>
       </div>
-    </div>
+    </Modal>
   );
 }

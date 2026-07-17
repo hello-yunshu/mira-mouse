@@ -675,6 +675,7 @@
       "frontend": "Frontend",
       "plugin": "Plugin",
       "localAi": "Local AI",
+      "source": "Source",
       "level": "Minimum level",
       "search": "Search message or module",
       "error": "Error",
@@ -698,6 +699,7 @@
       "pause": "Pause refresh",
       "resume": "Resume refresh",
       "clearView": "Clear current view",
+      "copyFiltered": "Copy filtered results",
       "export": "Export",
       "exportFiltered": "Export filtered results",
       "exportSession": "Export current session",
@@ -744,6 +746,10 @@
       "truncated": " (truncated)",
       "failed": "Export failed: {{error}}"
     },
+    "copy": {
+      "success": "Copied {{count}} entries to clipboard",
+      "failed": "Copy failed"
+    },
     "diagnostic": {
       "startTitle": "Start diagnostic session",
       "startHint": "Temporarily records more detailed logs (debug and above), still redacted and never uploaded. Lasts 10 minutes by default and auto-restores.",
@@ -753,7 +759,9 @@
       "cancel": "Cancel",
       "started": "Diagnostic session started",
       "stopped": "Diagnostic session stopped",
-      "expired": "Diagnostic session expired, capture level restored"
+      "expired": "Diagnostic session expired, capture level restored",
+      "startFailed": "Failed to start diagnostic session",
+      "stopFailed": "Failed to stop diagnostic session"
     },
     "fields": {
       "target": "Module",
@@ -763,6 +771,7 @@
       "timestamp": "Time"
     },
     "loadFailed": "Failed to load logs: {{error}}",
+    "openDirFailed": "Failed to open log directory",
     "previewEmpty": "Logs system is unavailable in web preview mode."
   }
 }

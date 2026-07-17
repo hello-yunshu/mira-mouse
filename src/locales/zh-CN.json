@@ -675,6 +675,7 @@
       "frontend": "前端",
       "plugin": "插件",
       "localAi": "本地 AI",
+      "source": "来源",
       "level": "最低等级",
       "search": "搜索消息或模块",
       "error": "错误",
@@ -698,6 +699,7 @@
       "pause": "暂停刷新",
       "resume": "继续刷新",
       "clearView": "清空当前视图",
+      "copyFiltered": "复制筛选结果",
       "export": "导出",
       "exportFiltered": "导出当前筛选结果",
       "exportSession": "导出本次会话",
@@ -744,6 +746,10 @@
       "truncated": "（已截断）",
       "failed": "导出失败：{{error}}"
     },
+    "copy": {
+      "success": "已复制 {{count}} 条日志到剪贴板",
+      "failed": "复制失败"
+    },
     "diagnostic": {
       "startTitle": "开始临时诊断",
       "startHint": "将临时记录更详细日志（debug 及以上），仍会脱敏且不会上传。默认持续 10 分钟，到期自动恢复。",
@@ -753,7 +759,9 @@
       "cancel": "取消",
       "started": "已开始临时诊断会话",
       "stopped": "已停止临时诊断会话",
-      "expired": "临时诊断会话已到期，采集等级已恢复"
+      "expired": "临时诊断会话已到期，采集等级已恢复",
+      "startFailed": "开始临时诊断失败",
+      "stopFailed": "停止临时诊断失败"
     },
     "fields": {
       "target": "模块",
@@ -763,6 +771,7 @@
       "timestamp": "时间"
     },
     "loadFailed": "加载日志失败：{{error}}",
+    "openDirFailed": "打开日志目录失败",
     "previewEmpty": "Web 预览模式下日志系统不可用。"
   }
 }
