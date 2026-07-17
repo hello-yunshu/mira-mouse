@@ -45,6 +45,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "serd
 png = "0.18"
 nusb = "0.2.4"
 futures-lite = "2"
+zip = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56"

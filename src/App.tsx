@@ -24,6 +24,7 @@ import { applyTheme, pastelDisplayColor } from './theme';
 import i18n, { applyLanguage, loadPluginLocales, resolveLabelKey } from './i18n';
 import { SettingsPage } from './Settings';
 import { AboutPage } from './About';
+import { LogPage } from './logs/LogPage';
 import { BatteryUsageModal } from './BatteryUsage';
 import { BatteryLevelIcon } from './BatteryLevelIcon';
 import type { AboutInfo, AppSettings, DeviceSnapshot, DeviceSnapshotEntry, DeviceState, DpiStage, PluginCapability, PluginCapabilityPlacement, PluginField, PluginFieldFormat, RangeSpec, ThemeMode } from './types';
@@ -55,7 +56,7 @@ import { LOCAL_AI_FEATURE, localAiFeatureEnabled } from './localAi';
 import { segmentedIndicatorStyle } from './segmentedControl';
 import './styles.css';
 
-type View = 'dashboard' | 'settings' | 'about';
+type View = 'dashboard' | 'settings' | 'about' | 'logs';
 type ControlMode = string;
 
 function isWindowsPlatform(): boolean {
@@ -2486,7 +2487,8 @@ export default function App() {
     </div>
     {view === 'dashboard' && (device ? <Dashboard device={device} deviceEntries={deviceEntries} onDeviceChange={setDevice} onDeviceSelect={selectDevice} onOpenBatteryUsage={openBatteryUsage} pluginLocaleRevision={pluginLocaleRevision} demoMode={demoMode} /> : <EmptyState onRefresh={() => { setDemoMode(false); setDevice(undefined); setDeviceEntries([]); deviceEntriesRef.current = []; setRefreshNonce((value) => value + 1); invoke('device_refresh').catch(() => {}); }} onDemo={() => { setDemoMode(true); setDevice(MOCK_DEVICE); setDeviceEntries(MOCK_DEVICE_ENTRIES); deviceEntriesRef.current = MOCK_DEVICE_ENTRIES; }} onOpenSettings={() => setView('settings')} />)}
     {view === 'settings' && <SettingsPage previewMode={pureWeb} focusPluginUpdateToken={settingsPluginFocusToken} onNavigateAbout={() => setView('about')} onOpenBatteryUsage={openBatteryUsage} onBatteryUsageSettingsChange={syncBatteryUsageSettings} onThemeChange={setTheme} pluginCapabilities={device?.pluginCapabilities ?? []} writableMutations={device?.writableMutations ?? []} />}
-    {view === 'about' && <AboutPage previewMode={pureWeb} focusUpdateToken={aboutFocusToken} onBack={() => setView('settings')} />}
+    {view === 'about' && <AboutPage previewMode={pureWeb} focusUpdateToken={aboutFocusToken} onBack={() => setView('settings')} onOpenLogs={() => setView('logs')} />}
+    {view === 'logs' && <LogPage onBack={() => setView('about')} />}
     <BatteryUsageModal
       key={batteryUsageSession}
       open={showBatteryUsage}

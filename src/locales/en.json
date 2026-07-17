@@ -652,7 +652,7 @@
     "recordEnabledHint": "Used to generate 24-hour and 10-day battery charts and local power summaries.",
     "aiAnalysisToggle": "Enable AI analysis",
     "aiAnalysisToggleHint": "Controls Battery Usage only. Enabling it also turns on the Local AI master switch and battery history; the model replaces the old estimate only after proving more accurate.",
-    "retentionDays": "Retention days",
+    "retentionDays": "Retention Days",
     "retentionDaysHint": "Records older than this will be automatically removed.",
     "clearHistory": "Clear battery history",
     "clearHistoryConfirm": "Confirm clear",
@@ -661,5 +661,108 @@
     "exportCsv": "Export CSV",
     "exportDone": "Battery history exported",
     "exportFailed": "Export failed"
+  },
+  "logs": {
+    "title": "Logs & Diagnostics",
+    "eyebrow": "Local runtime records",
+    "cardHint": "Inspect local runtime logs of the app, mouse plugins, and local AI to troubleshoot device connection, plugin execution, and prediction issues.",
+    "cardPrivacy": "Logs are stored locally only and never uploaded.",
+    "openButton": "Open Logs & Diagnostics",
+    "back": "Back",
+    "filter": {
+      "all": "All",
+      "app": "App",
+      "frontend": "Frontend",
+      "plugin": "Plugin",
+      "localAi": "Local AI",
+      "level": "Minimum level",
+      "search": "Search message or module",
+      "error": "Error",
+      "warn": "Warn",
+      "info": "Info",
+      "debug": "Debug",
+      "trace": "Trace"
+    },
+    "list": {
+      "empty": "No logs match the current filters",
+      "loading": "Loading…",
+      "more": "Load more",
+      "newCount": "{{count}} new logs",
+      "expand": "Expand details",
+      "collapse": "Collapse details",
+      "copy": "Copy",
+      "copied": "Copied"
+    },
+    "toolbar": {
+      "follow": "Auto-follow",
+      "pause": "Pause refresh",
+      "resume": "Resume refresh",
+      "clearView": "Clear current view",
+      "export": "Export",
+      "exportFiltered": "Export filtered results",
+      "exportSession": "Export current session",
+      "exportBundle": "Generate diagnostics bundle",
+      "delete": "Delete",
+      "deleteOlder": "Delete logs older than 7 days",
+      "deleteBeforeSession": "Delete logs before current session",
+      "deleteAll": "Delete all local logs",
+      "openDir": "Open log directory",
+      "diagnosticStart": "Start diagnostic session",
+      "diagnosticStop": "Stop diagnostic session",
+      "diagnosticActive": "Diagnostic active · {{minutes}} min left"
+    },
+    "status": {
+      "bufferCount": "Memory: {{count}} entries",
+      "diskUsage": "Disk: {{usage}} / {{quota}}",
+      "recentErrors": "Recent errors: {{count}}",
+      "recentWarns": "Recent warnings: {{count}}",
+      "sessionId": "Session: {{id}}"
+    },
+    "delete": {
+      "confirmTitle": "Delete local logs",
+      "confirmHint": "This will not delete settings, plugins, models, battery history, or other business data.",
+      "olderThanDays": "Delete logs older than 7 days",
+      "beforeCurrentSession": "Delete logs before current session",
+      "all": "Delete all local logs",
+      "confirm": "Delete",
+      "cancel": "Cancel",
+      "success": "Deleted: {{files}} files, {{entries}} entries",
+      "partial": "Partially succeeded: {{error}}",
+      "failed": "Delete failed: {{error}}"
+    },
+    "export": {
+      "filteredTitle": "Export filtered results",
+      "sessionTitle": "Export current session",
+      "bundleTitle": "Generate diagnostics bundle",
+      "defaultName": "mira-logs-{{date}}",
+      "bundleName": "mira-diagnostics-{{date}}",
+      "jsonlFilter": "JSONL logs",
+      "zipFilter": "ZIP diagnostics bundle",
+      "cancelled": "Export cancelled",
+      "success": "Exported {{count}} entries ({{bytes}} bytes) to: {{path}}",
+      "bundleSuccess": "Diagnostics bundle generated: {{path}}",
+      "truncated": " (truncated)",
+      "failed": "Export failed: {{error}}"
+    },
+    "diagnostic": {
+      "startTitle": "Start diagnostic session",
+      "startHint": "Temporarily records more detailed logs (debug and above), still redacted and never uploaded. Lasts 10 minutes by default and auto-restores.",
+      "durationLabel": "Duration minutes",
+      "levelLabel": "Capture level",
+      "start": "Start",
+      "cancel": "Cancel",
+      "started": "Diagnostic session started",
+      "stopped": "Diagnostic session stopped",
+      "expired": "Diagnostic session expired, capture level restored"
+    },
+    "fields": {
+      "target": "Module",
+      "sessionId": "Session",
+      "correlationId": "Correlation ID",
+      "fields": "Structured fields",
+      "timestamp": "Time"
+    },
+    "loadFailed": "Failed to load logs: {{error}}",
+    "previewEmpty": "Logs system is unavailable in web preview mode."
   }
 }
