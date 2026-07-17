@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { PropsWithChildren, useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
+import { OverlayPortal, subscribeOverlayStack } from './overlay';
 
 /**
- * Tooltip — 内容通过 React Portal 渲染到 document.body。
+ * Tooltip — 内容通过 OverlayPortal 渲染到顶层 #mira-overlay-root。
  *
  * 原因：tooltip 是临时浮层，需要脱离普通内容 surface 的堆叠上下文，
- * 让自己的特殊玻璃 token 独立工作。Portal 到 body 后，tooltip 不会被卡片、
- * 滚动容器或未来可能新增的 backdrop root 截断取样范围。
+ * 让自己的特殊玻璃 token 独立工作。Portal 到 Overlay Root 后，tooltip 不会
+ * 被卡片、滚动容器或业务层叠上下文截断取样范围，也避免与 Modal 抢占
+ * 层级——通过订阅 overlayStack，Modal 打开时立即隐藏所有 Tooltip。
  */
 export function Tooltip({ label, children }: PropsWithChildren<{ label: string }>) {
   const triggerRef = useRef<HTMLSpanElement>(null);
@@ -92,6 +93,13 @@ export function Tooltip({ label, children }: PropsWithChildren<{ label: string }
     };
   }, [mounted, measure]);
 
+  // 订阅浮层栈：任何 Modal 打开时立即隐藏 Tooltip，避免穿透到遮罩之上。
+  useEffect(() => subscribeOverlayStack(() => {
+    // 订阅回调里直接读取最新栈状态；只关心 Modal 出现这一方向。
+    // 使用 hideNow 的清理逻辑确保 timer 不会泄漏。
+    hideNow();
+  }), [hideNow]);
+
   useEffect(() => () => { cancelHover(); cancelHide(); }, []);
 
   return (
@@ -109,18 +117,19 @@ export function Tooltip({ label, children }: PropsWithChildren<{ label: string }
       >
         {children}
       </span>
-      {mounted && createPortal(
-        <span
-          role="tooltip"
-          id={id}
-          ref={tooltipRef}
-          className="tooltip-content"
-          data-show={visible ? 'true' : 'false'}
-          style={pos ? { top: `${pos.top}px`, left: `${pos.left}px` } : undefined}
-        >
-          {label}
-        </span>,
-        document.body
+      {mounted && (
+        <OverlayPortal>
+          <span
+            role="tooltip"
+            id={id}
+            ref={tooltipRef}
+            className="tooltip-content"
+            data-show={visible ? 'true' : 'false'}
+            style={pos ? { top: `${pos.top}px`, left: `${pos.left}px` } : undefined}
+          >
+            {label}
+          </span>
+        </OverlayPortal>
       )}
     </>
   );
