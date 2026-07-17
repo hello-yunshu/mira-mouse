@@ -15,4 +15,16 @@ Object.defineProperty(navigator, 'language', { configurable: true, value: 'zh-CN
 Object.defineProperty(navigator, 'languages', { configurable: true, value: ['zh-CN', 'zh', 'en'] });
 void i18n.changeLanguage('zh-CN');
 
+// jsdom 不实现 ResizeObserver，OverflowTip 等组件依赖它做溢出检测。
+// 提供一个最小桩：observe 时不触发回调（初始检测已在 useEffect 中同步执行）。
+class ResizeObserverStub {
+  constructor(callback: ResizeObserverCallback) { void callback; }
+  observe(target: Element, options?: ResizeObserverOptions): void { void target; void options; }
+  unobserve(target: Element): void { void target; }
+  disconnect(): void { /* no-op */ }
+}
+if (!('ResizeObserver' in globalThis)) {
+  (globalThis as { ResizeObserver: typeof ResizeObserverStub }).ResizeObserver = ResizeObserverStub;
+}
+
 afterEach(cleanup);
