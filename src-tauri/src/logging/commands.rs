@@ -13,6 +13,7 @@ use crate::logging::model::{
     DeleteResult, DeleteScope, ExportScope, LogInput, LogLevel, LogPage, LogQuery, LogStatus,
 };
 use crate::logging::{self, LogService, DEFAULT_DIAGNOSTIC_MINUTES};
+use crate::local_ai_update;
 use std::path::PathBuf;
 use tauri::State;
 
@@ -134,15 +135,49 @@ pub async fn log_export(
 }
 
 /// 导出诊断包 ZIP。
-/// `ctx` 由调用方（lib.rs）填充；`path` 由前端通过保存对话框获取。
+///
+/// 诊断上下文（应用版本、平台、架构、会话 ID、本地 AI 状态等）由本命令在后端
+/// 自行收集，不再依赖前端传入——前端无法可靠获取平台/架构等信息，且原先前端
+/// 构造的 `ctx` 各字段均为空，导致诊断包缺少系统信息。
+///
+/// `path` 由前端通过系统保存对话框获取。
 #[tauri::command]
 pub async fn log_export_diagnostics_bundle(
-    ctx: DiagnosticsContext,
     path: String,
+    app: tauri::AppHandle,
     state: State<'_, LogService>,
 ) -> Result<ExportOutcomeDto, String> {
     let output_path = PathBuf::from(&path);
+    let log_status = state.status();
     let entries = state.buffer_snapshot_for_session();
+
+    // 本地 AI 状态可能读取文件 / 状态，放到阻塞线程中执行。
+    let app_for_ai = app.clone();
+    let local_ai_status_json = tauri::async_runtime::spawn_blocking(move || {
+        serde_json::to_string(&local_ai_update::status(&app_for_ai))
+            .unwrap_or_else(|_| "{}".into())
+    })
+    .await
+    .map_err(|e| format!("diagnostics bundle failed: {e}"))?;
+
+    let package = app.package_info();
+    let ctx = DiagnosticsContext {
+        app_name: package.name.to_string(),
+        app_version: package.version.to_string(),
+        app_identifier: app.config().identifier.to_string(),
+        platform: std::env::consts::OS.to_string(),
+        architecture: std::env::consts::ARCH.to_string(),
+        rust_version: env!("CARGO_PKG_RUST_VERSION").to_string(),
+        session_id: log_status.session_id,
+        // app-info / plugin-status 暂无对应的只读收集命令，保留占位；
+        // summary.json 已含版本/平台等关键信息，日志本身在 logs.jsonl 中。
+        app_info_json: "{}".into(),
+        plugin_status_json: "{}".into(),
+        local_ai_status_json,
+        recent_error_count: log_status.recent_error_count,
+        recent_warn_count: log_status.recent_warn_count,
+    };
+
     let outcome = export::export_diagnostics_bundle(entries, &ctx, &output_path)
         .map_err(|e| format!("diagnostics bundle failed: {e}"))?;
     Ok(ExportOutcomeDto {

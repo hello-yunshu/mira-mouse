@@ -107,6 +107,8 @@ impl Default for Redactor {
 }
 
 impl Redactor {
+    /// 测试用构造器：指定 home_dir 与 user_name，避免依赖环境变量。
+    #[cfg(test)]
     pub fn new(home_dir: Option<PathBuf>, user_name: Option<String>) -> Self {
         Self {
             home_dir,
@@ -115,11 +117,10 @@ impl Redactor {
         }
     }
 
-    /// 注册一个已知设备标识，便于精确替换。值会先做基本脱敏（截断）。
+    /// 测试用：注入已知设备 ID，验证精确替换逻辑。
+    #[cfg(test)]
     pub fn register_device_id(&mut self, id: String) {
-        if !id.is_empty() && id.len() <= 64 {
-            self.known_device_ids.insert(id);
-        }
+        self.known_device_ids.insert(id);
     }
 
     /// 返回主目录路径（用于路径替换展示）。
@@ -226,7 +227,10 @@ impl Redactor {
             FieldValue::Text(text) => {
                 *text = self.redact_text(text, MAX_FIELD_LEN);
             }
-            FieldValue::Number(_) | FieldValue::Integer(_) | FieldValue::Boolean(_) | FieldValue::Null => {
+            FieldValue::Number(_)
+            | FieldValue::Integer(_)
+            | FieldValue::Boolean(_)
+            | FieldValue::Null => {
                 // 数值与布尔不脱敏。
             }
         }
@@ -266,7 +270,7 @@ pub fn redact_url_credentials(text: &str) -> String {
             // 找到下一个 '@' 之前是否有 ':'（凭据）。
             let rest = &text[i..];
             if let Some(at_pos) = rest.find('@') {
-                if let Some(colon_pos) = rest[..at_pos].find(':') {
+                if let Some(_colon_pos) = rest[..at_pos].find(':') {
                     // user:pass@ → ${REDACTED}@
                     out.push_str(REDACTED);
                     out.push('@');
@@ -293,10 +297,7 @@ fn find_scheme_end(bytes: &[u8]) -> Option<usize> {
         return None;
     }
     for i in 0..bytes.len() - 2 {
-        if bytes[i] == b':'
-            && bytes[i + 1] == b'/'
-            && bytes[i + 2] == b'/'
-        {
+        if bytes[i] == b':' && bytes[i + 1] == b'/' && bytes[i + 2] == b'/' {
             // scheme 必须以字母开头。
             if bytes[0].is_ascii_alphabetic() {
                 return Some(i + 3);
@@ -361,7 +362,9 @@ pub fn redact_inline_tokens(text: &str) -> String {
                 let value_start = start + marker.len();
                 // 找到下一个空白或行尾。
                 let value_end = out[value_start..]
-                    .find(|c: char| c.is_whitespace() || c == ',' || c == ';' || c == '"' || c == '\'')
+                    .find(|c: char| {
+                        c.is_whitespace() || c == ',' || c == ';' || c == '"' || c == '\''
+                    })
                     .map(|p| value_start + p)
                     .unwrap_or(out.len());
                 if value_end > value_start {
@@ -415,13 +418,19 @@ mod tests {
     }
 
     fn make_redactor() -> Redactor {
-        Redactor::new(Some(PathBuf::from("/Users/testuser")), Some("testuser".into()))
+        Redactor::new(
+            Some(PathBuf::from("/Users/testuser")),
+            Some("testuser".into()),
+        )
     }
 
     #[test]
     fn home_dir_is_replaced_with_placeholder() {
         let r = make_redactor();
-        let mut e = make_entry("loaded file from /Users/testuser/Library/Logs/mira.log", vec![]);
+        let mut e = make_entry(
+            "loaded file from /Users/testuser/Library/Logs/mira.log",
+            vec![],
+        );
         r.apply(&mut e);
         assert!(e.message.contains("${HOME}"));
         assert!(!e.message.contains("testuser"));
@@ -444,7 +453,10 @@ mod tests {
         let r = make_redactor();
         let mut e = make_entry(
             "request failed",
-            vec![("authorization", FieldValue::Text("Bearer abc.def.ghi".into()))],
+            vec![(
+                "authorization",
+                FieldValue::Text("Bearer abc.def.ghi".into()),
+            )],
         );
         r.apply(&mut e);
         match e.fields.get("authorization") {

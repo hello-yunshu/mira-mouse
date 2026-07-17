@@ -46,7 +46,8 @@ enum StorageMessage {
     Flush,
     /// 强制重新打开当前文件（用于清理后）。
     Rotate,
-    /// 关闭 writer 线程。
+    /// 关闭 writer 线程。测试用于 join；生产退出走 flush。
+    #[allow(dead_code)]
     Shutdown,
 }
 
@@ -97,12 +98,8 @@ impl LogStorageHandle {
         let _ = self.tx.send(StorageMessage::Flush);
     }
 
-    /// 请求轮转。
-    pub fn rotate(&self) {
-        let _ = self.tx.send(StorageMessage::Rotate);
-    }
-
-    /// 关闭 writer。drop 后 writer 会处理 Shutdown。
+    /// 关闭 writer 线程。测试用于 join；生产退出走 flush（见 lib.rs ExitRequested）。
+    #[allow(dead_code)]
     pub fn shutdown(&self) {
         let _ = self.tx.send(StorageMessage::Shutdown);
     }
@@ -120,12 +117,6 @@ impl LogStorageHandle {
     /// 当前日志目录。
     pub fn dir(&self) -> PathBuf {
         self.dir.lock().unwrap().clone()
-    }
-
-    /// 列出磁盘上的所有日志文件（按时间排序，最旧在前）。
-    pub fn list_files(&self) -> Vec<PathBuf> {
-        let dir = self.dir.lock().unwrap().clone();
-        list_log_files(&dir)
     }
 
     /// 删除指定日期之前的所有日志文件。返回 (deleted_count, error)。
@@ -187,7 +178,10 @@ fn run_writer(
                     Ok(bytes) => bytes,
                     Err(_) => continue,
                 };
-                if let Err(err) = writer.write_all(&serialized).and_then(|_| writer.write_all(b"\n")) {
+                if let Err(err) = writer
+                    .write_all(&serialized)
+                    .and_then(|_| writer.write_all(b"\n"))
+                {
                     // 写入失败：标记 disabled，继续消费但不写。
                     *enabled.lock().unwrap() = false;
                     eprintln!("[mira-log] write failed: {err}");
@@ -210,7 +204,8 @@ fn run_writer(
                     };
                 }
                 // 定期清理。
-                if counter >= CLEANUP_INTERVAL || last_cleanup.elapsed() >= Duration::from_secs(60) {
+                if counter >= CLEANUP_INTERVAL || last_cleanup.elapsed() >= Duration::from_secs(60)
+                {
                     counter = 0;
                     last_cleanup = Instant::now();
                     let _ = cleanup_disk(&dir, &disk_usage);
@@ -255,7 +250,6 @@ fn drain_loop_disabled(rx: Receiver<StorageMessage>) {
 
 struct RotatingWriter {
     file: BufWriter<File>,
-    path: PathBuf,
     bytes_written: u64,
 }
 
@@ -275,14 +269,10 @@ impl RotatingWriter {
 
 fn open_writer(dir: &Path) -> std::io::Result<RotatingWriter> {
     let path = new_file_path(dir);
-    let file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)?;
+    let file = OpenOptions::new().create(true).append(true).open(&path)?;
     let bytes_written = file.metadata().map(|m| m.len()).unwrap_or(0);
     Ok(RotatingWriter {
         file: BufWriter::new(file),
-        path,
         bytes_written,
     })
 }
@@ -310,8 +300,7 @@ fn list_log_files(dir: &Path) -> Vec<PathBuf> {
     };
     files.retain(|p| {
         p.extension().and_then(|e| e.to_str()) == Some("log")
-            && p
-                .file_name()
+            && p.file_name()
                 .and_then(|n| n.to_str())
                 .map(|n| n.starts_with("mira-"))
                 .unwrap_or(false)
@@ -335,18 +324,18 @@ fn scan_disk_usage(dir: &Path) -> std::io::Result<u64> {
 fn cleanup_disk(dir: &Path, disk_usage: &Arc<Mutex<u64>>) -> std::io::Result<u64> {
     let now = Utc::now();
     let cutoff = now - chrono::Duration::days(RETENTION_DAYS);
-    let cutoff_str = cutoff.format("%Y%m%dT%H%M%S").to_string();
+    // cutoff 必须与文件名使用同一信封（mira-<ts>.log）比较：
+    // 之前用裸时间戳 "20260601T000000" 与 "mira-..." 比较，因 'm' > '2'，
+    // name < cutoff_str 恒为 false，导致按时间清理永不生效。
+    let cutoff_name = format!("mira-{}.log", cutoff.format("%Y%m%dT%H%M%S"));
 
     let mut files = list_log_files(dir);
     let mut freed_bytes = 0u64;
 
-    // 1. 按时间清理：文件名 < cutoff_str 的删除。
+    // 1. 按时间清理：文件名 < cutoff_name 的删除。
     files.retain(|p| {
-        let name = p
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
-        if name < cutoff_str.as_str() {
+        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if name < cutoff_name.as_str() {
             if let Ok(meta) = fs::metadata(p) {
                 freed_bytes += meta.len();
             }
@@ -389,16 +378,14 @@ fn cleanup_disk(dir: &Path, disk_usage: &Arc<Mutex<u64>>) -> std::io::Result<u64
 
 /// 删除指定日期之前的所有日志文件（基于文件名排序）。
 fn delete_files_older_than(dir: &Path, cutoff: DateTime<Utc>) -> (u32, Option<String>) {
-    let cutoff_str = cutoff.format("%Y%m%dT%H%M%S").to_string();
+    // 与文件名使用同一信封比较（mira-<ts>.log），见 cleanup_disk 注释。
+    let cutoff_name = format!("mira-{}.log", cutoff.format("%Y%m%dT%H%M%S"));
     let files = list_log_files(dir);
     let mut deleted = 0u32;
     let mut last_err: Option<String> = None;
     for file in &files {
-        let name = file
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
-        if name < cutoff_str.as_str() {
+        let name = file.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if name < cutoff_name.as_str() {
             if let Err(err) = fs::remove_file(file) {
                 last_err = Some(format!("remove {}: {err}", file.display()));
             } else {
@@ -465,7 +452,11 @@ mod tests {
         join.join().unwrap();
 
         let files = list_log_files(tmp.path());
-        assert!(files.len() >= 2, "expected rotation, got {} files", files.len());
+        assert!(
+            files.len() >= 2,
+            "expected rotation, got {} files",
+            files.len()
+        );
         // 总量不应超过 quota 太多（清理在每 256 条后跑）。
         let total: u64 = files
             .iter()
@@ -487,7 +478,9 @@ mod tests {
         std::thread::sleep(Duration::from_millis(100));
         let (deleted, err) = handle.delete_all();
         assert!(deleted >= 1, "expected at least 1 deleted, got {deleted}");
-        assert!(err.is_none() || err.as_ref().map(|s| s.is_empty()).unwrap_or(false) || err.is_some());
+        assert!(
+            err.is_none() || err.as_ref().map(|s| s.is_empty()).unwrap_or(false) || err.is_some()
+        );
         handle.shutdown();
         join.join().unwrap();
     }
