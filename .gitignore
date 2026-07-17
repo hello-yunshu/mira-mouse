@@ -17,6 +17,8 @@ vite.config.d.ts
 vite.config.js
 /.trae/
 /design-qa.md
+/mira-mouse-log-system-ai-ide-prompt.md
+/mira-mouse-overlay-glass-fix-plan.md
 /tmp/
 /src-tauri/gen/
 src-tauri/tauri.test.conf.json
