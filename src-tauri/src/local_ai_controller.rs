@@ -10,7 +10,7 @@
 
 use std::{
     collections::BTreeMap,
-    io::{Read, Write},
+    io::{BufRead, BufReader, Read, Write},
     process::{Child, ChildStdin, Command, Stdio},
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -32,6 +32,8 @@ use tauri::AppHandle;
 
 use crate::{
     battery_history::BatterySample, local_ai_runtime, local_ai_runtime::RuntimeInstallation,
+    logging::{self, LogService},
+    logging::model::{LogInput, LogLevel, LogSource},
 };
 
 /// 单次请求/响应超时。与原 `predict_batteries` 的 RUNTIME_TIMEOUT 保持一致。
@@ -42,6 +44,10 @@ const FAILURE_COOLDOWN: Duration = Duration::from_secs(30);
 const STOP_GRACE: Duration = Duration::from_millis(500);
 /// stderr 缓冲上限,超限丢弃旧数据。仅用于错误诊断。
 const MAX_STDERR_BYTES: usize = 64 * 1024;
+/// stderr 单行截断上限,避免超长行冲击日志缓冲。
+const MAX_STDERR_LINE: usize = 4096;
+/// stderr 日志限流:每秒最多记录这么多行,超出后折叠为摘要。
+const STDERR_RATE_LIMIT: u32 = 50;
 /// Keep mature 30-day histories below the 1 MiB IPC envelope while retaining
 /// enough recent samples for the quality gate. At the normal five-minute
 /// cadence this is roughly two weeks per battery component.
@@ -70,6 +76,8 @@ struct ControllerInner {
     state: ControllerState,
     /// 由 lib.rs setup 阶段注入的 crash 事件 sender。None 时静默丢弃事件。
     crash_tx: Option<Sender<CrashEvent>>,
+    /// 由 lib.rs setup 阶段注入的统一日志服务。None 时静默丢弃日志。
+    log_service: Option<LogService>,
 }
 
 struct RunningRuntime {
@@ -98,6 +106,7 @@ impl Default for ControllerInner {
             running: None,
             state: ControllerState::Stopped,
             crash_tx: None,
+            log_service: None,
         }
     }
 }
@@ -107,6 +116,32 @@ impl LocalAiController {
     pub fn set_crash_sender(&self, tx: Sender<CrashEvent>) {
         let mut guard = self.lock();
         guard.crash_tx = Some(tx);
+    }
+
+    /// 在 lib.rs setup 阶段注入统一日志服务,让 controller 可写入 local-ai 来源日志。
+    pub fn set_log_service(&self, svc: LogService) {
+        let mut guard = self.lock();
+        guard.log_service = Some(svc);
+    }
+
+    /// 通过统一日志服务写入一条 local-ai 来源日志。未注入时静默丢弃。
+    fn log(&self, level: LogLevel, target: &str, message: impl Into<String>) {
+        let guard = self.lock();
+        if let Some(svc) = guard.log_service.as_ref() {
+            svc.write(LogInput::new(level, LogSource::LocalAi, target, message));
+        }
+    }
+
+    /// 通过统一日志服务写入一条 local-ai 来源日志,复用已有 guard(避免重锁)。
+    fn log_with_guard(
+        guard: &std::sync::MutexGuard<'_, ControllerInner>,
+        level: LogLevel,
+        target: &str,
+        message: impl Into<String>,
+    ) {
+        if let Some(svc) = guard.log_service.as_ref() {
+            svc.write(LogInput::new(level, LogSource::LocalAi, target, message));
+        }
     }
 
     /// Best-effort 投递事件:supervisor 已退出或未注入时静默丢弃。
@@ -124,10 +159,17 @@ impl LocalAiController {
         if matches!(guard.state, ControllerState::Running) && guard.running.is_some() {
             return Ok(());
         }
+        Self::log_with_guard(&guard, LogLevel::Info, "local_ai::lifecycle", "local AI starting");
         let Some(installation) = local_ai_runtime::resolve_installation(app) else {
             guard.state = ControllerState::Failed {
                 last_attempt: Instant::now(),
             };
+            Self::log_with_guard(
+                &guard,
+                LogLevel::Error,
+                "local_ai::lifecycle",
+                "runtime or model pack not available",
+            );
             let crash_tx = guard.crash_tx.clone();
             drop(guard);
             send_crash_event(
@@ -143,6 +185,12 @@ impl LocalAiController {
             guard.state = ControllerState::Failed {
                 last_attempt: Instant::now(),
             };
+            Self::log_with_guard(
+                &guard,
+                LogLevel::Error,
+                "local_ai::lifecycle",
+                format!("handshake failed: {error}"),
+            );
             let crash_tx = guard.crash_tx.clone();
             drop(guard);
             send_crash_event(
@@ -155,6 +203,12 @@ impl LocalAiController {
             return Err(error);
         }
         guard.state = ControllerState::Running;
+        Self::log_with_guard(
+            &guard,
+            LogLevel::Info,
+            "local_ai::lifecycle",
+            "local AI runtime started, handshake ok",
+        );
         Ok(())
     }
 
@@ -165,6 +219,7 @@ impl LocalAiController {
             guard.state = ControllerState::Stopped;
             return;
         };
+        Self::log_with_guard(&guard, LogLevel::Info, "local_ai::lifecycle", "local AI stopping");
         // drop stdin 触发 EOF,rill-runtime 的 BufReader::read_until 返回 0 退出主循环。
         drop(runtime.stdin);
         let status = runtime.child.wait_timeout(STOP_GRACE);
@@ -330,6 +385,27 @@ impl LocalAiController {
         // 完整跑完所有 batch 且至少返回 1 个结果 → 通知 supervisor 清零失败窗口。
         // 必须先 drop guard 再 emit,否则 emit_crash_event 重新 lock 会死锁。
         let has_results = !results.is_empty();
+        let batch_count = batches.len();
+        let result_count = results.len();
+        if has_results {
+            Self::log_with_guard(
+                &guard,
+                LogLevel::Debug,
+                "local_ai::predict",
+                format!(
+                    "prediction batch ok: {result_count}/{batch_count} devices returned estimates"
+                ),
+            );
+        } else if batch_count > 0 {
+            Self::log_with_guard(
+                &guard,
+                LogLevel::Warn,
+                "local_ai::predict",
+                format!(
+                    "prediction batch returned no estimates for {batch_count} devices"
+                ),
+            );
+        }
         drop(guard);
         if has_results {
             self.emit_crash_event(CrashEvent::Success);
@@ -349,6 +425,13 @@ fn send_crash_event(crash_tx: Option<Sender<CrashEvent>>, event: CrashEvent) {
 }
 
 fn mark_failed(guard: &mut std::sync::MutexGuard<'_, ControllerInner>, reason: &str) {
+    // 先记录失败原因到统一日志,便于诊断。log_service 未注入时静默丢弃。
+    LocalAiController::log_with_guard(
+        guard,
+        LogLevel::Error,
+        "local_ai::runtime",
+        format!("local AI marked failed: {reason}"),
+    );
     if let Some(mut runtime) = guard.running.take() {
         let _ = runtime.child.kill();
         let _ = runtime.child.wait();
@@ -456,22 +539,100 @@ fn spawn_and_handshake(
             }
         }
     });
-    // 后台读 stderr 线程,仅用于诊断:子进程退出后拿尾部 MAX_STDERR_BYTES 用于错误信息。
+    // 后台读 stderr 线程:逐行转发到统一日志(限流+截断),并保留尾部用于失败诊断。
+    let log_service = guard.log_service.clone();
     let _stderr_thread = std::thread::spawn(move || {
-        let mut reader = stderr;
-        let mut buf = vec![0u8; 1024];
+        let mut reader = BufReader::new(stderr);
         let mut stderr_tail: Vec<u8> = Vec::new();
+        let mut window_start = Instant::now();
+        let mut lines_in_window: u32 = 0;
+        let mut suppressed_count: u64 = 0;
+        let mut buf = String::new();
         loop {
-            match reader.read(&mut buf) {
+            buf.clear();
+            match reader.read_line(&mut buf) {
                 Ok(0) => break,
-                Ok(n) => {
-                    if stderr_tail.len() + n > MAX_STDERR_BYTES {
-                        let overflow = stderr_tail.len() + n - MAX_STDERR_BYTES;
-                        stderr_tail.drain(..overflow.min(stderr_tail.len()));
+                Ok(_) => {
+                    let line = buf.trim_end_matches(['\r', '\n']);
+                    // 维护尾部缓冲(用于子进程退出后的诊断快照)。
+                    let line_bytes = line.as_bytes();
+                    if stderr_tail.len() + line_bytes.len() + 1 > MAX_STDERR_BYTES {
+                        let need = stderr_tail.len() + line_bytes.len() + 1 - MAX_STDERR_BYTES;
+                        stderr_tail.drain(..need.min(stderr_tail.len()));
                     }
-                    stderr_tail.extend_from_slice(&buf[..n]);
+                    stderr_tail.extend_from_slice(line_bytes);
+                    stderr_tail.push(b'\n');
+
+                    // 1 秒窗口限流:超出 STDERR_RATE_LIMIT 的行折叠为摘要。
+                    let now = Instant::now();
+                    if now.duration_since(window_start) >= Duration::from_secs(1) {
+                        if suppressed_count > 0 {
+                            if let Some(svc) = log_service.as_ref() {
+                                svc.write(LogInput::new(
+                                    LogLevel::Warn,
+                                    LogSource::LocalAi,
+                                    "local_ai::stderr",
+                                    format!(
+                                        "stderr rate limit: {suppressed_count} additional lines suppressed"
+                                    ),
+                                ));
+                            }
+                            suppressed_count = 0;
+                        }
+                        window_start = now;
+                        lines_in_window = 0;
+                    }
+                    if lines_in_window >= STDERR_RATE_LIMIT {
+                        suppressed_count += 1;
+                        continue;
+                    }
+                    lines_in_window += 1;
+
+                    // 截断超长行(按字符边界,避免破坏 UTF-8)。
+                    let display_line: String = if line.chars().count() > MAX_STDERR_LINE {
+                        let truncated: String = line.chars().take(MAX_STDERR_LINE).collect();
+                        format!("{truncated}…(truncated)")
+                    } else {
+                        line.to_string()
+                    };
+
+                    // 启发式等级映射:并非所有 stderr 都是 error。
+                    // panic/fatal/error → Error,warn → Warn,其余默认 Info。
+                    let lower = display_line.to_ascii_lowercase();
+                    let level = if lower.contains("panic")
+                        || lower.contains("fatal")
+                        || lower.contains("error")
+                    {
+                        LogLevel::Error
+                    } else if lower.contains("warn") {
+                        LogLevel::Warn
+                    } else {
+                        LogLevel::Info
+                    };
+
+                    if let Some(svc) = log_service.as_ref() {
+                        svc.write(LogInput::new(
+                            level,
+                            LogSource::LocalAi,
+                            "local_ai::stderr",
+                            display_line,
+                        ));
+                    }
                 }
                 Err(_) => break,
+            }
+        }
+        // 收尾:刷新最后窗口中被抑制的行计数。
+        if suppressed_count > 0 {
+            if let Some(svc) = log_service.as_ref() {
+                svc.write(LogInput::new(
+                    LogLevel::Warn,
+                    LogSource::LocalAi,
+                    "local_ai::stderr",
+                    format!(
+                        "stderr rate limit: {suppressed_count} additional lines suppressed"
+                    ),
+                ));
             }
         }
         stderr_tail

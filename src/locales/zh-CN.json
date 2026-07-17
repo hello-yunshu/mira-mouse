@@ -661,5 +661,108 @@
     "exportCsv": "导出 CSV",
     "exportDone": "已导出电量历史",
     "exportFailed": "导出失败"
+  },
+  "logs": {
+    "title": "日志与诊断",
+    "eyebrow": "本地运行记录",
+    "cardHint": "查看程序、鼠标插件和本地 AI 的本地运行记录，用于排查设备连接、插件执行和预测问题。",
+    "cardPrivacy": "日志仅保存在本机，不会上传。",
+    "openButton": "打开日志与诊断",
+    "back": "返回",
+    "filter": {
+      "all": "全部",
+      "app": "程序",
+      "frontend": "前端",
+      "plugin": "插件",
+      "localAi": "本地 AI",
+      "level": "最低等级",
+      "search": "搜索消息或模块",
+      "error": "错误",
+      "warn": "警告",
+      "info": "信息",
+      "debug": "调试",
+      "trace": "追踪"
+    },
+    "list": {
+      "empty": "没有符合条件的日志",
+      "loading": "加载中…",
+      "more": "加载更多",
+      "newCount": "有 {{count}} 条新日志",
+      "expand": "展开详情",
+      "collapse": "收起详情",
+      "copy": "复制",
+      "copied": "已复制"
+    },
+    "toolbar": {
+      "follow": "自动跟随",
+      "pause": "暂停刷新",
+      "resume": "继续刷新",
+      "clearView": "清空当前视图",
+      "export": "导出",
+      "exportFiltered": "导出当前筛选结果",
+      "exportSession": "导出本次会话",
+      "exportBundle": "生成诊断包",
+      "delete": "删除",
+      "deleteOlder": "删除 7 天前日志",
+      "deleteBeforeSession": "删除本次会话之前的日志",
+      "deleteAll": "删除全部本地日志",
+      "openDir": "打开日志目录",
+      "diagnosticStart": "开始临时诊断",
+      "diagnosticStop": "停止临时诊断",
+      "diagnosticActive": "临时诊断中 · 剩余 {{minutes}} 分钟"
+    },
+    "status": {
+      "bufferCount": "内存：{{count}} 条",
+      "diskUsage": "磁盘：{{usage}} / {{quota}}",
+      "recentErrors": "最近错误：{{count}}",
+      "recentWarns": "最近警告：{{count}}",
+      "sessionId": "会话：{{id}}"
+    },
+    "delete": {
+      "confirmTitle": "删除本地日志",
+      "confirmHint": "该操作不会删除设置、插件、模型、电量历史或其他业务数据。",
+      "olderThanDays": "删除 7 天前日志",
+      "beforeCurrentSession": "删除当前会话之前的日志",
+      "all": "删除全部本地日志",
+      "confirm": "确认删除",
+      "cancel": "取消",
+      "success": "已删除：文件 {{files}} 个，条目 {{entries}} 条",
+      "partial": "部分成功：{{error}}",
+      "failed": "删除失败：{{error}}"
+    },
+    "export": {
+      "filteredTitle": "导出当前筛选结果",
+      "sessionTitle": "导出本次会话",
+      "bundleTitle": "生成诊断包",
+      "defaultName": "mira-logs-{{date}}",
+      "bundleName": "mira-diagnostics-{{date}}",
+      "jsonlFilter": "JSONL 日志",
+      "zipFilter": "ZIP 诊断包",
+      "cancelled": "导出已取消",
+      "success": "已导出 {{count}} 条日志（{{bytes}} 字节）至：{{path}}",
+      "bundleSuccess": "已生成诊断包：{{path}}",
+      "truncated": "（已截断）",
+      "failed": "导出失败：{{error}}"
+    },
+    "diagnostic": {
+      "startTitle": "开始临时诊断",
+      "startHint": "将临时记录更详细日志（debug 及以上），仍会脱敏且不会上传。默认持续 10 分钟，到期自动恢复。",
+      "durationLabel": "持续分钟",
+      "levelLabel": "采集等级",
+      "start": "开始",
+      "cancel": "取消",
+      "started": "已开始临时诊断会话",
+      "stopped": "已停止临时诊断会话",
+      "expired": "临时诊断会话已到期，采集等级已恢复"
+    },
+    "fields": {
+      "target": "模块",
+      "sessionId": "会话",
+      "correlationId": "关联 ID",
+      "fields": "结构化字段",
+      "timestamp": "时间"
+    },
+    "loadFailed": "加载日志失败：{{error}}",
+    "previewEmpty": "Web 预览模式下日志系统不可用。"
   }
 }
