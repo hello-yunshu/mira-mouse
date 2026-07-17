@@ -15,7 +15,7 @@ import {
   type AppUpdateState,
 } from './updater';
 
-export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0 }: { onBack: () => void; previewMode?: boolean; focusUpdateToken?: number }) {
+export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0, onOpenLogs }: { onBack: () => void; previewMode?: boolean; focusUpdateToken?: number; onOpenLogs?: () => void }) {
   const { t } = useTranslation();
   const PREVIEW_INFO: AboutInfo = {
     name: 'Mira Mouse',
@@ -134,6 +134,15 @@ export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0 }:
         <p className="disclaimer">
           {t('about.disclaimer')}
         </p>
+      </section>
+
+      <section className="card about-section about-logs-card">
+        <div className="card-title"><h2>{t('logs.title')}</h2></div>
+        <p className="setting-hint">{t('logs.cardHint')}</p>
+        <p className="setting-hint">{t('logs.cardPrivacy')}</p>
+        <div className="contact-links">
+          <button className="primary" onClick={() => onOpenLogs?.()} disabled={!onOpenLogs}>{t('logs.openButton')}</button>
+        </div>
       </section>
 
       <section className="card about-section">

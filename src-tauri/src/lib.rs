@@ -13,6 +13,7 @@ mod local_ai_auto_rollback;
 mod local_ai_controller;
 mod local_ai_runtime;
 mod local_ai_update;
+mod logging;
 mod tray;
 use battery_history::{AbnormalDrainNotifyState, BatteryHistoryResponse, BatteryHistoryState};
 use mira_plugin_runtime::{
@@ -875,6 +876,42 @@ struct SessionState {
     /// 自动回滚 supervisor 写入的状态标识(`autoRolledBack`/`autoDisabled`),
     /// 由 `local_ai_status` 命令读取,让前端能区分自动操作与手动操作。
     local_ai_auto_state: local_ai_auto_rollback::AutoState,
+    /// 统一日志服务。在 setup 中初始化；为 Option 因为 Default 不能构造（需要 AppHandle）。
+    /// 内部代码通过此字段写入日志；Tauri 命令通过 `app.manage(log_service.clone())` 访问。
+    log_service: Mutex<Option<logging::LogService>>,
+}
+
+impl SessionState {
+    /// 通过统一日志服务写入 error 级别日志。
+    /// LogService 未初始化时（极早期启动）回退到 eprintln。
+    fn log_error(&self, target: &'static str, message: impl Into<String>) {
+        let msg = message.into();
+        if let Some(svc) = self.log_service.lock().unwrap().as_ref() {
+            svc.error(target, msg);
+        } else {
+            eprintln!("[mira] {target}: {msg}");
+        }
+    }
+
+    /// 通过统一日志服务写入 warn 级别日志。
+    fn log_warn(&self, target: &'static str, message: impl Into<String>) {
+        let msg = message.into();
+        if let Some(svc) = self.log_service.lock().unwrap().as_ref() {
+            svc.warn(target, msg);
+        } else {
+            eprintln!("[mira] {target}: {msg}");
+        }
+    }
+
+    /// 通过统一日志服务写入 info 级别日志。
+    fn log_info(&self, target: &'static str, message: impl Into<String>) {
+        let msg = message.into();
+        if let Some(svc) = self.log_service.lock().unwrap().as_ref() {
+            svc.info(target, msg);
+        } else {
+            eprintln!("[mira] {target}: {msg}");
+        }
+    }
 }
 
 fn hid_io_stats_ref(state: &SessionState) -> Option<&Mutex<HidIoStats>> {
@@ -4818,7 +4855,10 @@ fn load_bundled_plugin_devices(
             match result {
                 Ok(plugin) => Some(plugin),
                 Err(error) => {
-                    eprintln!("[mira] plugin load failed: {error}");
+                    app.state::<SessionState>().log_error(
+                        "plugin::load",
+                        format!("plugin load failed: {error}"),
+                    );
                     None
                 }
             }
@@ -4844,7 +4884,10 @@ fn load_bundled_plugin_devices(
                             inspection.plugin_id, inspection.version
                         ));
                         if let Err(error) = fs::rename(&backup, target) {
-                            eprintln!("[mira] plugin rollback recovery failed: {error}");
+                            app.state::<SessionState>().log_error(
+                                "plugin::rollback",
+                                format!("plugin rollback recovery failed: {error}"),
+                            );
                         }
                     }
                 }
@@ -4882,15 +4925,34 @@ fn load_bundled_plugin_devices(
                                 installed_version > current
                             });
                         if let Some(index) = replace {
+                            // 审计事件:已安装插件覆盖内置版本。版本号嵌入消息便于日志检索。
+                            let plugin_id = installed.0.plugin_id.clone();
+                            let new_version = installed.0.version.clone();
+                            let old_version = plugins[index].0.version.clone();
+                            app.state::<SessionState>().log_info(
+                                "plugin::load",
+                                format!(
+                                    "installed plugin overrides bundled: id={plugin_id} {old_version} -> {new_version}"
+                                ),
+                            );
                             plugins[index] = installed;
                         } else if !plugins
                             .iter()
                             .any(|plugin| plugin.0.plugin_id == installed.0.plugin_id)
                         {
+                            let plugin_id = installed.0.plugin_id.clone();
+                            let version = installed.0.version.clone();
+                            app.state::<SessionState>().log_info(
+                                "plugin::load",
+                                format!("installed plugin added: id={plugin_id} version={version}"),
+                            );
                             plugins.push(installed);
                         }
                     }
-                    Err(error) => eprintln!("[mira] installed plugin ignored: {error}"),
+                    Err(error) => app.state::<SessionState>().log_warn(
+                        "plugin::load",
+                        format!("installed plugin ignored: {error}"),
+                    ),
                 }
             }
         }
@@ -8028,8 +8090,12 @@ fn start_local_ai_in_background(app: AppHandle) {
         if !cached_settings(&app).local_ai_analysis_enabled {
             return;
         }
-        if let Err(error) = app.state::<SessionState>().local_ai_controller.start(&app) {
-            eprintln!("[mira] local AI startup unavailable: {error}");
+        let state = app.state::<SessionState>();
+        if let Err(error) = state.local_ai_controller.start(&app) {
+            state.log_error(
+                "local_ai::startup",
+                format!("local AI startup unavailable: {error}"),
+            );
         }
     });
 }
@@ -8082,7 +8148,10 @@ fn settings_set(app: tauri::AppHandle, settings: AppSettings) -> Result<AppSetti
     // not abort unrelated runtime side effects (low-battery state, quiet
     // lighting, local AI) or make the frontend skip updater resynchronization.
     if let Err(error) = update_tray(&app, snapshot.as_ref(), &settings) {
-        eprintln!("[mira] update tray after settings save failed: {error}");
+        state.log_error(
+            "tray::settings",
+            format!("update tray after settings save failed: {error}"),
+        );
     }
     if low_battery_threshold_changed {
         let battery_value = snapshot
@@ -8238,8 +8307,11 @@ fn apply_windows_backdrop(window: &WebviewWindow, settings: &AppSettings) {
         Some(windows_acrylic_tint(window.app_handle(), settings)),
     ) {
         if let Err(mica_error) = apply_mica(window, None) {
-            eprintln!(
-                "[mira] Windows backdrop unavailable: Acrylic: {acrylic_error}; Mica: {mica_error}"
+            window.app_handle().state::<SessionState>().log_warn(
+                "window::backdrop",
+                format!(
+                    "Windows backdrop unavailable: Acrylic: {acrylic_error}; Mica: {mica_error}"
+                ),
             );
         }
     }
@@ -8338,7 +8410,10 @@ fn show_update_notification(
                         });
                     }
                 }
-                Err(error) => eprintln!("[mira] update notification failed: {error}"),
+                Err(error) => state.log_error(
+                    "updater::notification",
+                    format!("update notification failed: {error}"),
+                ),
             }
         });
         Ok(())
@@ -9148,7 +9223,10 @@ fn update_tray(
         let app_for_update = app.clone();
         app.run_on_main_thread(move || {
             if let Err(error) = update_tray(&app_for_update, snapshot.as_ref(), &settings) {
-                eprintln!("[mira] tray update on main thread failed: {error}");
+                app_for_update.state::<SessionState>().log_error(
+                    "tray::update",
+                    format!("tray update on main thread failed: {error}"),
+                );
             }
         })?;
         return Ok(());
@@ -9184,7 +9262,10 @@ fn update_tray(
             &tray_state,
             &style,
         ) {
-            eprintln!("[mira] tray icon update failed, falling back: {err}");
+            app.state::<SessionState>().log_warn(
+                "tray::update",
+                format!("tray icon update failed, falling back: {err}"),
+            );
             // fallback 到静态图标：不 panic，不影响菜单和 tooltip 更新
             let icon_bytes = if tray_state.connected {
                 let percentage = tray_state.mouse_battery.unwrap_or(0);
@@ -9386,6 +9467,42 @@ pub fn run() {
             let launch_hidden = should_start_hidden(&startup_settings);
             refresh_autostart_entry_if_enabled(app.handle());
 
+            // 初始化统一日志服务：在所有其他子系统之前，让后续关键事件可被记录。
+            // 失败不阻塞启动：LogService 内部已有降级路径。
+            {
+                let log_dir = app
+                    .path()
+                    .app_log_dir()
+                    .unwrap_or_else(|_| {
+                        app.path()
+                            .app_config_dir()
+                            .unwrap_or_else(|_| std::env::temp_dir())
+                            .join("logs")
+                    });
+                let session_id = logging::new_session_id();
+                let redactor = logging::redaction::Redactor::default();
+                let (service, _handles) = logging::LogService::new(
+                    session_id,
+                    log_dir,
+                    redactor,
+                    app.handle().clone(),
+                );
+                service.info(
+                    "app::startup",
+                    format!(
+                        "Mira v{} starting on {} {}",
+                        app.package_info().version,
+                        std::env::consts::OS,
+                        std::env::consts::ARCH,
+                    ),
+                );
+                // 让 Tauri 命令通过 State<'_, LogService> 访问。
+                app.manage(service.clone());
+                // 让内部 lib.rs 代码通过 SessionState 写入日志。
+                let state = app.state::<SessionState>();
+                *state.log_service.lock().unwrap() = Some(service);
+            }
+
             // 启动 local AI 自动回滚 supervisor:监听 controller crash 事件,
             // 10 分钟内 ≥3 次失败自动回滚 bundle,无 previous 时关开关 + 系统通知。
             // 必须在 controller.start() 之前启动,否则 start 失败的事件会丢失。
@@ -9394,6 +9511,17 @@ pub fn run() {
                     std::sync::mpsc::channel::<local_ai_controller::CrashEvent>();
                 let session = app.state::<SessionState>();
                 session.local_ai_controller.set_crash_sender(crash_tx);
+                // 注入统一日志服务,让 controller 写入 local-ai 来源日志
+                // (生命周期事件、predict 批次结果、stderr 转发等)。
+                let log_service = session
+                    .log_service
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .map(|svc| svc.clone());
+                if let Some(svc) = log_service {
+                    session.local_ai_controller.set_log_service(svc);
+                }
                 let auto_state = session.local_ai_auto_state.clone();
                 local_ai_auto_rollback::AutoRollbackSupervisor::start(
                     app.handle().clone(),
@@ -9436,7 +9564,10 @@ pub fn run() {
             // Load bundled plugins once and cache them for the app lifetime.
             let plugins = load_bundled_plugin_devices(app.handle());
             #[cfg(debug_assertions)]
-            eprintln!("[mira] loaded {} bundled plugin(s)", plugins.len());
+            app.state::<SessionState>().log_info(
+                "plugin::load",
+                format!("loaded {} bundled plugin(s)", plugins.len()),
+            );
             {
                 let state = app.state::<SessionState>();
                 *state.plugins.lock().unwrap_or_else(|e| e.into_inner()) = Some(plugins);
@@ -9454,14 +9585,18 @@ pub fn run() {
                         break;
                     }
                     Err(err) => {
-                        eprintln!("[mira] tray setup attempt {attempt}/3 failed: {err}");
+                        app.state::<SessionState>().log_warn(
+                            "tray::setup",
+                            format!("tray setup attempt {attempt}/3 failed: {err}"),
+                        );
                         std::thread::sleep(std::time::Duration::from_millis(200));
                     }
                 }
             }
             if !tray_ok {
-                eprintln!(
-                    "[mira] tray setup failed after 3 attempts; tray icon will be unavailable"
+                app.state::<SessionState>().log_error(
+                    "tray::setup",
+                    "tray setup failed after 3 attempts; tray icon will be unavailable",
                 );
             }
 
@@ -9571,7 +9706,10 @@ pub fn run() {
             if let Some(window) = app.get_webview_window("main") {
                 if launch_hidden {
                     if let Err(err) = window.hide() {
-                        eprintln!("[mira] hide main window failed: {err}");
+                        app.state::<SessionState>().log_error(
+                            "window::startup",
+                            format!("hide main window failed: {err}"),
+                        );
                     }
                     // macOS: 启动即隐藏到托盘时，也从 Dock 中隐藏。
                     #[cfg(target_os = "macos")]
@@ -9581,7 +9719,10 @@ pub fn run() {
                     }
                 } else {
                     if let Err(err) = window.show() {
-                        eprintln!("[mira] show main window failed: {err}");
+                        app.state::<SessionState>().log_error(
+                            "window::startup",
+                            format!("show main window failed: {err}"),
+                        );
                     }
                     let _ = window.set_focus();
                 }
@@ -9624,7 +9765,20 @@ pub fn run() {
             plugin_locales,
             battery_history_get,
             battery_history_clear,
-            battery_history_export
+            battery_history_export,
+            // 统一日志系统命令
+            logging::commands::log_query,
+            logging::commands::log_status,
+            logging::commands::log_delete,
+            logging::commands::log_subscribe,
+            logging::commands::log_unsubscribe,
+            logging::commands::log_set_level,
+            logging::commands::log_start_diagnostic_session,
+            logging::commands::log_stop_diagnostic_session,
+            logging::commands::log_write,
+            logging::commands::log_export,
+            logging::commands::log_export_diagnostics_bundle,
+            logging::commands::log_open_dir
         ])
         .build(tauri::generate_context!())
         .expect("Mira application runtime failed")
