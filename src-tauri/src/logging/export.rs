@@ -10,13 +10,11 @@
 //! 所有导出物已在前端展示和持久化阶段被 Redactor 统一脱敏；此处不再二次处理，
 //! 但仍会校验文件大小上限，避免异常情况把超大文件写入用户磁盘。
 
-use crate::logging::model::{LogEntry, LogQuery};
-use crate::logging::storage::LogStorageHandle;
+use crate::logging::model::LogEntry;
 use serde::Deserialize;
-use std::fs::{self, File};
+use std::fs::File;
 use std::io::{BufWriter, Write};
-use std::path::{Path, PathBuf};
-use zip::ZipWriter;
+use std::path::Path;
 
 /// 单次导出 JSONL 大小上限（约 16 MB）。超出截断并附加尾注。
 pub const MAX_EXPORT_BYTES: u64 = 16 * 1024 * 1024;
@@ -43,21 +41,9 @@ pub struct DiagnosticsContext {
     pub recent_warn_count: usize,
 }
 
-/// 导出范围。
-#[derive(Debug, Clone)]
-pub enum ExportRequest {
-    /// 按筛选条件导出。
-    Filtered { query: LogQuery },
-    /// 当前会话。
-    CurrentSession,
-    /// 诊断包 ZIP。
-    DiagnosticsBundle { ctx: DiagnosticsContext },
-}
-
 /// 导出结果。`bytes_written` 仅计算主日志文件，ZIP 中的元数据不计入。
 #[derive(Debug, Clone)]
 pub struct ExportOutcome {
-    pub path: PathBuf,
     pub entry_count: usize,
     pub bytes_written: u64,
     pub truncated: bool,
@@ -120,8 +106,7 @@ pub fn export_diagnostics_bundle(
         "generatedAt": chrono::Utc::now().to_rfc3339(),
         "logEntryCount": entries.len(),
     });
-    zip.start_file("summary.json", opts)
-        .map_err(io_err)?;
+    zip.start_file("summary.json", opts).map_err(io_err)?;
     let _ = serde_json::to_writer(&mut zip, &summary).map_err(io_err)?;
     // zip crate 2.x: starting a new file implicitly ends the previous one.
 
@@ -164,7 +149,8 @@ pub fn export_diagnostics_bundle(
     let _ = zip.write_all(plugin_bytes);
 
     // local-ai-status.json
-    zip.start_file("local-ai-status.json", opts).map_err(io_err)?;
+    zip.start_file("local-ai-status.json", opts)
+        .map_err(io_err)?;
     let ai_bytes = if ctx.local_ai_status_json.trim().is_empty() {
         b"{}"
     } else {
@@ -181,7 +167,6 @@ pub fn export_diagnostics_bundle(
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
 
     Ok(ExportOutcome {
-        path: output_path.to_path_buf(),
         entry_count: entries.len(),
         bytes_written,
         truncated,
@@ -214,7 +199,6 @@ fn write_jsonl(entries: Vec<LogEntry>, output_path: &Path) -> std::io::Result<Ex
     writer.flush()?;
 
     Ok(ExportOutcome {
-        path: output_path.to_path_buf(),
         entry_count: count,
         bytes_written,
         truncated,
@@ -253,23 +237,11 @@ fn build_privacy_report() -> String {
     out
 }
 
-/// 生成默认导出文件名。包含应用名、日期和会话标识前缀。
-pub fn default_export_filename(prefix: &str, session_id: &str, extension: &str) -> String {
-    let now = chrono::Utc::now();
-    let date = now.format("%Y%m%d").to_string();
-    let session_short: String = session_id.chars().take(8).collect();
-    format!("{prefix}-{date}-{session_short}.{extension}")
-}
-
-/// 生成默认 ZIP 诊断包文件名。
-pub fn default_diagnostics_filename(session_id: &str) -> String {
-    default_export_filename("mira-diagnostics", session_id, "zip")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::logging::model::{Fields, LogLevel, LogSource};
+    use std::fs;
     use tempfile::TempDir;
 
     fn make_entry(id: u64, level: LogLevel, source: LogSource, target: &str) -> LogEntry {
@@ -376,25 +348,13 @@ mod tests {
     }
 
     #[test]
-    fn default_filenames_include_date_and_session() {
-        let name = default_export_filename("mira-logs", "abcdef1234567890", "jsonl");
-        assert!(name.starts_with("mira-logs-"));
-        assert!(name.ends_with(".jsonl"));
-        assert!(name.contains("abcdef12"));
-
-        let zip_name = default_diagnostics_filename("xyz789");
-        assert!(zip_name.starts_with("mira-diagnostics-"));
-        assert!(zip_name.ends_with(".zip"));
-        assert!(zip_name.contains("xyz789"));
-    }
-
-    #[test]
     fn privacy_report_contains_key_sections() {
         let report = build_privacy_report();
         assert!(report.contains("包含"));
         assert!(report.contains("明确不包含"));
         assert!(report.contains("脱敏策略"));
-        assert!(report.contains("serial"));
+        // 隐私报告为中文，序列号对应 "序列号"；HOME 占位符为 "${HOME}"。
+        assert!(report.contains("序列号"));
         assert!(report.contains("HOME"));
     }
 
