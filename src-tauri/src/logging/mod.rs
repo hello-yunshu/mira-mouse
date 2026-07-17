@@ -21,17 +21,15 @@ pub mod redaction;
 pub mod storage;
 
 use chrono::Utc;
-use model::{LogEntry, LogInput, LogLevel, LogPage, LogQuery, LogStatus, DiagnosticSessionStatus};
+use model::{DiagnosticSessionStatus, LogEntry, LogInput, LogLevel, LogPage, LogQuery, LogStatus};
 use redaction::Redactor;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::thread::JoinHandle;
 use std::time::Duration;
 use tauri::AppHandle;
 
-pub use export::{default_diagnostics_filename, default_export_filename, DiagnosticsContext, ExportOutcome, ExportRequest};
-pub use model::{DeleteResult, DeleteScope, ExportScope};
+pub use model::{DeleteResult, DeleteScope};
 
 /// 默认采集等级。
 pub const DEFAULT_MIN_LEVEL: LogLevel = LogLevel::Info;
@@ -49,10 +47,8 @@ struct DiagnosticSession {
     original_level: LogLevel,
     current_level: LogLevel,
     auto_expire: bool,
-    /// 取消标志：手动停止时设为 true，自动到期线程退出前检查。
+    /// 取消标志：手动停止 / 会话 drop 时设为 true，自动到期线程退出前检查。
     cancel: Arc<AtomicBool>,
-    /// 自动到期线程的 JoinHandle。
-    join: Option<JoinHandle<()>>,
 }
 
 impl DiagnosticSession {
@@ -69,12 +65,12 @@ impl DiagnosticSession {
 
 impl Drop for DiagnosticSession {
     fn drop(&mut self) {
-        // 通知自动到期线程退出。
+        // 通知自动到期线程退出。线程在 ≤500ms 内响应 cancel 并退出。
+        // 刻意不 join：到期线程的自然过期路径只恢复 min_level，不再 drop 会话本身，
+        // 因此不会出现「到期线程 drop 含自身 JoinHandle 的会话」的自join死锁。
+        // 会话的实际 drop 由 status() 惰性过期或 stop/start 覆盖时触发，
+        // 此时 cancel 已置位、线程已退出或即将退出，detach 即可。
         self.cancel.store(true, Ordering::Relaxed);
-        // 不阻塞等待：会话 drop 时通常应用已退出；线程会很快结束。
-        if let Some(join) = self.join.take() {
-            let _ = join.join();
-        }
     }
 }
 
@@ -92,14 +88,6 @@ struct LogServiceInner {
     session_id: String,
     min_level: Mutex<LogLevel>,
     diagnostic_session: Mutex<Option<DiagnosticSession>>,
-    /// 启动时生成的时间戳，用于 status 展示。
-    started_at: chrono::DateTime<Utc>,
-}
-
-/// LogService 初始化返回的服务与后台线程句柄。调用方负责在退出时 join。
-pub struct LogServiceHandles {
-    pub storage_join: JoinHandle<()>,
-    pub frontend_join: JoinHandle<()>,
 }
 
 impl LogService {
@@ -113,10 +101,10 @@ impl LogService {
         storage_dir: PathBuf,
         redactor: Redactor,
         app_handle: AppHandle,
-    ) -> (Self, LogServiceHandles) {
+    ) -> Self {
         let buffer = Mutex::new(buffer::LogBuffer::new(buffer::DEFAULT_CAPACITY));
-        let (storage, storage_join) = storage::spawn(storage_dir);
-        let (frontend, frontend_join) = frontend::FrontendEmitter::spawn(app_handle);
+        let (storage, _) = storage::spawn(storage_dir);
+        let (frontend, _) = frontend::FrontendEmitter::spawn(app_handle);
         let min_level = Mutex::new(DEFAULT_MIN_LEVEL);
 
         let inner = Arc::new(LogServiceInner {
@@ -127,16 +115,9 @@ impl LogService {
             session_id: session_id.clone(),
             min_level,
             diagnostic_session: Mutex::new(None),
-            started_at: Utc::now(),
         });
 
-        (
-            Self { inner },
-            LogServiceHandles {
-                storage_join,
-                frontend_join,
-            },
-        )
+        Self { inner }
     }
 
     /// 写入一条日志。所有持久化、UI 推送、脱敏都在这里完成。
@@ -177,17 +158,32 @@ impl LogService {
 
     /// 便捷方法：写入一条 info 级别的应用日志。
     pub fn info(&self, target: &'static str, message: impl Into<String>) {
-        self.write(LogInput::new(LogLevel::Info, model::LogSource::App, target, message));
+        self.write(LogInput::new(
+            LogLevel::Info,
+            model::LogSource::App,
+            target,
+            message,
+        ));
     }
 
     /// 便捷方法：写入一条 warn 级别的应用日志。
     pub fn warn(&self, target: &'static str, message: impl Into<String>) {
-        self.write(LogInput::new(LogLevel::Warn, model::LogSource::App, target, message));
+        self.write(LogInput::new(
+            LogLevel::Warn,
+            model::LogSource::App,
+            target,
+            message,
+        ));
     }
 
     /// 便捷方法：写入一条 error 级别的应用日志。
     pub fn error(&self, target: &'static str, message: impl Into<String>) {
-        self.write(LogInput::new(LogLevel::Error, model::LogSource::App, target, message));
+        self.write(LogInput::new(
+            LogLevel::Error,
+            model::LogSource::App,
+            target,
+            message,
+        ));
     }
 
     /// 查询历史日志。
@@ -357,33 +353,33 @@ impl LogService {
         let inner_clone = self.inner.clone();
         let original_level_for_thread = original_level;
 
-        let join = if auto_expire {
+        if auto_expire {
             let sleep_duration = Duration::from_secs((minutes as u64) * 60);
-            Some(
-                std::thread::Builder::new()
-                    .name("mira-log-diag-expire".into())
-                    .spawn(move || {
-                        // 分段 sleep 以便响应 cancel。
-                        let chunk = Duration::from_millis(500);
-                        let mut elapsed = Duration::ZERO;
-                        while elapsed < sleep_duration {
-                            if cancel_clone.load(Ordering::Relaxed) {
-                                return;
-                            }
-                            let step = chunk.min(sleep_duration - elapsed);
-                            std::thread::sleep(step);
-                            elapsed += step;
+            // 到期线程 detach：JoinHandle 不存储，线程靠 cancel 标志退出。
+            // 刻意不在 Drop 中 join，避免到期线程 drop 含自身 handle 的会话造成自join死锁。
+            std::thread::Builder::new()
+                .name("mira-log-diag-expire".into())
+                .spawn(move || {
+                    // 分段 sleep 以便响应 cancel。
+                    let chunk = Duration::from_millis(500);
+                    let mut elapsed = Duration::ZERO;
+                    while elapsed < sleep_duration {
+                        if cancel_clone.load(Ordering::Relaxed) {
+                            return;
                         }
-                        if !cancel_clone.load(Ordering::Relaxed) {
-                            *inner_clone.min_level.lock().unwrap() = original_level_for_thread;
-                            *inner_clone.diagnostic_session.lock().unwrap() = None;
-                        }
-                    })
-                    .expect("spawn mira-log-diag-expire"),
-            )
-        } else {
-            None
-        };
+                        let step = chunk.min(sleep_duration - elapsed);
+                        std::thread::sleep(step);
+                        elapsed += step;
+                    }
+                    if !cancel_clone.load(Ordering::Relaxed) {
+                        // 自然到期：只恢复采集等级。不主动 drop 会话（那会触发 Drop→join 自身
+                        // 的死锁）。会话的惰性清理由 status() 在检测到 ends_at 已过时执行，
+                        // 或由下一次 start/stop 覆盖时触发。
+                        *inner_clone.min_level.lock().unwrap() = original_level_for_thread;
+                    }
+                })
+                .expect("spawn mira-log-diag-expire");
+        }
 
         let session = DiagnosticSession {
             started_at: now,
@@ -392,7 +388,6 @@ impl LogService {
             current_level: level,
             auto_expire,
             cancel,
-            join,
         };
 
         *self.inner.min_level.lock().unwrap() = level;
@@ -401,44 +396,15 @@ impl LogService {
 
     /// 手动停止临时诊断会话。恢复原采集等级。
     pub fn stop_diagnostic_session(&self) {
-        let mut session_guard = self.inner.diagnostic_session.lock().unwrap();
-        if let Some(session) = session_guard.take() {
-            // 通知后台线程退出。
+        // 先把会话从 Option 中取出并立即释放 diagnostic_session 锁，
+        // 再恢复等级、再 drop 会话。drop 只置 cancel 标志（不 join），
+        // 但释放锁后再 drop 仍是更安全的顺序：避免任何 drop 副作用持锁等待。
+        let session = { self.inner.diagnostic_session.lock().unwrap().take() };
+        if let Some(session) = session {
             session.cancel.store(true, Ordering::Relaxed);
-            // 恢复等级。
             *self.inner.min_level.lock().unwrap() = session.original_level;
-            // 后台线程会很快退出；不阻塞 join，避免持锁等待。
-            // DiagnosticSession::drop 会在 Arc 引用归零时回收线程。
-            // 这里手动 detach：直接丢弃 session，drop 时再 join。
             drop(session);
         }
-    }
-
-    /// 当前会话 ID。
-    pub fn session_id(&self) -> &str {
-        &self.inner.session_id
-    }
-
-    /// 启动时间。
-    pub fn started_at(&self) -> chrono::DateTime<Utc> {
-        self.inner.started_at
-    }
-
-    /// 关闭服务：flush + shutdown。
-    pub fn shutdown(&self) {
-        self.flush();
-        self.inner.storage.shutdown();
-        self.inner.frontend.shutdown();
-    }
-
-    /// 内部 storage handle 访问（用于 commands 实现导出）。
-    pub(crate) fn storage(&self) -> &storage::LogStorageHandle {
-        &self.inner.storage
-    }
-
-    /// 内部 buffer 访问（用于 commands 实现导出）。
-    pub(crate) fn buffer_snapshot(&self) -> Vec<LogEntry> {
-        self.inner.buffer.lock().unwrap().snapshot()
     }
 
     /// 当前会话的 buffer 快照。
@@ -477,7 +443,6 @@ pub fn new_session_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use model::LogSource;
 
     /// 在无 Tauri AppHandle 的测试环境下，使用一个简单的内存 stub 替换 LogService
     /// 的 buffer/storage/redaction 链路，仅验证等级过滤与诊断会话语义。
@@ -492,9 +457,18 @@ mod tests {
 
     #[test]
     fn diagnostic_minutes_clamped() {
-        assert_eq!(0i64.clamp(MIN_DIAGNOSTIC_MINUTES, MAX_DIAGNOSTIC_MINUTES), MIN_DIAGNOSTIC_MINUTES);
-        assert_eq!(120i64.clamp(MIN_DIAGNOSTIC_MINUTES, MAX_DIAGNOSTIC_MINUTES), MAX_DIAGNOSTIC_MINUTES);
-        assert_eq!(10i64.clamp(MIN_DIAGNOSTIC_MINUTES, MAX_DIAGNOSTIC_MINUTES), 10);
+        assert_eq!(
+            0i64.clamp(MIN_DIAGNOSTIC_MINUTES, MAX_DIAGNOSTIC_MINUTES),
+            MIN_DIAGNOSTIC_MINUTES
+        );
+        assert_eq!(
+            120i64.clamp(MIN_DIAGNOSTIC_MINUTES, MAX_DIAGNOSTIC_MINUTES),
+            MAX_DIAGNOSTIC_MINUTES
+        );
+        assert_eq!(
+            10i64.clamp(MIN_DIAGNOSTIC_MINUTES, MAX_DIAGNOSTIC_MINUTES),
+            10
+        );
     }
 
     #[test]
@@ -566,19 +540,5 @@ mod tests {
         state.stop();
         assert_eq!(state.min_level, LogLevel::Info);
         assert!(!state.in_session);
-    }
-
-    #[test]
-    fn log_input_builder_chains_correctly() {
-        let input = LogInput::new(LogLevel::Warn, LogSource::Plugin, "plugin::verify", "sig mismatch")
-            .with_field("pluginId", "mira.logitech-hidpp")
-            .with_field("errorCode", 3i64)
-            .with_correlation("op-123");
-        assert_eq!(input.level, LogLevel::Warn);
-        assert_eq!(input.source, LogSource::Plugin);
-        assert_eq!(input.target, "plugin::verify");
-        assert_eq!(input.message, "sig mismatch");
-        assert_eq!(input.correlation_id.as_deref(), Some("op-123"));
-        assert_eq!(input.fields.len(), 2);
     }
 }

@@ -35,10 +35,6 @@ impl LogBuffer {
         self.queue.len()
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.queue.is_empty()
-    }
-
     /// 分配下一个 ID（不插入）。
     pub fn next_id(&mut self) -> u64 {
         let id = self.next_id;
@@ -57,13 +53,6 @@ impl LogBuffer {
     /// 清空所有条目（保留 next_id）。
     pub fn clear(&mut self) {
         self.queue.clear();
-    }
-
-    /// 删除 id < threshold 的所有条目。返回删除条数。
-    pub fn drop_before_id(&mut self, threshold: u64) -> usize {
-        let before = self.queue.len();
-        self.queue.retain(|e| e.id >= threshold);
-        before - self.queue.len()
     }
 
     /// 删除时间早于 cutoff 的条目。cutoff 是 RFC3339 字符串，比较按字典序即可。
@@ -90,7 +79,6 @@ impl LogBuffer {
     ) -> (Vec<LogEntry>, bool, Option<u64>) {
         let limit = limit.max(1);
         let mut picked: Vec<LogEntry> = Vec::with_capacity(limit);
-        let mut oldest: Option<u64> = None;
         // VecDeque 从后向前遍历：从最新到最旧。
         for entry in self.queue.iter().rev() {
             // 游标：仅取 id < before_id。
@@ -102,14 +90,14 @@ impl LogBuffer {
             if !matcher(entry) {
                 continue;
             }
-            if oldest.is_none() {
-                oldest = Some(entry.id);
-            }
             picked.push(entry.clone());
             if picked.len() >= limit {
                 break;
             }
         }
+        // picked 为最新→最旧顺序，因此最后一个才是本页最旧的 id。
+        // 之前的实现在首个匹配处赋值，得到的是最新 id，导致 loadMore 游标错误。
+        let oldest = picked.last().map(|e| e.id);
         // has_more：在剩余范围内是否还有匹配项。
         let mut has_more = false;
         if picked.len() >= limit {
@@ -183,15 +171,17 @@ mod tests {
 
     #[test]
     fn push_drops_oldest_when_full() {
-        let mut buf = LogBuffer::new(3);
-        buf.push(make_entry(1, LogLevel::Info, "a", "s1"));
-        buf.push(make_entry(2, LogLevel::Info, "a", "s1"));
-        buf.push(make_entry(3, LogLevel::Info, "a", "s1"));
-        buf.push(make_entry(4, LogLevel::Info, "a", "s1"));
-        assert_eq!(buf.len(), 3);
+        // 容量被钳制到最小 64；推入 65 条验证最旧条目被淘汰。
+        let mut buf = LogBuffer::new(64);
+        assert_eq!(buf.capacity(), 64);
+        for i in 1..=65 {
+            buf.push(make_entry(i, LogLevel::Info, "a", "s1"));
+        }
+        assert_eq!(buf.len(), 64);
         let snap = buf.snapshot();
+        // 最旧的 id 1 被淘汰，最早保留的是 id 2，最新是 id 65。
         assert_eq!(snap[0].id, 2);
-        assert_eq!(snap[2].id, 4);
+        assert_eq!(snap[63].id, 65);
     }
 
     #[test]
@@ -214,7 +204,25 @@ mod tests {
         assert_eq!(page[0].id, 5);
         assert_eq!(page[2].id, 3);
         assert!(has_more);
-        assert_eq!(oldest, Some(5));
+        // oldest 应为本页最旧的 id（3），而非最新 id（5）。
+        assert_eq!(oldest, Some(3));
+    }
+
+    #[test]
+    fn page_oldest_id_drives_load_more_cursor() {
+        // 模拟前端 loadMore：第一页取最新 2 条，再用 oldest 作为 before_id 取下一页。
+        let mut buf = LogBuffer::new(10);
+        for i in 1..=5 {
+            buf.push(make_entry(i, LogLevel::Info, "a", "s1"));
+        }
+        let (first, _, oldest) = buf.page(2, None, |_| true);
+        assert_eq!(first.iter().map(|e| e.id).collect::<Vec<_>>(), vec![5, 4]);
+        assert_eq!(oldest, Some(4));
+        // 以 oldest 作为游标，应取到 id < 4 的条目（3, 2），不与第一页重叠。
+        let (second, has_more, second_oldest) = buf.page(2, oldest, |_| true);
+        assert_eq!(second.iter().map(|e| e.id).collect::<Vec<_>>(), vec![3, 2]);
+        assert!(has_more);
+        assert_eq!(second_oldest, Some(2));
     }
 
     #[test]
@@ -242,17 +250,6 @@ mod tests {
         assert_eq!(page.len(), 2);
         assert_eq!(page[0].id, 4);
         assert_eq!(page[1].id, 2);
-    }
-
-    #[test]
-    fn drop_before_id_removes_older_entries() {
-        let mut buf = LogBuffer::new(10);
-        for i in 1..=5 {
-            buf.push(make_entry(i, LogLevel::Info, "a", "s1"));
-        }
-        let removed = buf.drop_before_id(3);
-        assert_eq!(removed, 2);
-        assert_eq!(buf.len(), 3);
     }
 
     #[test]
@@ -305,9 +302,13 @@ mod tests {
 
     #[test]
     fn capacity_minimum_is_enforced() {
+        // 低于最小值 64 的容量被钳制到 64。
         let buf = LogBuffer::new(10);
-        assert_eq!(buf.capacity(), 10);
+        assert_eq!(buf.capacity(), 64);
         let buf = LogBuffer::new(0);
         assert_eq!(buf.capacity(), 64);
+        // 超过最小值的容量原样保留。
+        let buf = LogBuffer::new(100);
+        assert_eq!(buf.capacity(), 100);
     }
 }

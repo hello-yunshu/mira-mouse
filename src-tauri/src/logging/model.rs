@@ -36,18 +36,6 @@ impl LogLevel {
     pub fn at_least(self, min: LogLevel) -> bool {
         self.weight() <= min.weight()
     }
-
-    /// 从字符串解析（不区分大小写）。未知值返回 `None`。
-    pub fn parse(value: &str) -> Option<Self> {
-        match value.to_ascii_lowercase().as_str() {
-            "error" => Some(LogLevel::Error),
-            "warn" => Some(LogLevel::Warn),
-            "info" => Some(LogLevel::Info),
-            "debug" => Some(LogLevel::Debug),
-            "trace" => Some(LogLevel::Trace),
-            _ => None,
-        }
-    }
 }
 
 impl PartialOrd for LogLevel {
@@ -79,18 +67,6 @@ pub enum LogSource {
     LocalAi,
 }
 
-impl LogSource {
-    pub fn parse(value: &str) -> Option<Self> {
-        match value {
-            "app" => Some(LogSource::App),
-            "frontend" => Some(LogSource::Frontend),
-            "plugin" => Some(LogSource::Plugin),
-            "local-ai" => Some(LogSource::LocalAi),
-            _ => None,
-        }
-    }
-}
-
 impl Default for LogSource {
     fn default() -> Self {
         LogSource::App
@@ -106,28 +82,6 @@ pub enum FieldValue {
     Integer(i64),
     Boolean(bool),
     Null,
-}
-
-impl FieldValue {
-    /// 从任意 `serde_json::Value` 构造，保证只接受标量。复杂类型转为 Null。
-    pub fn from_json(value: &serde_json::Value) -> Self {
-        match value {
-            serde_json::Value::Null => FieldValue::Null,
-            serde_json::Value::Bool(b) => FieldValue::Boolean(*b),
-            serde_json::Value::Number(n) => {
-                if let Some(i) = n.as_i64() {
-                    FieldValue::Integer(i)
-                } else if let Some(f) = n.as_f64() {
-                    FieldValue::Number(f)
-                } else {
-                    FieldValue::Null
-                }
-            }
-            serde_json::Value::String(s) => FieldValue::Text(s.clone()),
-            // 复杂类型不进入 fields：避免大对象、嵌套递归。
-            _ => FieldValue::Null,
-        }
-    }
 }
 
 /// 字段表。键名为字符串，值受 `FieldValue` 限制。
@@ -188,18 +142,6 @@ impl LogInput {
             correlation_id: None,
             fields: Fields::new(),
         }
-    }
-
-    /// 附加结构化字段。
-    pub fn with_field(mut self, key: impl Into<String>, value: impl Into<FieldValue>) -> Self {
-        self.fields.insert(key.into(), value.into());
-        self
-    }
-
-    /// 附加关联 ID。
-    pub fn with_correlation(mut self, correlation_id: impl Into<String>) -> Self {
-        self.correlation_id = Some(correlation_id.into());
-        self
     }
 }
 
@@ -429,53 +371,6 @@ mod tests {
     }
 
     #[test]
-    fn level_parse_handles_case() {
-        assert_eq!(LogLevel::parse("ERROR"), Some(LogLevel::Error));
-        assert_eq!(LogLevel::parse("Warn"), Some(LogLevel::Warn));
-        assert_eq!(LogLevel::parse("info"), Some(LogLevel::Info));
-        assert_eq!(LogLevel::parse("debug"), Some(LogLevel::Debug));
-        assert_eq!(LogLevel::parse("trace"), Some(LogLevel::Trace));
-        assert_eq!(LogLevel::parse("unknown"), None);
-    }
-
-    #[test]
-    fn source_parse_recognizes_all_variants() {
-        assert_eq!(LogSource::parse("app"), Some(LogSource::App));
-        assert_eq!(LogSource::parse("frontend"), Some(LogSource::Frontend));
-        assert_eq!(LogSource::parse("plugin"), Some(LogSource::Plugin));
-        assert_eq!(LogSource::parse("local-ai"), Some(LogSource::LocalAi));
-        assert_eq!(LogSource::parse("vendor"), None);
-    }
-
-    #[test]
-    fn field_value_from_json_only_accepts_scalars() {
-        assert!(matches!(
-            FieldValue::from_json(&serde_json::json!(null)),
-            FieldValue::Null
-        ));
-        assert!(matches!(
-            FieldValue::from_json(&serde_json::json!(true)),
-            FieldValue::Boolean(true)
-        ));
-        assert!(matches!(
-            FieldValue::from_json(&serde_json::json!(42)),
-            FieldValue::Integer(42)
-        ));
-        assert!(matches!(
-            FieldValue::from_json(&serde_json::json!("hi")),
-            FieldValue::Text(_)
-        ));
-        assert!(matches!(
-            FieldValue::from_json(&serde_json::json!({"a": 1})),
-            FieldValue::Null
-        ));
-        assert!(matches!(
-            FieldValue::from_json(&serde_json::json!([1, 2, 3])),
-            FieldValue::Null
-        ));
-    }
-
-    #[test]
     fn query_matches_combines_filters_with_and() {
         let entry = LogEntry {
             id: 1,
@@ -521,11 +416,20 @@ mod tests {
 
     #[test]
     fn query_effective_limit_is_bounded() {
-        let q = LogQuery { limit: Some(0), ..LogQuery::default() };
+        let q = LogQuery {
+            limit: Some(0),
+            ..LogQuery::default()
+        };
         assert_eq!(q.effective_limit(), 1);
-        let q = LogQuery { limit: Some(10_000), ..LogQuery::default() };
+        let q = LogQuery {
+            limit: Some(10_000),
+            ..LogQuery::default()
+        };
         assert_eq!(q.effective_limit(), 1000);
-        let q = LogQuery { limit: Some(500), ..LogQuery::default() };
+        let q = LogQuery {
+            limit: Some(500),
+            ..LogQuery::default()
+        };
         assert_eq!(q.effective_limit(), 500);
     }
 }
