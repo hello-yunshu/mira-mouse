@@ -8,12 +8,12 @@
 //! - 导出路径由前端通过系统保存对话框获取后传入，遵循 `device_config_export` /
 //!   `battery_history_export` 已有模式；不在后端弹对话框，避免 dialog 插件 API 差异。
 
+use crate::local_ai_update;
 use crate::logging::export::{self, DiagnosticsContext};
 use crate::logging::model::{
     DeleteResult, DeleteScope, ExportScope, LogInput, LogLevel, LogPage, LogQuery, LogStatus,
 };
 use crate::logging::{self, LogService, DEFAULT_DIAGNOSTIC_MINUTES};
-use crate::local_ai_update;
 use std::path::PathBuf;
 use tauri::State;
 
@@ -154,8 +154,7 @@ pub async fn log_export_diagnostics_bundle(
     // 本地 AI 状态可能读取文件 / 状态，放到阻塞线程中执行。
     let app_for_ai = app.clone();
     let local_ai_status_json = tauri::async_runtime::spawn_blocking(move || {
-        serde_json::to_string(&local_ai_update::status(&app_for_ai))
-            .unwrap_or_else(|_| "{}".into())
+        serde_json::to_string(&local_ai_update::status(&app_for_ai)).unwrap_or_else(|_| "{}".into())
     })
     .await
     .map_err(|e| format!("diagnostics bundle failed: {e}"))?;
