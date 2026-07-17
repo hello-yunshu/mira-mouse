@@ -14,6 +14,7 @@ import { ExternalLink } from './ExternalLink';
 import { startAutomaticAppUpdateCheck } from './updater';
 import { checkForPluginUpdates, installPluginUpdate, onPluginUpdateState, pluginUpdateState, startAutomaticPluginUpdateCheck, type PluginUpdateState } from './plugin-updater';
 import { DEFAULT_LOCAL_AI_FEATURES, LOCAL_AI_FEATURE, localAiFeatureEnabled, setLocalAiFeature } from './localAi';
+import { LogPage } from './logs/LogPage';
 
 const DEFAULT_SETTINGS: AppSettings = {
   language: 'auto',
@@ -146,6 +147,7 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
   const [discovered, setDiscovered] = useState<DiscoveredDevice[]>([]);
   const [saved, setSaved] = useState(false);
   const [confirmingClearBattery, setConfirmingClearBattery] = useState(false);
+  const [subview, setSubview] = useState<'main' | 'logs'>('main');
   const [tabState, setTabState] = useState<{ tab: SettingsTab; focusToken: number }>(() => ({
     tab: focusPluginUpdateToken > 0 ? 'plugins' : 'general',
     focusToken: focusPluginUpdateToken,
@@ -502,6 +504,10 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
     }
   }
 
+  if (subview === 'logs') {
+    return <LogPage onBack={() => setSubview('main')} />;
+  }
+
   return (
     <main className="settings-page">
       <header>
@@ -781,7 +787,7 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
             <p className="setting-hint">
               {t('settings.config.hint')}
             </p>
-            <div className="contact-links">
+            <div className="contact-links align-start">
               <button className="secondary" onClick={() => void handleExportConfig()} disabled={previewMode}>{t('settings.config.export')}</button>
               <button className="secondary" onClick={() => void handleImportConfig()} disabled={previewMode}>{t('settings.config.import')}</button>
             </div>
@@ -941,6 +947,15 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
             <SettingRow title={t('settings.about.label')} hint={t('settings.about.hint')}>
               <button className="secondary" onClick={onNavigateAbout}>{t('settings.about.button')}</button>
             </SettingRow>
+          </section>
+
+          <section className="card settings-section">
+            <div className="card-title"><h2>{t('logs.title')}</h2></div>
+            <p className="setting-hint">{t('logs.cardHint')}</p>
+            <p className="setting-hint">{t('logs.cardPrivacy')}</p>
+            <div className="contact-links">
+              <button className="primary" onClick={() => setSubview('logs')}>{t('logs.openButton')}</button>
+            </div>
           </section>
 
           <section className="card settings-section donate-card">

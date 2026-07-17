@@ -88,21 +88,6 @@ export interface ExportOutcomeDto {
   truncated: boolean;
 }
 
-export interface DiagnosticsContext {
-  appName: string;
-  appVersion: string;
-  appIdentifier: string;
-  platform: string;
-  architecture: string;
-  rustVersion: string;
-  sessionId: string;
-  appInfoJson: string;
-  pluginStatusJson: string;
-  localAiStatusJson: string;
-  recentErrorCount: number;
-  recentWarnCount: number;
-}
-
 /** 后端向前端推送的实时日志批次事件 payload。 */
 export type LogBatchEvent = LogEntry[];
 

@@ -1777,7 +1777,12 @@ body:has(.platform-fallback:not(.web-preview)) {
 }
 .lighting-group.is-compact .lighting-row strong { font-size: 10px; }
 
-/* Compact edit popovers use the same glass treatment as the battery popover. */
+/* Compact edit popovers use the same glass treatment as the battery popover.
+   小型弹窗（DPI / 回报率 / 灯光 / 插件字段 / 日志确认 / 诊断对话框）：
+   不对整个页面背景施加毛玻璃虚化，仅保留极轻遮罩维持视觉聚焦，
+   毛玻璃效果完全由 .edit-modal 自身的 backdrop-filter 提供。
+   全页展示的大型弹窗（.details-backdrop / .battery-usage-modal-overlay）
+   仍保留全屏 backdrop-filter 虚化，形成差异化层级。 */
 .edit-modal-backdrop {
   position: fixed;
   z-index: var(--z-modal);
@@ -1786,8 +1791,6 @@ body:has(.platform-fallback:not(.web-preview)) {
   display: grid;
   place-items: center;
   background: var(--modal-backdrop-bg);
-  -webkit-backdrop-filter: var(--modal-backdrop-blur);
-  backdrop-filter: var(--modal-backdrop-blur);
 }
 .edit-modal {
   width: min(304px, 50vw, calc(100vw - 32px));

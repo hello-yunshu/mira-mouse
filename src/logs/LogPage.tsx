@@ -14,10 +14,10 @@ import {
   Wrench,
 } from '@phosphor-icons/react';
 import { save } from '@tauri-apps/plugin-dialog';
+import { Modal } from '../overlay';
 import { getLogClient } from './log-client';
 import {
   LOG_LEVELS,
-  LOG_SOURCES,
   LEVEL_WEIGHT,
   levelAtLeast,
   type DeleteScope,
@@ -188,80 +188,30 @@ function LoadMoreFooter({ hasMore, onLoadMore, loading }: { hasMore: boolean; on
   );
 }
 
-/** 日志列表 + 自动跟随 / 暂停 / 新日志计数入口。 */
+/** 日志列表：纯展示组件，滚动逻辑（自动跟随 / atBottom 检测 / 信号跳转）由 LogPage 统一管理。 */
 function LogList({
   entries,
   hasMore,
   loading,
-  paused,
-  follow,
-  newCount,
   onLoadMore,
-  onJumpToNewest,
 }: {
   entries: LogEntry[];
   hasMore: boolean;
   loading: boolean;
-  paused: boolean;
-  follow: boolean;
-  newCount: number;
   onLoadMore: () => void;
-  onJumpToNewest: () => void;
 }) {
   const { t } = useTranslation();
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const [atBottom, setAtBottom] = useState(true);
-
-  /** 检测当前是否在底部附近。 */
-  const checkAtBottom = useCallback(() => {
-    const el = scrollRef.current;
-    if (!el) return true;
-    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
-    return distance <= FOLLOW_THRESHOLD_PX;
-  }, []);
-
-  /** 滚动到底部。 */
-  const scrollToBottom = useCallback(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    el.scrollTop = el.scrollHeight;
-  }, []);
-
-  // 自动跟随：新日志到达时若用户在底部且未暂停 + follow 开启，自动滚动。
-  useEffect(() => {
-    if (paused || !follow) return;
-    if (!atBottom) return;
-    scrollToBottom();
-  }, [entries.length, paused, follow, atBottom, scrollToBottom]);
-
-  // 监听滚动，更新 atBottom 状态
-  const handleScroll = useCallback(() => {
-    setAtBottom(checkAtBottom());
-  }, [checkAtBottom]);
-
-  // 初次加载时滚到底
-  useEffect(() => {
-    scrollToBottom();
-    // 初始挂载后将状态同步为「已在底部」。这是同步滚动后的副作用，不会造成级联渲染。
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setAtBottom(true);
-  }, [scrollToBottom]);
-
   return (
     <div className="log-list-wrapper">
-      <div className="log-list" ref={scrollRef} onScroll={handleScroll}>
+      <div className="log-list">
+        {/* 加载更旧日志的入口放在顶部：列表为「最旧在上、最新在下」的会话式顺序。 */}
+        <LoadMoreFooter hasMore={hasMore} onLoadMore={onLoadMore} loading={loading} />
         {entries.length === 0 ? (
           <p className="log-list-empty">{loading ? t('logs.list.loading') : t('logs.list.empty')}</p>
         ) : (
           entries.map((entry) => <LogEntryRow key={entry.id} entry={entry} onCopy={() => undefined} />)
         )}
-        <LoadMoreFooter hasMore={hasMore} onLoadMore={onLoadMore} loading={loading} />
       </div>
-      {follow && !paused && !atBottom && newCount > 0 && (
-        <button type="button" className="log-new-count" onClick={onJumpToNewest}>
-          {t('logs.list.newCount', { count: newCount })}
-        </button>
-      )}
     </div>
   );
 }
@@ -285,6 +235,8 @@ function LogToolbar({
   onExportSession,
   onExportBundle,
   onDelete,
+  onCopyFiltered,
+  copyDisabled,
   onOpenDir,
   onDiagnosticStart,
   onDiagnosticStop,
@@ -305,7 +257,9 @@ function LogToolbar({
   onExportFiltered: () => void;
   onExportSession: () => void;
   onExportBundle: () => void;
-  onDelete: () => void;
+  onDelete: (scope: DeleteScope, label: string) => void;
+  onCopyFiltered: () => void;
+  copyDisabled: boolean;
   onOpenDir: () => void;
   onDiagnosticStart: () => void;
   onDiagnosticStop: () => void;
@@ -322,13 +276,12 @@ function LogToolbar({
           <select
             value={sourceFilter}
             onChange={(e) => onSourceChange(e.target.value as SourceFilter)}
-            aria-label={t('logs.filter.level')}
+            aria-label={t('logs.filter.source')}
           >
             <option value="all">{t('logs.filter.all')}</option>
-            {LOG_SOURCES.map((source) => {
-              const key = source === 'local-ai' ? 'localAi' : source;
-              return <option key={source} value={source}>{t(`logs.filter.${key}`)}</option>;
-            })}
+            <option value="app">{t('logs.filter.app')}</option>
+            <option value="plugin">{t('logs.filter.plugin')}</option>
+            <option value="local-ai">{t('logs.filter.localAi')}</option>
           </select>
         </label>
         <label className="log-filter-level">
@@ -377,6 +330,10 @@ function LogToolbar({
           <Eraser weight="regular" aria-hidden="true" />
           <span>{t('logs.toolbar.clearView')}</span>
         </button>
+        <button type="button" className="log-action" onClick={onCopyFiltered} disabled={copyDisabled} aria-label={t('logs.toolbar.copyFiltered')}>
+          <Clipboard weight="regular" aria-hidden="true" />
+          <span>{t('logs.toolbar.copyFiltered')}</span>
+        </button>
         <div className="log-menu-wrap">
           <button type="button" className="log-action" onClick={() => { setExportOpen((v) => !v); setDeleteOpen(false); }}>
             <Export weight="regular" aria-hidden="true" />
@@ -399,7 +356,9 @@ function LogToolbar({
           </button>
           {deleteOpen && (
             <div className="log-menu" role="menu">
-              <button type="button" role="menuitem" onClick={() => { setDeleteOpen(false); onDelete(); }}>{t('logs.toolbar.deleteOlder')}</button>
+              <button type="button" role="menuitem" onClick={() => { setDeleteOpen(false); onDelete({ scope: 'olderThanDays', days: 7 }, t('logs.delete.olderThanDays')); }}>{t('logs.toolbar.deleteOlder')}</button>
+              <button type="button" role="menuitem" onClick={() => { setDeleteOpen(false); onDelete({ scope: 'beforeCurrentSession' }, t('logs.delete.beforeCurrentSession')); }}>{t('logs.toolbar.deleteBeforeSession')}</button>
+              <button type="button" role="menuitem" onClick={() => { setDeleteOpen(false); onDelete({ scope: 'all' }, t('logs.delete.all')); }}>{t('logs.toolbar.deleteAll')}</button>
             </div>
           )}
         </div>
@@ -436,60 +395,35 @@ function LogToolbar({
 }
 
 /** 删除确认对话框。 */
-function DeleteConfirmDialog({
-  state,
-  onClose,
-  onConfirm,
-}: {
+function DeleteConfirmDialog({ state, onClose, onConfirm }: {
   state: DeleteDialogState;
   onClose: () => void;
   onConfirm: (scope: DeleteScope) => Promise<void>;
 }) {
   const { t } = useTranslation();
   const [busy, setBusy] = useState(false);
-  const confirmRef = useRef<HTMLButtonElement>(null);
-
-  useEffect(() => {
-    if (state.open) {
-      // 初始焦点放在确认按钮上（危险操作，需要用户明确点击）
-      confirmRef.current?.focus();
-    }
-  }, [state.open]);
-
   if (!state.open) return null;
-
   const handleConfirm = async () => {
     setBusy(true);
-    try {
-      await onConfirm(state.scope);
-    } finally {
-      setBusy(false);
-    }
+    try { await onConfirm(state.scope); } finally { setBusy(false); }
   };
-
   return (
-    <div className="edit-modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="edit-modal log-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="log-delete-title">
-        <header><h3 id="log-delete-title">{t('logs.delete.confirmTitle')}</h3></header>
-        <div className="edit-modal-body">
-          <p className="setting-hint">{t('logs.delete.confirmHint')}</p>
-          <p className="setting-hint"><strong>{state.label}</strong></p>
-        </div>
-        <footer>
-          <button type="button" className="secondary" onClick={onClose} disabled={busy}>{t('logs.delete.cancel')}</button>
-          <button type="button" ref={confirmRef} onClick={handleConfirm} disabled={busy}>{t('logs.delete.confirm')}</button>
-        </footer>
+    <Modal open={true} title={t('logs.delete.confirmTitle')} size="small"
+      className="edit-modal log-confirm-dialog" backdropClassName="edit-modal-backdrop" onClose={onClose}>
+      <div className="edit-modal-body">
+        <p className="setting-hint">{t('logs.delete.confirmHint')}</p>
+        <p className="setting-hint"><strong>{state.label}</strong></p>
       </div>
-    </div>
+      <footer>
+        <button type="button" className="secondary" onClick={onClose} disabled={busy}>{t('logs.delete.cancel')}</button>
+        <button type="button" onClick={handleConfirm} disabled={busy}>{t('logs.delete.confirm')}</button>
+      </footer>
+    </Modal>
   );
 }
 
 /** 临时诊断会话对话框。 */
-function DiagnosticStartDialog({
-  state,
-  onClose,
-  onConfirm,
-}: {
+function DiagnosticStartDialog({ state, onClose, onConfirm }: {
   state: DiagnosticDialogState;
   onClose: () => void;
   onConfirm: (minutes: number, level: LogLevel) => Promise<void>;
@@ -498,49 +432,35 @@ function DiagnosticStartDialog({
   const [minutes, setMinutes] = useState(state.minutes);
   const [level, setLevel] = useState<LogLevel>(state.level);
   const [busy, setBusy] = useState(false);
-
   if (!state.open) return null;
-
   const handleConfirm = async () => {
     setBusy(true);
-    try {
-      await onConfirm(minutes, level);
-    } finally {
-      setBusy(false);
-    }
+    try { await onConfirm(minutes, level); } finally { setBusy(false); }
   };
-
   return (
-    <div className="edit-modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="edit-modal" role="dialog" aria-modal="true" aria-labelledby="log-diagnostic-title">
-        <header><h3 id="log-diagnostic-title">{t('logs.diagnostic.startTitle')}</h3></header>
-        <div className="edit-modal-body">
-          <p className="setting-hint">{t('logs.diagnostic.startHint')}</p>
-          <label className="edit-field">
-            <span>{t('logs.diagnostic.durationLabel')}</span>
-            <input
-              type="number"
-              min={1}
-              max={30}
-              value={minutes}
-              onChange={(e) => setMinutes(Math.max(1, Math.min(30, Number(e.target.value) || 10)))}
-            />
-          </label>
-          <label className="edit-field">
-            <span>{t('logs.diagnostic.levelLabel')}</span>
-            <select value={level} onChange={(e) => setLevel(e.target.value as LogLevel)}>
-              {LOG_LEVELS.filter((l) => LEVEL_WEIGHT[l] >= LEVEL_WEIGHT.debug).map((l) => (
-                <option key={l} value={l}>{l}</option>
-              ))}
-            </select>
-          </label>
-        </div>
-        <footer>
-          <button type="button" className="secondary" onClick={onClose} disabled={busy}>{t('logs.diagnostic.cancel')}</button>
-          <button type="button" onClick={handleConfirm} disabled={busy}>{t('logs.diagnostic.start')}</button>
-        </footer>
+    <Modal open={true} title={t('logs.diagnostic.startTitle')} size="small"
+      className="edit-modal" backdropClassName="edit-modal-backdrop" onClose={onClose}>
+      <div className="edit-modal-body">
+        <p className="setting-hint">{t('logs.diagnostic.startHint')}</p>
+        <label className="edit-field">
+          <span>{t('logs.diagnostic.durationLabel')}</span>
+          <input type="number" min={1} max={30} value={minutes}
+            onChange={(e) => setMinutes(Math.max(1, Math.min(30, Number(e.target.value) || 10)))} />
+        </label>
+        <label className="edit-field">
+          <span>{t('logs.diagnostic.levelLabel')}</span>
+          <select value={level} onChange={(e) => setLevel(e.target.value as LogLevel)}>
+            {LOG_LEVELS.filter((l) => LEVEL_WEIGHT[l] >= LEVEL_WEIGHT.debug).map((l) => (
+              <option key={l} value={l}>{l}</option>
+            ))}
+          </select>
+        </label>
       </div>
-    </div>
+      <footer>
+        <button type="button" className="secondary" onClick={onClose} disabled={busy}>{t('logs.diagnostic.cancel')}</button>
+        <button type="button" onClick={handleConfirm} disabled={busy}>{t('logs.diagnostic.start')}</button>
+      </footer>
+    </Modal>
   );
 }
 
@@ -566,7 +486,11 @@ function buildQuery(sourceFilter: SourceFilter, minLevel: LogLevel, keyword: str
 
 /** 前端二次筛选：实时事件按当前 filter 立即过滤，避免等到刷新。 */
 function entryMatchesFilter(entry: LogEntry, sourceFilter: SourceFilter, minLevel: LogLevel, keyword: string): boolean {
-  if (sourceFilter !== 'all' && entry.source !== sourceFilter) return false;
+  if (sourceFilter !== 'all') {
+    if (sourceFilter === 'app') {
+      if (entry.source !== 'app' && entry.source !== 'frontend') return false;
+    } else if (entry.source !== sourceFilter) return false;
+  }
   if (!levelAtLeast(entry.level, minLevel)) return false;
   const trimmed = keyword.trim().toLowerCase();
   if (!trimmed) return true;
@@ -590,6 +514,59 @@ export function LogPage({ onBack }: { onBack: () => void }) {
   const [follow, setFollow] = useState(true);
   const [paused, setPaused] = useState(false);
   const [newCount, setNewCount] = useState(0);
+  /** 强制滚动到底部的信号（跳转最新 / 恢复暂停时自增）。 */
+  const [scrollSignal, setScrollSignal] = useState(0);
+  /** 用户是否停留在页面底部（滚动检测由 LogPage 自身管理）。 */
+  const [atBottom, setAtBottom] = useState(true);
+  const atBottomRef = useRef(true);
+  useEffect(() => { atBottomRef.current = atBottom; }, [atBottom]);
+
+  /** 页面级滚动容器 ref（挂在 <main> 上）。滚动跟随 / atBottom 检测均基于此 ref。 */
+  const scrollRef = useRef<HTMLElement>(null);
+
+  /** 检测当前是否在底部附近。 */
+  const checkAtBottom = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return true;
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+    return distance <= FOLLOW_THRESHOLD_PX;
+  }, []);
+
+  /** 滚动到底部。 */
+  const scrollToBottom = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, []);
+
+  // 自动跟随：新日志到达时若用户在底部且未暂停 + follow 开启，自动滚动。
+  useEffect(() => {
+    if (paused || !follow) return;
+    if (!atBottom) return;
+    scrollToBottom();
+  }, [entries.length, paused, follow, atBottom, scrollToBottom]);
+
+  // 强制滚动信号：跳转最新 / 恢复暂停时滚到底部。
+  useEffect(() => {
+    if (scrollSignal === 0) return;
+    scrollToBottom();
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setAtBottom(true);
+  }, [scrollSignal, scrollToBottom]);
+
+  // 监听页面滚动，更新 atBottom 状态
+  const handleScroll = useCallback(() => {
+    const next = checkAtBottom();
+    setAtBottom(next);
+  }, [checkAtBottom]);
+
+  // 初次加载时滚到底
+  useEffect(() => {
+    scrollToBottom();
+    // 初始挂载后将状态同步为「已在底部」。这是同步滚动后的副作用，不会造成级联渲染。
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setAtBottom(true);
+  }, [scrollToBottom]);
 
   const [status, setStatus] = useState<LogStatus | null>(null);
   const [oldestId, setOldestId] = useState<number | null>(null);
@@ -649,7 +626,9 @@ export function LogPage({ onBack }: { onBack: () => void }) {
     clientRef.current.query(initialQuery)
       .then((page: LogPageData) => {
         if (cancelled) return;
-        setEntries(page.entries.slice(-MAX_VIEW_ENTRIES));
+        // 后端返回最新在前（newest→oldest）；列表采用会话式顺序（最旧在上、最新在下），
+        // 因此反转为最旧在前后再截断到展示窗口。
+        setEntries(page.entries.slice(0, MAX_VIEW_ENTRIES).reverse());
         setHasMore(page.hasMore);
         setOldestId(page.oldestId);
         setError('');
@@ -697,14 +676,25 @@ export function LogPage({ onBack }: { onBack: () => void }) {
       if (filtered.length === 0) return;
 
       if (pausedRef.current) {
-        // 暂停期间：只累计计数，不更新列表
+        // 暂停期间：累计到 pendingBatchRef，恢复或跳转最新时合并；同时更新计数。
+        // 之前只更新计数而不缓冲，导致「N 条新日志」徽章点击后无内容可合并（数据丢失）。
+        pendingBatchRef.current.push(...filtered);
+        // 防止长时间暂停导致无界增长：只保留最近一个展示窗口的条目。
+        if (pendingBatchRef.current.length > MAX_VIEW_ENTRIES) {
+          pendingBatchRef.current = pendingBatchRef.current.slice(-MAX_VIEW_ENTRIES);
+        }
         setNewCount((n) => n + filtered.length);
         return;
       }
 
+      // 非暂停：日志进入列表（flush），但若用户不在底部则计数提示
       pendingBatchRef.current.push(...filtered);
       if (flushTimerRef.current === null) {
         flushTimerRef.current = setTimeout(flush, BATCH_FLUSH_MS);
+      }
+      if (!atBottomRef.current) {
+        // 用户在阅读历史，不强制滚动，显示徽章
+        setNewCount((n) => n + filtered.length);
       }
     };
 
@@ -728,6 +718,24 @@ export function LogPage({ onBack }: { onBack: () => void }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  /** 用当前筛选条件重新查询并刷新列表（供删除等操作后调用）。 */
+  const refreshEntries = useCallback(async () => {
+    if (pureWeb) return;
+    const query = buildQuery(sourceFilterRef.current, minLevelRef.current, keywordRef.current);
+    setLoading(true);
+    try {
+      const page = await clientRef.current.query(query);
+      setEntries(page.entries.slice(0, MAX_VIEW_ENTRIES).reverse());
+      setHasMore(page.hasMore);
+      setOldestId(page.oldestId);
+      setNewCount(0);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setLoading(false);
+    }
+  }, [pureWeb]);
+
   /** 筛选条件变化时重新查询。 */
   useEffect(() => {
     if (pureWeb) return;
@@ -738,7 +746,7 @@ export function LogPage({ onBack }: { onBack: () => void }) {
     clientRef.current.query(query)
       .then((page) => {
         if (cancelled) return;
-        setEntries(page.entries.slice(-MAX_VIEW_ENTRIES));
+        setEntries(page.entries.slice(0, MAX_VIEW_ENTRIES).reverse());
         setHasMore(page.hasMore);
         setOldestId(page.oldestId);
         setNewCount(0);
@@ -757,32 +765,35 @@ export function LogPage({ onBack }: { onBack: () => void }) {
   // 关键字搜索防抖
   useEffect(() => {
     if (pureWeb) return;
+    // cancelled 提升到 effect 作用域：之前放在 setTimeout 回调里，
+    // 其返回的清理函数被 setTimeout 忽略，快速输入时会用过期结果覆盖最新结果。
+    let cancelled = false;
     const timer = setTimeout(() => {
-      let cancelled = false;
       const query = buildQuery(sourceFilter, minLevel, keyword);
       clientRef.current.query(query)
         .then((page) => {
           if (cancelled) return;
-          setEntries(page.entries.slice(-MAX_VIEW_ENTRIES));
+          setEntries(page.entries.slice(0, MAX_VIEW_ENTRIES).reverse());
           setHasMore(page.hasMore);
           setOldestId(page.oldestId);
           setNewCount(0);
         })
         .catch(() => { /* 静默 */ });
-      return () => { cancelled = true; };
     }, 250);
-    return () => clearTimeout(timer);
+    return () => { cancelled = true; clearTimeout(timer); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [keyword]);
 
-  /** 加载更多（向前翻页）。 */
+  /** 加载更多（向前翻页，加载更旧的条目）。 */
   const loadMore = useCallback(async () => {
     if (oldestId === null || loading) return;
     setLoading(true);
     try {
       const query = buildQuery(sourceFilter, minLevel, keyword, oldestId);
       const page = await clientRef.current.query(query);
-      setEntries((prev) => [...page.entries, ...prev].slice(0, MAX_VIEW_ENTRIES));
+      // page.entries 为最新→最旧；反转成最旧→最新后前插，保持列表「最旧在上」的顺序。
+      // 截断保留最新的一屏（slice(-MAX)），与实时刷新的窗口策略一致。
+      setEntries((prev) => [...page.entries.slice().reverse(), ...prev].slice(-MAX_VIEW_ENTRIES));
       setHasMore(page.hasMore);
       setOldestId(page.oldestId);
     } catch (err) {
@@ -792,29 +803,34 @@ export function LogPage({ onBack }: { onBack: () => void }) {
     }
   }, [oldestId, loading, sourceFilter, minLevel, keyword]);
 
-  /** 跳到最新。 */
+  /** 跳到最新：合并暂停期间累计的日志并强制滚动到底部。 */
   const jumpToNewest = useCallback(() => {
-    // 恢复暂停期间累计的日志
     if (pendingBatchRef.current.length > 0) {
+      const pending = pendingBatchRef.current;
+      pendingBatchRef.current = [];
       setEntries((prev) => {
-        const next = [...prev, ...pendingBatchRef.current];
-        pendingBatchRef.current = [];
+        const next = [...prev, ...pending];
         return next.length > MAX_VIEW_ENTRIES ? next.slice(next.length - MAX_VIEW_ENTRIES) : next;
       });
     }
     setNewCount(0);
+    // 强制滚动到底部：之前未滚动，导致点击「N 条新日志」后视图仍停在旧位置。
+    setScrollSignal((n) => n + 1);
+    // 点击徽章表示用户想看新日志：若处于暂停则恢复自动刷新
+    if (pausedRef.current) {
+      setPaused(false);
+    }
   }, []);
 
   /** 暂停切换。 */
   const pauseToggle = useCallback(() => {
-    setPaused((p) => {
-      const next = !p;
-      if (!next) {
-        // 恢复时合并暂停期间累计的日志
-        jumpToNewest();
-      }
-      return next;
-    });
+    // 读取当前暂停状态决定是否恢复；副作用（合并日志）放在 updater 之外，
+    // 避免在 StrictMode 双调用 updater 时重复触发副作用。
+    const resuming = pausedRef.current;
+    setPaused((p) => !p);
+    if (resuming) {
+      jumpToNewest();
+    }
   }, [jumpToNewest]);
 
   /** 清空当前视图：仅清前端显示，不调用删除命令。 */
@@ -870,7 +886,7 @@ export function LogPage({ onBack }: { onBack: () => void }) {
     }
   }, [t]);
 
-  /** 导出诊断包。 */
+  /** 导出诊断包。诊断上下文（版本/平台/架构/本地 AI 状态等）由后端收集。 */
   const exportBundle = useCallback(async () => {
     try {
       const date = currentDateStamp();
@@ -879,36 +895,36 @@ export function LogPage({ onBack }: { onBack: () => void }) {
         filters: [{ name: t('logs.export.zipFilter'), extensions: ['zip'] }],
       });
       if (!path) return;
-      // 诊断包上下文：前端构造基本字段，JSON 内容由后端填充。
-      const ctx = {
-        appName: 'Mira',
-        appVersion: '',
-        appIdentifier: '',
-        platform: '',
-        architecture: '',
-        rustVersion: '',
-        sessionId: status?.sessionId ?? '',
-        appInfoJson: '{}',
-        pluginStatusJson: '{}',
-        localAiStatusJson: '{}',
-        recentErrorCount: status?.recentErrorCount ?? 0,
-        recentWarnCount: status?.recentWarnCount ?? 0,
-      };
-      const outcome = await clientRef.current.exportDiagnosticsBundle(ctx, path);
-      notifySuccess(t('logs.export.bundleSuccess', { path: outcome.path }));
+      const outcome = await clientRef.current.exportDiagnosticsBundle(path);
+      notifySuccess(
+        t('logs.export.bundleSuccess', { path: outcome.path })
+        + (outcome.truncated ? t('logs.export.truncated') : ''),
+      );
     } catch (err) {
       notifyError(t('notification.exportFailed'), t('logs.export.failed', { error: String(err) }));
     }
-  }, [status, t]);
+  }, [t]);
+
+  /** 复制当前筛选结果到剪贴板（JSONL）。 */
+  const copyFiltered = useCallback(async () => {
+    if (entries.length === 0) return;
+    const jsonl = entries.map((e) => JSON.stringify({
+      id: e.id, timestamp: e.timestamp, level: e.level, source: e.source,
+      target: e.target, message: e.message, sessionId: e.sessionId,
+      correlationId: e.correlationId, fields: e.fields,
+    })).join('\n');
+    try {
+      await navigator.clipboard.writeText(jsonl);
+      notifySuccess(t('logs.copy.success', { count: entries.length }));
+    } catch {
+      notifyError(t('logs.copy.failed'));
+    }
+  }, [entries, t]);
 
   /** 打开删除确认。 */
-  const openDelete = useCallback(() => {
-    setDeleteDialog({
-      open: true,
-      scope: { scope: 'olderThanDays', days: 7 },
-      label: t('logs.delete.olderThanDays'),
-    });
-  }, [t]);
+  const openDelete = useCallback((scope: DeleteScope, label: string) => {
+    setDeleteDialog({ open: true, scope, label });
+  }, []);
 
   /** 确认删除。 */
   const confirmDelete = useCallback(async (scope: DeleteScope) => {
@@ -925,18 +941,20 @@ export function LogPage({ onBack }: { onBack: () => void }) {
         }));
       }
       setDeleteDialog({ open: false });
+      // 之前只刷新状态（bufferCount），列表中已删除的条目仍残留；需重新查询列表。
       void refreshStatus();
+      void refreshEntries();
     } catch (err) {
       notifyError(t('logs.delete.failed'), String(err));
     }
-  }, [refreshStatus, t]);
+  }, [refreshStatus, refreshEntries, t]);
 
   /** 打开日志目录。 */
   const openDir = useCallback(async () => {
     try {
       await clientRef.current.openLogDir();
     } catch (err) {
-      notifyError(t('logs.delete.failed'), String(err));
+      notifyError(t('logs.openDirFailed'), String(err));
     }
   }, [t]);
 
@@ -953,7 +971,7 @@ export function LogPage({ onBack }: { onBack: () => void }) {
       setDiagnosticDialog((s) => ({ ...s, open: false }));
       void refreshStatus();
     } catch (err) {
-      notifyError(t('logs.delete.failed'), String(err));
+      notifyError(t('logs.diagnostic.startFailed'), String(err));
     }
   }, [refreshStatus, t]);
 
@@ -965,7 +983,7 @@ export function LogPage({ onBack }: { onBack: () => void }) {
       setDiagnosticRemaining(null);
       void refreshStatus();
     } catch (err) {
-      notifyError(t('logs.delete.failed'), String(err));
+      notifyError(t('logs.diagnostic.stopFailed'), String(err));
     }
   }, [refreshStatus, t]);
 
@@ -994,7 +1012,7 @@ export function LogPage({ onBack }: { onBack: () => void }) {
   }
 
   return (
-    <main className="log-page">
+    <main className="log-page" ref={scrollRef} onScroll={handleScroll}>
       <header>
         <div>
           <p className="eyebrow">{t('logs.eyebrow')}</p>
@@ -1021,6 +1039,8 @@ export function LogPage({ onBack }: { onBack: () => void }) {
         onExportSession={exportSession}
         onExportBundle={exportBundle}
         onDelete={openDelete}
+        onCopyFiltered={copyFiltered}
+        copyDisabled={entries.length === 0}
         onOpenDir={openDir}
         onDiagnosticStart={startDiagnostic}
         onDiagnosticStop={stopDiagnostic}
@@ -1029,12 +1049,13 @@ export function LogPage({ onBack }: { onBack: () => void }) {
         entries={entries}
         hasMore={hasMore}
         loading={loading}
-        paused={paused}
-        follow={follow}
-        newCount={newCount}
         onLoadMore={loadMore}
-        onJumpToNewest={jumpToNewest}
       />
+      {follow && newCount > 0 && (
+        <button type="button" className="log-new-count" onClick={jumpToNewest}>
+          {t('logs.list.newCount', { count: newCount })}
+        </button>
+      )}
       <DeleteConfirmDialog state={deleteDialog} onClose={() => setDeleteDialog({ open: false })} onConfirm={confirmDelete} />
       <DiagnosticStartDialog
         state={diagnosticDialog}
