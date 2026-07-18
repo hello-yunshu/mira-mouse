@@ -17,4 +17,5 @@ hex.workspace = true
 reqwest.workspace = true
 rill-runtime-protocol.workspace = true
 semver.workspace = true
+toml.workspace = true
 zip.workspace = true

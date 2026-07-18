@@ -11,6 +11,7 @@ use std::{
     collections::BTreeMap, env, fs, io::Cursor, path::PathBuf, process::Command as StdCommand,
     time::Duration,
 };
+use toml::Value;
 use zip::ZipArchive;
 
 const MAX_PLUGIN_BYTES: u64 = 32 * 1024 * 1024;
@@ -38,6 +39,13 @@ enum Command {
         #[arg(trailing_var_arg = true)]
         args: Vec<String>,
     },
+    /// 校验 `handlers/mira-battery-handler` 的 Cargo.lock 是否与 workspace
+    /// 内 path 依赖的实际版本同步。CI 用 `--locked` 构建前先跑此命令，
+    /// 避免工作区版本号升级后漏同步 handler 锁文件导致下游 model-pack 失败。
+    Handler {
+        #[command(subcommand)]
+        command: HandlerCmd,
+    },
     /// 从 rill-ml releases 下载预编译 `rill-runtime` 并拷到 `src-tauri/binaries/`，
     /// 供 Tauri `externalBin` sidecar 打包使用。文件名需带 target-triple 后缀。
     DistSidecar {
@@ -51,6 +59,12 @@ enum Command {
         #[arg(long, default_value_t = true)]
         release: bool,
     },
+}
+#[derive(Subcommand)]
+enum HandlerCmd {
+    /// 对比 handler Cargo.lock 中 path 依赖的锁定版本与对应 crate Cargo.toml
+    /// 声明的版本，不一致则报错。
+    CheckLock,
 }
 #[derive(Subcommand)]
 enum Plugins {
@@ -142,6 +156,9 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        Command::Handler {
+            command: HandlerCmd::CheckLock,
+        } => handler_check_lock(),
         Command::DistSidecar {
             target,
             version,
@@ -550,14 +567,7 @@ fn dist_sidecar(target: Option<&str>, version: Option<&str>, _release: bool) -> 
         format!("rill-runtime-{target_triple}")
     };
 
-    let manifest_dir = env::var("CARGO_MANIFEST_DIR")
-        .map(PathBuf::from)
-        .or_else(|_| env::current_dir())?;
-    let workspace_root = manifest_dir
-        .ancestors()
-        .nth(1)
-        .context("xtask must be run from its own crate dir")?
-        .to_path_buf();
+    let workspace_root = workspace_root()?;
     let dest_dir = workspace_root.join("src-tauri/binaries");
     fs::create_dir_all(&dest_dir)?;
 
@@ -773,9 +783,157 @@ fn host_target_triple() -> Result<String> {
     bail!("could not parse host target triple from rustc -vV output");
 }
 
+/// 解析 xtask 自身 crate 目录（CARGO_MANIFEST_DIR）的上一层，得到 workspace 根。
+/// 同时被 dist_sidecar 与 handler_check_lock 复用。
+fn workspace_root() -> Result<PathBuf> {
+    let manifest_dir = env::var("CARGO_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .or_else(|_| env::current_dir())?;
+    manifest_dir
+        .ancestors()
+        .nth(1)
+        .context("xtask must be run from its own crate dir")
+        .map(PathBuf::from)
+}
+
+/// 校验 `handlers/mira-battery-handler` 的 Cargo.lock 中所有 path 依赖的锁定版本
+/// 是否等于对应 crate Cargo.toml 声明的版本。handler 被主 workspace exclude，
+/// 拥有独立 Cargo.lock，升 workspace.package.version 后必须手动 `cargo update`
+/// 同步；此命令在 CI 的 rust job 最前面跑，提前拦截漏同步。
+fn handler_check_lock() -> Result<()> {
+    let root = workspace_root()?;
+    let handler_dir = root.join("handlers/mira-battery-handler");
+
+    let workspace_toml =
+        fs::read_to_string(root.join("Cargo.toml")).context("read workspace Cargo.toml")?;
+    let workspace_version =
+        parse_workspace_version(&workspace_toml).context("parse workspace.package.version")?;
+
+    let handler_toml =
+        fs::read_to_string(handler_dir.join("Cargo.toml")).context("read handler Cargo.toml")?;
+    let path_deps = parse_path_dependencies(&handler_toml)?;
+
+    let lock_text =
+        fs::read_to_string(handler_dir.join("Cargo.lock")).context("read handler Cargo.lock")?;
+    let locked = parse_lock_packages(&lock_text)?;
+    let lock_index: BTreeMap<&str, &str> = locked
+        .iter()
+        .map(|(name, version)| (name.as_str(), version.as_str()))
+        .collect();
+
+    let mut failures = Vec::new();
+    for (name, rel_path) in &path_deps {
+        let dep_toml_path = handler_dir.join(rel_path).join("Cargo.toml");
+        let dep_toml = fs::read_to_string(&dep_toml_path)
+            .with_context(|| format!("read {}", dep_toml_path.display()))?;
+        let expected = resolve_package_version(&dep_toml, &workspace_version)
+            .with_context(|| format!("resolve version for {name}"))?;
+        match lock_index.get(name.as_str()) {
+            None => failures.push(format!("{name}: missing from Cargo.lock")),
+            Some(actual) if *actual != expected => failures.push(format!(
+                "{name}: Cargo.lock pins {actual}, but Cargo.toml declares {expected}"
+            )),
+            _ => {}
+        }
+    }
+
+    if !failures.is_empty() {
+        bail!(
+            "handler Cargo.lock is out of sync with workspace crates:\n{}\n\
+             Run `cargo update` in handlers/mira-battery-handler/ to sync.",
+            failures.join("\n")
+        );
+    }
+    println!(
+        "handler lock: mira-battery-handler Cargo.lock is in sync with workspace v{workspace_version}"
+    );
+    Ok(())
+}
+
+/// 从 workspace 根 Cargo.toml 解析 `[workspace.package] version`。
+fn parse_workspace_version(text: &str) -> Result<String> {
+    let value: Value = toml::from_str(text).context("parse Cargo.toml")?;
+    let version = value
+        .get("workspace")
+        .and_then(|w| w.get("package"))
+        .and_then(|p| p.get("version"))
+        .and_then(|v| v.as_str())
+        .context("workspace.package.version is missing or not a string")?;
+    Ok(version.to_string())
+}
+
+/// 从 handler Cargo.toml 的 `[dependencies]` 中提取所有 path 依赖，
+/// 返回 (crate_name, relative_path) 列表。非 path 依赖（纯版本字符串、
+/// 仅含 registry 来源的 table）会被跳过。
+fn parse_path_dependencies(text: &str) -> Result<Vec<(String, String)>> {
+    let value: Value = toml::from_str(text).context("parse Cargo.toml")?;
+    let deps = value
+        .get("dependencies")
+        .and_then(|d| d.as_table())
+        .context("Cargo.toml has no [dependencies] table")?;
+    let mut path_deps = Vec::new();
+    for (name, spec) in deps {
+        let table = match spec.as_table() {
+            Some(t) => t,
+            None => continue,
+        };
+        if let Some(path) = table.get("path").and_then(|p| p.as_str()) {
+            path_deps.push((name.clone(), path.to_string()));
+        }
+    }
+    Ok(path_deps)
+}
+
+/// 从被依赖 crate 的 Cargo.toml 解析 `[package] version`。
+/// 支持两种形式：`version = "0.9.6"` 或 `version.workspace = true`，
+/// 后者使用 workspace_version 兜底。
+fn resolve_package_version(text: &str, workspace_version: &str) -> Result<String> {
+    let value: Value = toml::from_str(text).context("parse Cargo.toml")?;
+    let version = value
+        .get("package")
+        .and_then(|p| p.get("version"))
+        .context("package.version is missing")?;
+    if let Some(literal) = version.as_str() {
+        return Ok(literal.to_string());
+    }
+    let table = version
+        .as_table()
+        .context("package.version is neither string nor table")?;
+    if table
+        .get("workspace")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        return Ok(workspace_version.to_string());
+    }
+    bail!("package.version has unsupported shape: {version:?}");
+}
+
+/// 从 Cargo.lock 解析所有 `[[package]]` 的 (name, version)。
+fn parse_lock_packages(text: &str) -> Result<Vec<(String, String)>> {
+    #[derive(Deserialize)]
+    struct LockPackage {
+        name: String,
+        version: String,
+    }
+    #[derive(Deserialize)]
+    struct LockFile {
+        package: Vec<LockPackage>,
+    }
+    let lock: LockFile = toml::from_str(text).context("parse Cargo.lock")?;
+    Ok(lock
+        .package
+        .into_iter()
+        .map(|p| (p.name, p.version))
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::merge_bundle_resources;
+    use super::{
+        merge_bundle_resources, parse_lock_packages, parse_path_dependencies,
+        parse_workspace_version, resolve_package_version,
+    };
 
     #[test]
     fn plugin_lock_updates_preserve_non_plugin_bundle_resources() {
@@ -795,5 +953,163 @@ mod tests {
                 "resources/local-ai/handler.rillhandler"
             ]
         );
+    }
+
+    #[test]
+    fn parse_workspace_version_reads_literal() {
+        let text = r#"
+[workspace.package]
+version = "0.9.6"
+edition = "2021"
+"#;
+        assert_eq!(parse_workspace_version(text).unwrap(), "0.9.6");
+    }
+
+    #[test]
+    fn parse_workspace_version_errors_when_missing() {
+        let text = r#"
+[workspace]
+members = ["crates/foo"]
+"#;
+        assert!(parse_workspace_version(text).is_err());
+    }
+
+    #[test]
+    fn parse_path_dependencies_extracts_only_path_entries() {
+        let text = r#"
+[package]
+name = "mira-battery-handler"
+version = "0.8.3"
+
+[dependencies]
+mira-local-ai = { path = "../../crates/mira-local-ai" }
+mira-protocol = { path = "../../crates/mira-protocol" }
+serde_json = "1"
+wit-bindgen = { version = "0.29" }
+"#;
+        let deps = parse_path_dependencies(text).unwrap();
+        assert_eq!(
+            deps,
+            vec![
+                (
+                    "mira-local-ai".to_string(),
+                    "../../crates/mira-local-ai".to_string()
+                ),
+                (
+                    "mira-protocol".to_string(),
+                    "../../crates/mira-protocol".to_string()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn resolve_package_version_handles_literal() {
+        let text = r#"
+[package]
+name = "foo"
+version = "1.2.3"
+"#;
+        assert_eq!(resolve_package_version(text, "9.9.9").unwrap(), "1.2.3");
+    }
+
+    #[test]
+    fn resolve_package_version_handles_workspace_true() {
+        let text = r#"
+[package]
+name = "mira-local-ai"
+version.workspace = true
+"#;
+        assert_eq!(resolve_package_version(text, "0.9.6").unwrap(), "0.9.6");
+    }
+
+    #[test]
+    fn resolve_package_version_rejects_unsupported_shape() {
+        let text = r#"
+[package]
+name = "weird"
+version = { git = "https://example.com" }
+"#;
+        assert!(resolve_package_version(text, "0.9.6").is_err());
+    }
+
+    #[test]
+    fn parse_lock_packages_indexes_by_name() {
+        let text = r#"
+version = 4
+
+[[package]]
+name = "mira-local-ai"
+version = "0.9.6"
+dependencies = ["mira-protocol"]
+
+[[package]]
+name = "serde_json"
+version = "1.0.134"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+"#;
+        let packages = parse_lock_packages(text).unwrap();
+        let lookup: std::collections::BTreeMap<&str, &str> = packages
+            .iter()
+            .map(|(n, v)| (n.as_str(), v.as_str()))
+            .collect();
+        assert_eq!(lookup.get("mira-local-ai"), Some(&"0.9.6"));
+        assert_eq!(lookup.get("serde_json"), Some(&"1.0.134"));
+    }
+
+    /// 端到端校验：handler 声明的 path 依赖版本与 Cargo.lock 一致时不报错，
+    /// 不一致时能定位到具体 crate。此测试用内存字符串模拟整个流程，不依赖
+    /// 真实文件系统。
+    #[test]
+    fn detect_version_mismatch_between_lock_and_toml() {
+        let workspace_toml = r#"
+[workspace.package]
+version = "0.9.6"
+"#;
+        let handler_toml = r#"
+[dependencies]
+mira-local-ai = { path = "../../crates/mira-local-ai" }
+"#;
+        let dep_toml = r#"
+[package]
+name = "mira-local-ai"
+version.workspace = true
+"#;
+        let lock_stale = r#"
+version = 4
+
+[[package]]
+name = "mira-local-ai"
+version = "0.9.0"
+"#;
+        let lock_fresh = r#"
+version = 4
+
+[[package]]
+name = "mira-local-ai"
+version = "0.9.6"
+"#;
+
+        let workspace_version = parse_workspace_version(workspace_toml).unwrap();
+        let path_deps = parse_path_dependencies(handler_toml).unwrap();
+        assert_eq!(path_deps.len(), 1);
+        let expected = resolve_package_version(dep_toml, &workspace_version).unwrap();
+        assert_eq!(expected, "0.9.6");
+
+        // 不一致：lock=0.9.0, expected=0.9.6
+        let stale = parse_lock_packages(lock_stale).unwrap();
+        let stale_lookup: std::collections::BTreeMap<&str, &str> = stale
+            .iter()
+            .map(|(n, v)| (n.as_str(), v.as_str()))
+            .collect();
+        assert_ne!(stale_lookup.get("mira-local-ai"), Some(&expected.as_str()));
+
+        // 一致：lock=0.9.6, expected=0.9.6
+        let fresh = parse_lock_packages(lock_fresh).unwrap();
+        let fresh_lookup: std::collections::BTreeMap<&str, &str> = fresh
+            .iter()
+            .map(|(n, v)| (n.as_str(), v.as_str()))
+            .collect();
+        assert_eq!(fresh_lookup.get("mira-local-ai"), Some(&"0.9.6"));
     }
 }

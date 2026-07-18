@@ -6111,6 +6111,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "toml 0.9.12+spec-1.1.0",
  "zip 2.4.2",
 ]
 
