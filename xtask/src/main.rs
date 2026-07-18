@@ -862,23 +862,25 @@ fn parse_workspace_version(text: &str) -> Result<String> {
     Ok(version.to_string())
 }
 
-/// 从 handler Cargo.toml 的 `[dependencies]` 中提取所有 path 依赖，
-/// 返回 (crate_name, relative_path) 列表。非 path 依赖（纯版本字符串、
-/// 仅含 registry 来源的 table）会被跳过。
+/// 从 handler Cargo.toml 的 `[dependencies]`、`[dev-dependencies]`、
+/// `[build-dependencies]` 中提取所有 path 依赖，返回 (crate_name, relative_path)
+/// 列表。非 path 依赖（纯版本字符串、仅含 registry 来源的 table）会被跳过。
+/// 同时覆盖三段是为了未来 handler 新增 dev/build path 依赖时不漏校验。
 fn parse_path_dependencies(text: &str) -> Result<Vec<(String, String)>> {
     let value: Value = toml::from_str(text).context("parse Cargo.toml")?;
-    let deps = value
-        .get("dependencies")
-        .and_then(|d| d.as_table())
-        .context("Cargo.toml has no [dependencies] table")?;
     let mut path_deps = Vec::new();
-    for (name, spec) in deps {
-        let table = match spec.as_table() {
-            Some(t) => t,
-            None => continue,
+    for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
+        let Some(deps) = value.get(section).and_then(|d| d.as_table()) else {
+            continue;
         };
-        if let Some(path) = table.get("path").and_then(|p| p.as_str()) {
-            path_deps.push((name.clone(), path.to_string()));
+        for (name, spec) in deps {
+            let table = match spec.as_table() {
+                Some(t) => t,
+                None => continue,
+            };
+            if let Some(path) = table.get("path").and_then(|p| p.as_str()) {
+                path_deps.push((name.clone(), path.to_string()));
+            }
         }
     }
     Ok(path_deps)
@@ -918,6 +920,7 @@ fn parse_lock_packages(text: &str) -> Result<Vec<(String, String)>> {
     }
     #[derive(Deserialize)]
     struct LockFile {
+        #[serde(default)]
         package: Vec<LockPackage>,
     }
     let lock: LockFile = toml::from_str(text).context("parse Cargo.lock")?;
@@ -986,6 +989,9 @@ mira-local-ai = { path = "../../crates/mira-local-ai" }
 mira-protocol = { path = "../../crates/mira-protocol" }
 serde_json = "1"
 wit-bindgen = { version = "0.29" }
+
+[dev-dependencies]
+mira-testkit = { path = "../../crates/mira-testkit" }
 "#;
         let deps = parse_path_dependencies(text).unwrap();
         assert_eq!(
@@ -999,8 +1005,26 @@ wit-bindgen = { version = "0.29" }
                     "mira-protocol".to_string(),
                     "../../crates/mira-protocol".to_string()
                 ),
+                (
+                    "mira-testkit".to_string(),
+                    "../../crates/mira-testkit".to_string()
+                ),
             ]
         );
+    }
+
+    #[test]
+    fn parse_path_dependencies_returns_empty_when_no_path_deps() {
+        let text = r#"
+[package]
+name = "foo"
+version = "0.1.0"
+
+[dependencies]
+serde_json = "1"
+"#;
+        let deps = parse_path_dependencies(text).unwrap();
+        assert!(deps.is_empty());
     }
 
     #[test]
@@ -1055,6 +1079,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
             .collect();
         assert_eq!(lookup.get("mira-local-ai"), Some(&"0.9.6"));
         assert_eq!(lookup.get("serde_json"), Some(&"1.0.134"));
+    }
+
+    #[test]
+    fn parse_lock_packages_handles_empty_lockfile() {
+        // Cargo.lock 顶层只有 version 字段、无任何 [[package]] 块时，应返回空 Vec
+        // 而非反序列化失败。
+        let text = r#"
+version = 4
+"#;
+        let packages = parse_lock_packages(text).unwrap();
+        assert!(packages.is_empty());
     }
 
     /// 端到端校验：handler 声明的 path 依赖版本与 Cargo.lock 一致时不报错，
