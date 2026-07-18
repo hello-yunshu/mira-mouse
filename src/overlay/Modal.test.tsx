@@ -32,8 +32,10 @@ describe('Modal', () => {
     const root = document.getElementById(OVERLAY_ROOT_ID);
     expect(root).not.toBeNull();
     expect(root?.textContent).toContain('内容');
-    // 渲染了 dialog 角色
-    expect(screen.getByRole('dialog')).toBeDefined();
+    const dialog = screen.getByRole('dialog', { name: '标题' });
+    expect(dialog).toBeDefined();
+    // title 只提供无障碍名称，不再额外注入一个隐藏的同名文本节点。
+    expect(screen.queryByText('标题')).toBeNull();
   });
 
   it('Escape 调用 onClose', () => {
