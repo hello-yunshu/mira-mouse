@@ -55,6 +55,11 @@ jobs:
             cargo-rust-${{ runner.os }}-
       - run: cargo fmt --all --check
       - run: cargo run --package xtask -- plugins sync --locked
+      - name: Verify mira-battery-handler Cargo.lock is in sync with workspace
+        # handler 被主 workspace exclude，有独立 Cargo.lock；升 workspace.package.version
+        # 后若漏跑 `cargo update`，下游 model-pack 的 `cargo build --locked` 会失败。
+        # 在 rust job 最前面校验，提前拦截。
+        run: cargo run --package xtask -- handler check-lock
       - name: Create placeholder sidecar for lint/test
         # tauri-build 校验 externalBin 路径存在;rust job 不编译 sidecar(那是
         # tauri-bundle job 的职责),用空文件满足存在性检查即可。
