@@ -10,11 +10,12 @@ use std::cmp::Ordering;
 /// - `Info`：低频生命周期、用户触发的关键操作结果、版本与状态变化
 /// - `Debug`：诊断所需的流程、耗时、分支选择和结构化上下文
 /// - `Trace`：极低层且高频的细节，仅短时诊断使用
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LogLevel {
     Error,
     Warn,
+    #[default]
     Info,
     Debug,
     Trace,
@@ -51,26 +52,15 @@ impl Ord for LogLevel {
     }
 }
 
-impl Default for LogLevel {
-    fn default() -> Self {
-        LogLevel::Info
-    }
-}
-
 /// 日志来源。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum LogSource {
+    #[default]
     App,
     Frontend,
     Plugin,
     LocalAi,
-}
-
-impl Default for LogSource {
-    fn default() -> Self {
-        LogSource::App
-    }
 }
 
 /// 字段值类型：可序列化、有界、无递归。
@@ -218,7 +208,7 @@ pub struct LogQuery {
 
 impl LogQuery {
     pub fn effective_limit(&self) -> usize {
-        self.limit.unwrap_or(200).min(1000).max(1)
+        self.limit.unwrap_or(200).clamp(1, 1000)
     }
 
     /// 判断一条日志是否匹配筛选条件。`entry` 必须已通过 ID 范围检查。

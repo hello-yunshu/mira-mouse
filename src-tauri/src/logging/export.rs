@@ -107,7 +107,7 @@ pub fn export_diagnostics_bundle(
         "logEntryCount": entries.len(),
     });
     zip.start_file("summary.json", opts).map_err(io_err)?;
-    let _ = serde_json::to_writer(&mut zip, &summary).map_err(io_err)?;
+    serde_json::to_writer(&mut zip, &summary).map_err(io_err)?;
     // zip crate 2.x: starting a new file implicitly ends the previous one.
 
     // logs.jsonl
@@ -164,7 +164,7 @@ pub fn export_diagnostics_bundle(
     let _ = zip.write_all(privacy_report.as_bytes());
 
     zip.finish()
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
 
     Ok(ExportOutcome {
         entry_count: entries.len(),
@@ -206,7 +206,7 @@ fn write_jsonl(entries: Vec<LogEntry>, output_path: &Path) -> std::io::Result<Ex
 }
 
 fn io_err<E: std::fmt::Display>(e: E) -> std::io::Error {
-    std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+    std::io::Error::other(e.to_string())
 }
 
 fn build_privacy_report() -> String {
