@@ -953,7 +953,7 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
             <div className="card-title"><h2>{t('logs.title')}</h2></div>
             <p className="setting-hint">{t('logs.cardHint')}</p>
             <p className="setting-hint">{t('logs.cardPrivacy')}</p>
-            <div className="contact-links">
+            <div className="contact-links align-end">
               <button className="primary" onClick={() => setSubview('logs')}>{t('logs.openButton')}</button>
             </div>
           </section>
