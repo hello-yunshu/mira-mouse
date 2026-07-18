@@ -241,9 +241,8 @@ fn run_writer(
 /// 降级循环：通道仍能消费，但所有日志被丢弃。
 fn drain_loop_disabled(rx: Receiver<StorageMessage>) {
     while let Ok(msg) = rx.recv() {
-        match msg {
-            StorageMessage::Shutdown => break,
-            _ => {}
+        if let StorageMessage::Shutdown = msg {
+            break;
         }
     }
 }
@@ -361,7 +360,7 @@ fn cleanup_disk(dir: &Path, disk_usage: &Arc<Mutex<u64>>) -> std::io::Result<u64
                 break;
             }
             let size = fs::metadata(file).map(|m| m.len()).unwrap_or(0);
-            if let Err(_) = fs::remove_file(file) {
+            if fs::remove_file(file).is_err() {
                 // 忽略错误，继续尝试下一个。
             } else {
                 deleted_bytes += size;
