@@ -55,6 +55,8 @@ describe('Mira shell', () => {
     render(<App />);
     fireEvent.click(screen.getByText('查看演示'));
     expect(document.documentElement.style.getPropertyValue('--accent')).toBe('#ffb3b3');
+    expect(screen.getAllByText('82%')).toHaveLength(1);
+    fireEvent.click(document.querySelector('.battery-state') as HTMLButtonElement);
     expect(screen.getAllByText('82%')).toHaveLength(2);
     expect(screen.getByLabelText('当前 DPI：1000，点击编辑')).toBeInTheDocument();
     const dpiItems = [...document.querySelectorAll<HTMLElement>('.dpi-stage-item')];
@@ -77,6 +79,10 @@ describe('Mira shell', () => {
     expect(screen.getByText('传感器与连接')).toBeInTheDocument();
     expect(screen.getByText('按键映射')).toBeInTheDocument();
     expect(screen.getByText('接收器灯光固件')).toBeInTheDocument();
+    const detailsDialog = screen.getByRole('dialog', { name: '全部读数' });
+    const detailsHeader = detailsDialog.querySelector(':scope > header');
+    expect(detailsHeader).toBeInTheDocument();
+    expect(within(detailsHeader as HTMLElement).getByRole('button', { name: '关闭读数详情' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '关闭读数详情' }));
     expect(screen.queryByRole('dialog', { name: '全部读数' })).not.toBeInTheDocument();
   });
@@ -184,6 +190,81 @@ describe('Mira shell', () => {
     expect(contextLayer).toHaveAttribute('data-sync', 'surface');
     expect(document.querySelector('.shared-control-surface')).toBe(surfaceLayer);
   });
+  it('settles on the selected metric after rapid DPI and polling switches', async () => {
+    render(<App />);
+    fireEvent.click(screen.getByText('查看演示'));
+
+    const dpiTab = screen.getByRole('tab', { name: 'DPI' });
+    const pollingTab = screen.getByRole('tab', { name: '回报率' });
+    fireEvent.click(pollingTab);
+    fireEvent.click(dpiTab);
+    fireEvent.click(pollingTab);
+
+    const metricLayer = document.querySelector('.shared-control-metric')!;
+    expect(document.querySelector('.control-stage')).toHaveAttribute('data-control-mode', 'polling');
+    await waitFor(() => {
+      expect(metricLayer.querySelector('.shared-control-metric-face.is-next')).not.toBeInTheDocument();
+      expect(metricLayer.querySelector('.shared-control-metric-face.is-current')).toHaveTextContent('1000Hz');
+    });
+  });
+  it('commits an edited metric on the real flip boundary', async () => {
+    render(<App />);
+    fireEvent.click(screen.getByText('查看演示'));
+
+    fireEvent.click(screen.getByRole('button', { name: '当前 DPI：1000，点击编辑' }));
+    let dialog = await screen.findByRole('dialog', { name: '编辑第 3 档 DPI' });
+    fireEvent.change(within(dialog).getByLabelText('DPI 数值'), { target: { value: '9300' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: '应用' }));
+
+    const metricValue = document.querySelector('.shared-control-metric-value')!;
+    let terminalDigit: Element | null = null;
+    await waitFor(() => {
+      terminalDigit = metricValue.querySelector('[data-flip-last="true"]');
+      expect(terminalDigit).toBeInTheDocument();
+    });
+    fireEvent.animationEnd(terminalDigit!, { animationName: 'metric-digit-settle' });
+    await waitFor(() => {
+      expect(metricValue.querySelector('.shared-control-metric-face.is-current')).toHaveTextContent('9300DPI');
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: '当前 DPI：9300，点击编辑' }));
+    dialog = await screen.findByRole('dialog', { name: '编辑第 3 档 DPI' });
+    fireEvent.change(within(dialog).getByLabelText('DPI 数值'), { target: { value: '500' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: '应用' }));
+
+    let incomingFace: Element | null = null;
+    await waitFor(() => {
+      expect(metricValue).toHaveAttribute('data-transition', 'flip');
+      incomingFace = metricValue.querySelector('.shared-control-metric-face.is-next');
+      expect(incomingFace?.querySelector('.metric-flip-sizer')).toHaveTextContent('500');
+      expect(incomingFace?.querySelector('em')).toHaveTextContent('DPI');
+    });
+
+    const digitSlots = [...incomingFace!.querySelectorAll<HTMLElement>('.metric-flip-digit')];
+    expect(digitSlots).toHaveLength(4);
+    expect([...digitSlots[0].querySelectorAll('.metric-flip-digit-face')].map((face) => face.textContent))
+      .toEqual(['9', '8', '7', '6', '5', '4', '3', '2', '1', '0', ' ']);
+    expect([...digitSlots[1].querySelectorAll('.metric-flip-digit-face')].map((face) => face.textContent))
+      .toEqual(['3', '4', '5']);
+    expect([...digitSlots[2].querySelectorAll('.metric-flip-digit-face')].map((face) => face.textContent))
+      .toEqual(['0']);
+    expect([...digitSlots[3].querySelectorAll('.metric-flip-digit-face')].map((face) => face.textContent))
+      .toEqual(['0']);
+    expect(digitSlots[2].querySelector('.metric-flip-digit-face')).toHaveClass('is-static');
+    expect(digitSlots[3].querySelector('.metric-flip-digit-face')).toHaveClass('is-static');
+    const lastFinalDigit = incomingFace!.querySelector('[data-flip-last="true"]');
+    expect(lastFinalDigit).toBeInTheDocument();
+    expect(lastFinalDigit?.textContent).toBe(' ');
+    expect(lastFinalDigit).toHaveAttribute('style', '--metric-digit-delay: 520ms;');
+    fireEvent.animationEnd(lastFinalDigit!, { animationName: 'metric-digit-settle' });
+    await waitFor(() => {
+      expect(metricValue.querySelector('.shared-control-metric-face.is-next')).not.toBeInTheDocument();
+    });
+    expect(metricValue.querySelector('.shared-control-metric-face.is-current')).toBe(incomingFace);
+    expect(metricValue.querySelector('.shared-control-metric-face.is-current')).toHaveTextContent('500DPI');
+    expect(document.querySelector('.primary-reading > .live-value')).not.toBeInTheDocument();
+    expect(document.querySelector('.primary-reading > strong')).toHaveTextContent('500');
+  });
   it('shows the multi-mouse switcher in the demo fixture', () => {
     render(<App />);
     fireEvent.click(screen.getByText('查看演示'));
@@ -191,7 +272,20 @@ describe('Mira shell', () => {
     fireEvent.click(screen.getByRole('button', { name: '切换鼠标' }));
     fireEvent.click(screen.getByText('Mira Example USB Mouse').closest('button')!);
     expect(screen.getByRole('heading', { name: 'Mira Example USB Mouse' })).toBeInTheDocument();
+    expect(screen.getAllByRole('tab').map((tab) => tab.textContent))
+      .toEqual(['配置控制', 'DPI', '回报率', '灯光']);
+    expect(screen.getByRole('tab', { name: '配置控制' })).toHaveAttribute('aria-selected', 'true');
+    fireEvent.click(screen.getByRole('tab', { name: 'DPI' }));
     expect(screen.getByLabelText('当前 DPI：1600，点击编辑')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('tab', { name: '灯光' }));
+    fireEvent.click(screen.getByRole('tab', { name: '配置控制' }));
+    const stage = document.querySelector('.control-stage')!;
+    expect(stage).toHaveAttribute('data-control-transition', 'standard-to-segmented');
+    expect(stage.querySelector('.control-stage-page.is-leaving')).not.toBeInTheDocument();
+    const enteringPage = stage.querySelector('.control-stage-page.is-entering')!;
+    expect(enteringPage).toHaveAttribute('data-page-kind', 'segmented');
+    expect(within(enteringPage as HTMLElement).getByRole('group', { name: '配置控制' })).toBeInTheDocument();
   });
   it('returns to the dashboard when exiting demo mode from another page', () => {
     render(<App />);
@@ -209,7 +303,7 @@ describe('Mira shell', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '当前回报率：1000 Hz，点击编辑' }));
     const dialog = await screen.findByRole('dialog', { name: '设置回报率' });
-    fireEvent.change(within(dialog).getByLabelText('回报率'), { target: { value: '2000' } });
+    fireEvent.change(within(dialog).getByLabelText('回报率'), { target: { value: '500' } });
     fireEvent.click(within(dialog).getByRole('button', { name: '应用' }));
 
     // 演示模式下不应调用真实 Tauri device_mutate
@@ -219,6 +313,6 @@ describe('Mira shell', () => {
     // 应该看到「搞定啦」成功通知
     expect(await screen.findByText('搞定啦')).toBeInTheDocument();
     // UI 反映新的回报率
-    expect(screen.getByRole('button', { name: '当前回报率：2000 Hz，点击编辑' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '当前回报率：500 Hz，点击编辑' })).toBeInTheDocument();
   });
 });
