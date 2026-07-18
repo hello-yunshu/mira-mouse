@@ -131,6 +131,23 @@ export function resolveVisibleWhen(condition: PluginVisibleWhen | undefined, dev
   return value != null;
 }
 
+/**
+ * A dashboard field is useful only after the device has reported its current
+ * value.  Action fields are the exception: they intentionally represent an
+ * operation rather than a reading.
+ *
+ * This is a host-wide safety net for optional plugin capabilities.  Plugins
+ * should still declare probes/visibleWhen gates, but a missing runtime value
+ * must never turn into an editable "not reported" control.
+ */
+export function fieldHasReportedValue(field: PluginField, device: DeviceState): boolean {
+  if (!resolveVisibleWhen(field.visibleWhen, device)) return false;
+  if (field.editor === 'inline-action') return true;
+
+  const value = readPath(device, field.switch?.source ?? field.source);
+  return value !== undefined && value !== null && value !== '';
+}
+
 /// 读 field.switch 判断开关状态。
 /// 无 switch 时返回 true；否则用 readPath 读取 switch.source 的值，返回 value !== switch.offValue。
 export function resolveSwitchState(field: PluginField, device: DeviceState): boolean {
@@ -138,6 +155,58 @@ export function resolveSwitchState(field: PluginField, device: DeviceState): boo
   if (!sw) return true;
   const value = readPath(device, sw.source);
   return value !== sw.offValue;
+}
+
+/** 状态卡片与字段控件共用的交互类型。 */
+export type PluginFieldInteraction = 'toggle' | 'action' | 'modal' | 'control';
+
+/**
+ * 根据字段自己的 editor 契约决定点击行为。
+ *
+ * 宿主不感知 capability、设备或厂商名称：弹窗字段打开编辑器，开关和动作
+ * 直接执行，其余需要多个选项或专用布局的字段回到 capability 控制区。
+ */
+export function resolveFieldInteraction(field: PluginField): PluginFieldInteraction {
+  switch (field.editor) {
+    case 'inline-toggle':
+      return 'toggle';
+    case 'inline-action':
+      return 'action';
+    case 'modal-select':
+    case 'modal-color':
+    case 'modal-range':
+    case 'modal-number':
+    case 'modal-gradient':
+      return 'modal';
+    default:
+      return 'control';
+  }
+}
+
+/**
+ * 解析 inline-toggle 下一次应写入的值。
+ *
+ * 布尔开关可由 offValue 直接反转；枚举开关优先恢复调用方记住的非关闭值，
+ * 再回退到插件声明的第一个非关闭选项。返回 undefined 表示契约没有提供安全
+ * 的恢复值，此时宿主不猜测设备语义。
+ */
+export function resolveSwitchNextValue(
+  field: PluginField,
+  device: DeviceState,
+  rememberedOnValue?: unknown,
+): unknown | undefined {
+  const sw = field.switch;
+  if (!sw) return readPath(device, field.source) !== true;
+
+  const currentValue = readPath(device, sw.source);
+  if (currentValue !== sw.offValue) return sw.offValue;
+  if (rememberedOnValue !== undefined && rememberedOnValue !== sw.offValue) return rememberedOnValue;
+
+  const declaredOnValue = resolveFieldOptions(field, device)
+    .find((option) => option.value !== sw.offValue)?.value;
+  if (declaredOnValue !== undefined) return declaredOnValue;
+  if (typeof sw.offValue === 'boolean') return !sw.offValue;
+  return undefined;
 }
 
 /// 字段标题只来自插件声明的 labelKey；运行时 labelSource 和 options 描述的是值。

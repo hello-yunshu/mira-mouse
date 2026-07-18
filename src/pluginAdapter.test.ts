@@ -2,7 +2,9 @@
 import { describe, expect, it } from 'vitest';
 import i18n from './i18n';
 import {
+  fieldHasReportedValue,
   resolveFieldLabel,
+  resolveFieldInteraction,
   resolveDetailValueLabel,
   resolveFieldValueLabel,
   resolveFieldMutationParams,
@@ -13,6 +15,7 @@ import {
   resolveStatusField,
   resolveStateMapping,
   resolveSwitchState,
+  resolveSwitchNextValue,
   resolveVisibleWhen,
   resolveZones,
   simulateDemoMutation,
@@ -41,6 +44,27 @@ describe('resolveMutation', () => {
     expect(resolveMutation(['legacy-write', 'preferred-write'], ['preferred-write'])).toBe('preferred-write');
     expect(resolveMutation('preferred-write', ['preferred-write'])).toBe('preferred-write');
     expect(resolveMutation(['legacy-write'], ['preferred-write'])).toBeUndefined();
+  });
+});
+
+describe('fieldHasReportedValue', () => {
+  const numericField: PluginField = {
+    id: 'pointer-speed',
+    source: 'state.pointerSpeed',
+    editor: 'modal-number',
+  };
+
+  it('keeps zero and false readings but rejects missing and empty values', () => {
+    expect(fieldHasReportedValue(numericField, makeDevice({ pointerSpeed: 0 }))).toBe(true);
+    expect(fieldHasReportedValue({ ...numericField, source: 'state.enabled' }, makeDevice({ enabled: false }))).toBe(true);
+    expect(fieldHasReportedValue(numericField, makeDevice())).toBe(false);
+    expect(fieldHasReportedValue(numericField, makeDevice({ pointerSpeed: '' }))).toBe(false);
+  });
+
+  it('keeps action fields without inventing a current reading', () => {
+    expect(fieldHasReportedValue({
+      id: 'reset', source: 'state.unused', editor: 'inline-action',
+    }, makeDevice())).toBe(true);
   });
 });
 
@@ -198,6 +222,50 @@ describe('resolveSwitchState', () => {
     };
     expect(resolveSwitchState(field, makeDevice({ mode: 'breathing' }))).toBe(true);
     expect(resolveSwitchState(field, makeDevice({ mode: 'off' }))).toBe(false);
+  });
+});
+
+describe('resolveFieldInteraction', () => {
+  it('routes fields by their declared editor instead of capability identity', () => {
+    expect(resolveFieldInteraction({ id: 'enabled', source: 'state.enabled', editor: 'inline-toggle' })).toBe('toggle');
+    expect(resolveFieldInteraction({ id: 'run', source: 'state.ready', editor: 'inline-action' })).toBe('action');
+    expect(resolveFieldInteraction({ id: 'color', source: 'state.color', editor: 'modal-color' })).toBe('modal');
+    expect(resolveFieldInteraction({ id: 'mode', source: 'state.mode', editor: 'inline-segmented' })).toBe('control');
+    expect(resolveFieldInteraction({ id: 'stage', source: 'state.stage', editor: 'modal-dpi-stage' })).toBe('control');
+  });
+});
+
+describe('resolveSwitchNextValue', () => {
+  it('toggles a boolean switch from the plugin declaration', () => {
+    const field: PluginField = {
+      id: 'enabled', source: 'state.enabled', editor: 'inline-toggle',
+      switch: { source: 'state.enabled', offValue: false },
+    };
+    expect(resolveSwitchNextValue(field, makeDevice({ enabled: true }))).toBe(false);
+    expect(resolveSwitchNextValue(field, makeDevice({ enabled: false }))).toBe(true);
+  });
+
+  it('restores a remembered enum value and otherwise uses a declared non-off option', () => {
+    const field: PluginField = {
+      id: 'effect', source: 'state.effect', editor: 'inline-toggle',
+      switch: { source: 'state.effect', offValue: 0 },
+      options: [
+        { value: 0, labelKey: 'lighting.off' },
+        { value: 1, labelKey: 'lighting.fixed' },
+        { value: 3, labelKey: 'lighting.cycle' },
+      ],
+    };
+    expect(resolveSwitchNextValue(field, makeDevice({ effect: 0 }), 3)).toBe(3);
+    expect(resolveSwitchNextValue(field, makeDevice({ effect: 0 }))).toBe(1);
+    expect(resolveSwitchNextValue(field, makeDevice({ effect: 3 }))).toBe(0);
+  });
+
+  it('does not invent an enum restore value when the contract has none', () => {
+    const field: PluginField = {
+      id: 'effect', source: 'state.effect', editor: 'inline-toggle',
+      switch: { source: 'state.effect', offValue: 0 },
+    };
+    expect(resolveSwitchNextValue(field, makeDevice({ effect: 0 }))).toBeUndefined();
   });
 });
 

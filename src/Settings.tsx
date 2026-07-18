@@ -782,14 +782,14 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
             )}
           </section>
 
-          <section className="card settings-section">
+          <section className="card settings-section settings-action-card">
             <div className="card-title"><h2>{t('settings.section.config')}</h2></div>
-            <p className="setting-hint">
-              {t('settings.config.hint')}
-            </p>
-            <div className="contact-links align-start">
-              <button className="secondary" onClick={() => void handleExportConfig()} disabled={previewMode}>{t('settings.config.export')}</button>
-              <button className="secondary" onClick={() => void handleImportConfig()} disabled={previewMode}>{t('settings.config.import')}</button>
+            <div className="settings-action-body">
+              <p className="setting-hint">{t('settings.config.hint')}</p>
+              <div className="contact-links align-end">
+                <button className="secondary" onClick={() => void handleExportConfig()} disabled={previewMode}>{t('settings.config.export')}</button>
+                <button className="secondary" onClick={() => void handleImportConfig()} disabled={previewMode}>{t('settings.config.import')}</button>
+              </div>
             </div>
           </section>
         </>
@@ -942,18 +942,24 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
 
       {tab === 'about' && (
         <>
-          <section className="card settings-section">
+          <section className="card settings-section settings-action-card">
             <div className="card-title"><h2>{t('settings.section.about')}</h2></div>
-            <SettingRow title={t('settings.about.label')} hint={t('settings.about.hint')}>
+            <div className="settings-action-body">
+              <div className="setting-label">
+                <strong>{t('settings.about.label')}</strong>
+                <span className="setting-hint">{t('settings.about.hint')}</span>
+              </div>
               <button className="secondary" onClick={onNavigateAbout}>{t('settings.about.button')}</button>
-            </SettingRow>
+            </div>
           </section>
 
-          <section className="card settings-section">
+          <section className="card settings-section settings-action-card logs-card">
             <div className="card-title"><h2>{t('logs.title')}</h2></div>
-            <p className="setting-hint">{t('logs.cardHint')}</p>
-            <p className="setting-hint">{t('logs.cardPrivacy')}</p>
-            <div className="contact-links align-end">
+            <div className="settings-action-body">
+              <div className="settings-action-copy">
+                <p className="setting-hint">{t('logs.cardHint')}</p>
+                <p className="setting-hint">{t('logs.cardPrivacy')}</p>
+              </div>
               <button className="primary" onClick={() => setSubview('logs')}>{t('logs.openButton')}</button>
             </div>
           </section>

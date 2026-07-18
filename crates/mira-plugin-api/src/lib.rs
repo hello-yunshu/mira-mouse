@@ -374,6 +374,15 @@ fn valid_declarative_presentation(capability: &Capability) -> bool {
                             })
                     })
                 })
+                && field.get("switch").is_none_or(|switch| {
+                    switch.as_object().is_some_and(|switch| {
+                        valid_path(switch.get("source"))
+                            && switch.contains_key("offValue")
+                            && switch
+                                .get("restoreField")
+                                .is_none_or(|restore| valid_path(Some(restore)))
+                    })
+                })
         })
     };
     let fields_valid = metadata.get("fields").is_none_or(|fields| {
@@ -408,7 +417,49 @@ fn valid_declarative_presentation(capability: &Capability) -> bool {
     let accent_source_valid = metadata
         .get("accentSource")
         .is_none_or(|source| valid_path(Some(source)));
-    if !fields_valid || !zones_valid || !battery_history_valid || !accent_source_valid {
+    let mut declared_field_ids = BTreeSet::new();
+    if let Some(fields) = metadata.get("fields").and_then(serde_json::Value::as_array) {
+        for field in fields {
+            if let Some(id) = field.get("id").and_then(serde_json::Value::as_str) {
+                declared_field_ids.insert(id);
+            }
+        }
+    }
+    if let Some(zones) = metadata.get("zones").and_then(serde_json::Value::as_array) {
+        for zone in zones {
+            if let Some(fields) = zone.get("fields").and_then(serde_json::Value::as_array) {
+                for field in fields {
+                    if let Some(id) = field.get("id").and_then(serde_json::Value::as_str) {
+                        declared_field_ids.insert(id);
+                    }
+                }
+            }
+        }
+    }
+    let status_display_valid = metadata.get("statusDisplay").is_none_or(|display| {
+        display.as_object().is_some_and(|display| {
+            valid_path(display.get("valueSource"))
+                && display
+                    .get("labelKey")
+                    .is_none_or(|label| valid_path(Some(label)))
+                && display
+                    .get("valueOptions")
+                    .is_none_or(valid_declarative_options)
+                && display.get("valueFormat").is_none_or(valid_value_format)
+                && display.get("onClickField").is_none_or(|field| {
+                    valid_path(Some(field))
+                        && field
+                            .as_str()
+                            .is_some_and(|field| declared_field_ids.contains(field))
+                })
+        })
+    });
+    if !fields_valid
+        || !zones_valid
+        || !battery_history_valid
+        || !accent_source_valid
+        || !status_display_valid
+    {
         return false;
     }
     match capability.control {
@@ -1265,13 +1316,26 @@ mod tests {
             label_key: "capability.lighting".into(),
             read_only: false,
             placements: vec![],
-            metadata: BTreeMap::from([(
-                "zones".into(),
-                serde_json::json!([
-                    {"id": "mouse", "labelKey": "lighting.mouse", "fields": [{"id": "enabled", "source": "capabilities.mouse.enabled", "editor": "inline-toggle", "mutation": ["set-mouse", "set-mouse-legacy"]}]},
-                    {"id": "receiver", "labelKey": "lighting.receiver", "fields": [{"id": "effect", "source": "capabilities.receiver.effect", "editor": "modal-select", "mutation": "set-receiver", "options": [{"value": 0, "labelKey": "lighting.off"}]}]}
-                ]),
-            )]),
+            metadata: BTreeMap::from([
+                (
+                    "zones".into(),
+                    serde_json::json!([
+                        {"id": "mouse", "labelKey": "lighting.mouse", "fields": [{"id": "enabled", "source": "capabilities.mouse.enabled", "editor": "inline-toggle", "mutation": ["set-mouse", "set-mouse-legacy"], "switch": {"source": "capabilities.mouse.enabled", "offValue": false}}]},
+                        {"id": "receiver", "labelKey": "lighting.receiver", "fields": [{"id": "effect", "source": "capabilities.receiver.effect", "editor": "modal-select", "mutation": "set-receiver", "options": [{"value": 0, "labelKey": "lighting.off"}]}]}
+                    ]),
+                ),
+                (
+                    "statusDisplay".into(),
+                    serde_json::json!({
+                        "valueSource": "capabilities.mouse.enabled",
+                        "valueOptions": [
+                            {"value": false, "labelKey": "lighting.off"},
+                            {"value": true, "labelKey": "lighting.on"}
+                        ],
+                        "onClickField": "enabled"
+                    }),
+                ),
+            ]),
             probe: None,
             connections: None,
             min_firmware: None,
@@ -1297,6 +1361,53 @@ mod tests {
             vec!["set-mouse", "set-mouse-legacy"]
         );
         assert_eq!(roles.receiver.unwrap().candidates(), vec!["set-receiver"]);
+    }
+
+    #[test]
+    fn rejects_status_display_that_targets_an_undeclared_field() {
+        let capability = Capability {
+            id: "lighting".into(),
+            control: Control::LightingZone,
+            label_key: "capability.lighting".into(),
+            read_only: false,
+            placements: vec![],
+            metadata: BTreeMap::from([
+                (
+                    "zones".into(),
+                    serde_json::json!([
+                        {"id": "mouse", "labelKey": "lighting.mouse", "fields": [{"id": "enabled", "source": "capabilities.mouse.enabled", "editor": "inline-toggle", "mutation": "set-mouse", "switch": {"source": "capabilities.mouse.enabled", "offValue": false}}]}
+                    ]),
+                ),
+                (
+                    "statusDisplay".into(),
+                    serde_json::json!({
+                        "valueSource": "capabilities.mouse.enabled",
+                        "onClickField": "missing"
+                    }),
+                ),
+            ]),
+            probe: None,
+            connections: None,
+            min_firmware: None,
+        };
+        let manifest = PluginManifest {
+            schema_version: 1,
+            plugin_id: "mira.example".into(),
+            name: "Example".into(),
+            version: "1.0.0".into(),
+            plugin_api: ">=1.0.0, <2.0.0".parse().unwrap(),
+            publisher_key_id: None,
+            evidence: EvidenceLevel::FixtureVerified,
+            permissions: vec![],
+            capabilities: vec![capability],
+            writes_enabled: false,
+            exportable_fields: vec![],
+            depends_on: vec![],
+        };
+        assert_eq!(
+            manifest.validate(),
+            Err(ApiError::CapabilityPresentation("lighting".into()))
+        );
     }
 
     #[test]

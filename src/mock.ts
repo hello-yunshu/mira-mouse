@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Explicit test/development boundary. Production must obtain snapshots from Tauri commands.
-import type { BatteryHistoryResponse, BatteryHistoryRange, DeviceSnapshot, DeviceSnapshotEntry, DeviceState, DpiStage, PluginFieldOption } from './types';
+import type { BatteryHistoryResponse, BatteryHistoryRange, DeviceSnapshot, DeviceSnapshotEntry, DeviceState, DpiStage, PluginCapability, PluginFieldOption } from './types';
 import { DEFAULT_THEME_ACCENT } from './theme';
 
 // ─── 共享常量 ────────────────────────────────────────────────────────────────
@@ -251,6 +251,26 @@ function mockSnapshot(overrides: Partial<DeviceSnapshot> = {}): DeviceSnapshot {
   };
 }
 
+const MOCK_CONTROL_MODE_CAPABILITY: PluginCapability = {
+  id: 'control-mode',
+  control: 'Segmented',
+  labelKey: '配置控制',
+  readOnly: false,
+  placements: [{ region: 'control', group: 'configuration', order: 5, span: 1, icon: 'settings' }],
+  metadata: {
+    fields: [{
+      id: 'mode',
+      source: 'state.controlMode',
+      mutation: 'set-control-mode',
+      param: 'mode',
+      editor: 'inline-segmented',
+      labelKey: '配置控制',
+      options: [{ value: 1, labelKey: '板载' }, { value: 2, labelKey: '软件' }],
+    }],
+    stateMapping: { controlMode: 'capabilities.controlMode.mode' },
+  },
+};
+
 export const MOCK_DEVICE_ENTRIES: DeviceSnapshotEntry[] = [
   {
     deviceKey: 'demo-wireless',
@@ -276,6 +296,7 @@ export const MOCK_DEVICE_ENTRIES: DeviceSnapshotEntry[] = [
       confirmedLightColor: '#8fc7b8',
       capabilities: {
         ...MOCK_DEVICE.capabilities,
+        controlMode: { mode: 1, modeName: 'onboard' },
         battery: { percentage: 96, charging: true, valid: true },
         dpi: {
           profile: 1,
@@ -302,6 +323,8 @@ export const MOCK_DEVICE_ENTRIES: DeviceSnapshotEntry[] = [
           color: MOCK_RECEIVER_LIGHT_COLOR,
         },
       },
+      pluginCapabilities: [...MOCK_DEVICE.pluginCapabilities, MOCK_CONTROL_MODE_CAPABILITY],
+      writableMutations: [...MOCK_DEVICE.writableMutations, 'set-control-mode'],
     }),
   },
 ];

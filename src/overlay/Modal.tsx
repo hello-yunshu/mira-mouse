@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { useEffect, useId, useLayoutEffect, useRef } from 'react';
+import { useEffect, useLayoutEffect, useRef } from 'react';
 import type { ReactNode } from 'react';
 import { OverlayPortal } from './OverlayPortal';
 import { openModalLayer } from './overlayStack';
@@ -8,7 +8,7 @@ export type ModalSize = 'small' | 'medium' | 'large';
 
 interface ModalProps {
   open: boolean;
-  /// 无障碍标题。提供时通过 aria-labelledby 关联到 sr-only 标题。
+  /// 无障碍标题。可见标题由业务内容自己渲染，避免同一标题出现两次。
   title?: string;
   /// 无 title 时的 aria-label。
   ariaLabel?: string;
@@ -56,7 +56,6 @@ export function Modal({
   onClose,
   children,
 }: ModalProps) {
-  const titleId = useId();
   const dialogRef = useRef<HTMLDivElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
 
@@ -164,15 +163,9 @@ export function Modal({
           className={['modal-surface', className].filter(Boolean).join(' ')}
           role="dialog"
           aria-modal="true"
-          aria-labelledby={title ? titleId : undefined}
-          aria-label={!title ? ariaLabel : undefined}
+          aria-label={title ?? ariaLabel}
           tabIndex={-1}
         >
-          {title && (
-            <span id={titleId} className="sr-only">
-              {title}
-            </span>
-          )}
           {children}
         </div>
       </div>
