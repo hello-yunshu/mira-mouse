@@ -47,7 +47,7 @@
     ],
     "resources": [
       "resources/plugins/mira-amaster-1.6.5.mira-plugin",
-      "resources/plugins/mira-logitech-hidpp-0.8.1.mira-plugin",
+      "resources/plugins/mira-logitech-hidpp-0.8.2.mira-plugin",
       "resources/local-ai/model.rillpack",
       "resources/local-ai/handler.rillhandler"
     ],
