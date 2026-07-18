@@ -126,6 +126,7 @@ describe('Overlay 架构集成', () => {
 
   it('BatteryUsageModal 渲染到 #mira-overlay-root', async () => {
     const { rootDiv } = await enterDemoMode();
+    fireEvent.click(document.querySelector('.battery-state') as HTMLButtonElement);
     fireEvent.click(screen.getByRole('button', { name: '查看用电趋势' }));
 
     const dialog = await screen.findByRole('dialog');
@@ -133,5 +134,16 @@ describe('Overlay 架构集成', () => {
     expect(overlayRoot).not.toBeNull();
     expect(overlayRoot?.contains(dialog)).toBe(true);
     expect(rootDiv.contains(dialog)).toBe(false);
+  });
+
+  it('首页电量 popover 渲染到 #mira-overlay-root，避免 DPI 合成层穿透', async () => {
+    const { rootDiv } = await enterDemoMode();
+    fireEvent.click(document.querySelector('.battery-state') as HTMLButtonElement);
+
+    const popover = await screen.findByRole('region', { name: '设备电量' });
+    const overlayRoot = document.getElementById(OVERLAY_ROOT_ID);
+    expect(overlayRoot).not.toBeNull();
+    expect(overlayRoot?.contains(popover)).toBe(true);
+    expect(rootDiv.contains(popover)).toBe(false);
   });
 });

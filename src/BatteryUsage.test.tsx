@@ -324,6 +324,39 @@ describe('BatteryUsageModal', () => {
     }
   });
 
+  it('only offers currently connected battery targets in the device switcher', async () => {
+    const historicalOnlyDevice = {
+      ...MOCK_BATTERY_HISTORY_24H.devices[0],
+      key: 'mouse:old-device:mouse',
+      deviceId: 'old-device',
+      deviceName: 'Old Offline Mouse',
+      latestPercentage: 55,
+    };
+    mockInvoke({
+      response: {
+        ...MOCK_BATTERY_HISTORY_24H,
+        devices: [...MOCK_BATTERY_HISTORY_24H.devices, historicalOnlyDevice],
+      },
+    });
+
+    render(
+      <BatteryUsageModal
+        open
+        onClose={() => {}}
+        hasBattery
+        connectedTargets={[
+          { deviceName: 'Mira Example Wireless Mouse', componentId: 'mouse' },
+          { deviceName: 'Mira Example Wireless Mouse', componentId: 'receiver' },
+        ]}
+      />,
+    );
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('battery_history_get', { range: '24h' }));
+
+    fireEvent.click(screen.getByRole('button', { name: '切换设备' }));
+    expect(screen.getAllByRole('menuitemradio')).toHaveLength(2);
+    expect(screen.queryByRole('menuitemradio', { name: /Old Offline Mouse/ })).toBeNull();
+  });
+
   it('falls back to an available device when a refreshed range drops the selection', async () => {
     const tenDayWithoutReceiver: BatteryHistoryResponse = {
       ...MOCK_BATTERY_HISTORY_10D,

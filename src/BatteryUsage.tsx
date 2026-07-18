@@ -807,12 +807,22 @@ export interface BatteryUsageModalProps {
   hasBattery: boolean;
   batteryHistoryEnabled?: boolean;
   aiAnalysisEnabled?: boolean;
+  connectedTargets?: readonly BatteryUsageConnectedTarget[];
   preferredDeviceName?: string;
   preferredComponentId?: string;
 }
 
+export interface BatteryUsageConnectedTarget {
+  deviceName: string;
+  componentId: string;
+}
+
 function normalizedDeviceName(value: string | undefined): string {
   return value?.trim().replace(/\s+/g, ' ').toLocaleLowerCase() ?? '';
+}
+
+function batteryUsageTargetKey(deviceName: string, componentId: string): string {
+  return `${normalizedDeviceName(deviceName)}\u0000${componentId}`;
 }
 
 export function BatteryUsageModal({
@@ -821,6 +831,7 @@ export function BatteryUsageModal({
   hasBattery,
   batteryHistoryEnabled: providedHistoryEnabled,
   aiAnalysisEnabled: providedAiAnalysisEnabled,
+  connectedTargets,
   preferredDeviceName,
   preferredComponentId,
 }: BatteryUsageModalProps) {
@@ -882,30 +893,43 @@ export function BatteryUsageModal({
   // 手动刷新（清除后调用）
   const loadData = useCallback(() => setReloadNonce((n) => n + 1), []);
 
+  // 历史响应继续保留完整数据；设备切换器只投影当前连接快照中的电量组件。
+  // 未提供 connectedTargets 时保持组件的独立使用兼容性（例如单元测试和故事页）。
+  const selectableDevices = useMemo(() => {
+    const historyDevices = response?.devices ?? [];
+    if (connectedTargets === undefined) return historyDevices;
+    const connectedKeys = new Set(
+      connectedTargets.map((target) => batteryUsageTargetKey(target.deviceName, target.componentId)),
+    );
+    return historyDevices.filter((device) => (
+      connectedKeys.has(batteryUsageTargetKey(device.deviceName, device.componentId))
+    ));
+  }, [connectedTargets, response]);
+
   // 每次打开时，优先定位 Dashboard 当前鼠标的历史记录；手动切换仍保持优先。
   const preferredDeviceKey = useMemo(() => {
     const deviceName = normalizedDeviceName(preferredDeviceName);
     if (!deviceName) return '';
-    const matchingDevices = response?.devices.filter(
+    const matchingDevices = selectableDevices.filter(
       (device) => normalizedDeviceName(device.deviceName) === deviceName,
-    ) ?? [];
+    );
     return matchingDevices.find((device) => device.componentId === preferredComponentId)?.key
       ?? matchingDevices[0]?.key
       ?? '';
-  }, [response, preferredDeviceName, preferredComponentId]);
+  }, [selectableDevices, preferredDeviceName, preferredComponentId]);
 
   // 未显式选择时，定位当前鼠标；没有匹配的旧记录时才回退到第一个。
   // 不让旧范围中的选择键拖垮整个切换器：某台设备在新响应里暂时缺席时，
   // 立即回退到当前鼠标或第一个可用记录。
-  const selectedDeviceAvailable = response?.devices.some((device) => device.key === selectedDeviceKey) ?? false;
+  const selectedDeviceAvailable = selectableDevices.some((device) => device.key === selectedDeviceKey);
   const effectiveDeviceKey = (selectedDeviceAvailable ? selectedDeviceKey : '')
     || preferredDeviceKey
-    || response?.devices[0]?.key
+    || selectableDevices[0]?.key
     || '';
 
   const selectedDevice = useMemo(
-    () => response?.devices.find((d) => d.key === effectiveDeviceKey),
-    [response, effectiveDeviceKey],
+    () => selectableDevices.find((device) => device.key === effectiveDeviceKey),
+    [selectableDevices, effectiveDeviceKey],
   );
 
   const selectedSeries = useMemo(
@@ -1061,7 +1085,7 @@ export function BatteryUsageModal({
         {/* 滚动区域：内容超出时仅此区域滚动 */}
         <div className="battery-usage-scroll-region">
           {/* 无数据空状态 */}
-          {!loading && (!response || response.devices.length === 0) ? (
+          {!loading && (!response || selectableDevices.length === 0) ? (
             <BatteryHistoryEmptyState onClose={onClose} />
           ) : (
             <>
@@ -1097,7 +1121,7 @@ export function BatteryUsageModal({
               {/* 设备状态条：多设备时点击可切换 */}
               <BatteryUsageStatusStrip
                 device={selectedDevice}
-                devices={response?.devices ?? []}
+                devices={selectableDevices}
                 insights={selectedInsights}
                 onSelectDevice={setSelectedDeviceKey}
               />

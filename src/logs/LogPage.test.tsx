@@ -363,6 +363,22 @@ describe('LogPage toolbar and dialogs', () => {
     expect(payload.split('\n').length).toBe(1);
   });
 
+  it('keeps newest entries above older entries', async () => {
+    const entries: LogEntry[] = [
+      { id: 3, timestamp: '2026-07-17T10:00:03+08:00', level: 'info', source: 'app', target: 'm', message: 'newest', sessionId: 's1', fields: {} },
+      { id: 2, timestamp: '2026-07-17T10:00:02+08:00', level: 'info', source: 'app', target: 'm', message: 'middle', sessionId: 's1', fields: {} },
+      { id: 1, timestamp: '2026-07-17T10:00:01+08:00', level: 'info', source: 'app', target: 'm', message: 'oldest', sessionId: 's1', fields: {} },
+    ];
+    invokeMock.mockImplementation(makeInvokeImpl({ entries }));
+
+    renderLogPage();
+    await screen.findByText('newest');
+    const summaries = [...document.querySelectorAll('.log-entry-summary')].map((node) => node.textContent);
+    expect(summaries[0]).toContain('newest');
+    expect(summaries[1]).toContain('middle');
+    expect(summaries[2]).toContain('oldest');
+  });
+
   it('does not list frontend as a top-level source filter option', async () => {
     renderLogPage();
     const sourceSelect = await screen.findByRole('combobox', { name: '来源' }) as HTMLSelectElement;
@@ -391,6 +407,8 @@ describe('LogPage toolbar and dialogs', () => {
 
     const dialog = await screen.findByRole('dialog', { name: '删除本地日志' });
     expect(dialog).toHaveAttribute('aria-modal', 'true');
+    expect(within(dialog).getAllByText('删除本地日志')).toHaveLength(1);
+    expect(within(dialog).getByRole('heading', { name: '删除本地日志' })).toBeInTheDocument();
     const cancelButton = within(dialog).getByRole('button', { name: '取消' });
     // Modal 通过 requestAnimationFrame 把焦点移入弹窗；等待 rAF 执行后再断言。
     await act(async () => {
@@ -435,7 +453,7 @@ describe('LogPage toolbar and dialogs', () => {
     expect(screen.getByText('paused-2')).toBeInTheDocument();
   });
 
-  it('does not force-scroll to the bottom when the user has scrolled up', async () => {
+  it('does not force-scroll to the top when the user is reading older logs', async () => {
     const makeEntry = (id: number): LogEntry => ({
       id, timestamp: `2026-07-17T10:00:0${id}+08:00`, level: 'info', source: 'app',
       target: 'm', message: `scroll-msg-${id}`, sessionId: 's1', fields: {},
@@ -453,12 +471,11 @@ describe('LogPage toolbar and dialogs', () => {
 
     const scrollEl = container.querySelector('.log-page') as HTMLElement;
     expect(scrollEl).toBeTruthy();
-    // 模拟用户向上滚动（远离底部）：scrollHeight=1000, clientHeight=200, scrollTop=0
-    // → checkAtBottom = 1000 - 0 - 200 = 800 > 24 → atBottom=false
+    // 模拟用户向下滚动查看旧日志：scrollTop=400 > 24 → atTop=false
     Object.defineProperties(scrollEl, {
       scrollHeight: { configurable: true, value: 1000 },
       clientHeight: { configurable: true, value: 200 },
-      scrollTop: { configurable: true, value: 0, writable: true },
+      scrollTop: { configurable: true, value: 400, writable: true },
     });
     fireEvent.scroll(scrollEl);
 
@@ -468,8 +485,8 @@ describe('LogPage toolbar and dialogs', () => {
     });
     await screen.findByText('scroll-msg-2');
 
-    // 用户在顶部时，新日志到达不应强制把 scrollTop 拉到底部
-    expect(scrollEl.scrollTop).toBe(0);
+    // 用户查看旧日志时，新日志到达不应强制把 scrollTop 拉回顶部
+    expect(scrollEl.scrollTop).toBe(400);
   });
 
   it('unsubscribes the batch listener on unmount', async () => {
@@ -551,12 +568,11 @@ describe('LogPage toolbar and dialogs', () => {
 
     const scrollEl = container.querySelector('.log-page') as HTMLElement;
     expect(scrollEl).toBeTruthy();
-    // 模拟用户向上滚动（远离底部）：scrollHeight=1000, clientHeight=200, scrollTop=0
-    // → checkAtBottom = 1000 - 0 - 200 = 800 > 24 → atBottom=false
+    // 模拟用户向下滚动查看旧日志：scrollTop=400 > 24 → atTop=false
     Object.defineProperties(scrollEl, {
       scrollHeight: { configurable: true, value: 1000 },
       clientHeight: { configurable: true, value: 200 },
-      scrollTop: { configurable: true, value: 0, writable: true },
+      scrollTop: { configurable: true, value: 400, writable: true },
     });
     fireEvent.scroll(scrollEl);
 

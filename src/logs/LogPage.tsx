@@ -188,7 +188,7 @@ function LoadMoreFooter({ hasMore, onLoadMore, loading }: { hasMore: boolean; on
   );
 }
 
-/** 日志列表：纯展示组件，滚动逻辑（自动跟随 / atBottom 检测 / 信号跳转）由 LogPage 统一管理。 */
+/** 日志列表：纯展示组件，滚动逻辑（自动跟随 / atTop 检测 / 信号跳转）由 LogPage 统一管理。 */
 function LogList({
   entries,
   hasMore,
@@ -204,13 +204,13 @@ function LogList({
   return (
     <div className="log-list-wrapper">
       <div className="log-list">
-        {/* 加载更旧日志的入口放在顶部：列表为「最旧在上、最新在下」的会话式顺序。 */}
-        <LoadMoreFooter hasMore={hasMore} onLoadMore={onLoadMore} loading={loading} />
         {entries.length === 0 ? (
           <p className="log-list-empty">{loading ? t('logs.list.loading') : t('logs.list.empty')}</p>
         ) : (
           entries.map((entry) => <LogEntryRow key={entry.id} entry={entry} onCopy={() => undefined} />)
         )}
+        {/* 列表按最新到最旧排列，所以加载更旧记录的入口留在底部。 */}
+        <LoadMoreFooter hasMore={hasMore} onLoadMore={onLoadMore} loading={loading} />
       </div>
     </div>
   );
@@ -410,6 +410,7 @@ function DeleteConfirmDialog({ state, onClose, onConfirm }: {
   return (
     <Modal open={true} title={t('logs.delete.confirmTitle')} size="small"
       className="edit-modal log-confirm-dialog" backdropClassName="edit-modal-backdrop" onClose={onClose}>
+      <header><h3>{t('logs.delete.confirmTitle')}</h3></header>
       <div className="edit-modal-body">
         <p className="setting-hint">{t('logs.delete.confirmHint')}</p>
         <p className="setting-hint"><strong>{state.label}</strong></p>
@@ -440,6 +441,7 @@ function DiagnosticStartDialog({ state, onClose, onConfirm }: {
   return (
     <Modal open={true} title={t('logs.diagnostic.startTitle')} size="small"
       className="edit-modal" backdropClassName="edit-modal-backdrop" onClose={onClose}>
+      <header><h3>{t('logs.diagnostic.startTitle')}</h3></header>
       <div className="edit-modal-body">
         <p className="setting-hint">{t('logs.diagnostic.startHint')}</p>
         <label className="edit-field">
@@ -514,59 +516,58 @@ export function LogPage({ onBack }: { onBack: () => void }) {
   const [follow, setFollow] = useState(true);
   const [paused, setPaused] = useState(false);
   const [newCount, setNewCount] = useState(0);
-  /** 强制滚动到底部的信号（跳转最新 / 恢复暂停时自增）。 */
+  /** 强制滚动到顶部的信号（跳转最新 / 恢复暂停时自增）。 */
   const [scrollSignal, setScrollSignal] = useState(0);
-  /** 用户是否停留在页面底部（滚动检测由 LogPage 自身管理）。 */
-  const [atBottom, setAtBottom] = useState(true);
-  const atBottomRef = useRef(true);
-  useEffect(() => { atBottomRef.current = atBottom; }, [atBottom]);
+  /** 用户是否停留在页面顶部（最新日志所在位置）。 */
+  const [atTop, setAtTop] = useState(true);
+  const atTopRef = useRef(true);
+  useEffect(() => { atTopRef.current = atTop; }, [atTop]);
 
-  /** 页面级滚动容器 ref（挂在 <main> 上）。滚动跟随 / atBottom 检测均基于此 ref。 */
+  /** 页面级滚动容器 ref（挂在 <main> 上）。滚动跟随 / atTop 检测均基于此 ref。 */
   const scrollRef = useRef<HTMLElement>(null);
 
-  /** 检测当前是否在底部附近。 */
-  const checkAtBottom = useCallback(() => {
+  /** 检测当前是否在顶部附近。 */
+  const checkAtTop = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return true;
-    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
-    return distance <= FOLLOW_THRESHOLD_PX;
+    return el.scrollTop <= FOLLOW_THRESHOLD_PX;
   }, []);
 
-  /** 滚动到底部。 */
-  const scrollToBottom = useCallback(() => {
+  /** 滚动到最新日志所在的顶部。 */
+  const scrollToTop = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
-    el.scrollTop = el.scrollHeight;
+    el.scrollTop = 0;
   }, []);
 
-  // 自动跟随：新日志到达时若用户在底部且未暂停 + follow 开启，自动滚动。
+  // 自动跟随：新日志到达时若用户在顶部且未暂停 + follow 开启，保持在顶部。
   useEffect(() => {
     if (paused || !follow) return;
-    if (!atBottom) return;
-    scrollToBottom();
-  }, [entries.length, paused, follow, atBottom, scrollToBottom]);
+    if (!atTop) return;
+    scrollToTop();
+  }, [entries.length, paused, follow, atTop, scrollToTop]);
 
-  // 强制滚动信号：跳转最新 / 恢复暂停时滚到底部。
+  // 强制滚动信号：跳转最新 / 恢复暂停时滚到顶部。
   useEffect(() => {
     if (scrollSignal === 0) return;
-    scrollToBottom();
+    scrollToTop();
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setAtBottom(true);
-  }, [scrollSignal, scrollToBottom]);
+    setAtTop(true);
+  }, [scrollSignal, scrollToTop]);
 
-  // 监听页面滚动，更新 atBottom 状态
+  // 监听页面滚动，更新 atTop 状态
   const handleScroll = useCallback(() => {
-    const next = checkAtBottom();
-    setAtBottom(next);
-  }, [checkAtBottom]);
+    const next = checkAtTop();
+    setAtTop(next);
+  }, [checkAtTop]);
 
-  // 初次加载时滚到底
+  // 初次加载时停在最新日志所在的顶部
   useEffect(() => {
-    scrollToBottom();
-    // 初始挂载后将状态同步为「已在底部」。这是同步滚动后的副作用，不会造成级联渲染。
+    scrollToTop();
+    // 初始挂载后将状态同步为「已在顶部」。这是同步滚动后的副作用，不会造成级联渲染。
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setAtBottom(true);
-  }, [scrollToBottom]);
+    setAtTop(true);
+  }, [scrollToTop]);
 
   const [status, setStatus] = useState<LogStatus | null>(null);
   const [oldestId, setOldestId] = useState<number | null>(null);
@@ -626,9 +627,8 @@ export function LogPage({ onBack }: { onBack: () => void }) {
     clientRef.current.query(initialQuery)
       .then((page: LogPageData) => {
         if (cancelled) return;
-        // 后端返回最新在前（newest→oldest）；列表采用会话式顺序（最旧在上、最新在下），
-        // 因此反转为最旧在前后再截断到展示窗口。
-        setEntries(page.entries.slice(0, MAX_VIEW_ENTRIES).reverse());
+        // 后端已返回最新→最旧，直接保留这一顺序。
+        setEntries(page.entries.slice(0, MAX_VIEW_ENTRIES));
         setHasMore(page.hasMore);
         setOldestId(page.oldestId);
         setError('');
@@ -657,11 +657,8 @@ export function LogPage({ onBack }: { onBack: () => void }) {
       pendingBatchRef.current = [];
       if (batch.length === 0) return;
       setEntries((prev) => {
-        const next = [...prev, ...batch];
-        if (next.length > MAX_VIEW_ENTRIES) {
-          return next.slice(next.length - MAX_VIEW_ENTRIES);
-        }
-        return next;
+        // emitter 批次按产生时间（旧→新）到达；反转后前插，保持最新在上。
+        return [...batch.slice().reverse(), ...prev].slice(0, MAX_VIEW_ENTRIES);
       });
       // 更新状态中的 bufferCount
       void refreshStatus();
@@ -687,12 +684,12 @@ export function LogPage({ onBack }: { onBack: () => void }) {
         return;
       }
 
-      // 非暂停：日志进入列表（flush），但若用户不在底部则计数提示
+      // 非暂停：日志进入列表（flush），但若用户不在顶部则计数提示
       pendingBatchRef.current.push(...filtered);
       if (flushTimerRef.current === null) {
         flushTimerRef.current = setTimeout(flush, BATCH_FLUSH_MS);
       }
-      if (!atBottomRef.current) {
+      if (!atTopRef.current) {
         // 用户在阅读历史，不强制滚动，显示徽章
         setNewCount((n) => n + filtered.length);
       }
@@ -725,7 +722,7 @@ export function LogPage({ onBack }: { onBack: () => void }) {
     setLoading(true);
     try {
       const page = await clientRef.current.query(query);
-      setEntries(page.entries.slice(0, MAX_VIEW_ENTRIES).reverse());
+      setEntries(page.entries.slice(0, MAX_VIEW_ENTRIES));
       setHasMore(page.hasMore);
       setOldestId(page.oldestId);
       setNewCount(0);
@@ -746,7 +743,7 @@ export function LogPage({ onBack }: { onBack: () => void }) {
     clientRef.current.query(query)
       .then((page) => {
         if (cancelled) return;
-        setEntries(page.entries.slice(0, MAX_VIEW_ENTRIES).reverse());
+        setEntries(page.entries.slice(0, MAX_VIEW_ENTRIES));
         setHasMore(page.hasMore);
         setOldestId(page.oldestId);
         setNewCount(0);
@@ -773,7 +770,7 @@ export function LogPage({ onBack }: { onBack: () => void }) {
       clientRef.current.query(query)
         .then((page) => {
           if (cancelled) return;
-          setEntries(page.entries.slice(0, MAX_VIEW_ENTRIES).reverse());
+          setEntries(page.entries.slice(0, MAX_VIEW_ENTRIES));
           setHasMore(page.hasMore);
           setOldestId(page.oldestId);
           setNewCount(0);
@@ -791,9 +788,8 @@ export function LogPage({ onBack }: { onBack: () => void }) {
     try {
       const query = buildQuery(sourceFilter, minLevel, keyword, oldestId);
       const page = await clientRef.current.query(query);
-      // page.entries 为最新→最旧；反转成最旧→最新后前插，保持列表「最旧在上」的顺序。
-      // 截断保留最新的一屏（slice(-MAX)），与实时刷新的窗口策略一致。
-      setEntries((prev) => [...page.entries.slice().reverse(), ...prev].slice(-MAX_VIEW_ENTRIES));
+      // page.entries 为更旧一页的最新→最旧；追加到底部，保持最新在上。
+      setEntries((prev) => [...prev, ...page.entries].slice(0, MAX_VIEW_ENTRIES));
       setHasMore(page.hasMore);
       setOldestId(page.oldestId);
     } catch (err) {
@@ -803,18 +799,17 @@ export function LogPage({ onBack }: { onBack: () => void }) {
     }
   }, [oldestId, loading, sourceFilter, minLevel, keyword]);
 
-  /** 跳到最新：合并暂停期间累计的日志并强制滚动到底部。 */
+  /** 跳到最新：合并暂停期间累计的日志并强制滚动到顶部。 */
   const jumpToNewest = useCallback(() => {
     if (pendingBatchRef.current.length > 0) {
       const pending = pendingBatchRef.current;
       pendingBatchRef.current = [];
       setEntries((prev) => {
-        const next = [...prev, ...pending];
-        return next.length > MAX_VIEW_ENTRIES ? next.slice(next.length - MAX_VIEW_ENTRIES) : next;
+        return [...pending.slice().reverse(), ...prev].slice(0, MAX_VIEW_ENTRIES);
       });
     }
     setNewCount(0);
-    // 强制滚动到底部：之前未滚动，导致点击「N 条新日志」后视图仍停在旧位置。
+    // 强制滚动到顶部，展示刚合并的最新日志。
     setScrollSignal((n) => n + 1);
     // 点击徽章表示用户想看新日志：若处于暂停则恢复自动刷新
     if (pausedRef.current) {
@@ -1045,17 +1040,17 @@ export function LogPage({ onBack }: { onBack: () => void }) {
         onDiagnosticStart={startDiagnostic}
         onDiagnosticStop={stopDiagnostic}
       />
+      {follow && newCount > 0 && (
+        <button type="button" className="log-new-count" onClick={jumpToNewest}>
+          {t('logs.list.newCount', { count: newCount })}
+        </button>
+      )}
       <LogList
         entries={entries}
         hasMore={hasMore}
         loading={loading}
         onLoadMore={loadMore}
       />
-      {follow && newCount > 0 && (
-        <button type="button" className="log-new-count" onClick={jumpToNewest}>
-          {t('logs.list.newCount', { count: newCount })}
-        </button>
-      )}
       <DeleteConfirmDialog state={deleteDialog} onClose={() => setDeleteDialog({ open: false })} onConfirm={confirmDelete} />
       <DiagnosticStartDialog
         state={diagnosticDialog}

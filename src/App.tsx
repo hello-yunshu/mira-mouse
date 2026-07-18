@@ -13,8 +13,8 @@ import {
   Minus,
   ReadCvLogo,
   SignOut,
+  SlidersHorizontal,
   Timer,
-  UserCircle,
   WaveSine,
   X,
 } from '@phosphor-icons/react';
@@ -24,14 +24,16 @@ import { applyTheme, pastelDisplayColor } from './theme';
 import i18n, { applyLanguage, loadPluginLocales, resolveLabelKey } from './i18n';
 import { SettingsPage } from './Settings';
 import { AboutPage } from './About';
-import { BatteryUsageModal } from './BatteryUsage';
+import { BatteryUsageModal, type BatteryUsageConnectedTarget } from './BatteryUsage';
 import { BatteryLevelIcon } from './BatteryLevelIcon';
 import type { AboutInfo, AppSettings, DeviceSnapshot, DeviceSnapshotEntry, DeviceState, DpiStage, PluginCapability, PluginCapabilityPlacement, PluginField, PluginFieldFormat, RangeSpec, ThemeMode } from './types';
 import {
   MAX_CONTROL_GROUPS,
   MAX_STATUS_ITEMS,
+  fieldHasReportedValue,
   readPath,
   resolveDetailValueLabel,
+  resolveFieldInteraction,
   resolveFieldMutationParams,
   resolveFieldParams,
   resolveMutation,
@@ -44,6 +46,7 @@ import {
   resolveStatusField,
   resolveStatusDisplay,
   resolveSwitchState,
+  resolveSwitchNextValue,
   resolveVisibleWhen,
   resolveZones,
   simulateDemoMutation,
@@ -58,6 +61,26 @@ import './styles.css';
 
 type View = 'dashboard' | 'settings' | 'about';
 type ControlMode = string;
+
+type ControlPageKind = 'dpi' | 'segmented' | 'standard';
+
+type ControlStageTransition = {
+  id: number;
+  fromMode: string;
+  fromKind: ControlPageKind;
+  fromCapabilities: PluginCapability[];
+  preserveOutgoing: boolean;
+  toMode: string;
+  toKind: ControlPageKind;
+};
+
+function controlPageKind(capabilities: PluginCapability[]): ControlPageKind {
+  if (capabilities.some((capability) => Boolean(resolveStageLayout(capability)))) return 'dpi';
+  if (capabilities.some((capability) => (
+    (capability.metadata.fields ?? []).some((field) => field.editor === 'inline-segmented')
+  ))) return 'segmented';
+  return 'standard';
+}
 
 function isWindowsPlatform(): boolean {
   const previewPlatform = new URLSearchParams(window.location.search).get('platform');
@@ -217,13 +240,108 @@ type MetricFlipValue = {
   variant: SharedControlMetric['variant'];
 };
 
+type MetricDigitFlip = {
+  targetText: string;
+  targetLength: number;
+  duration: number;
+  slots: Array<{
+    position: number;
+    frames: Array<{
+      character: string;
+      delay: number;
+      kind: 'static' | 'initial' | 'cycle' | 'final';
+      terminal?: boolean;
+    }>;
+  }>;
+};
+
+const METRIC_DIGIT_STAGGER = 42;
+const METRIC_DIGIT_STEP = 52;
+const METRIC_DIGIT_FINAL_DURATION = 92;
+
+function metricDigitFlip(fromText: string, targetText: string): MetricDigitFlip | undefined {
+  if (!/^\d+$/.test(fromText) || !/^\d+$/.test(targetText)) return undefined;
+
+  const slotCount = Math.max(fromText.length, targetText.length);
+  const targetLength = targetText.length;
+  const leadingSlots = slotCount - targetLength;
+  const fromDigits = fromText.padStart(slotCount, ' ');
+  const targetDigits = targetText.padStart(slotCount, ' ');
+  const slots: MetricDigitFlip['slots'] = Array.from({ length: slotCount }, (_, index) => {
+    const fromCharacter = fromDigits[index];
+    const targetCharacter = targetDigits[index];
+    const baseDelay = index * METRIC_DIGIT_STAGGER;
+
+    if (fromCharacter === targetCharacter) {
+      return {
+        position: index - leadingSlots,
+        frames: [{ character: targetCharacter, delay: baseDelay, kind: 'static' }],
+      };
+    }
+
+    let intermediateCharacters: string[];
+    if (fromCharacter === ' ') {
+      const targetDigit = Number(targetCharacter);
+      intermediateCharacters = Array.from({ length: targetDigit }, (_, step) => String(step));
+    } else if (targetCharacter === ' ') {
+      const fromDigit = Number(fromCharacter);
+      intermediateCharacters = Array.from({ length: fromDigit }, (_, step) => String(fromDigit - step - 1));
+    } else {
+      const fromDigit = Number(fromCharacter);
+      const targetDigit = Number(targetCharacter);
+      const direction = targetDigit > fromDigit ? 1 : -1;
+      intermediateCharacters = Array.from(
+        { length: Math.max(0, Math.abs(targetDigit - fromDigit) - 1) },
+        (_, step) => String(fromDigit + direction * (step + 1)),
+      );
+    }
+
+    return {
+      position: index - leadingSlots,
+      frames: [
+        { character: fromCharacter, delay: baseDelay, kind: 'initial' },
+        ...intermediateCharacters.map((character, frameIndex) => ({
+          character,
+          delay: baseDelay + (frameIndex + 1) * METRIC_DIGIT_STEP,
+          kind: 'cycle' as const,
+        })),
+        {
+          character: targetCharacter,
+          delay: baseDelay + (intermediateCharacters.length + 1) * METRIC_DIGIT_STEP,
+          kind: 'final' as const,
+        },
+      ],
+    };
+  });
+
+  let terminalFrame: MetricDigitFlip['slots'][number]['frames'][number] | undefined;
+  for (const slot of slots) {
+    const finalFrame = slot.frames.find((frame) => frame.kind === 'final');
+    if (finalFrame && (!terminalFrame || finalFrame.delay >= terminalFrame.delay)) {
+      terminalFrame = finalFrame;
+    }
+  }
+  if (terminalFrame) terminalFrame.terminal = true;
+
+  return {
+    targetText,
+    targetLength,
+    duration: (terminalFrame?.delay ?? 0) + METRIC_DIGIT_FINAL_DURATION,
+    slots,
+  };
+}
+
+function metricDigitFlipDuration(fromText: string, targetText: string): number | undefined {
+  return metricDigitFlip(fromText, targetText)?.duration;
+}
+
 function MorphingMetricValue({
   active,
   contextKey,
   text,
   unit,
   variant,
-  duration = 280,
+  duration = 320,
 }: MetricFlipValue & { active: boolean; duration?: number }) {
   const [currentValue, setCurrentValue] = useState<MetricFlipValue>(() => ({
     contextKey,
@@ -234,27 +352,47 @@ function MorphingMetricValue({
   const [nextValue, setNextValue] = useState<MetricFlipValue>();
   const [transitioning, setTransitioning] = useState(false);
   const [transitionKind, setTransitionKind] = useState<'crossfade' | 'flip'>('crossfade');
+  const currentValueRef = useRef(currentValue);
+  const transitionIdRef = useRef(0);
 
   useEffect(() => {
-    if (!active) return;
-    if (
-      text === currentValue.text
-      && unit === currentValue.unit
-      && variant === currentValue.variant
-      && contextKey === currentValue.contextKey
-    ) return;
-
+    const transitionId = transitionIdRef.current + 1;
+    transitionIdRef.current = transitionId;
     let transitionFrame = 0;
     let commitFrame = 0;
     let timeout = 0;
+    let resetFrame = 0;
+    const displayedValue = currentValueRef.current;
     const incomingValue = {
       contextKey,
       text,
       unit,
       variant,
     };
-    const incomingTransitionKind = contextKey === currentValue.contextKey ? 'flip' : 'crossfade';
-    const transitionDuration = incomingTransitionKind === 'crossfade' ? 360 : duration;
+    const alreadyCurrent = text === displayedValue.text
+      && unit === displayedValue.unit
+      && variant === displayedValue.variant
+      && contextKey === displayedValue.contextKey;
+
+    // Every prop change cancels the previous animation. Clear any abandoned next
+    // face even when the user switches back to the currently displayed metric.
+    // Otherwise a fast DPI -> polling -> DPI sequence can leave a stale face and
+    // the following polling selection still renders the DPI value.
+    if (!active || alreadyCurrent) {
+      resetFrame = window.requestAnimationFrame(() => {
+        setNextValue(undefined);
+        setTransitioning(false);
+      });
+      return () => window.cancelAnimationFrame(resetFrame);
+    }
+
+    const incomingTransitionKind = contextKey === displayedValue.contextKey ? 'flip' : 'crossfade';
+    const transitionDuration = incomingTransitionKind === 'crossfade'
+      ? 360
+      : metricDigitFlipDuration(displayedValue.text, incomingValue.text) ?? duration;
+    const fallbackDuration = incomingTransitionKind === 'flip'
+      ? transitionDuration + 80
+      : transitionDuration;
     const prepareFrame = window.requestAnimationFrame(() => {
       setTransitionKind(incomingTransitionKind);
       setNextValue(incomingValue);
@@ -262,12 +400,15 @@ function MorphingMetricValue({
       transitionFrame = window.requestAnimationFrame(() => {
         setTransitioning(true);
         timeout = window.setTimeout(() => {
+          if (transitionIdRef.current !== transitionId) return;
           commitFrame = window.requestAnimationFrame(() => {
+            if (transitionIdRef.current !== transitionId) return;
+            currentValueRef.current = incomingValue;
             setCurrentValue(incomingValue);
             setNextValue(undefined);
             setTransitioning(false);
           });
-        }, transitionDuration);
+        }, fallbackDuration);
       });
     });
 
@@ -275,20 +416,83 @@ function MorphingMetricValue({
       window.cancelAnimationFrame(prepareFrame);
       window.cancelAnimationFrame(transitionFrame);
       window.cancelAnimationFrame(commitFrame);
+      window.cancelAnimationFrame(resetFrame);
       window.clearTimeout(timeout);
     };
-  }, [active, contextKey, currentValue, duration, text, unit, variant]);
+  }, [active, contextKey, duration, text, unit, variant]);
 
-  const renderFace = (value: MetricFlipValue, className: string) => (
-    <span
-      key={`${value.contextKey}\u0000${value.variant}\u0000${value.text}\u0000${value.unit}`}
-      className={`shared-control-metric-face ${className}`}
-      data-variant={value.variant}
-    >
-      <strong className="shared-control-metric-text">{value.text}</strong>
-      {value.unit && <em>{value.unit}</em>}
-    </span>
-  );
+  const commitNextValue = () => {
+    if (!nextValue) return;
+    transitionIdRef.current += 1;
+    currentValueRef.current = nextValue;
+    setCurrentValue(nextValue);
+    setNextValue(undefined);
+    setTransitioning(false);
+  };
+
+  const finishFlipTransition = (event: React.TransitionEvent<HTMLSpanElement>) => {
+    if (
+      transitionKind !== 'flip'
+      || event.target !== event.currentTarget
+      || event.propertyName !== 'opacity'
+    ) return;
+
+    commitNextValue();
+  };
+
+  const finishDigitFlip = (event: React.AnimationEvent<HTMLSpanElement>) => {
+    const target = event.target as HTMLElement;
+    if (
+      transitionKind !== 'flip'
+      || target.dataset.flipLast !== 'true'
+    ) return;
+
+    commitNextValue();
+  };
+
+  const renderFace = (value: MetricFlipValue, className: string) => {
+    const digitFlip = className === 'is-next' && transitionKind === 'flip'
+      ? metricDigitFlip(currentValue.text, value.text)
+      : undefined;
+    return (
+      <span
+        key={`${value.contextKey}\u0000${value.variant}\u0000${value.text}\u0000${value.unit}`}
+        className={`shared-control-metric-face ${className}`}
+        data-variant={value.variant}
+        onTransitionEnd={className === 'is-next' && !digitFlip ? finishFlipTransition : undefined}
+      >
+        <strong className="shared-control-metric-text">
+          {digitFlip ? (
+            <span
+              className="metric-flip-digits"
+              style={{ '--metric-target-digits': digitFlip.targetLength } as React.CSSProperties}
+            >
+              <span className="metric-flip-sizer" aria-hidden="true">{digitFlip.targetText}</span>
+              {digitFlip.slots.map((slot) => (
+                <span
+                  key={slot.position}
+                  className="metric-flip-digit"
+                  style={{ '--metric-digit-position': slot.position } as React.CSSProperties}
+                >
+                  {slot.frames.map((frame, frameIndex) => (
+                    <span
+                      key={`${frame.kind}:${frameIndex}:${frame.character}`}
+                      className={`metric-flip-digit-face is-${frame.kind}`}
+                      data-flip-last={frame.terminal ? 'true' : undefined}
+                      style={{ '--metric-digit-delay': `${frame.delay}ms` } as React.CSSProperties}
+                      onAnimationEnd={frame.terminal ? finishDigitFlip : undefined}
+                      aria-hidden="true"
+                    >{frame.character || '\u00a0'}</span>
+                  ))}
+                </span>
+              ))}
+            </span>
+          ) : value.text}
+        </strong>
+        {value.unit && <em>{value.unit}</em>}
+      </span>
+    );
+  };
 
   return (
     <span
@@ -323,7 +527,10 @@ function FormattedValue({ value, format, label, className }: {
 }
 
 function CapabilitySummary({ capability, device }: { capability: PluginCapability; device: DeviceState }) {
-  const items = capability.metadata.summary ?? [];
+  const items = (capability.metadata.summary ?? []).filter((item) => {
+    const value = readPath(device, item.source);
+    return value !== undefined && value !== null && value !== '';
+  });
   if (items.length === 0) return null;
   return (
     <div
@@ -420,8 +627,31 @@ function batteryUsageTarget(entry: DeviceSnapshotEntry | undefined) {
   const battery = snapshot.batteries?.find((item) => item.id === 'mouse') ?? snapshot.batteries?.[0];
   return {
     name: snapshot.historyIdentity?.displayName ?? snapshot.displayName,
-    componentId: battery?.id,
+    componentId: battery?.id ?? (snapshot.batteryPercent !== undefined ? 'mouse' : undefined),
   };
+}
+
+function connectedBatteryUsageTargets(entries: DeviceSnapshotEntry[]): BatteryUsageConnectedTarget[] {
+  const targets: BatteryUsageConnectedTarget[] = [];
+  const seen = new Set<string>();
+
+  for (const { snapshot } of entries) {
+    const deviceName = snapshot.historyIdentity?.displayName ?? snapshot.displayName;
+    const componentIds = snapshot.batteries?.length
+      ? snapshot.batteries.map((battery) => battery.id)
+      : snapshot.batteryPercent !== undefined
+        ? ['mouse']
+        : [];
+
+    for (const componentId of componentIds) {
+      const key = `${deviceName.trim().replace(/\s+/g, ' ').toLocaleLowerCase()}\u0000${componentId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      targets.push({ deviceName, componentId });
+    }
+  }
+
+  return targets;
 }
 
 function DeviceAura({ color }: { color?: string }) {
@@ -530,6 +760,27 @@ function deviceRuntimePending(device: DeviceState): boolean {
   return device.pluginCapabilities.some(capabilityRuntimePending);
 }
 
+function capabilityHasControlContent(capability: PluginCapability, device: DeviceState): boolean {
+  if (capabilityRuntimePending(capability)) return true;
+
+  const layout = resolveStageLayout(capability);
+  if (layout) {
+    const stages = readPath(device, layout.dotsSource);
+    return Array.isArray(stages) && stages.some((stage) => (
+      stage && typeof stage === 'object' && (stage as DpiStage).enabled
+    ));
+  }
+
+  if (capability.metadata.zones) {
+    return resolveZones(capability, device).some((zone) => (
+      zone.fields.some((field) => fieldHasReportedValue(field, device))
+    ));
+  }
+
+  return (capability.metadata.fields ?? [])
+    .some((field) => fieldHasReportedValue(field, device));
+}
+
 function PluginIconView({
   name,
   device,
@@ -552,20 +803,20 @@ function PluginIconView({
   }
   switch (name) {
     case 'gauge':
-      return <Gauge weight="regular" />;
+      return <Gauge weight="regular" data-plugin-icon="gauge" />;
     case 'lightbulb':
-      return <Lightbulb weight="regular" />;
+      return <Lightbulb weight="regular" data-plugin-icon="lightbulb" />;
     case 'profile':
-      return <UserCircle weight="regular" />;
+      return <SlidersHorizontal weight="regular" data-plugin-icon="profile" />;
     case 'settings':
-      return <Gear weight="regular" />;
+      return <Gear weight="regular" data-plugin-icon="settings" />;
     case 'timer':
-      return <Timer weight="regular" />;
+      return <Timer weight="regular" data-plugin-icon="timer" />;
     case 'wave':
-      return <WaveSine weight="regular" />;
+      return <WaveSine weight="regular" data-plugin-icon="wave" />;
     case 'info':
     default:
-      return <Info weight="regular" />;
+      return <Info weight="regular" data-plugin-icon="info" />;
   }
 }
 
@@ -803,20 +1054,9 @@ function SwitchField({ field, device, writeBusy, runMutation }: {
 
   const handleClick = () => {
     if (!mutation) return;
-    if (isOn) {
-      void runMutation(mutation, resolveFieldMutationParams(field, device, sw.offValue));
-    } else {
-      let restoreValue = restoreRef.current;
-      if (restoreValue === undefined && field.options) {
-        const nonOff = field.options.find((opt) => opt.value !== sw.offValue);
-        restoreValue = nonOff?.value;
-      }
-      if (restoreValue === undefined && typeof sw.offValue === 'boolean') {
-        restoreValue = !sw.offValue;
-      }
-      if (restoreValue !== undefined) {
-        void runMutation(mutation, resolveFieldMutationParams(field, device, restoreValue));
-      }
+    const nextValue = resolveSwitchNextValue(field, device, restoreRef.current);
+    if (nextValue !== undefined) {
+      void runMutation(mutation, resolveFieldMutationParams(field, device, nextValue));
     }
   };
 
@@ -842,7 +1082,7 @@ function FieldRenderer({ field, device, writeBusy, runMutation }: {
 }) {
   const [editing, setEditing] = useState(false);
 
-  if (!resolveVisibleWhen(field.visibleWhen, device)) return null;
+  if (!fieldHasReportedValue(field, device)) return null;
 
   const mutation = resolveMutation(field.mutation, device.writableMutations);
   const writable = Boolean(mutation && !writeBusy);
@@ -1059,7 +1299,7 @@ function GenericFieldControl({ field, device, writeBusy, runMutation }: {
     }
   }, [field.switch, switchValue]);
 
-  if (!resolveVisibleWhen(field.visibleWhen, device)) return null;
+  if (!fieldHasReportedValue(field, device)) return null;
 
   const apply = (nextValue: unknown) => {
     if (mutation) void runMutation(mutation, resolveFieldMutationParams(field, device, nextValue));
@@ -1075,17 +1315,8 @@ function GenericFieldControl({ field, device, writeBusy, runMutation }: {
           aria-pressed={isOn}
           disabled={!writable}
           onClick={() => {
-            if (!field.switch) {
-              apply(!isOn);
-              return;
-            }
-            if (isOn) {
-              apply(field.switch.offValue);
-              return;
-            }
-            const restored = restoreRef.current
-              ?? field.options?.find((option) => option.value !== field.switch?.offValue)?.value;
-            if (restored !== undefined) apply(restored);
+            const nextValue = resolveSwitchNextValue(field, device, restoreRef.current);
+            if (nextValue !== undefined) apply(nextValue);
           }}
         >{isOn ? i18n.t('common.on') : i18n.t('common.off')}</button>
       );
@@ -1174,12 +1405,14 @@ function GenericCapabilityControl({ capability, device, writeBusy, runMutation }
   writeBusy: boolean;
   runMutation: (mutation: string, params: Record<string, unknown>) => Promise<void>;
 }) {
-  const fields = (capability.metadata.fields ?? []).filter((field) => resolveVisibleWhen(field.visibleWhen, device));
+  const fields = (capability.metadata.fields ?? []).filter((field) => fieldHasReportedValue(field, device));
   const label = resolveLabelKey(capability.labelKey, device.pluginId);
+
+  if (fields.length === 0) return null;
 
   return (
     <div className="control-reading mode-reading plugin-control-reading">
-      <UserCircle weight="regular" />
+      <PluginIconView name={placementsFor(capability, 'control')[0]?.icon} device={device} />
       <span>{label}</span>
       {fields.map((field) => (
         <GenericFieldControl
@@ -1245,7 +1478,10 @@ function StageLayout({ capability, device, writeBusy, runMutation }: {
           setEditingStage(currentStageNumber);
         }}
       >
-        <LiveValue text={String(activeDpi || (runtimePending ? '—' : i18n.t('common.notReported')))} /><em>DPI</em>
+        {/* The shared metric layer owns the visible transition. Keep this hidden
+            geometry anchor synchronous so ResizeObserver never follows a stale
+            intermediate width after the visible number has already settled. */}
+        <strong>{String(activeDpi || (runtimePending ? '—' : i18n.t('common.notReported')))}</strong><em>DPI</em>
       </button>
       <div className={`dpi-scale ${runtimePending ? 'is-pending' : 'is-ready'}`} aria-label={i18n.t('dashboard.dpiStages')} style={{ '--stage-count': Math.max(displayedStages.length, 1) } as React.CSSProperties}>
         <div className="dpi-stage-placeholders" aria-hidden="true">
@@ -1386,7 +1622,7 @@ function ZoneRenderer({ capability, device, writeBusy, runMutation }: {
     : activeZone.id === zones[0].id;
   const tabAccent = usesThemeAccent ? 'var(--accent)' : zoneColor ?? 'var(--accent)';
 
-  const visibleFields = activeZone.fields.filter((f) => resolveVisibleWhen(f.visibleWhen, device));
+  const visibleFields = activeZone.fields.filter((field) => fieldHasReportedValue(field, device));
   // 条件显示的次级区域通常是接收器等附属对象；字段较多时使用与旧界面一致
   // 的紧凑密度。这里仅依赖 zone 的声明形态，不依赖 zone id。
   const compactDetailGrid = Boolean(activeZone.visibleWhen) && visibleFields.length >= 5;
@@ -1542,7 +1778,7 @@ function CapabilityRouter({ capability, device, writeBusy, runMutation }: {
       </div>
     );
   }
-  const fields = (capability.metadata.fields ?? []).filter((f) => resolveVisibleWhen(f.visibleWhen, device));
+  const fields = (capability.metadata.fields ?? []).filter((field) => fieldHasReportedValue(field, device));
   const metricField = fields.length === 1 && fields[0].format === 'hertz' ? fields[0] : undefined;
   if (metricField) {
     return <MetricField capability={capability} field={metricField} device={device} writeBusy={writeBusy} runMutation={runMutation} />;
@@ -1570,31 +1806,29 @@ function DeviceDetails({ device, onClose }: { device: DeviceState; onClose: () =
       backdropClassName="details-backdrop"
       onClose={onClose}
     >
-      <section aria-labelledby="device-details-title">
-        <header>
-          <div><p className="eyebrow">{i18n.t('dashboard.readonlyReport')}</p><h2 id="device-details-title">{i18n.t('dashboard.allReadInfo')}</h2></div>
-          <button className="icon-button" onClick={onClose} aria-label={i18n.t('dashboard.closeDeviceDetails')}><X weight="regular" /></button>
-        </header>
-        <p className="details-note">{i18n.t('dashboard.detailsNote')}</p>
-        <div className="capability-groups">
-          {groups.length ? groups.map(([group, fields]) => (
-            <section className="capability-group" key={group}>
-              <h3>{capabilityGroupLabel(group)}</h3>
-              <dl>
-                {Object.entries(fields).map(([key, value]) => {
-                  const valueLabel = resolveDetailValueLabel(group, key, device);
-                  return (
-                    <div key={key}>
-                      <dt>{capabilityFieldLabel(key)}</dt>
-                      <dd><FormattedValue value={value} label={valueLabel} /></dd>
-                    </div>
-                  );
-                })}
-              </dl>
-            </section>
-          )) : <p className="setting-hint">{i18n.t('dashboard.noCapabilities')}</p>}
-        </div>
-      </section>
+      <header>
+        <div><p className="eyebrow">{i18n.t('dashboard.readonlyReport')}</p><h2 id="device-details-title">{i18n.t('dashboard.allReadInfo')}</h2></div>
+        <button className="icon-button" onClick={onClose} aria-label={i18n.t('dashboard.closeDeviceDetails')}><X weight="regular" /></button>
+      </header>
+      <p className="details-note">{i18n.t('dashboard.detailsNote')}</p>
+      <div className="capability-groups">
+        {groups.length ? groups.map(([group, fields]) => (
+          <section className="capability-group" key={group}>
+            <h3>{capabilityGroupLabel(group)}</h3>
+            <dl>
+              {Object.entries(fields).map(([key, value]) => {
+                const valueLabel = resolveDetailValueLabel(group, key, device);
+                return (
+                  <div key={key}>
+                    <dt>{capabilityFieldLabel(key)}</dt>
+                    <dd><FormattedValue value={value} label={valueLabel} /></dd>
+                  </div>
+                );
+              })}
+            </dl>
+          </section>
+        )) : <p className="setting-hint">{i18n.t('dashboard.noCapabilities')}</p>}
+      </div>
     </Modal>
   );
 }
@@ -1634,7 +1868,7 @@ function sharedControlMetric(capabilities: PluginCapability[], device: DeviceSta
     }
 
     const fields = (capability.metadata.fields ?? [])
-      .filter((field) => resolveVisibleWhen(field.visibleWhen, device));
+      .filter((field) => fieldHasReportedValue(field, device));
     const metricField = fields.length === 1 && fields[0].format === 'hertz' ? fields[0] : undefined;
     if (metricField) {
       const value = readPath(device, metricField.source);
@@ -1659,7 +1893,10 @@ function sharedControlSurface(capabilities: PluginCapability[], device: DeviceSt
     if (resolveZones(capability, device).length > 0) {
       return { kind: 'lighting', targetSelector: '.lighting-reading .lighting-group' };
     }
-    if ((capability.metadata.summary ?? []).length > 0) {
+    if ((capability.metadata.summary ?? []).some((item) => {
+      const value = readPath(device, item.source);
+      return value !== undefined && value !== null && value !== '';
+    })) {
       return { kind: 'summary', targetSelector: '.metric-reading > .capability-summary' };
     }
   }
@@ -1671,12 +1908,20 @@ function useControlTargetPosition(
   targetSelector: string | undefined,
   layerRef: React.RefObject<HTMLElement | null>,
   transitionMode: 'morph' | 'snap',
+  geometryScope?: string,
+  geometryContent?: string,
 ) {
   const previousTargetRef = useRef<string | undefined>(undefined);
+  const previousGeometryScopeRef = useRef<string | undefined>(undefined);
+  const previousGeometryContentRef = useRef<string | undefined>(undefined);
 
   useLayoutEffect(() => {
     const previousTarget = previousTargetRef.current;
+    const previousGeometryScope = previousGeometryScopeRef.current;
+    const previousGeometryContent = previousGeometryContentRef.current;
     previousTargetRef.current = targetSelector;
+    previousGeometryScopeRef.current = geometryScope;
+    previousGeometryContentRef.current = geometryContent;
     if (!targetSelector) return;
 
     const stage = stageRef.current;
@@ -1684,8 +1929,15 @@ function useControlTargetPosition(
     const layer = layerRef.current;
     if (!stage || !target || !layer) return;
 
-    const shouldSnap = layer.dataset.positioned !== 'true'
+    const shouldHideWhileSnapping = layer.dataset.positioned !== 'true'
       || (transitionMode === 'snap' && previousTarget === undefined);
+    const shouldSnapContentChange = layer.dataset.positioned === 'true'
+      && previousTarget === targetSelector
+      && previousGeometryScope === geometryScope
+      && previousGeometryContent !== undefined
+      && geometryContent !== undefined
+      && previousGeometryContent !== geometryContent;
+    const shouldDisableGeometryMotion = shouldHideWhileSnapping || shouldSnapContentChange;
     let revealFrame = 0;
 
     const measure = () => {
@@ -1697,18 +1949,20 @@ function useControlTargetPosition(
       layer.dataset.positioned = 'true';
     };
 
-    if (shouldSnap) {
+    if (shouldDisableGeometryMotion) {
       layer.dataset.geometryReady = 'false';
-      layer.dataset.repositioning = 'true';
+      layer.dataset.geometrySnap = 'true';
+      if (shouldHideWhileSnapping) layer.dataset.repositioning = 'true';
       layer.getBoundingClientRect();
     } else {
       layer.dataset.geometryReady = 'true';
     }
     measure();
-    if (shouldSnap) {
+    if (shouldDisableGeometryMotion) {
       layer.getBoundingClientRect();
       revealFrame = window.requestAnimationFrame(() => {
         layer.dataset.geometryReady = 'true';
+        layer.dataset.geometrySnap = 'false';
         layer.dataset.repositioning = 'false';
       });
     }
@@ -1721,9 +1975,10 @@ function useControlTargetPosition(
       window.cancelAnimationFrame(revealFrame);
       observer?.disconnect();
       window.removeEventListener('resize', measure);
+      layer.dataset.geometrySnap = 'false';
       layer.dataset.repositioning = 'false';
     };
-  }, [layerRef, stageRef, targetSelector, transitionMode]);
+  }, [geometryContent, geometryScope, layerRef, stageRef, targetSelector, transitionMode]);
 }
 
 function SharedControlMetricLayer({
@@ -1834,22 +2089,55 @@ function Dashboard({
   const { t } = useTranslation();
   const [mode, setMode] = useState<ControlMode>('');
   const [contextMotionSync, setContextMotionSync] = useState<'metric' | 'surface'>('metric');
+  const [controlStageTransition, setControlStageTransition] = useState<ControlStageTransition>();
   const [previewMessage, setPreviewMessage] = useState('');
   const [showDetails, setShowDetails] = useState(false);
   const [showBatteries, setShowBatteries] = useState(false);
   const [showDeviceSwitcher, setShowDeviceSwitcher] = useState(false);
   const batteryControlRef = useRef<HTMLDivElement>(null);
+  const batteryPopoverRef = useRef<HTMLElement>(null);
   const deviceSwitcherRef = useRef<HTMLDivElement>(null);
+  const [batteryPopoverPosition, setBatteryPopoverPosition] = useState<{ left: number; top: number; width: number } | null>(null);
   const controlStageLayersRef = useRef<HTMLDivElement>(null);
   const sharedContextLayerRef = useRef<HTMLDivElement>(null);
   const sharedMetricLayerRef = useRef<HTMLDivElement>(null);
   const sharedSurfaceLayerRef = useRef<HTMLDivElement>(null);
   const [writeBusy, setWriteBusy] = useState(false);
   const [editingField, setEditingField] = useState<{ capability: PluginCapability; field: PluginField } | null>(null);
+  const [statusSwitchRestoreValues, setStatusSwitchRestoreValues] = useState<Record<string, unknown>>({});
+
+  const positionBatteryPopover = useCallback(() => {
+    const anchor = batteryControlRef.current;
+    if (!anchor) return;
+    const rect = anchor.getBoundingClientRect();
+    const viewportPadding = 16;
+    const width = Math.min(238, Math.max(0, window.innerWidth - viewportPadding * 2));
+    const maxLeft = Math.max(viewportPadding, window.innerWidth - viewportPadding - width);
+    setBatteryPopoverPosition({
+      left: Math.min(Math.max(viewportPadding, rect.left), maxLeft),
+      top: rect.bottom + 6,
+      width,
+    });
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!showBatteries) return;
+    positionBatteryPopover();
+    const reposition = () => positionBatteryPopover();
+    window.addEventListener('resize', reposition);
+    window.addEventListener('scroll', reposition, true);
+    return () => {
+      window.removeEventListener('resize', reposition);
+      window.removeEventListener('scroll', reposition, true);
+    };
+  }, [positionBatteryPopover, showBatteries]);
 
   useEffect(() => {
     const closeOnOutsideClick = (event: MouseEvent) => {
-      if (!batteryControlRef.current?.contains(event.target as Node)) setShowBatteries(false);
+      const target = event.target as Node;
+      if (!batteryControlRef.current?.contains(target) && !batteryPopoverRef.current?.contains(target)) {
+        setShowBatteries(false);
+      }
       if (!deviceSwitcherRef.current?.contains(event.target as Node)) setShowDeviceSwitcher(false);
     };
     const closeOnEscape = (event: KeyboardEvent) => {
@@ -1908,6 +2196,7 @@ function Dashboard({
       .filter(capabilityAvailable)
       .flatMap((capability) => placementsFor(capability, 'control').map((placement) => ({ capability, placement })))
       .filter(({ capability }) => resolveVisibleWhen(capability.metadata.visibleWhen, device))
+      .filter(({ capability }) => capabilityHasControlContent(capability, device))
       .sort((a, b) => a.placement.order - b.placement.order);
     const groups = new Map<string, { id: string; label: string; icon: string | undefined; capabilities: PluginCapability[] }>();
     for (const { capability, placement } of controlPlacements) {
@@ -1941,15 +2230,56 @@ function Dashboard({
   const surfacePresentation = sharedControlSurface(activeCapabilities, device);
   const activeHasMetric = activeGroup?.hasMetric ?? false;
   const activeHasSurface = activeGroup?.hasSurface ?? false;
+  const activePageKind = controlPageKind(activeCapabilities);
   const pollingContextTarget = metricPresentation?.variant === 'hertz'
     ? '.metric-reading > .metric-reading-heading'
     : undefined;
+  const metricGeometryContent = metricPresentation
+    ? `${metricPresentation.variant}\u0000${metricPresentation.text}\u0000${metricPresentation.unit}`
+    : undefined;
   useControlTargetPosition(controlStageLayersRef, pollingContextTarget, sharedContextLayerRef, 'snap');
-  useControlTargetPosition(controlStageLayersRef, metricPresentation?.targetSelector, sharedMetricLayerRef, 'morph');
+  useControlTargetPosition(
+    controlStageLayersRef,
+    metricPresentation?.targetSelector,
+    sharedMetricLayerRef,
+    'morph',
+    activeMode,
+    metricGeometryContent,
+  );
   useControlTargetPosition(controlStageLayersRef, surfacePresentation?.targetSelector, sharedSurfaceLayerRef, 'snap');
+
+  useEffect(() => {
+    if (!controlStageTransition) return;
+    const transitionId = controlStageTransition.id;
+    const fallback = window.setTimeout(() => {
+      setControlStageTransition((current) => current?.id === transitionId ? undefined : current);
+    }, 380);
+    return () => window.clearTimeout(fallback);
+  }, [controlStageTransition]);
 
   const switchMode = (targetMode: string, sync: 'metric' | 'surface') => {
     if (!targetMode || targetMode === activeMode) return;
+    const targetGroup = controls.find((control) => control.id === targetMode);
+    const targetCapabilities = targetGroup?.capabilities ?? [];
+    const targetPageKind = controlPageKind(targetCapabilities);
+    const coordinatesDpiAndSegmented = (
+      (activePageKind === 'dpi' && targetPageKind === 'segmented')
+      || (activePageKind === 'segmented' && targetPageKind === 'dpi')
+    );
+    const entersSegmentedPage = targetPageKind === 'segmented';
+    if (coordinatesDpiAndSegmented || entersSegmentedPage) {
+      setControlStageTransition((current) => ({
+        id: (current?.id ?? 0) + 1,
+        fromMode: activeMode,
+        fromKind: activePageKind,
+        fromCapabilities: [...activeCapabilities],
+        preserveOutgoing: coordinatesDpiAndSegmented,
+        toMode: targetMode,
+        toKind: targetPageKind,
+      }));
+    } else {
+      setControlStageTransition(undefined);
+    }
     setContextMotionSync(sync);
     setMode(targetMode);
     setPreviewMessage('');
@@ -1957,40 +2287,82 @@ function Dashboard({
 
   const statusItems = (() => {
     const items: { capability: PluginCapability; placement: PluginCapabilityPlacement; onClick: (() => void) | undefined }[] = [];
+    const controlAction = (capability: PluginCapability): (() => void) | undefined => {
+      const controlPlacement = placementsFor(capability, 'control')[0];
+      if (!controlPlacement) return undefined;
+      const target = controlPlacement.group || capability.id;
+      const targetControl = controls.find((control) => control.id === target);
+      if (!targetControl) return undefined;
+      const sync = resolveContextMotionSync(
+        activeHasMetric,
+        activeHasSurface,
+        targetControl.hasMetric,
+        targetControl.hasSurface,
+      );
+      return () => switchMode(target, sync);
+    };
+
     for (const capability of device.pluginCapabilities) {
       if (!capabilityAvailable(capability)) continue;
       if (!resolveVisibleWhen(capability.metadata.visibleWhen, device)) continue;
       const display = resolveStatusDisplay(capability);
       if (!display) continue;
+      if (!capabilityRuntimePending(capability)) {
+        const requestedField = resolveStatusField(capability, display.onClickField, device);
+        const displayedValue = readPath(device, display.valueSource);
+        const fallbackValue = requestedField ? readPath(device, requestedField.source) : undefined;
+        if (
+          (displayedValue === undefined || displayedValue === null || displayedValue === '')
+          && (fallbackValue === undefined || fallbackValue === null || fallbackValue === '')
+        ) continue;
+      }
       const placements = placementsFor(capability, 'status');
       for (const placement of placements) {
         let onClick: (() => void) | undefined;
         if (display.onClickField) {
           const field = resolveStatusField(capability, display.onClickField, device);
           if (field) {
-            const isWritable = Boolean(resolveMutation(field.mutation, device.writableMutations));
-            if (isWritable) {
-              onClick = () => {
-                invoke('device_refresh_quick').catch(() => {});
-                setEditingField({ capability, field });
-              };
+            const interaction = resolveFieldInteraction(field);
+            const mutation = resolveMutation(field.mutation, device.writableMutations);
+            if (interaction === 'control') {
+              onClick = controlAction(capability);
+            } else if (mutation && !writeBusy) {
+              if (interaction === 'modal') {
+                onClick = () => {
+                  invoke('device_refresh_quick').catch(() => {});
+                  setEditingField({ capability, field });
+                };
+              } else if (interaction === 'action') {
+                onClick = () => void runMutation(mutation, resolveFieldParams(field, device));
+              } else {
+                const restoreKey = `${device.name}:${capability.id}:${field.id}`;
+                onClick = () => {
+                  const currentValue = readPath(device, field.switch?.source ?? field.source);
+                  const rememberedValue = field.switch
+                    && currentValue !== field.switch.offValue
+                    && currentValue != null
+                    ? currentValue
+                    : statusSwitchRestoreValues[restoreKey];
+                  if (rememberedValue === currentValue && currentValue != null) {
+                    setStatusSwitchRestoreValues((current) => ({
+                      ...current,
+                      [restoreKey]: currentValue,
+                    }));
+                  }
+                  const nextValue = resolveSwitchNextValue(
+                    field,
+                    device,
+                    rememberedValue,
+                  );
+                  if (nextValue !== undefined) {
+                    void runMutation(mutation, resolveFieldMutationParams(field, device, nextValue));
+                  }
+                };
+              }
             }
           }
         } else {
-          const controlPlacement = placementsFor(capability, 'control')[0];
-          if (controlPlacement) {
-            const target = controlPlacement.group || capability.id;
-            const targetControl = controls.find((control) => control.id === target);
-            if (targetControl) {
-              const sync = resolveContextMotionSync(
-                activeHasMetric,
-                activeHasSurface,
-                targetControl.hasMetric,
-                targetControl.hasSurface,
-              );
-              onClick = () => switchMode(target, sync);
-            }
-          }
+          onClick = controlAction(capability);
         }
         items.push({ capability, placement, onClick });
       }
@@ -2058,7 +2430,10 @@ function Dashboard({
                 aria-expanded={showBatteries}
                 aria-controls="device-batteries"
                 onClick={() => {
-                  if (!showBatteries) invoke('device_refresh_battery').catch(() => {});
+                  if (!showBatteries) {
+                    invoke('device_refresh_battery').catch(() => {});
+                    positionBatteryPopover();
+                  }
                   setShowBatteries((visible) => !visible);
                 }}
               >
@@ -2067,7 +2442,22 @@ function Dashboard({
                 {device.batteries[0].charging ? ` · ${t('common.charging')}` : ''}
                 <span className="battery-count">{t('dashboard.deviceCount', { count: device.batteries.length })}</span>
               </button>
-              <section id="device-batteries" className="battery-popover" aria-label={t('dashboard.deviceBattery')}>
+            </div>
+            )}
+          </div>
+        </div>
+        <DeviceAura color={declaredAccentColor(device)} />
+      </section>
+      {showBatteries && (
+        <OverlayPortal>
+          <section
+            ref={batteryPopoverRef}
+            id="device-batteries"
+            className="battery-popover"
+            aria-label={t('dashboard.deviceBattery')}
+            data-positioned={batteryPopoverPosition ? 'true' : 'false'}
+            style={batteryPopoverPosition ?? undefined}
+          >
                 <div className="battery-popover-header">
                   <span>{t('dashboard.deviceBattery')}</span>
                   <strong>{t('dashboard.deviceCount', { count: device.batteries.length })}</strong>
@@ -2106,13 +2496,9 @@ function Dashboard({
                   <ChartBar weight="regular" />
                   <span>{t('batteryUsage.viewTrend')}</span>
                 </button>
-              </section>
-            </div>
-            )}
-          </div>
-        </div>
-        <DeviceAura color={declaredAccentColor(device)} />
-      </section>
+          </section>
+        </OverlayPortal>
+      )}
 
       <div
         className="control-tabs segmented-slider"
@@ -2164,19 +2550,55 @@ function Dashboard({
         ].filter(Boolean).join(' ')}
         aria-live="polite"
         data-control-mode={activeMode}
+        data-control-transition={controlStageTransition
+          ? `${controlStageTransition.fromKind}-to-${controlStageTransition.toKind}`
+          : undefined}
       >
         <div ref={controlStageLayersRef} className="control-stage-layers">
           <SharedControlSurfaceLayer layerRef={sharedSurfaceLayerRef} surface={surfacePresentation} />
           <div className="control-stage-content">
-            {activeCapabilities.map((capability) => (
-              <CapabilityRouter
-                key={capability.id}
-                capability={capability}
-                device={device}
-                writeBusy={writeBusy}
-                runMutation={runMutation}
-              />
-            ))}
+            {controlStageTransition?.toMode === activeMode && controlStageTransition.preserveOutgoing && (
+              <div
+                key={`leaving-${controlStageTransition.id}`}
+                className="control-stage-page is-leaving"
+                data-control-page={controlStageTransition.fromMode}
+                data-page-kind={controlStageTransition.fromKind}
+                aria-hidden="true"
+                inert
+              >
+                {controlStageTransition.fromCapabilities.map((capability) => (
+                  <CapabilityRouter
+                    key={capability.id}
+                    capability={capability}
+                    device={device}
+                    writeBusy={writeBusy}
+                    runMutation={runMutation}
+                  />
+                ))}
+              </div>
+            )}
+            <div
+              key={activeMode}
+              className={`control-stage-page${controlStageTransition?.toMode === activeMode ? ' is-entering' : ''}`}
+              data-control-page={activeMode}
+              data-page-kind={activePageKind}
+              onAnimationEnd={(event) => {
+                if (event.target !== event.currentTarget) return;
+                const transitionId = controlStageTransition?.id;
+                if (transitionId === undefined) return;
+                setControlStageTransition((current) => current?.id === transitionId ? undefined : current);
+              }}
+            >
+              {activeCapabilities.map((capability) => (
+                <CapabilityRouter
+                  key={capability.id}
+                  capability={capability}
+                  device={device}
+                  writeBusy={writeBusy}
+                  runMutation={runMutation}
+                />
+              ))}
+            </div>
           </div>
           <SharedPollingContextLayer
             layerRef={sharedContextLayerRef}
@@ -2472,6 +2894,10 @@ export default function App() {
 
   const themeColor = device ? declaredAccentColor(device) : undefined;
   const selectedBatteryUsageTarget = batteryUsageTarget(selectedDeviceEntry(deviceEntries));
+  const batteryUsageConnectedTargets = useMemo(
+    () => connectedBatteryUsageTargets(deviceEntries),
+    [deviceEntries],
+  );
   useEffect(() => {
     if (!themeLoaded) return;
     applyTheme(theme, themeColor);
@@ -2498,6 +2924,7 @@ export default function App() {
       hasBattery={(device?.batteries.length ?? 0) > 0}
       batteryHistoryEnabled={batteryUsageSettings?.batteryHistoryEnabled}
       aiAnalysisEnabled={batteryUsageSettings?.aiAnalysisEnabled}
+      connectedTargets={batteryUsageConnectedTargets}
       preferredDeviceName={selectedBatteryUsageTarget?.name}
       preferredComponentId={selectedBatteryUsageTarget?.componentId}
     />

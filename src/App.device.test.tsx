@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import App from './App';
 import { themeAccent } from './theme';
@@ -361,6 +361,69 @@ describe('real device snapshot mapping', () => {
     expect(status.querySelector('svg:not(.battery-level-svg)')).not.toBeInTheDocument();
   });
 
+  it('executes an inline-toggle status field without opening an unsupported modal', async () => {
+    const toggleStatusSnapshot: DeviceSnapshot = {
+      displayName: 'Contract Toggle Mouse', connection: 'wireless', batteryPercent: 80,
+      charging: false, batteries: [],
+      capabilities: {
+        settings: { mouseLightEnabled: true },
+        mouseLighting: { color: '#112233' },
+      },
+      pluginCapabilities: [
+        {
+          id: 'lighting', control: 'LightingZone', labelKey: 'plugin.label.capability.lighting', readOnly: false,
+          placements: [
+            { region: 'control', group: 'lighting', order: 30, span: 1, icon: 'lightbulb' },
+            { region: 'status', order: 30, span: 1, icon: 'lightbulb' },
+          ],
+          metadata: {
+            zones: [{
+              id: 'mouse', labelKey: 'dashboard.mouseLighting', fields: [{
+                id: 'enabled', source: 'capabilities.settings.mouseLightEnabled',
+                mutation: 'set-mouse-lighting', param: 'enabled', editor: 'inline-toggle',
+                switch: { source: 'capabilities.settings.mouseLightEnabled', offValue: false },
+                labelKey: 'dashboard.status',
+                paramSources: {
+                  color: 'capabilities.mouseLighting.color',
+                  enabled: 'capabilities.settings.mouseLightEnabled',
+                },
+              }],
+            }],
+            statusDisplay: {
+              labelKey: 'plugin.label.capability.lighting',
+              valueSource: 'capabilities.settings.mouseLightEnabled',
+              valueOptions: [
+                { value: false, labelKey: 'lighting.off' },
+                { value: true, labelKey: 'lighting.on' },
+              ],
+              onClickField: 'enabled',
+            },
+          },
+        },
+      ],
+      writableMutations: ['set-mouse-lighting'], evidence: 'hardware-verified',
+    };
+    invokeMock.mockImplementation((command: string, args?: { mutation?: string }) => {
+      if (command === 'settings_get') return Promise.resolve(settings);
+      if (command === 'device_snapshots') return Promise.resolve(entries(toggleStatusSnapshot));
+      if (command === 'device_mutate' && args?.mutation === 'set-mouse-lighting') return Promise.resolve(toggleStatusSnapshot);
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+
+    render(<App />);
+    const status = await screen.findByRole('region', { name: '设备状态' });
+    const lightingStatus = status.querySelector('button');
+    expect(lightingStatus).toHaveTextContent('灯光已开启');
+    fireEvent.click(lightingStatus as HTMLButtonElement);
+
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('device_mutate', {
+      mutation: 'set-mouse-lighting',
+      params: { color: '#112233', enabled: false },
+    }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.queryByText('未报告')).not.toBeInTheDocument();
+  });
+
   it('renders plugin-declared controls and status without a brand-specific branch', async () => {
     const pluginSnapshot: DeviceSnapshot = {
       displayName: 'Declarative Mouse', connection: 'wireless', batteryPercent: 80,
@@ -381,7 +444,7 @@ describe('real device snapshot mapping', () => {
               options: [{ value: 1, labelKey: '板载' }, { value: 2, labelKey: '软件' }],
               labelKey: 'plugin.label.capability.lighting',
             }],
-            statusDisplay: { valueSource: 'state.controlMode', valueOptions: [{ value: 1, labelKey: '板载' }, { value: 2, labelKey: '软件' }] },
+            statusDisplay: { valueSource: 'state.controlMode', valueOptions: [{ value: 1, labelKey: '板载' }, { value: 2, labelKey: '软件' }], onClickField: 'mode' },
             stateMapping: { controlMode: 'capabilities.controlMode.mode' },
           },
         },
@@ -412,7 +475,31 @@ describe('real device snapshot mapping', () => {
     expect(screen.getByRole('tab', { name: 'DPI' })).toBeInTheDocument();
     expect(screen.getByRole('region', { name: '设备状态' })).toHaveTextContent('灯光板载');
     expect(screen.getByRole('region', { name: '设备状态' })).toHaveAttribute('data-status-count', '1');
+    fireEvent.click(screen.getByRole('region', { name: '设备状态' }).querySelector('button') as HTMLButtonElement);
+    expect(screen.getByRole('tab', { name: '灯光' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+
+    const stage = document.querySelector('.control-stage')!;
+    expect(stage).toHaveAttribute('data-control-transition', 'dpi-to-segmented');
+    expect(stage.querySelector('.control-stage-page.is-leaving')).toHaveAttribute('data-page-kind', 'dpi');
+    let enteringPage = stage.querySelector('.control-stage-page.is-entering')!;
+    expect(enteringPage).toHaveAttribute('data-page-kind', 'segmented');
+    expect(within(enteringPage as HTMLElement).getByRole('group', { name: '灯光' })).toBeInTheDocument();
+    fireEvent.animationEnd(enteringPage, { animationName: 'mira-control-page-enter' });
+    await waitFor(() => expect(stage.querySelector('.control-stage-page.is-leaving')).not.toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('tab', { name: 'DPI' }));
+    expect(stage).toHaveAttribute('data-control-transition', 'segmented-to-dpi');
+    expect(stage.querySelector('.control-stage-page.is-leaving')).toHaveAttribute('data-page-kind', 'segmented');
+    enteringPage = stage.querySelector('.control-stage-page.is-entering')!;
+    expect(enteringPage).toHaveAttribute('data-page-kind', 'dpi');
+    expect(enteringPage.querySelector('.dpi-scale')).toBeInTheDocument();
+    fireEvent.animationEnd(enteringPage, { animationName: 'mira-control-page-enter' });
+    await waitFor(() => expect(stage.querySelector('.control-stage-page.is-leaving')).not.toBeInTheDocument());
+
     fireEvent.click(screen.getByRole('tab', { name: '灯光' }));
+    enteringPage = stage.querySelector('.control-stage-page.is-entering')!;
+    fireEvent.animationEnd(enteringPage, { animationName: 'mira-control-page-enter' });
     fireEvent.click(screen.getByRole('button', { name: '软件' }));
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('device_mutate', {
       mutation: 'set-control-mode', params: { mode: 2 },
@@ -639,7 +726,6 @@ describe('real device snapshot mapping', () => {
             fields: [{
               id: 'value', source: 'state.pointerSpeed', mutation: 'set-pointer-speed', param: 'value',
               editor: 'modal-range', range: { min: 0, max: 1000, step: 1 }, labelKey: 'capability.field.sensorIndex',
-              visibleWhen: { path: 'state.pointerSpeed' },
             }],
             stateMapping: { pointerSpeed: 'capabilities.settings.pointerSpeed' },
           },
@@ -655,8 +741,76 @@ describe('real device snapshot mapping', () => {
 
     render(<App />);
     await screen.findByRole('heading', { name: 'Missing Value Mouse' });
-    // pointerSpeed 未报告时，字段不渲染
+    // 即使插件漏写 visibleWhen，未上报的普通数值能力也不能产生空标签页或占位控件。
+    expect(screen.queryByRole('tab')).not.toBeInTheDocument();
     expect(screen.queryByText('capability.field.sensorIndex')).not.toBeInTheDocument();
+    expect(screen.queryByText('未报告')).not.toBeInTheDocument();
+  });
+
+  it('removes unreported sibling controls and follows plugin icon declarations', async () => {
+    const mixedSnapshot: DeviceSnapshot = {
+      displayName: 'Mixed Capability Mouse', connection: 'wireless', batteryPercent: 80,
+      charging: false, batteries: [], dpi: 1600,
+      dpiStages: [{ value: 1600, color: '#9a8bd0', active: true, enabled: true }],
+      capabilities: { controlMode: { mode: 1 } },
+      pluginCapabilities: [
+        {
+          id: 'control-mode', control: 'Segmented', labelKey: '配置控制', readOnly: false,
+          placements: [{ region: 'control', group: 'configuration', order: 5, span: 1, icon: 'settings' }],
+          metadata: { fields: [{
+            id: 'value', source: 'capabilities.controlMode.mode', mutation: 'set-control-mode', param: 'mode',
+            editor: 'inline-segmented', labelKey: '配置控制',
+            options: [{ value: 1, labelKey: '板载' }, { value: 2, labelKey: '软件' }],
+          }] },
+        },
+        {
+          id: 'profile-mgmt-current', control: 'Number', labelKey: '当前配置文件', readOnly: false,
+          placements: [{ region: 'control', group: 'configuration', order: 6, span: 1, icon: 'profile' }],
+          metadata: { fields: [{
+            id: 'value', source: 'capabilities.profileMgmtCurrent.profileIndex',
+            mutation: 'set-profile-mgmt-current', param: 'profileIndex', editor: 'modal-number',
+            labelKey: '当前配置文件', range: { min: 0, max: 15, step: 1 },
+          }] },
+        },
+        {
+          id: 'dpi', control: 'DpiStages', labelKey: 'DPI', readOnly: false,
+          placements: [{ region: 'control', group: 'performance', order: 10, span: 1, icon: 'gauge' }],
+          metadata: {
+            stageLayout: {
+              dotsSource: 'state.dpiStages', selectMutation: 'set-dpi-stage',
+              setMutation: 'set-dpi-value', valueSource: 'state.dpiStages',
+              range: { min: 100, max: 32000, step: 50 },
+            },
+            stateMapping: { dpiStages: 'dpiStages' },
+          },
+        },
+        {
+          id: 'pointer-speed', control: 'Number', labelKey: '指针速度', readOnly: false,
+          placements: [{ region: 'control', group: 'performance', order: 15, span: 1, icon: 'gauge' }],
+          metadata: { fields: [{
+            id: 'value', source: 'capabilities.pointerSpeed.speedRaw', mutation: 'set-pointer-speed',
+            param: 'speed', editor: 'modal-number', labelKey: '指针速度',
+            range: { min: 46, max: 511, step: 1 },
+          }] },
+        },
+      ],
+      writableMutations: ['set-control-mode', 'set-profile-mgmt-current', 'set-dpi-stage', 'set-dpi-value', 'set-pointer-speed'],
+      evidence: 'hardware-verified',
+    };
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'settings_get') return Promise.resolve(settings);
+      if (command === 'device_snapshots') return Promise.resolve(entries(mixedSnapshot));
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Mixed Capability Mouse' });
+
+    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['配置控制', 'DPI']);
+    expect(document.querySelector('.plugin-control-reading svg')).toHaveAttribute('data-plugin-icon', 'settings');
+    expect(screen.queryByText('当前配置文件')).not.toBeInTheDocument();
+    expect(screen.queryByText('指针速度')).not.toBeInTheDocument();
+    expect(screen.queryByText('未报告')).not.toBeInTheDocument();
   });
 
   it('keeps all plugin capabilities available from the main snapshot', async () => {
@@ -866,7 +1020,7 @@ describe('real device snapshot mapping', () => {
     expect(receiverGroup?.querySelectorAll('.lighting-row')).toHaveLength(5);
   });
 
-  it('shows polling placeholder when rate not reported', async () => {
+  it('hides polling control when rate not reported', async () => {
     const noPollingSnapshot: DeviceSnapshot = {
       displayName: 'No Polling Mouse', connection: 'wireless', batteryPercent: 80,
       charging: false, batteries: [], dpi: 1600,
@@ -892,12 +1046,9 @@ describe('real device snapshot mapping', () => {
 
     render(<App />);
     await screen.findByRole('heading', { name: 'No Polling Mouse' });
-    fireEvent.click(screen.getByRole('tab', { name: '回报率' }));
-    // 未报告时显示 i18n 的 "未报告" 文案（与 DPI 分支一致：
-    // 仅当 capability 处于 runtime pending 时才显示 "—"，真正未上报走 notReported）
-    expect(screen.getAllByText('未报告')).not.toHaveLength(0);
-    expect(document.querySelector('.metric-reading')).toBeInTheDocument();
-    expect(screen.getAllByText('当前回报率')).not.toHaveLength(0);
+    expect(screen.queryByRole('tab', { name: '回报率' })).not.toBeInTheDocument();
+    expect(screen.queryByText('未报告')).not.toBeInTheDocument();
+    expect(document.querySelector('.metric-reading')).not.toBeInTheDocument();
   });
 
   it('uses plugin locale labels when available', async () => {
