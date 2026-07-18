@@ -128,7 +128,7 @@ dependencies = [
 
 [[package]]
 name = "mira-local-ai"
-version = "0.9.0"
+version = "0.9.6"
 dependencies = [
  "chrono",
  "mira-protocol",
@@ -138,7 +138,7 @@ dependencies = [
 
 [[package]]
 name = "mira-protocol"
-version = "0.9.0"
+version = "0.9.6"
 dependencies = [
  "serde",
  "serde_json",
