@@ -8435,7 +8435,7 @@ fn show_update_notification(
                         });
                     }
                 }
-                Err(error) => state.log_error(
+                Err(error) => app.state::<SessionState>().log_error(
                     "updater::notification",
                     format!("update notification failed: {error}"),
                 ),
