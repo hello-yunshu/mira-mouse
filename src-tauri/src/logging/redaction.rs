@@ -357,8 +357,9 @@ pub fn redact_inline_tokens(text: &str) -> String {
     ];
     for (uppercase, lowercase) in patterns {
         for marker in [uppercase, lowercase] {
-            loop {
-                let Some(start) = out.find(marker) else { break };
+            let mut search_from = 0;
+            while let Some(rel) = out[search_from..].find(marker) {
+                let start = search_from + rel;
                 let value_start = start + marker.len();
                 // 找到下一个空白或行尾。
                 let value_end = out[value_start..]
@@ -369,6 +370,8 @@ pub fn redact_inline_tokens(text: &str) -> String {
                     .unwrap_or(out.len());
                 if value_end > value_start {
                     out.replace_range(value_start..value_end, REDACTED);
+                    // 跳过已替换区域，避免重新匹配同一标记导致死循环。
+                    search_from = value_start + REDACTED.len();
                 } else {
                     break;
                 }
