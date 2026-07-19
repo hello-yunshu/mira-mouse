@@ -191,7 +191,7 @@ describe('BatteryUsageModal', () => {
     expect(screen.getByText('充电习惯')).toBeInTheDocument();
   });
 
-  it('switches to 10d range and refetches', async () => {
+  it('switches to 10d range using cached response without refetching', async () => {
     let callCount = 0;
     invokeMock.mockImplementation((command: string, payload?: { range?: string }) => {
       if (command === 'settings_get') return Promise.resolve(settingsEnabled);
@@ -202,11 +202,13 @@ describe('BatteryUsageModal', () => {
       return Promise.resolve(undefined);
     });
     render(<BatteryUsageModal open onClose={() => {}} hasBattery />);
-    await waitFor(() => expect(callCount).toBe(1));
+    // 打开时并行拉取 24h + 10d 两个 range（callCount=2），切换不再触发请求。
+    await waitFor(() => expect(callCount).toBe(2));
     const range10d = screen.getByRole('tab', { name: '10 天' });
     fireEvent.click(range10d);
-    await waitFor(() => expect(callCount).toBe(2));
-    expect(invokeMock).toHaveBeenCalledWith('battery_history_get', { range: '10d' });
+    // 切换后立即命中缓存渲染 10d 图表，callCount 仍为 2。
+    await waitFor(() => expect(document.querySelectorAll('.battery-chart g[role="button"]')).toHaveLength(30));
+    expect(callCount).toBe(2);
     const tenDayBars = Array.from(document.querySelectorAll<SVGGElement>('.battery-chart g[role="button"]'));
     expect(tenDayBars).toHaveLength(30);
     expect(document.querySelectorAll('.battery-chart-x-grid')).toHaveLength(10);
@@ -244,6 +246,45 @@ describe('BatteryUsageModal', () => {
     expect(document.querySelector('.battery-chart-tooltip')).toHaveTextContent('时段内充电: 是');
   });
 
+  it('does not remount stable blocks when switching range', async () => {
+    let callCount = 0;
+    invokeMock.mockImplementation((command: string, payload?: { range?: string }) => {
+      if (command === 'settings_get') return Promise.resolve(settingsEnabled);
+      if (command === 'battery_history_get') {
+        callCount += 1;
+        // 两次返回的 device 数据完全相同，模拟「切换 range 但当前电量未变」
+        return Promise.resolve(payload?.range === '10d' ? MOCK_BATTERY_HISTORY_10D : MOCK_BATTERY_HISTORY_24H);
+      }
+      return Promise.resolve(undefined);
+    });
+    render(<BatteryUsageModal open onClose={() => {}} hasBattery />);
+    // 打开时并行拉取 24h + 10d（callCount=2），切换命中缓存不再触发请求。
+    await waitFor(() => expect(callCount).toBe(2));
+
+    // 缓存切换前的关键 DOM 节点引用
+    const stripBefore = document.querySelector('.battery-status-strip');
+    const primaryBefore = document.querySelector('.battery-summary-item.primary');
+    const batteryIconBefore = document.querySelector('.battery-summary-item.primary .battery-level-icon');
+    const rangeToggleBefore = document.querySelector('.battery-range-toggle');
+
+    fireEvent.click(screen.getByRole('tab', { name: '10 天' }));
+    // 等待 10d 图表渲染完成（命中缓存即渲染，无须等待新请求）。
+    await waitFor(() => expect(document.querySelectorAll('.battery-chart g[role="button"]')).toHaveLength(30));
+    expect(callCount).toBe(2);
+
+    // 切换后再次查询，外部容器与电池图标节点必须是同一个 DOM 引用，
+    // 证明没有卸载重建，CSS 入场动画/transition 不会被重新触发。
+    const stripAfter = document.querySelector('.battery-status-strip');
+    const primaryAfter = document.querySelector('.battery-summary-item.primary');
+    const batteryIconAfter = document.querySelector('.battery-summary-item.primary .battery-level-icon');
+    const rangeToggleAfter = document.querySelector('.battery-range-toggle');
+
+    expect(stripBefore).toBe(stripAfter);
+    expect(primaryBefore).toBe(primaryAfter);
+    expect(batteryIconBefore).toBe(batteryIconAfter);
+    expect(rangeToggleBefore).toBe(rangeToggleAfter);
+  });
+
   it('formats English hour, weekday, and date labels compactly', async () => {
     await i18n.changeLanguage('en');
     let callCount = 0;
@@ -257,7 +298,8 @@ describe('BatteryUsageModal', () => {
     });
 
     render(<BatteryUsageModal open onClose={() => {}} hasBattery />);
-    await waitFor(() => expect(callCount).toBe(1));
+    // 打开时并行拉取 24h + 10d（callCount=2）。
+    await waitFor(() => expect(callCount).toBe(2));
     const hourLabels = Array.from(document.querySelectorAll<SVGTextElement>('.battery-chart-x-label'))
       .map((label) => label.textContent);
     expect(hourLabels).toContain('12 AM');
@@ -265,7 +307,9 @@ describe('BatteryUsageModal', () => {
     expect(hourLabels.every((label) => /^(12 AM|12 PM|3|6|9)$/.test(label ?? ''))).toBe(true);
 
     fireEvent.click(screen.getByRole('tab', { name: '10 days' }));
-    await waitFor(() => expect(callCount).toBe(2));
+    // 切换命中缓存，callCount 仍为 2；等待 10d 标签渲染完成。
+    await waitFor(() => expect(document.querySelectorAll('.battery-chart-x-label')).toHaveLength(10));
+    expect(callCount).toBe(2);
     const weekdayLabels = Array.from(document.querySelectorAll<SVGTextElement>('.battery-chart-x-label'))
       .map((label) => label.textContent ?? '');
     const dateLabels = Array.from(document.querySelectorAll<SVGTextElement>('.battery-chart-x-date'))
@@ -275,7 +319,9 @@ describe('BatteryUsageModal', () => {
     expect(dateLabels.every((label) => /^\d{1,2}\/\d{1,2}$/.test(label))).toBe(true);
   });
 
-  it('keeps the current chart coherent until the next range response arrives', async () => {
+  it('keeps the chart loading until both ranges arrive in parallel', async () => {
+    // 新架构下打开时并行拉取 24h + 10d，两者都到齐前保持 loading。
+    // 这里验证：10d 响应延迟时，loading 期间不渲染图表；10d 到齐后才渲染。
     let resolveTenDay: ((response: BatteryHistoryResponse) => void) | undefined;
     invokeMock.mockImplementation((command: string, payload?: { range?: string }) => {
       if (command === 'settings_get') return Promise.resolve(settingsEnabled);
@@ -287,22 +333,103 @@ describe('BatteryUsageModal', () => {
     });
 
     render(<BatteryUsageModal open onClose={() => {}} hasBattery />);
-    await waitFor(() => expect(document.querySelectorAll('.battery-chart g[role="button"]')).toHaveLength(48));
-    const averageLayer = document.querySelector<SVGGElement>('.battery-chart-average');
-    const initialAverageTransform = averageLayer?.style.transform;
-    fireEvent.click(screen.getByRole('tab', { name: '10 天' }));
-
-    expect(screen.getByRole('tab', { name: '10 天' })).toHaveAttribute('aria-selected', 'true');
-    expect(document.querySelectorAll('.battery-chart g[role="button"]')).toHaveLength(48);
-    expect(document.querySelectorAll('.battery-chart-x-label')).toHaveLength(8);
-    expect(document.querySelector('.battery-chart')).toHaveAttribute('viewBox', '0 0 520 162');
+    // 24h 已到齐但 10d 未到，loading 期间不渲染图表。
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('battery_history_get', { range: '10d' }));
+    expect(document.querySelector('.battery-chart')).toBeNull();
 
     resolveTenDay?.(MOCK_BATTERY_HISTORY_10D);
-    await waitFor(() => expect(document.querySelectorAll('.battery-chart g[role="button"]')).toHaveLength(30));
-    expect(document.querySelector('.battery-chart-average')).toBe(averageLayer);
-    expect(document.querySelector<SVGGElement>('.battery-chart-average')?.style.transform).not.toBe(initialAverageTransform);
-    expect(document.querySelectorAll('.battery-chart-x-label')).toHaveLength(10);
+    await waitFor(() => expect(document.querySelectorAll('.battery-chart g[role="button"]')).toHaveLength(48));
     expect(document.querySelector('.battery-chart')).toHaveAttribute('viewBox', '0 0 520 162');
+  });
+
+  it('caps insight card count to the minimum of 24h and 10d visible counts', async () => {
+    // 24h 有 4 个 basic insights（chargingHabit/batteryConsistency/averageDailyDrain/chargingCount），
+    // 经 filterInsightsForCards 规整后为 4 张卡片。10d 只有 2 个 basic insights，规整后为 2 张。
+    // minInsightCount = min(4, 2) = 2，两个 range 都只渲染 2 张卡片，
+    // 从源头避免「切换 range 时卡片增减」造成布局抖动。
+    const response24h: BatteryHistoryResponse = {
+      ...MOCK_BATTERY_HISTORY_24H,
+      insights: [
+        { type: 'chargingHabit', severity: 'info', title: 'chargingHabit', message: 'chargingHabitStartEnd|18|92|3', deviceKey: 'mouse:abc123:mouse' },
+        { type: 'batteryConsistency', severity: 'info', title: 'batteryConsistency', message: 'consistencyStable', deviceKey: 'mouse:abc123:mouse' },
+        { type: 'averageDailyDrain', severity: 'info', title: 'averageDailyDrain', message: 'averageDailyDrain|2.3', deviceKey: 'mouse:abc123:mouse' },
+        { type: 'chargingCount', severity: 'info', title: 'chargingCount', message: 'chargingCount|1', deviceKey: 'mouse:abc123:mouse' },
+      ],
+    };
+    const response10d: BatteryHistoryResponse = {
+      ...MOCK_BATTERY_HISTORY_10D,
+      insights: [
+        { type: 'chargingHabit', severity: 'info', title: 'chargingHabit', message: 'chargingHabitStartEnd|18|92|3', deviceKey: 'mouse:abc123:mouse' },
+        { type: 'batteryConsistency', severity: 'info', title: 'batteryConsistency', message: 'consistencyStable', deviceKey: 'mouse:abc123:mouse' },
+      ],
+    };
+    invokeMock.mockImplementation((command: string, payload?: { range?: string }) => {
+      if (command === 'settings_get') return Promise.resolve(settingsEnabled);
+      if (command === 'battery_history_get') {
+        return Promise.resolve(payload?.range === '10d' ? response10d : response24h);
+      }
+      return Promise.resolve(undefined);
+    });
+
+    render(<BatteryUsageModal open onClose={() => {}} hasBattery />);
+    // 两个 range 都到齐后，取最小卡片数（2），24h 只渲染 2 张（虽然实际有 4 个 insights）。
+    await waitFor(() => expect(document.querySelectorAll('.battery-insight-card')).toHaveLength(2));
+
+    // 切换到 10d，卡片数仍为 2（与 24h 一致，无增减）。
+    fireEvent.click(screen.getByRole('tab', { name: '10 天' }));
+    await waitFor(() => expect(document.querySelector('.battery-chart-plot-content')).toHaveClass('range-10d'));
+    expect(document.querySelectorAll('.battery-insight-card')).toHaveLength(2);
+
+    // 切换回 24h，卡片数仍为 2（被 maxCount 限制）。
+    fireEvent.click(screen.getByRole('tab', { name: '24 小时' }));
+    await waitFor(() => expect(document.querySelector('.battery-chart-plot-content')).toHaveClass('range-24h'));
+    expect(document.querySelectorAll('.battery-insight-card')).toHaveLength(2);
+  });
+
+  it('hides the entire insight section when min count drops to zero', async () => {
+    // 边界场景：24h 只有 1 个洞察（奇数截断为 0），10d 有 4 个洞察（保留 4 个）。
+    // minInsightCount = min(0, 4) = 0，整个洞察 section（标题、副标题、卡片）都不渲染。
+    // 切换到 10d 时同理：minInsightCount 仍是 0，10d 即使有 4 个洞察也不显示。
+    const response24h: BatteryHistoryResponse = {
+      ...MOCK_BATTERY_HISTORY_24H,
+      insights: [
+        { type: 'chargingHabit', severity: 'info', title: 'chargingHabit', message: 'chargingHabitStartEnd|18|92|3', deviceKey: 'mouse:abc123:mouse' },
+      ],
+    };
+    const response10d: BatteryHistoryResponse = {
+      ...MOCK_BATTERY_HISTORY_10D,
+      insights: [
+        { type: 'chargingHabit', severity: 'info', title: 'chargingHabit', message: 'chargingHabitStartEnd|18|92|3', deviceKey: 'mouse:abc123:mouse' },
+        { type: 'batteryConsistency', severity: 'info', title: 'batteryConsistency', message: 'consistencyStable', deviceKey: 'mouse:abc123:mouse' },
+        { type: 'averageDailyDrain', severity: 'info', title: 'averageDailyDrain', message: 'averageDailyDrain|1.8', deviceKey: 'mouse:abc123:mouse' },
+        { type: 'chargingCount', severity: 'info', title: 'chargingCount', message: 'chargingCount|6', deviceKey: 'mouse:abc123:mouse' },
+      ],
+    };
+    invokeMock.mockImplementation((command: string, payload?: { range?: string }) => {
+      if (command === 'settings_get') return Promise.resolve(settingsEnabled);
+      if (command === 'battery_history_get') {
+        return Promise.resolve(payload?.range === '10d' ? response10d : response24h);
+      }
+      return Promise.resolve(undefined);
+    });
+
+    render(<BatteryUsageModal open onClose={() => {}} hasBattery />);
+    // 两个 range 都到齐后，minInsightCount=0，洞察 section 完全不渲染。
+    await waitFor(() => expect(document.querySelector('.battery-chart')).not.toBeNull());
+    expect(document.querySelector('.battery-insight-section')).toBeNull();
+    expect(document.querySelector('.battery-insight-card')).toBeNull();
+    expect(screen.queryByText('本地 AI 洞察')).toBeNull();
+    expect(screen.queryByText('用电洞察')).toBeNull();
+    expect(screen.queryByText('由趋势建模、异常掉电检测与充电习惯推断生成')).toBeNull();
+    expect(screen.queryByText('根据本地电量历史生成趋势、耗电与充电习惯摘要')).toBeNull();
+
+    // 切换到 10d：minInsightCount 仍是 0（来自缓存），10d 即使有 4 个洞察也不显示。
+    fireEvent.click(screen.getByRole('tab', { name: '10 天' }));
+    await waitFor(() => expect(document.querySelector('.battery-chart-plot-content')).toHaveClass('range-10d'));
+    expect(document.querySelector('.battery-insight-section')).toBeNull();
+    expect(document.querySelector('.battery-insight-card')).toBeNull();
+    expect(screen.queryByText('本地 AI 洞察')).toBeNull();
+    expect(screen.queryByText('用电洞察')).toBeNull();
   });
 
   it('keeps the native device switcher clickable across repeated selections', async () => {
@@ -318,8 +445,9 @@ describe('BatteryUsageModal', () => {
       fireEvent.click(switcher);
       const item = screen.getByRole('menuitemradio', { name: selectReceiver ? /接收器/ : /鼠标/ });
       fireEvent.click(item);
-      expect(document.querySelector('.battery-status-metric strong'))
-        .toHaveTextContent(selectReceiver ? '96%' : '82%');
+      // FadeText 在文本变化时触发 160ms 淡入淡出过渡，过渡结束后 currentValue 才更新为新值。
+      await waitFor(() => expect(document.querySelector('.battery-status-metric strong'))
+        .toHaveTextContent(selectReceiver ? '96%' : '82%'));
       expect(switcher).toHaveAttribute('aria-expanded', 'false');
     }
   });
@@ -375,7 +503,8 @@ describe('BatteryUsageModal', () => {
     await waitFor(() => expect(document.querySelector('.battery-status-metric strong')).toHaveTextContent('82%'));
     fireEvent.click(screen.getByRole('button', { name: '切换设备' }));
     fireEvent.click(screen.getByRole('menuitemradio', { name: /接收器/ }));
-    expect(document.querySelector('.battery-status-metric strong')).toHaveTextContent('96%');
+    // FadeText 在文本变化时触发 160ms 淡入淡出过渡，过渡结束后 currentValue 才更新为新值。
+    await waitFor(() => expect(document.querySelector('.battery-status-metric strong')).toHaveTextContent('96%'));
 
     fireEvent.click(screen.getByRole('tab', { name: '10 天' }));
     await waitFor(() => expect(document.querySelector('.battery-status-metric strong')).toHaveTextContent('82%'));
