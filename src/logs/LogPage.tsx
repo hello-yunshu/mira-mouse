@@ -555,13 +555,11 @@ export function LogPage({ onBack }: { onBack: () => void }) {
     setAtTop(true);
   }, [scrollSignal, scrollToTop]);
 
-  // 监听页面滚动，更新 atTop 状态
   const handleScroll = useCallback(() => {
     const next = checkAtTop();
     setAtTop(next);
   }, [checkAtTop]);
 
-  // 初次加载时停在最新日志所在的顶部
   useEffect(() => {
     scrollToTop();
     // 初始挂载后将状态同步为「已在顶部」。这是同步滚动后的副作用，不会造成级联渲染。
@@ -660,7 +658,6 @@ export function LogPage({ onBack }: { onBack: () => void }) {
         // emitter 批次按产生时间（旧→新）到达；反转后前插，保持最新在上。
         return [...batch.slice().reverse(), ...prev].slice(0, MAX_VIEW_ENTRIES);
       });
-      // 更新状态中的 bufferCount
       void refreshStatus();
     };
 
@@ -674,7 +671,6 @@ export function LogPage({ onBack }: { onBack: () => void }) {
 
       if (pausedRef.current) {
         // 暂停期间：累计到 pendingBatchRef，恢复或跳转最新时合并；同时更新计数。
-        // 之前只更新计数而不缓冲，导致「N 条新日志」徽章点击后无内容可合并（数据丢失）。
         pendingBatchRef.current.push(...filtered);
         // 防止长时间暂停导致无界增长：只保留最近一个展示窗口的条目。
         if (pendingBatchRef.current.length > MAX_VIEW_ENTRIES) {
@@ -759,11 +755,9 @@ export function LogPage({ onBack }: { onBack: () => void }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sourceFilter, minLevel]);
 
-  // 关键字搜索防抖
   useEffect(() => {
     if (pureWeb) return;
-    // cancelled 提升到 effect 作用域：之前放在 setTimeout 回调里，
-    // 其返回的清理函数被 setTimeout 忽略，快速输入时会用过期结果覆盖最新结果。
+    // cancelled 提升到 effect 作用域，避免快速输入时用过期结果覆盖最新结果。
     let cancelled = false;
     const timer = setTimeout(() => {
       const query = buildQuery(sourceFilter, minLevel, keyword);
@@ -809,7 +803,6 @@ export function LogPage({ onBack }: { onBack: () => void }) {
       });
     }
     setNewCount(0);
-    // 强制滚动到顶部，展示刚合并的最新日志。
     setScrollSignal((n) => n + 1);
     // 点击徽章表示用户想看新日志：若处于暂停则恢复自动刷新
     if (pausedRef.current) {
@@ -936,7 +929,6 @@ export function LogPage({ onBack }: { onBack: () => void }) {
         }));
       }
       setDeleteDialog({ open: false });
-      // 之前只刷新状态（bufferCount），列表中已删除的条目仍残留；需重新查询列表。
       void refreshStatus();
       void refreshEntries();
     } catch (err) {
