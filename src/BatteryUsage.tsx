@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { forwardRef, memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { save } from '@tauri-apps/plugin-dialog';
@@ -25,6 +25,65 @@ import { Tooltip } from './Tooltip';
 
 function isPureWebPreview(): boolean {
   return !('__TAURI_INTERNALS__' in window);
+}
+
+// 切换 battery range 时后端会返回新的 response 引用，但其中的 device/insight
+// 内容通常完全相同（当前电量、设备名、洞察消息都没变）。这些新引用会让下游
+// memo 浅比较失效，导致 StatusStrip/Summary 整体重渲染，电池图标被重新调用
+// 函数体并触发 CSS transition/animation 的视觉抖动。下面这组 equal 函数 +
+// useStable hook 用于在内容相同时复用旧引用，让 memo 浅比较生效。
+function batteryDeviceEqual(a: BatteryHistoryDevice | undefined, b: BatteryHistoryDevice | undefined): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    a.key === b.key &&
+    a.deviceId === b.deviceId &&
+    a.deviceName === b.deviceName &&
+    a.connection === b.connection &&
+    a.componentId === b.componentId &&
+    a.componentLabel === b.componentLabel &&
+    a.latestPercentage === b.latestPercentage &&
+    a.latestCharging === b.latestCharging &&
+    a.latestAt === b.latestAt &&
+    a.lowBattery === b.lowBattery
+  );
+}
+
+function batteryInsightEqual(a: BatteryInsight | undefined, b: BatteryInsight | undefined): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    a.type === b.type &&
+    a.severity === b.severity &&
+    a.title === b.title &&
+    a.message === b.message &&
+    a.deviceKey === b.deviceKey
+  );
+}
+
+const deviceArrayEqual = (a: readonly BatteryHistoryDevice[], b: readonly BatteryHistoryDevice[]): boolean =>
+  a.length === b.length && a.every((d, i) => batteryDeviceEqual(d, b[i]));
+
+const insightArrayEqual = (a: readonly BatteryInsight[], b: readonly BatteryInsight[]): boolean =>
+  a.length === b.length && a.every((x, i) => batteryInsightEqual(x, b[i]));
+
+/**
+ * 引用稳定 hook：内容相同时复用旧引用，让下游 memo 浅比较生效。
+ * 用于切换 battery range 时 response 引用变化但内容相同的场景。
+ *
+ * 实现说明：用 useState 持有「上一次返回的引用」，render 中比较内容——
+ * 内容相同则返回旧引用（命中下游 memo）；内容变化则 setState 触发一次
+ * 重渲染，并直接返回新引用，避免本次渲染先用旧值再切到新值的视觉跳跃。
+ * 这符合 React 关于「storing information from previous renders」的官方
+ * 用法（https://react.dev/reference/react/useState#storing-information-from-previous-renders）。
+ */
+function useStable<T>(value: T, equal: (a: T, b: T) => boolean): T {
+  const [stable, setStable] = useState<T>(value);
+  if (!equal(stable, value)) {
+    setStable(value);
+    return value;
+  }
+  return stable;
 }
 
 function formatRelativeTime(iso: string, t: (key: string, options?: Record<string, unknown>) => string): string {
@@ -94,11 +153,78 @@ function formatInsightMessage(insight: BatteryInsight, t: (key: string, options?
   }
 }
 
+// ─── 文本淡入淡出 ───────────────────────────────────────────────────────────
+// 双 span 交叉 opacity 过渡：文本变化时旧值淡出 + 新值淡入，单层 opacity +
+// 1px translateY，220ms 时长（对齐项目 motion-base 量级，比 motion-fast 稍慢，
+// 让用户看清过渡）。用独立的 .battery-fade-text 类（而非 .live-value），避免
+// 与 Dashboard LiveValue 共享样式，便于按需调整时长与多行布局。
+// 多行模式（multiline=true，配合 OverflowTip multiline）：next span 用 absolute
+// 定位脱离文档流，外层容器高度仅由 current 决定，避免新旧文案行数不同时
+// 撑开容器导致洞察卡片高度抖动 / 重排。
+// delay prop：父组件按子块位置传不同延迟（如 0/40/80/120ms），让同时变化的
+// 多个文本错落地切换，参考灯光块 secondaryRevealStyle 的 staggered 思路。
+// 实现上 delay 同时作用于 CSS transition-delay 和 setTimeout 时长，保证过渡
+// 时序与状态切换同步。
+const FadeText = forwardRef<HTMLSpanElement, {
+  text: string;
+  className?: string;
+  multiline?: boolean;
+  delay?: number;
+}>(function FadeText({ text, className, multiline, delay = 0 }, ref) {
+  const [currentValue, setCurrentValue] = useState(text);
+  const [nextValue, setNextValue] = useState<string | undefined>(undefined);
+  const [transitioning, setTransitioning] = useState(false);
+
+  useEffect(() => {
+    if (text === currentValue) return;
+    let prepareFrame = 0;
+    let transitionFrame = 0;
+    let timeout = 0;
+    prepareFrame = window.requestAnimationFrame(() => {
+      setNextValue(text);
+      setTransitioning(false);
+      transitionFrame = window.requestAnimationFrame(() => {
+        setTransitioning(true);
+        timeout = window.setTimeout(() => {
+          setCurrentValue(text);
+          setNextValue(undefined);
+          setTransitioning(false);
+        }, 220 + delay);
+      });
+    });
+    return () => {
+      window.cancelAnimationFrame(prepareFrame);
+      window.cancelAnimationFrame(transitionFrame);
+      window.clearTimeout(timeout);
+    };
+  }, [currentValue, text, delay]);
+
+  return (
+    <span
+      ref={ref}
+      style={{ '--fade-delay': `${delay}ms` } as CSSProperties}
+      className={[
+        className,
+        multiline ? 'battery-fade-multiline' : 'battery-fade-text',
+        transitioning ? 'is-transitioning' : undefined,
+      ].filter(Boolean).join(' ')}
+      aria-label={text}
+    >
+      <span className="battery-fade-current" aria-hidden="true">{currentValue}</span>
+      {nextValue !== undefined && (
+        <span className="battery-fade-next" aria-hidden="true">{nextValue}</span>
+      )}
+    </span>
+  );
+});
+
 // ─── 溢出文字弹窗 ───────────────────────────────────────────────────────────
 // 检测单行/多行文字是否溢出容器，溢出时复用统一 Tooltip 显示完整内容。
 // Tooltip 通过 OverlayPortal 渲染到顶层 #mira-overlay-root，避免被祖先
 // overflow: hidden / overflow-y: auto 裁切。
-function OverflowTip({ text, className, multiline }: { text: string; className?: string; multiline?: boolean }) {
+// 内部用 FadeText 渲染文本，让所有用 OverflowTip 的 summary 文本在
+// 内容变化时自动获得淡入淡出动画（复用 .live-value CSS）。
+function OverflowTip({ text, className, multiline, delay }: { text: string; className?: string; multiline?: boolean; delay?: number }) {
   const ref = useRef<HTMLSpanElement>(null);
   const [overflowed, setOverflowed] = useState(false);
 
@@ -119,7 +245,7 @@ function OverflowTip({ text, className, multiline }: { text: string; className?:
     return () => observer.disconnect();
   }, [checkOverflow]);
 
-  const content = <span ref={ref} className={className}>{text}</span>;
+  const content = <FadeText ref={ref} text={text} className={className} multiline={multiline} delay={delay} />;
   return overflowed ? <Tooltip label={text}>{content}</Tooltip> : content;
 }
 
@@ -526,49 +652,104 @@ interface SummaryProps {
   range: BatteryHistoryRange;
 }
 
-function BatteryUsageSummary({ device, insights, range }: SummaryProps) {
+// 摘要卡片拆成 4 个 memo 子块：切换 range 时只有真正变化的块重渲染，
+// 「当前电量」等不变块的 DOM 与子组件实例完全复用，避免电池图标被
+// 重新调用函数体而触发 CSS transition/animation 的视觉抖动。
+// 每个子块自己调用 useTranslation() 拿到 t —— react-i18next 在相同
+// i18n 状态下 t 引用稳定，子块各自调用更解耦，且不依赖父层 t 引用。
+
+// 子块 1：当前电量（不依赖 range，依赖 device）
+const CurrentBatteryItem = memo(function CurrentBatteryItem({ device, delay }: { device: BatteryHistoryDevice; delay?: number }) {
   const { t } = useTranslation();
-  if (!device) return null;
-
-  const remaining = insights.find((i) => i.type === 'estimatedRemaining');
-  const runout = insights.find((i) => i.type === 'estimatedRunout');
   const charging = device.latestCharging ?? false;
-  const lowBattery = device.lowBattery ?? false;
+  return (
+    <div className="battery-summary-item primary">
+      <span className="summary-label with-icon">
+        <BatteryLevelIcon percentage={device.latestPercentage} charging={charging} />
+        {t('batteryUsage.currentBattery')}
+      </span>
+      <OverflowTip className="summary-value" text={`${device.latestPercentage ?? '--'}%`} delay={delay} />
+      {device.latestAt && <OverflowTip className="summary-sub" text={formatRelativeTime(device.latestAt, t)} delay={delay} />}
+    </div>
+  );
+});
 
+// 子块 2：24h/10d 变化（依赖 range + charging/lowBattery）
+const BatteryChangeItem = memo(function BatteryChangeItem({
+  range,
+  charging,
+  lowBattery,
+  delay,
+}: {
+  range: BatteryHistoryRange;
+  charging: boolean;
+  lowBattery: boolean;
+  delay?: number;
+}) {
+  const { t } = useTranslation();
   const statusText = charging
     ? t('batteryUsage.charging')
     : lowBattery
       ? t('batteryUsage.lowBattery')
       : t('batteryUsage.normal');
+  return (
+    <div className="battery-summary-item">
+      <OverflowTip className="summary-label" text={t('batteryUsage.change' + (range === '24h' ? '24h' : '10d'))} delay={delay} />
+      <OverflowTip className="summary-value" text={statusText} delay={delay} />
+      <OverflowTip className="summary-sub" text={charging ? t('batteryUsage.charging') : t('batteryUsage.notCharging')} delay={delay} />
+    </div>
+  );
+});
 
+// 子块 3：预计剩余（依赖 insights.remaining，自定义比较避免 find 返回新引用导致 memo 失效）
+const EstimatedRemainingItem = memo(
+  function EstimatedRemainingItem({ remaining, delay }: { remaining: BatteryInsight | undefined; delay?: number }) {
+    const { t } = useTranslation();
+    return (
+      <div className="battery-summary-item">
+        <OverflowTip className="summary-label" text={t('batteryUsage.estimatedRemaining')} delay={delay} />
+        <OverflowTip className="summary-value" text={remaining ? formatInsightMessage(remaining, t) : t('batteryUsage.notEnoughData')} delay={delay} />
+      </div>
+    );
+  },
+  (prev, next) => batteryInsightEqual(prev.remaining, next.remaining),
+);
+
+// 子块 4：预计耗尽（依赖 insights.runout + charging）
+const EstimatedRunoutItem = memo(
+  function EstimatedRunoutItem({ runout, charging, delay }: { runout: BatteryInsight | undefined; charging: boolean; delay?: number }) {
+    const { t } = useTranslation();
+    return (
+      <div className="battery-summary-item">
+        <OverflowTip className="summary-label" text={t('batteryUsage.estimatedRunout')} delay={delay} />
+        <OverflowTip className="summary-value" text={!charging ? (runout?.message ?? t('batteryUsage.notEnoughData')) : t('batteryUsage.charging')} delay={delay} />
+      </div>
+    );
+  },
+  (prev, next) => batteryInsightEqual(prev.runout, next.runout) && prev.charging === next.charging,
+);
+
+// 父组件：派生数据并组装 4 个子块。device/insights 引用已在 BatteryUsageModal
+// 中通过 useStable 稳定，切换 range 时若内容相同则子块全部命中 memo 缓存。
+// delay 按子块位置错落分配（0/40/80/120ms），让同时变化的多个文本错开
+// 开始过渡，参考灯光块 secondaryRevealStyle 的 staggered 思路。
+function BatteryUsageSummary({ device, insights, range }: SummaryProps) {
+  if (!device) return null;
+  const charging = device.latestCharging ?? false;
+  const lowBattery = device.lowBattery ?? false;
+  const remaining = insights.find((i) => i.type === 'estimatedRemaining');
+  const runout = insights.find((i) => i.type === 'estimatedRunout');
   return (
     <div className="battery-summary-grid">
-      <div className="battery-summary-item primary">
-        <span className="summary-label with-icon">
-          <BatteryLevelIcon percentage={device.latestPercentage} charging={charging} />
-          {t('batteryUsage.currentBattery')}
-        </span>
-        <OverflowTip className="summary-value" text={`${device.latestPercentage ?? '--'}%`} />
-        {device.latestAt && <OverflowTip className="summary-sub" text={formatRelativeTime(device.latestAt, t)} />}
-      </div>
-      <div className="battery-summary-item">
-        <OverflowTip className="summary-label" text={t('batteryUsage.change' + (range === '24h' ? '24h' : '10d'))} />
-        <OverflowTip className="summary-value" text={statusText} />
-        <OverflowTip className="summary-sub" text={charging ? t('batteryUsage.charging') : t('batteryUsage.notCharging')} />
-      </div>
-      <div className="battery-summary-item">
-        <OverflowTip className="summary-label" text={t('batteryUsage.estimatedRemaining')} />
-        <OverflowTip className="summary-value" text={remaining ? formatInsightMessage(remaining, t) : t('batteryUsage.notEnoughData')} />
-      </div>
-      <div className="battery-summary-item">
-        <OverflowTip className="summary-label" text={t('batteryUsage.estimatedRunout')} />
-        <OverflowTip className="summary-value" text={!charging ? (runout?.message ?? t('batteryUsage.notEnoughData')) : t('batteryUsage.charging')} />
-      </div>
+      <CurrentBatteryItem device={device} delay={0} />
+      <BatteryChangeItem range={range} charging={charging} lowBattery={lowBattery} delay={40} />
+      <EstimatedRemainingItem remaining={remaining} delay={80} />
+      <EstimatedRunoutItem runout={runout} charging={charging} delay={120} />
     </div>
   );
 }
 
-function BatteryUsageStatusStrip({
+const BatteryUsageStatusStrip = memo(function BatteryUsageStatusStrip({
   device,
   devices,
   insights,
@@ -639,13 +820,13 @@ function BatteryUsageStatusStrip({
         <div className="battery-status-device">
           <BatteryLevelIcon percentage={device.latestPercentage} charging={charging} />
           <div className="battery-status-device-info">
-            <span>{device.deviceName}</span>
-            <strong>{t(device.componentLabel, { defaultValue: device.componentLabel })}</strong>
+            <span><FadeText text={device.deviceName} delay={0} /></span>
+            <strong><FadeText text={t(device.componentLabel, { defaultValue: device.componentLabel })} delay={30} /></strong>
           </div>
         </div>
         <div className="battery-status-metric">
-          <strong>{device.latestPercentage ?? '--'}%</strong>
-          <span>{remaining ? formatInsightMessage(remaining, t) : statusText}</span>
+          <strong><FadeText text={`${device.latestPercentage ?? '--'}%`} delay={60} /></strong>
+          <span><FadeText text={remaining ? formatInsightMessage(remaining, t) : statusText} delay={90} /></span>
         </div>
         {hasMultipleDevices && (
           <CaretUpDown weight="thin" className="battery-status-switch-icon" aria-hidden="true" />
@@ -683,23 +864,49 @@ function BatteryUsageStatusStrip({
       )}
     </div>
   );
+});
+
+// ─── 洞察卡片筛选 ───────────────────────────────────────────────────────────
+// 从全量 insights 中筛出可展示的卡片：去重（已在摘要 grid 展示的 4 类）
+// → 特殊洞察（事件驱动）置顶 + 基础洞察按优先级补齐 → 截断到 maxCount →
+// 偶数化（固定 2 列布局，避免单块占行）。
+// 抽出为独立函数，让 BatteryUsageModal 可对 24h/10d 两个 range 各跑一次，
+// 取最小值作为 maxCount 上限，实现「两个 range 卡片数一致」的视觉稳定性。
+const INSIGHT_SPECIAL_TYPES: BatteryInsight['type'][] = ['abnormalDrain', 'powerSavingTip'];
+const INSIGHT_BASIC_PRIORITY: BatteryInsight['type'][] = ['chargingHabit', 'batteryConsistency', 'averageDailyDrain', 'chargingCount'];
+const INSIGHT_DEDUP_TYPES: ReadonlySet<BatteryInsight['type']> = new Set(['estimatedRemaining', 'estimatedRunout', 'deviceComparison', 'lowestLevel']);
+const INSIGHT_HARD_MAX = 6;
+
+function filterInsightsForCards(insights: BatteryInsight[], maxCount: number = INSIGHT_HARD_MAX): BatteryInsight[] {
+  const effectiveMax = Math.max(0, Math.min(maxCount, INSIGHT_HARD_MAX));
+  const deduped = insights.filter((i) => !INSIGHT_DEDUP_TYPES.has(i.type));
+  const special = deduped.filter((i) => INSIGHT_SPECIAL_TYPES.includes(i.type));
+  const basic = deduped
+    .filter((i) => !INSIGHT_SPECIAL_TYPES.includes(i.type))
+    .sort((a, b) => {
+      const pa = INSIGHT_BASIC_PRIORITY.indexOf(a.type);
+      const pb = INSIGHT_BASIC_PRIORITY.indexOf(b.type);
+      return (pa === -1 ? 99 : pa) - (pb === -1 ? 99 : pb);
+    });
+  const basicTake = Math.max(0, Math.min(basic.length, effectiveMax - special.length));
+  let visible: BatteryInsight[] = [...special, ...basic.slice(0, basicTake)].slice(0, effectiveMax);
+  // 固定 2 列布局：奇数时截断最后一个，避免单块占行。
+  if (visible.length % 2 !== 0) {
+    visible = visible.slice(0, visible.length - 1);
+  }
+  return visible;
 }
 
 // ─── 洞察卡片 ───────────────────────────────────────────────────────────────
 
-function BatteryInsightCards({ insights, aiAnalysisEnabled }: { insights: BatteryInsight[]; aiAnalysisEnabled: boolean }) {
+function BatteryInsightCards({ insights, aiAnalysisEnabled, maxCount }: { insights: BatteryInsight[]; aiAnalysisEnabled: boolean; maxCount?: number }) {
   const { t } = useTranslation();
 
-  // 过滤掉已在上方摘要 grid 中展示的"预计剩余"和"预计耗尽"，避免重复。
-  // 同时过滤"设备对比"和"最低电量"——前者信息密度低，后者已由摘要区当前电量覆盖。
-  const deduped = insights.filter(
-    (i) => i.type !== 'estimatedRemaining'
-      && i.type !== 'estimatedRunout'
-      && i.type !== 'deviceComparison'
-      && i.type !== 'lowestLevel',
-  );
+  // maxCount 由父组件计算（24h 与 10d 两个 range 的可见卡片数取最小），
+  // 让切换 range 时卡片数保持一致，避免块的增加/减少造成布局抖动。
+  const visible = filterInsightsForCards(insights, maxCount);
 
-  if (deduped.length === 0) return null;
+  if (visible.length === 0) return null;
 
   const iconFor = (type: BatteryInsight['type']) => {
     switch (type) {
@@ -714,30 +921,6 @@ function BatteryInsightCards({ insights, aiAnalysisEnabled }: { insights: Batter
       default: return <Clock weight="regular" />;
     }
   };
-
-  // 特殊洞察（事件驱动）置顶，基础洞察（稳定生成）按优先级补齐，最多 6 个。
-  const specialTypes: BatteryInsight['type'][] = ['abnormalDrain', 'powerSavingTip'];
-  const special = deduped.filter((i) => specialTypes.includes(i.type));
-  const basicPriority: BatteryInsight['type'][] = ['chargingHabit', 'batteryConsistency', 'averageDailyDrain', 'chargingCount'];
-  const basic = deduped
-    .filter((i) => !specialTypes.includes(i.type))
-    .sort((a, b) => {
-      const pa = basicPriority.indexOf(a.type);
-      const pb = basicPriority.indexOf(b.type);
-      return (pa === -1 ? 99 : pa) - (pb === -1 ? 99 : pb);
-    });
-
-  const maxCount = 6;
-  const basicTake = Math.max(0, Math.min(basic.length, maxCount - special.length));
-  let visible: BatteryInsight[] = [...special, ...basic.slice(0, basicTake)];
-
-  // 固定 2 列布局：奇数时截断最后一个，避免单块占行。
-  if (visible.length % 2 !== 0) {
-    visible = visible.slice(0, visible.length - 1);
-  }
-
-  // 标题只解释实际展示的卡片；若双列裁剪后没有卡片，整段都不渲染。
-  if (visible.length === 0) return null;
 
   return (
     <section className="battery-insight-section">
@@ -754,8 +937,8 @@ function BatteryInsightCards({ insights, aiAnalysisEnabled }: { insights: Batter
           <div key={i} className={`battery-insight-card severity-${insight.severity}`}>
             <span className="insight-icon">{iconFor(insight.type)}</span>
             <div className="insight-body">
-              <OverflowTip className="insight-title" text={t(`batteryUsage.${insight.title}`)} />
-              <OverflowTip className="insight-text" text={formatInsightMessage(insight, t)} multiline />
+              <OverflowTip className="insight-title" text={t(`batteryUsage.${insight.title}`)} delay={i * 50} />
+              <OverflowTip className="insight-text" text={formatInsightMessage(insight, t)} multiline delay={i * 50 + 30} />
             </div>
           </div>
         ))}
@@ -838,7 +1021,11 @@ export function BatteryUsageModal({
   const { t } = useTranslation();
   const [range, setRange] = useState<BatteryHistoryRange>('24h');
   const [selectedDeviceKey, setSelectedDeviceKey] = useState<string>('');
-  const [response, setResponse] = useState<BatteryHistoryResponse | null>(null);
+  // 同时缓存 24h 与 10d 两个 range 的响应：打开时并行拉取，切换 range 命中缓存
+  // 即可直接渲染（无须再触发请求），并可用于计算「两个 range 洞察卡片数取最小」
+  // 的 maxCount 上限，让切换 range 时卡片数保持一致，避免块增减造成布局抖动。
+  const [responses, setResponses] = useState<Partial<Record<BatteryHistoryRange, BatteryHistoryResponse>>>({});
+  const response = responses[range] ?? null;
   const [loading, setLoading] = useState(false);
   const [confirmingClear, setConfirmingClear] = useState(false);
   // 模态打开时拉取设置中的 batteryHistoryEnabled
@@ -864,31 +1051,45 @@ export function BatteryUsageModal({
       .catch(() => { /* 保留默认值 */ });
   }, [open, providedAiAnalysisEnabled, providedHistoryEnabled, pureWeb]);
 
-  // 数据加载：仅在异步回调中调用 setState，避免 effect 内同步 setState 引发级联渲染
+  // 数据加载：打开时并行拉取 24h + 10d 两个 range，存入 responses 缓存。
+  // 切换 range 不再触发请求（直接命中缓存）；仅 open/historyEnabled/reloadNonce
+  // 变化时重新拉取。Promise.allSettled 容忍单边失败：若 10d 失败仍可用 24h。
+  // 两个 range 到齐前保持 loading=true，确保 minInsightCount 计算时已有完整数据，
+  // 避免先按 24h 全量渲染再因 10d 较少而突然裁剪造成视觉抖动。
   useEffect(() => {
     if (!open || !historyEnabled) return;
     let cancelled = false;
     if (pureWeb) {
       queueMicrotask(() => {
         if (cancelled) return;
-        setResponse(range === '24h' ? MOCK_BATTERY_HISTORY_24H : MOCK_BATTERY_HISTORY_10D);
+        setResponses({
+          '24h': MOCK_BATTERY_HISTORY_24H,
+          '10d': MOCK_BATTERY_HISTORY_10D,
+        });
         setLoading(false);
       });
       return () => { cancelled = true; };
     }
-    invoke<BatteryHistoryResponse>('battery_history_get', { range })
-      .then((res) => {
-        if (cancelled) return;
-        setResponse(res);
-        setLoading(false);
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        notifyError(t('batteryUsage.title'), String(err));
-        setLoading(false);
-      });
+    // setLoading(true) 必须同步调用：两个 range 到齐前需要显示 loading 占位，
+    // 避免 minInsightCount 未定时洞察卡片先全量渲染再裁剪造成布局抖动。
+    // effect 依赖不包含 loading，不会触发级联渲染。
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setLoading(true);
+    Promise.allSettled([
+      invoke<BatteryHistoryResponse>('battery_history_get', { range: '24h' }),
+      invoke<BatteryHistoryResponse>('battery_history_get', { range: '10d' }),
+    ]).then(([r24h, r10d]) => {
+      if (cancelled) return;
+      const next: Partial<Record<BatteryHistoryRange, BatteryHistoryResponse>> = {};
+      if (r24h.status === 'fulfilled') next['24h'] = r24h.value;
+      else notifyError(t('batteryUsage.title'), String(r24h.reason));
+      if (r10d.status === 'fulfilled') next['10d'] = r10d.value;
+      else notifyError(t('batteryUsage.title'), String(r10d.reason));
+      setResponses(next);
+      setLoading(false);
+    });
     return () => { cancelled = true; };
-  }, [open, historyEnabled, range, pureWeb, t, reloadNonce]);
+  }, [open, historyEnabled, pureWeb, t, reloadNonce]);
 
   // 手动刷新（清除后调用）
   const loadData = useCallback(() => setReloadNonce((n) => n + 1), []);
@@ -945,6 +1146,38 @@ export function BatteryUsageModal({
     [response, effectiveDeviceKey],
   );
 
+  // 分别计算 24h 与 10d 两个 range 经设备过滤后的洞察列表，再各自算出
+  // 经过 filterInsightsForCards 规整后的可见卡片数。两者取最小作为
+  // BatteryInsightCards 的 maxCount 上限，让切换 range 时卡片数保持一致，
+  // 从源头避免「块增加/减少」造成的布局抖动（而非依赖入场/出场动画掩盖）。
+  // 仅在两个 range 都到齐时才取最小；若只到齐一个，则让已到齐的那个自然渲染，
+  // 避免 loading 期间强行裁剪造成空帧。
+  const selectedInsights24h = useMemo(
+    () => (responses['24h']?.insights ?? []).filter(
+      (i) => !i.deviceKey || i.deviceKey === effectiveDeviceKey,
+    ),
+    [responses, effectiveDeviceKey],
+  );
+  const selectedInsights10d = useMemo(
+    () => (responses['10d']?.insights ?? []).filter(
+      (i) => !i.deviceKey || i.deviceKey === effectiveDeviceKey,
+    ),
+    [responses, effectiveDeviceKey],
+  );
+  const visibleCount24h = filterInsightsForCards(selectedInsights24h).length;
+  const visibleCount10d = filterInsightsForCards(selectedInsights10d).length;
+  const minInsightCount = responses['24h'] && responses['10d']
+    ? Math.min(visibleCount24h, visibleCount10d)
+    : undefined;
+
+  // 切换 range 时后端会返回新的 response 引用，但其中的 device/insight
+  // 内容通常完全相同（当前电量、设备名、洞察消息都没变）。这里用 useStable
+  // 在内容相同时复用旧引用，让下游 memo（StatusStrip、Summary 子块、InsightCards）
+  // 浅比较生效，避免不变块重渲染而触发 CSS transition/animation 抖动。
+  const stableSelectableDevices = useStable(selectableDevices, deviceArrayEqual);
+  const stableSelectedDevice = useStable(selectedDevice, batteryDeviceEqual);
+  const stableSelectedInsights = useStable(selectedInsights, insightArrayEqual);
+
   // 请求下一范围时继续按旧响应自己的范围渲染，避免旧数据短暂套入新坐标系。
   // 新响应到齐后，图表与摘要再作为一个完整状态一次性切换。
   const displayedRange = response?.range ?? range;
@@ -952,16 +1185,23 @@ export function BatteryUsageModal({
   const handleClear = useCallback(async () => {
     if (pureWeb) {
       if (effectiveDeviceKey) {
-        setResponse((current) => current
-          ? {
-              ...current,
-              devices: current.devices.filter((d) => d.key !== effectiveDeviceKey),
-              series: current.series.filter((s) => s.key !== effectiveDeviceKey),
-              insights: current.insights.filter((i) => i.deviceKey !== effectiveDeviceKey),
-            }
-          : null);
+        // 同步从两个 range 的缓存响应中剔除该设备数据。
+        setResponses((current) => {
+          const next: Partial<Record<BatteryHistoryRange, BatteryHistoryResponse>> = {};
+          for (const key of Object.keys(current) as BatteryHistoryRange[]) {
+            const resp = current[key];
+            if (!resp) continue;
+            next[key] = {
+              ...resp,
+              devices: resp.devices.filter((d) => d.key !== effectiveDeviceKey),
+              series: resp.series.filter((s) => s.key !== effectiveDeviceKey),
+              insights: resp.insights.filter((i) => i.deviceKey !== effectiveDeviceKey),
+            };
+          }
+          return next;
+        });
       } else {
-        setResponse(null);
+        setResponses({});
       }
       setConfirmingClear(false);
       notifySuccess(t('batteryUsage.clearDone'));
@@ -1120,14 +1360,14 @@ export function BatteryUsageModal({
 
               {/* 设备状态条：多设备时点击可切换 */}
               <BatteryUsageStatusStrip
-                device={selectedDevice}
-                devices={selectableDevices}
-                insights={selectedInsights}
+                device={stableSelectedDevice}
+                devices={stableSelectableDevices}
+                insights={stableSelectedInsights}
                 onSelectDevice={setSelectedDeviceKey}
               />
               <BatteryUsageSummary
-                device={selectedDevice}
-                insights={selectedInsights}
+                device={stableSelectedDevice}
+                insights={stableSelectedInsights}
                 range={displayedRange}
               />
 
@@ -1142,8 +1382,9 @@ export function BatteryUsageModal({
 
               {/* 洞察 */}
               <BatteryInsightCards
-                insights={selectedInsights}
+                insights={stableSelectedInsights}
                 aiAnalysisEnabled={aiAnalysisEnabled}
+                maxCount={minInsightCount}
               />
 
               {/* 操作区 */}
