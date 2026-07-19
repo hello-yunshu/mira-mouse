@@ -264,6 +264,8 @@ export interface LocalAiInstallResult {
 export interface DeviceSnapshot {
   displayName: string;
   connection: 'usb' | 'wireless' | 'bluetooth' | 'virtual';
+  /** 插件根据设备描述或实际连接类型声明的默认选择优先级。 */
+  selectionPriority?: number;
   batteryPercent?: number;
   charging?: boolean;
   batteries?: DeviceBattery[];

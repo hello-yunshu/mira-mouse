@@ -3,8 +3,9 @@
 //!
 //! 总开关 `local_ai_analysis_enabled` 翻转到 on 时调用 `start()` 启动当前平台的 rill-runtime
 //! 子进程并完成握手;翻转到 off 时调用 `stop()` 优雅退出。`predict()` 复用已建立的
-//! stdin/stdout 通道,避免每次预测的进程启动开销。任何 IO/解析错误或子进程意外退出
-//! 都标记 `Failed`,下次 `predict()` 在冷却窗口外自动重启。
+//! stdin/stdout 通道,避免每次预测的进程启动开销。IO/解析错误或子进程意外退出
+//! 标记 `Failed` 并在冷却窗口外重启；Wasmtime timeout/trap 会使 component instance
+//! 不可复用，因此立即丢弃且不进入 fatal 冷却，下次预测启动干净实例。
 //!
 //! 失败、超时或未安装时,predict 返回空 map,调用方回退确定性算法。
 
@@ -70,6 +71,27 @@ pub enum CrashEvent {
     },
     /// predict() 完整跑完所有 batch 且至少返回 1 个结果。
     Success,
+}
+
+/// `parse_prediction` 返回的错误分类。区分三类以便 `predict()` 采取不同处置:
+///
+/// - [`PredictionError::Fatal`] — runtime 通道/进程级故障(runtime 可能已死),
+///   走 `mark_failed`:kill 子进程 + 30s 冷却 + 投 `CrashEvent::Failed`。
+/// - [`PredictionError::HandlerInterrupted`] — handler 调用因 fuel/epoch 超时或 trap
+///   被 Wasmtime 中断。进程仍在，但 component instance 已不可再次进入；必须丢弃
+///   当前 runtime，并让下次预测立即启动干净实例。timeout 不计入 bundle 回滚，
+///   trap 计入。
+/// - [`PredictionError::HandlerBug`] — handler bug(rill-runtime 返回
+///   `retryable=false`,如 `handlerInvalidOutput`)。runtime 仍健康:
+///   不 kill、不冷却,但投 `CrashEvent::Failed` 让 supervisor 在 3/10min 阈值时回滚。
+#[derive(Debug)]
+enum PredictionError {
+    Fatal(String),
+    HandlerInterrupted {
+        reason: String,
+        report_failure: bool,
+    },
+    HandlerBug(String),
 }
 
 /// 控制器状态。所有字段通过单一 Mutex 串行化访问,避免并发竞争。
@@ -274,7 +296,9 @@ impl LocalAiController {
 
         // 2. 串行发送所有请求并读取响应。
         let mut results = BTreeMap::new();
+        let mut handler_failure_reason: Option<String> = None;
         let mut guard = self.lock();
+        let prediction_log_service = guard.log_service.clone();
         let Some(runtime) = guard.running.as_mut() else {
             return BTreeMap::new();
         };
@@ -380,8 +404,46 @@ impl LocalAiController {
                     }
                 }
                 Ok(None) => {}
-                Err(error) => {
-                    mark_failed(&mut guard, &error);
+                Err(PredictionError::HandlerInterrupted {
+                    reason,
+                    report_failure,
+                }) => {
+                    // Wasmtime 的 fuel/epoch/trap 中断会让 component instance 无法再次
+                    // enter。进程本身即使还活着也不能复用，因此立即丢弃；不进入 30s
+                    // 冷却，让下一次预测能启动干净实例。
+                    Self::log_with_guard(
+                        &guard,
+                        LogLevel::Warn,
+                        "local_ai::predict",
+                        format!("handler interrupted, runtime will restart: {reason}"),
+                    );
+                    discard_interrupted_runtime(&mut guard);
+                    let crash_tx = report_failure.then(|| guard.crash_tx.clone()).flatten();
+                    drop(guard);
+                    if let Some(tx) = crash_tx {
+                        let _ = tx.send(CrashEvent::Failed {
+                            at: Instant::now(),
+                            reason,
+                        });
+                    }
+                    return BTreeMap::new();
+                }
+                Err(PredictionError::HandlerBug(reason)) => {
+                    // handler 真实 bug(runtime 仍健康,不需要 kill/冷却),
+                    // 记录一次失败并继续排空本轮剩余响应，避免已写入 runtime 的响应
+                    // 留在 channel 中污染下一次 request_id；其他设备仍可正常使用 AI 结果。
+                    if let Some(svc) = prediction_log_service.as_ref() {
+                        svc.write(LogInput::new(
+                            LogLevel::Warn,
+                            LogSource::LocalAi,
+                            "local_ai::predict",
+                            format!("handler bug, falling back: {reason}"),
+                        ));
+                    }
+                    handler_failure_reason.get_or_insert(reason);
+                }
+                Err(PredictionError::Fatal(reason)) => {
+                    mark_failed(&mut guard, &reason);
                     return BTreeMap::new();
                 }
             }
@@ -391,7 +453,16 @@ impl LocalAiController {
         let has_results = !results.is_empty();
         let batch_count = batches.len();
         let result_count = results.len();
-        if has_results {
+        if handler_failure_reason.is_some() {
+            Self::log_with_guard(
+                &guard,
+                LogLevel::Warn,
+                "local_ai::predict",
+                format!(
+                    "prediction batch completed with handler errors: {result_count}/{batch_count} devices returned estimates"
+                ),
+            );
+        } else if has_results {
             Self::log_with_guard(
                 &guard,
                 LogLevel::Debug,
@@ -409,7 +480,12 @@ impl LocalAiController {
             );
         }
         drop(guard);
-        if has_results {
+        if let Some(reason) = handler_failure_reason {
+            self.emit_crash_event(CrashEvent::Failed {
+                at: Instant::now(),
+                reason,
+            });
+        } else if has_results {
             self.emit_crash_event(CrashEvent::Success);
         }
         results
@@ -448,6 +524,19 @@ fn mark_failed(guard: &mut std::sync::MutexGuard<'_, ControllerInner>, reason: &
             reason: reason.to_string(),
         });
     }
+}
+
+/// Drop a Wasmtime instance after an interrupt/trap without entering the fatal
+/// 30-second cooldown. Wasmtime component instances cannot be re-entered after
+/// such a trap, even though the sidecar process may still answer IPC requests.
+fn discard_interrupted_runtime(guard: &mut std::sync::MutexGuard<'_, ControllerInner>) {
+    if let Some(mut runtime) = guard.running.take() {
+        let _ = runtime.child.kill();
+        let _ = runtime.child.wait();
+    }
+    // Running + no process is the controller's existing "start on next predict"
+    // state. Keeping it distinct from Failed avoids the fatal-error cooldown.
+    guard.state = ControllerState::Running;
 }
 
 fn spawn_and_handshake(
@@ -713,30 +802,60 @@ fn read_line(reader: &mut impl Read, buf: &mut Vec<u8>) -> Result<Option<()>, St
 fn parse_prediction(
     response: &RuntimeResponse,
     expected_request_id: &str,
-) -> Result<Option<f64>, String> {
+) -> Result<Option<f64>, PredictionError> {
     match response {
         RuntimeResponse::Result {
             request_id,
             api_version,
             output,
         } if request_id == expected_request_id && *api_version == RUNTIME_API_VERSION => {
-            let output: BatteryPredictionOutput = serde_json::from_value(output.clone())
-                .map_err(|error| format!("decode battery prediction output: {error}"))?;
+            let output: BatteryPredictionOutput =
+                serde_json::from_value(output.clone()).map_err(|error| {
+                    PredictionError::Fatal(format!("decode battery prediction output: {error}"))
+                })?;
             match output.source {
                 PredictionSource::LocalAi => {
                     let remaining = output
                         .remaining_hours
                         .filter(|value| value.is_finite() && *value >= 0.0)
-                        .ok_or_else(|| "local AI returned an invalid estimate".to_string())?;
+                        .ok_or_else(|| {
+                            PredictionError::HandlerBug(
+                                "local AI returned an invalid estimate".into(),
+                            )
+                        })?;
                     Ok(Some(remaining))
                 }
                 PredictionSource::BaselineRecommended => Ok(None),
             }
         }
-        RuntimeResponse::Error { code, message, .. } => {
-            Err(format!("local AI prediction failed ({code}): {message}"))
+        // rill-runtime 能返回结构化响应说明 IPC 仍健康，但 Wasmtime 的 timeout/trap
+        // 已使当前 component instance 不可再次进入。两者都必须重建 runtime；timeout
+        // 属于资源预算/系统繁忙，不计入 bundle 回滚，真实 trap 则需要上报 supervisor。
+        // 其他 handler 错误没有中断实例，可继续复用进程并交由 supervisor 判断回滚。
+        RuntimeResponse::Error {
+            code,
+            message,
+            retryable,
+            ..
+        } => {
+            let reason = format!("local AI prediction failed ({code}): {message}");
+            if *retryable || code == "handlerTimeout" {
+                Err(PredictionError::HandlerInterrupted {
+                    reason,
+                    report_failure: false,
+                })
+            } else if code == "handlerTrap" {
+                Err(PredictionError::HandlerInterrupted {
+                    reason,
+                    report_failure: true,
+                })
+            } else {
+                Err(PredictionError::HandlerBug(reason))
+            }
         }
-        _ => Err("local AI prediction contract mismatch".into()),
+        _ => Err(PredictionError::Fatal(
+            "local AI prediction contract mismatch".into(),
+        )),
     }
 }
 
@@ -762,5 +881,193 @@ impl WaitTimeoutExt for Child {
                 Err(_) => return Err(()),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! 覆盖协议错误分类以及 interrupted runtime 的进程丢弃/即时恢复状态；
+    //! 完整 WASM/IPC 路径由 handler 发布工作流的 4,096 样本 smoke gate 验证。
+
+    use super::*;
+    use crate::local_ai_runtime::MIRA_HANDLER_ID;
+    use mira_protocol::BatteryPredictionOutput;
+    use rill_runtime_protocol::HANDLER_API_VERSION;
+
+    const REQUEST_ID: &str = "mira-battery-predict-test";
+
+    fn result_response(output: BatteryPredictionOutput) -> RuntimeResponse {
+        RuntimeResponse::Result {
+            request_id: REQUEST_ID.into(),
+            api_version: RUNTIME_API_VERSION,
+            output: serde_json::to_value(&output).unwrap(),
+        }
+    }
+
+    fn error_response(code: &str, message: &str, retryable: bool) -> RuntimeResponse {
+        RuntimeResponse::Error {
+            request_id: REQUEST_ID.into(),
+            api_version: RUNTIME_API_VERSION,
+            code: code.into(),
+            message: message.into(),
+            retryable,
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn interrupted_runtime_is_discarded_without_fatal_cooldown() {
+        let controller = LocalAiController::default();
+        let mut child = Command::new("sh")
+            .args(["-c", "sleep 30"])
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdin = child.stdin.take().unwrap();
+        let (_response_tx, responses) = mpsc::channel();
+
+        let mut guard = controller.lock();
+        guard.running = Some(RunningRuntime {
+            child,
+            stdin,
+            responses,
+            request_seq: AtomicU64::new(0),
+        });
+        guard.state = ControllerState::Running;
+
+        discard_interrupted_runtime(&mut guard);
+
+        assert!(guard.running.is_none());
+        assert!(matches!(&guard.state, ControllerState::Running));
+    }
+
+    fn prediction_output(
+        source: PredictionSource,
+        remaining_hours: Option<f64>,
+    ) -> BatteryPredictionOutput {
+        BatteryPredictionOutput {
+            remaining_hours,
+            source,
+            reason: "test".into(),
+            training_samples: 20,
+            validation_samples: 10,
+            baseline_mae: Some(2.0),
+            candidate_mae: Some(1.0),
+        }
+    }
+
+    #[test]
+    fn parse_prediction_restarts_runtime_for_retryable_timeout() {
+        // handlerTimeout 是 rill-runtime 当前唯一标 retryable=true 的错误。
+        let response = error_response("handlerTimeout", "handlerTimeout", true);
+        let result = parse_prediction(&response, REQUEST_ID);
+        assert!(matches!(
+            result,
+            Err(PredictionError::HandlerInterrupted {
+                report_failure: false,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn parse_prediction_restarts_and_reports_handler_trap() {
+        let response = error_response("handlerTrap", "wasm unreachable", false);
+        let result = parse_prediction(&response, REQUEST_ID);
+        assert!(matches!(
+            result,
+            Err(PredictionError::HandlerInterrupted {
+                report_failure: true,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn parse_prediction_returns_handler_bug_for_non_retryable_error() {
+        // handlerInvalidOutput 等未中断实例的错误仍交由 supervisor 判断 bundle 回滚。
+        let response = error_response("handlerInvalidOutput", "invalid JSON", false);
+        let result = parse_prediction(&response, REQUEST_ID);
+        assert!(matches!(result, Err(PredictionError::HandlerBug(_))));
+    }
+
+    #[test]
+    fn parse_prediction_returns_fatal_for_contract_mismatch() {
+        // 收到非 Result/Error 变体(如 Handshake)表示协议/版本错位,runtime 可能不兼容。
+        let response = RuntimeResponse::Handshake {
+            request_id: REQUEST_ID.into(),
+            api_version: RUNTIME_API_VERSION,
+            runtime_version: "0.7.1".into(),
+            model_pack_id: "mira.battery.default".into(),
+            model_pack_version: "0.5.0".into(),
+            capabilities: vec![BATTERY_USAGE_CAPABILITY.into()],
+            handler_id: MIRA_HANDLER_ID.into(),
+            handler_version: "0.8.2".into(),
+            handler_api_version: HANDLER_API_VERSION,
+            effective_capabilities: vec![BATTERY_USAGE_CAPABILITY.into()],
+        };
+        let result = parse_prediction(&response, REQUEST_ID);
+        assert!(matches!(result, Err(PredictionError::Fatal(_))));
+    }
+
+    #[test]
+    fn parse_prediction_returns_fatal_for_decode_failure() {
+        // Result 变体但 output 不是合法 BatteryPredictionOutput JSON → 协议不匹配。
+        let response = RuntimeResponse::Result {
+            request_id: REQUEST_ID.into(),
+            api_version: RUNTIME_API_VERSION,
+            output: serde_json::Value::String("not-a-battery-output".into()),
+        };
+        let result = parse_prediction(&response, REQUEST_ID);
+        assert!(matches!(result, Err(PredictionError::Fatal(_))));
+    }
+
+    #[test]
+    fn parse_prediction_returns_none_for_baseline_recommended() {
+        // BaselineRecommended 是 handler 的正常回退路径,不是错误。
+        let response = result_response(prediction_output(
+            PredictionSource::BaselineRecommended,
+            None,
+        ));
+        let result = parse_prediction(&response, REQUEST_ID);
+        assert_eq!(result.unwrap(), None);
+    }
+
+    #[test]
+    fn parse_prediction_returns_some_for_local_ai() {
+        // LocalAi 通过质量门的有效预测。
+        let response = result_response(prediction_output(PredictionSource::LocalAi, Some(12.5)));
+        let result = parse_prediction(&response, REQUEST_ID);
+        assert_eq!(result.unwrap(), Some(12.5));
+    }
+
+    #[test]
+    fn parse_prediction_returns_handler_bug_for_invalid_local_ai_estimate() {
+        // source=LocalAi 但 remaining_hours 为 None/非有限/负值 → handler 返回了无效值,
+        // runtime 本身健康,归类为 HandlerBug(不 kill,但投 supervisor)。
+        let response = result_response(prediction_output(PredictionSource::LocalAi, None));
+        let result = parse_prediction(&response, REQUEST_ID);
+        assert!(matches!(result, Err(PredictionError::HandlerBug(_))));
+
+        let response_nan =
+            result_response(prediction_output(PredictionSource::LocalAi, Some(f64::NAN)));
+        let result_nan = parse_prediction(&response_nan, REQUEST_ID);
+        assert!(matches!(result_nan, Err(PredictionError::HandlerBug(_))));
+
+        let response_neg =
+            result_response(prediction_output(PredictionSource::LocalAi, Some(-1.0)));
+        let result_neg = parse_prediction(&response_neg, REQUEST_ID);
+        assert!(matches!(result_neg, Err(PredictionError::HandlerBug(_))));
+    }
+
+    #[test]
+    fn parse_prediction_returns_fatal_for_wrong_request_id() {
+        // request_id 不匹配 → 协议错位(可能是 runtime 串响应),Fatal。
+        let response = result_response(prediction_output(
+            PredictionSource::BaselineRecommended,
+            None,
+        ));
+        let result = parse_prediction(&response, "some-other-request-id");
+        assert!(matches!(result, Err(PredictionError::Fatal(_))));
     }
 }

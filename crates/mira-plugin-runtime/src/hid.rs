@@ -33,6 +33,12 @@ pub struct DeviceDescriptor {
     pub transport: Option<String>,
     #[serde(default)]
     pub identity: Option<DeviceIdentity>,
+    /// 静态默认选择优先级。数值越大，越适合作为主设备。
+    #[serde(default)]
+    pub selection_priority: i32,
+    /// 按运行时实际连接类型覆盖默认选择优先级。
+    #[serde(default)]
+    pub selection_priority_by_connection: BTreeMap<String, i32>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -63,6 +69,17 @@ pub struct MatchedDevice {
     /// 未来可通过 workflow 探测或 VID/PID 查表精确识别多型号场景。
     pub model: Option<String>,
     pub identity: Option<DeviceIdentity>,
+    pub selection_priority: i32,
+    pub selection_priority_by_connection: BTreeMap<String, i32>,
+}
+
+impl MatchedDevice {
+    pub fn selection_priority_for(&self, connection: &str) -> i32 {
+        self.selection_priority_by_connection
+            .get(connection)
+            .copied()
+            .unwrap_or(self.selection_priority)
+    }
 }
 
 fn connection_label(conn: Option<&str>) -> String {
@@ -115,6 +132,10 @@ pub fn enumerate_matched_devices(
                         usage: device.usage(),
                         model,
                         identity: descriptor.identity.clone(),
+                        selection_priority: descriptor.selection_priority,
+                        selection_priority_by_connection: descriptor
+                            .selection_priority_by_connection
+                            .clone(),
                     };
                     let key = (
                         candidate.plugin_id.clone(),
@@ -232,12 +253,43 @@ impl<'a> AmasterReader<'a> {
 
 /// Convenience: parse `devices.json` from plugin package bytes.
 pub fn parse_devices_json(bytes: &[u8]) -> Result<DevicesFile, String> {
-    serde_json::from_slice(bytes).map_err(|e| format!("invalid devices.json: {e}"))
+    let devices: DevicesFile =
+        serde_json::from_slice(bytes).map_err(|e| format!("invalid devices.json: {e}"))?;
+    for descriptor in &devices.devices {
+        for connection in descriptor.selection_priority_by_connection.keys() {
+            if !matches!(
+                connection.as_str(),
+                "usb" | "wireless" | "bluetooth" | "virtual"
+            ) {
+                return Err(format!(
+                    "invalid devices.json: {}/selectionPriorityByConnection has unknown connection {}",
+                    descriptor.family, connection
+                ));
+            }
+        }
+        let priorities = std::iter::once(("selectionPriority", descriptor.selection_priority))
+            .chain(
+                descriptor
+                    .selection_priority_by_connection
+                    .iter()
+                    .map(|(connection, priority)| (connection.as_str(), *priority)),
+            );
+        for (source, priority) in priorities {
+            if !(-1000..=1000).contains(&priority) {
+                return Err(format!(
+                    "invalid devices.json: {}/{} must be between -1000 and 1000",
+                    descriptor.family, source
+                ));
+            }
+        }
+    }
+    Ok(devices)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{evidence_rank, matches_descriptor, DeviceDescriptor};
+    use super::{evidence_rank, matches_descriptor, parse_devices_json, DeviceDescriptor};
+    use std::collections::BTreeMap;
 
     #[test]
     fn protocol_evidence_outranks_unverified_source_evidence() {
@@ -261,6 +313,8 @@ mod tests {
             topology: Vec::new(),
             transport: None,
             identity: None,
+            selection_priority: 0,
+            selection_priority_by_connection: BTreeMap::new(),
         }
     }
 
@@ -292,5 +346,52 @@ mod tests {
         assert!(matches_descriptor(0x1234, 0x0001, 0, 0, &desc));
         assert!(matches_descriptor(0x1234, 0xFFFF, 0xFF, 0xFF, &desc));
         assert!(!matches_descriptor(0x0000, 0x0001, 0, 0, &desc));
+    }
+
+    #[test]
+    fn rejects_out_of_range_selection_priority() {
+        let devices = br#"{
+            "schemaVersion": 1,
+            "devices": [{
+                "family": "test",
+                "selectionPriority": 1001
+            }]
+        }"#;
+
+        assert!(parse_devices_json(devices)
+            .unwrap_err()
+            .contains("selectionPriority must be between -1000 and 1000"));
+    }
+
+    #[test]
+    fn resolves_connection_specific_selection_priority() {
+        let devices = br#"{
+            "schemaVersion": 1,
+            "devices": [{
+                "family": "test",
+                "selectionPriority": -10,
+                "selectionPriorityByConnection": { "usb": 100, "wireless": 0 }
+            }]
+        }"#;
+        let descriptor = &parse_devices_json(devices).unwrap().devices[0];
+        let matched = super::MatchedDevice {
+            plugin_id: "test.plugin".into(),
+            family: descriptor.family.clone(),
+            evidence: "fixture-verified".into(),
+            connection: "hidpp".into(),
+            path: "test-path".into(),
+            vendor_id: 0,
+            product_id: 0,
+            usage_page: 0,
+            usage: 0,
+            model: None,
+            identity: None,
+            selection_priority: descriptor.selection_priority,
+            selection_priority_by_connection: descriptor.selection_priority_by_connection.clone(),
+        };
+
+        assert_eq!(matched.selection_priority_for("usb"), 100);
+        assert_eq!(matched.selection_priority_for("wireless"), 0);
+        assert_eq!(matched.selection_priority_for("virtual"), -10);
     }
 }

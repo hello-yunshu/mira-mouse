@@ -231,6 +231,7 @@ mod tests {
         DeviceSnapshot {
             display_name: "Test Mouse".into(),
             connection: Connection::Usb,
+            selection_priority: 0,
             battery_percent: None,
             charging: false,
             batteries,

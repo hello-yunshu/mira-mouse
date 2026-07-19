@@ -94,6 +94,9 @@ pub struct PluginCapabilityPlacement {
 pub struct DeviceSnapshot {
     pub display_name: String,
     pub connection: Connection,
+    /// 插件根据设备描述或实际连接类型声明的默认选择优先级。
+    #[serde(default)]
+    pub selection_priority: i32,
     pub battery_percent: Option<u8>,
     pub charging: bool,
     #[serde(default)]

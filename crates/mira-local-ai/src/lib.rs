@@ -157,12 +157,27 @@ fn validated_model_prediction(
     )
     .map_err(|_| BatteryPredictionError::InvalidModel)?;
 
-    for (index, observation) in observations.iter().enumerate() {
-        let recent_rate = weighted_baseline_rate(
-            &observations[..index],
-            observation.at,
-            config.baseline_decay_tau_hours,
-        );
+    // 增量 EWMA 累加器:维护 S = Σ w_j·rate_j 和 W = Σ w_j,锚定在 prev_ended_at。
+    // 当 at 前进 dt 时,所有既有权重都乘同一个 exp(-dt/tau),所以只需对 S 和 W 整体衰减。
+    // 这把原 O(N²) 的 weighted_baseline_rate(&observations[..index], ...) 调用降为 O(N) 的
+    // 增量更新,数学上完全等价(详见下方 #[cfg(test)] 参考实现和等价性测试)。
+    let mut weighted_rate_sum: f64 = 0.0;
+    let mut total_weight_sum: f64 = 0.0;
+    let mut prev_ended_at: Option<DateTime<Utc>> = None;
+
+    for observation in observations {
+        // 1. 从 prev_ended_at 衰减到 observation.at,得到以 observation.at 为锚的累加器。
+        //    此时累加器等价于原 weighted_baseline_rate(&observations[..index], observation.at, tau)。
+        if let Some(prev) = prev_ended_at {
+            let dt_hours = (observation.at - prev).num_seconds().max(0) as f64 / 3600.0;
+            if dt_hours > 0.0 {
+                let decay = (-dt_hours / config.baseline_decay_tau_hours).exp();
+                weighted_rate_sum *= decay;
+                total_weight_sum *= decay;
+            }
+        }
+        let recent_rate = (total_weight_sum > 0.0).then_some(weighted_rate_sum / total_weight_sum);
+
         let features = features(
             observation.percentage,
             observation.at,
@@ -187,6 +202,20 @@ fn validated_model_prediction(
         model
             .learn(&features, observation.drain_per_hour)
             .map_err(|_| BatteryPredictionError::InvalidModel)?;
+
+        // 2. 从 observation.at 衰减到 observation.ended_at,再以 weight=1.0 加入当前观测。
+        //    这把累加器锚点推进到 observation.ended_at,为下一轮准备好以 ended_at 为锚的求和。
+        //    (observation.ended_at 处自身的权重为 exp(0) = 1.0)
+        let inner_dt_hours =
+            (observation.ended_at - observation.at).num_seconds().max(0) as f64 / 3600.0;
+        if inner_dt_hours > 0.0 {
+            let decay = (-inner_dt_hours / config.baseline_decay_tau_hours).exp();
+            weighted_rate_sum *= decay;
+            total_weight_sum *= decay;
+        }
+        weighted_rate_sum += observation.drain_per_hour;
+        total_weight_sum += 1.0;
+        prev_ended_at = Some(observation.ended_at);
     }
 
     comparator.update_best();
@@ -236,7 +265,17 @@ fn validated_model_prediction(
         ));
     }
 
-    let recent_rate = weighted_baseline_rate(observations, now, config.baseline_decay_tau_hours);
+    // 从 prev_ended_at 衰减到 now,得到最终 recent_rate
+    // (等价于原 weighted_baseline_rate(observations, now, tau))。
+    if let Some(prev) = prev_ended_at {
+        let dt_hours = (now - prev).num_seconds().max(0) as f64 / 3600.0;
+        if dt_hours > 0.0 {
+            let decay = (-dt_hours / config.baseline_decay_tau_hours).exp();
+            weighted_rate_sum *= decay;
+            total_weight_sum *= decay;
+        }
+    }
+    let recent_rate = (total_weight_sum > 0.0).then_some(weighted_rate_sum / total_weight_sum);
     let predicted_rate = model
         .predict(&features(
             current_percentage,
@@ -296,22 +335,6 @@ fn fallback(
         baseline_mae,
         candidate_mae,
     }
-}
-
-fn weighted_baseline_rate(
-    observations: &[DrainObservation],
-    at: DateTime<Utc>,
-    decay_tau_hours: f64,
-) -> Option<f64> {
-    let mut weighted_rate = 0.0;
-    let mut total_weight = 0.0;
-    for observation in observations {
-        let hours_ago = (at - observation.ended_at).num_seconds().max(0) as f64 / 3600.0;
-        let weight = (-hours_ago / decay_tau_hours).exp();
-        weighted_rate += observation.drain_per_hour * weight;
-        total_weight += weight;
-    }
-    (total_weight > 0.0).then_some(weighted_rate / total_weight)
 }
 
 /// 将灯光模式名映射为功耗强度评分 \[0, 1\]。
@@ -477,6 +500,194 @@ fn finish_segment(
 mod tests {
     use super::*;
     use chrono::{Duration, TimeZone};
+    use std::time::Instant;
+
+    /// 原 O(N²) EWMA baseline 实现，从 git 历史恢复，仅供等价性测试对比。
+    ///
+    /// 数学定义：对每个历史观测 o_j 计算 w_j(at) = exp(-(at - o_j.ended_at)/tau)，
+    /// 返回 Σ_j w_j·o_j.drain / Σ_j w_j。空切片返回 None。
+    ///
+    /// 生产代码已改用 O(N) 增量累加器（见 `validated_model_prediction` 主循环），
+    /// 此函数仅在 `#[cfg(test)]` 下编译，作为参考标准验证增量实现的数学等价性。
+    fn weighted_baseline_rate_reference(
+        observations: &[DrainObservation],
+        at: DateTime<Utc>,
+        decay_tau_hours: f64,
+    ) -> Option<f64> {
+        let mut weighted_rate = 0.0;
+        let mut total_weight = 0.0;
+        for observation in observations {
+            let hours_ago = (at - observation.ended_at).num_seconds().max(0) as f64 / 3600.0;
+            let weight = (-hours_ago / decay_tau_hours).exp();
+            weighted_rate += observation.drain_per_hour * weight;
+            total_weight += weight;
+        }
+        (total_weight > 0.0).then_some(weighted_rate / total_weight)
+    }
+
+    /// 原 `validated_model_prediction` 实现（O(N²)），从 git 历史恢复，仅供等价性测试对比。
+    ///
+    /// 与生产版本唯一的差异：主循环内调用 `weighted_baseline_rate_reference(&observations[..index], ...)`
+    /// 和末次 `weighted_baseline_rate_reference(observations, now, ...)`，而非增量累加器。
+    /// 其余（features / comparator / model.learn / 质量门 / fallback 路径）逐字保持一致。
+    #[allow(clippy::too_many_lines)]
+    fn validated_model_prediction_reference(
+        observations: &[DrainObservation],
+        current_percentage: u8,
+        now: DateTime<Utc>,
+        now_timezone_offset_minutes: i32,
+        current_context: Option<&DeviceContextSnapshot>,
+        config: &BatteryModelConfig,
+    ) -> Result<BatteryPredictionOutput, BatteryPredictionError> {
+        let optimizer = Optimizer::sgd(
+            config.feature_count,
+            SgdConfig {
+                learning_rate: config.learning_rate,
+                l2: config.l2,
+            },
+        )
+        .map_err(|_| BatteryPredictionError::InvalidModel)?;
+        let mut model = LinearRegression::new(
+            config.feature_count,
+            LinearRegressionConfig {
+                optimizer,
+                loss: RegressionLoss::Huber(
+                    HuberLoss::new(config.huber_delta)
+                        .map_err(|_| BatteryPredictionError::InvalidModel)?,
+                ),
+            },
+        )
+        .map_err(|_| BatteryPredictionError::InvalidModel)?;
+        let mut comparator = BaselineComparator::new(
+            &["deterministic-baseline", "rill-local-ai"],
+            config.quality_window,
+        )
+        .map_err(|_| BatteryPredictionError::InvalidModel)?;
+
+        for (index, observation) in observations.iter().enumerate() {
+            let recent_rate = weighted_baseline_rate_reference(
+                &observations[..index],
+                observation.at,
+                config.baseline_decay_tau_hours,
+            );
+            let features = features(
+                observation.percentage,
+                observation.at,
+                observation.timezone_offset_minutes,
+                recent_rate,
+                observation.context.as_ref(),
+            );
+            if model.samples_seen() >= config.min_training_samples {
+                if let Some(baseline_prediction) = recent_rate {
+                    if let Ok(ai_prediction) = model.predict(&features) {
+                        if ai_prediction.is_finite() {
+                            comparator
+                                .record(0, observation.drain_per_hour, baseline_prediction)
+                                .map_err(|_| BatteryPredictionError::InvalidModel)?;
+                            comparator
+                                .record(1, observation.drain_per_hour, ai_prediction)
+                                .map_err(|_| BatteryPredictionError::InvalidModel)?;
+                        }
+                    }
+                }
+            }
+            model
+                .learn(&features, observation.drain_per_hour)
+                .map_err(|_| BatteryPredictionError::InvalidModel)?;
+        }
+
+        comparator.update_best();
+        let baseline = comparator.entry(0);
+        let candidate = comparator.entry(1);
+        let validation_samples = candidate.map_or(0, |entry| entry.total_samples());
+        let baseline_samples = baseline.map_or(0, |entry| entry.total_samples());
+        let baseline_mae = baseline.and_then(|entry| entry.rolling_mae());
+        let candidate_mae = candidate.and_then(|entry| entry.rolling_mae());
+        let training_samples = model.samples_seen();
+
+        if training_samples < config.min_training_samples {
+            return Ok(fallback(
+                "insufficientTrainingData",
+                training_samples,
+                validation_samples,
+                baseline_mae,
+                candidate_mae,
+            ));
+        }
+        if validation_samples < config.min_validation_samples
+            || baseline_samples != validation_samples
+        {
+            return Ok(fallback(
+                "insufficientValidationData",
+                training_samples,
+                validation_samples,
+                baseline_mae,
+                candidate_mae,
+            ));
+        }
+        let (Some(baseline_error), Some(candidate_error)) = (baseline_mae, candidate_mae) else {
+            return Ok(fallback(
+                "qualityMetricsUnavailable",
+                training_samples,
+                validation_samples,
+                baseline_mae,
+                candidate_mae,
+            ));
+        };
+        if candidate_error >= baseline_error * config.required_error_ratio {
+            return Ok(fallback(
+                "candidateNotBetter",
+                training_samples,
+                validation_samples,
+                baseline_mae,
+                candidate_mae,
+            ));
+        }
+
+        let recent_rate =
+            weighted_baseline_rate_reference(observations, now, config.baseline_decay_tau_hours);
+        let predicted_rate = model
+            .predict(&features(
+                current_percentage,
+                now,
+                now_timezone_offset_minutes,
+                recent_rate,
+                current_context,
+            ))
+            .map_err(|_| BatteryPredictionError::InvalidModel)?;
+        if !predicted_rate.is_finite()
+            || predicted_rate <= 0.0
+            || predicted_rate > config.max_drain_per_hour
+        {
+            return Ok(fallback(
+                "candidateOutsideSafetyBounds",
+                training_samples,
+                validation_samples,
+                baseline_mae,
+                candidate_mae,
+            ));
+        }
+        let remaining_hours = current_percentage as f64 / predicted_rate;
+        if !remaining_hours.is_finite() || remaining_hours > config.max_remaining_hours {
+            return Ok(fallback(
+                "candidateOutsideSafetyBounds",
+                training_samples,
+                validation_samples,
+                baseline_mae,
+                candidate_mae,
+            ));
+        }
+
+        Ok(BatteryPredictionOutput {
+            remaining_hours: Some(remaining_hours),
+            source: PredictionSource::LocalAi,
+            reason: "candidatePassedQualityGate".into(),
+            training_samples,
+            validation_samples,
+            baseline_mae,
+            candidate_mae,
+        })
+    }
 
     fn test_now() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 7, 15, 12, 0, 0).unwrap()
@@ -816,5 +1027,175 @@ mod tests {
         assert_eq!(feats_none[6], 0.0);
         assert_eq!(feats_none[7], 0.0);
         assert_eq!(feats_none[8], 0.0);
+    }
+
+    /// 验证 O(N) 增量 EWMA 与原 O(N²) 实现在浮点容差 1e-9 内字段对字段相等。
+    ///
+    /// 用内置 LCG（不引入 `rand` 依赖）生成确定性随机序列，覆盖
+    /// count ∈ {0,1,5,50,500} × 8 个种子 × 多种 gap/duration/rate 组合，
+    /// 同时跑生产版和参考版，对比 6 个输出字段。质量门未通过的序列也必须给出一致 fallback。
+    #[test]
+    fn incremental_ewma_matches_reference_implementation() {
+        fn lcg_next(state: &mut u64) -> u64 {
+            *state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            *state
+        }
+        fn lcg_range(state: &mut u64, lo: f64, hi: f64) -> f64 {
+            let u = lcg_next(state);
+            lo + (u as f64 / u64::MAX as f64) * (hi - lo)
+        }
+
+        let start = Utc.with_ymd_and_hms(2026, 1, 5, 0, 0, 0).unwrap();
+        let config = BatteryModelConfig::default();
+
+        for &count in &[0usize, 1, 5, 50, 500] {
+            for seed in 0..8u64 {
+                let mut rng = seed.wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(42);
+                let mut at_cursor = start;
+                let mut observations = Vec::with_capacity(count);
+                for _ in 0..count {
+                    // gap before this observation: 0 / 5min / 1h / 1day
+                    let gap_minutes = [0.0, 5.0, 60.0, 1440.0][lcg_next(&mut rng) as usize % 4];
+                    at_cursor += Duration::minutes(gap_minutes as i64);
+                    // segment duration: 1min / 30min / 2h
+                    let dur_minutes = [1.0, 30.0, 120.0][lcg_next(&mut rng) as usize % 3];
+                    let ended_at = at_cursor + Duration::minutes(dur_minutes as i64);
+                    // drain rate ∈ [0.1, 50.0] with jitter
+                    let rate = lcg_range(&mut rng, 0.1, 50.0);
+                    observations.push(DrainObservation {
+                        at: at_cursor,
+                        ended_at,
+                        timezone_offset_minutes: 0,
+                        percentage: 80,
+                        drain_per_hour: rate,
+                        context: None,
+                    });
+                    at_cursor = ended_at;
+                }
+                let now = at_cursor + Duration::hours(2);
+
+                let got =
+                    validated_model_prediction(&observations, 80, now, 0, None, &config).unwrap();
+                let want =
+                    validated_model_prediction_reference(&observations, 80, now, 0, None, &config)
+                        .unwrap();
+
+                assert_eq!(
+                    got.source, want.source,
+                    "source mismatch at count={count} seed={seed}"
+                );
+                assert_eq!(
+                    got.reason, want.reason,
+                    "reason mismatch at count={count} seed={seed}"
+                );
+                assert_eq!(got.training_samples, want.training_samples);
+                assert_eq!(got.validation_samples, want.validation_samples);
+                let eq = |a: Option<f64>, b: Option<f64>| -> bool {
+                    match (a, b) {
+                        (Some(x), Some(y)) => (x - y).abs() < 1e-9,
+                        (None, None) => true,
+                        _ => false,
+                    }
+                };
+                assert!(
+                    eq(got.remaining_hours, want.remaining_hours),
+                    "remaining_hours mismatch at count={count} seed={seed}: {got:?} vs {want:?}"
+                );
+                assert!(
+                    eq(got.baseline_mae, want.baseline_mae),
+                    "baseline_mae mismatch at count={count} seed={seed}"
+                );
+                assert!(
+                    eq(got.candidate_mae, want.candidate_mae),
+                    "candidate_mae mismatch at count={count} seed={seed}"
+                );
+            }
+        }
+    }
+
+    /// 空 observations → 全程 recent_rate=None → 无训练样本 → insufficientTrainingData。
+    #[test]
+    fn incremental_ewma_handles_empty_observations() {
+        let now = test_now();
+        let config = BatteryModelConfig::default();
+        let result = validated_model_prediction(&[], 80, now, 0, None, &config).unwrap();
+        assert_eq!(result.source, PredictionSource::BaselineRecommended);
+        assert_eq!(result.remaining_hours, None);
+        assert_eq!(result.training_samples, 0);
+        assert_eq!(result.reason, "insufficientTrainingData");
+    }
+
+    /// 单观测 → 迭代 0 recent_rate=None；末次 recent_rate=Some(o_0.drain)。
+    /// 训练样本 1 < min_training_samples(默认) → 走 insufficientTrainingData fallback。
+    /// 同时验证参考实现给出一致结果。
+    #[test]
+    fn incremental_ewma_handles_single_observation() {
+        let start = Utc.with_ymd_and_hms(2026, 1, 5, 0, 0, 0).unwrap();
+        let config = BatteryModelConfig::default();
+        let observations = vec![DrainObservation {
+            at: start,
+            ended_at: start + Duration::minutes(30),
+            timezone_offset_minutes: 0,
+            percentage: 80,
+            drain_per_hour: 5.0,
+            context: None,
+        }];
+        let result = validated_model_prediction(
+            &observations,
+            80,
+            start + Duration::hours(2),
+            0,
+            None,
+            &config,
+        )
+        .unwrap();
+        assert_eq!(result.source, PredictionSource::BaselineRecommended);
+        assert_eq!(result.training_samples, 1);
+
+        let ref_result = validated_model_prediction_reference(
+            &observations,
+            80,
+            start + Duration::hours(2),
+            0,
+            None,
+            &config,
+        )
+        .unwrap();
+        assert_eq!(result.source, ref_result.source);
+        assert_eq!(result.training_samples, ref_result.training_samples);
+        assert_eq!(result.reason, ref_result.reason);
+    }
+
+    /// 4096 observations 必须 <100ms 完成。O(N) 增量约 1ms，O(N²) 回归会 >10s 立即失败。
+    /// 此测试防御未来误改回每次重算的 weighted_baseline_rate 调用。
+    #[test]
+    fn incremental_ewma_performance_under_max_samples() {
+        let start = Utc.with_ymd_and_hms(2026, 1, 5, 0, 0, 0).unwrap();
+        let config = BatteryModelConfig::default();
+        let observations: Vec<DrainObservation> = (0..4096)
+            .map(|i| {
+                let at = start + Duration::minutes(i * 10);
+                DrainObservation {
+                    at,
+                    ended_at: at + Duration::minutes(5),
+                    timezone_offset_minutes: 0,
+                    percentage: 80,
+                    drain_per_hour: 5.0 + (i as f64 % 10.0),
+                    context: None,
+                }
+            })
+            .collect();
+        let now = start + Duration::hours(4096 * 10 / 60 + 2);
+
+        let t0 = Instant::now();
+        let _ = validated_model_prediction(&observations, 80, now, 0, None, &config).unwrap();
+        let elapsed = t0.elapsed();
+
+        assert!(
+            elapsed.as_millis() < 100,
+            "O(N) EWMA on 4096 samples should be <100ms, got {elapsed:?}"
+        );
     }
 }

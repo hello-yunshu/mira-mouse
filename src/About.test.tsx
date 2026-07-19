@@ -26,6 +26,16 @@ describe('AboutPage', () => {
     expect(screen.queryByText(/加载关于信息失败/)).not.toBeInTheDocument();
   });
 
+  it('keeps the intro special while reusing the settings action layout for about buttons', () => {
+    render(<AboutPage previewMode onBack={vi.fn()} />);
+
+    expect(screen.getByRole('heading', { name: 'Mira Mouse' }).closest('section')).toHaveClass('about-intro-card');
+    expect(screen.getByRole('link', { name: 'GitHub' }).closest('.settings-action-body')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '查看开源许可证' }).closest('.settings-action-body')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '报告问题' }).closest('.settings-action-body')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '打赏支持' }).closest('.settings-action-body')).not.toBeInTheDocument();
+  });
+
   it('shows the checked application version and release notes', async () => {
     invokeMock.mockResolvedValue({
       name: 'Mira', version: '0.1.0', identifier: 'run.hey.mira', platform: 'macos', architecture: 'aarch64',
@@ -33,6 +43,7 @@ describe('AboutPage', () => {
     });
     render(<AboutPage onBack={vi.fn()} />);
     expect(await screen.findByRole('button', { name: '下载并安装 v0.2.0' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '检查更新' }).closest('.contact-links')).toHaveClass('align-end');
     expect(screen.getByText('更新说明')).toBeInTheDocument();
     expect(screen.queryByText('Bundle Identifier')).not.toBeInTheDocument();
   });
@@ -46,6 +57,7 @@ describe('AboutPage', () => {
 
     expect(await screen.findByText(/releaseReady: false/)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '检查更新' })).not.toBeInTheDocument();
+    expect(screen.queryByText('更新说明')).not.toBeInTheDocument();
   });
 
   it('opens donate link through the native browser bridge in Tauri', async () => {
