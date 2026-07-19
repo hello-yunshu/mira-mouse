@@ -1261,6 +1261,12 @@ fn apply_night_mode_transition(app: &AppHandle, target_phase: NightPhase) {
             };
 
             let mut any_failed = false;
+            // 已成功恢复的目标清除其 saved，下一轮重试时只针对失败的目标，
+            // 避免对已恢复的目标重复写入打扰设备固件渲染（如接收器 effect=1
+            // 常亮会被每分钟的 HID 代理通信打断造成视觉闪烁）。与 Day→Night
+            // 路径的 `new_saved_*.is_none()` 跳过逻辑对称。
+            let mut new_saved_mouse = saved_mouse.clone();
+            let mut new_saved_receiver = saved_receiver.clone();
 
             // 恢复阶段同样动态查询插件声明的 mutation 名（与关闭阶段保持一致）
             let (mouse_mutation, receiver_mutation) = resolve_lighting_mutations(&snapshot);
@@ -1292,18 +1298,26 @@ fn apply_night_mode_transition(app: &AppHandle, target_phase: NightPhase) {
                     if let Some(ref ec) = saved.extra_color {
                         params.insert("extraColor".into(), serde_json::Value::String(ec.clone()));
                     }
-                    if let Err(error) = device_mutate_blocking(app, mouse_mutation, &params) {
-                        eprintln!("[mira] night mode: failed to restore mouse lighting: {error}");
-                        if can_notify {
-                            let _ = app
-                                .notification()
-                                .builder()
-                                .title(tr_night_mode_title(lang))
-                                .body(tr_night_mode_restore_failed(lang, &error))
-                                .show();
-                            did_notify = true;
+                    match device_mutate_blocking(app, mouse_mutation, &params) {
+                        Ok(_) => {
+                            // 成功：清除 saved_mouse，下一轮不再重复写入。
+                            new_saved_mouse = None;
                         }
-                        any_failed = true;
+                        Err(error) => {
+                            eprintln!(
+                                "[mira] night mode: failed to restore mouse lighting: {error}"
+                            );
+                            if can_notify {
+                                let _ = app
+                                    .notification()
+                                    .builder()
+                                    .title(tr_night_mode_title(lang))
+                                    .body(tr_night_mode_restore_failed(lang, &error))
+                                    .show();
+                                did_notify = true;
+                            }
+                            any_failed = true;
+                        }
                     }
                 }
             }
@@ -1335,28 +1349,44 @@ fn apply_night_mode_transition(app: &AppHandle, target_phase: NightPhase) {
                             serde_json::Value::String(saved.color.clone()),
                         ),
                     ]);
-                    if let Err(error) = device_mutate_blocking(app, receiver_mutation, &params) {
-                        eprintln!(
-                            "[mira] night mode: failed to restore receiver lighting: {error}"
-                        );
-                        if can_notify {
-                            let _ = app
-                                .notification()
-                                .builder()
-                                .title(tr_night_mode_title(lang))
-                                .body(tr_night_mode_restore_failed_receiver(lang, &error))
-                                .show();
-                            did_notify = true;
+                    match device_mutate_blocking(app, receiver_mutation, &params) {
+                        Ok(_) => {
+                            // 成功：清除 saved_receiver，下一轮不再重复写入。
+                            new_saved_receiver = None;
                         }
-                        any_failed = true;
+                        Err(error) => {
+                            eprintln!(
+                                "[mira] night mode: failed to restore receiver lighting: {error}"
+                            );
+                            if can_notify {
+                                let _ = app
+                                    .notification()
+                                    .builder()
+                                    .title(tr_night_mode_title(lang))
+                                    .body(tr_night_mode_restore_failed_receiver(lang, &error))
+                                    .show();
+                                did_notify = true;
+                            }
+                            any_failed = true;
+                        }
                     }
                 }
             }
 
             if !any_failed {
+                // 全部恢复成功（或无 saved 需要恢复）：阶段切换为 Day。
                 update_night_mode_phase(app, NightPhase::Day, None, None);
+            } else {
+                // 部分失败：保持 Night 阶段，但持久化已成功目标的 saved=None，
+                // 下一轮重试时只会重试失败的目标，避免对已成功的目标重复写入
+                // 打扰设备固件渲染。
+                update_night_mode_phase(
+                    app,
+                    NightPhase::Night,
+                    new_saved_mouse,
+                    new_saved_receiver,
+                );
             }
-            // 有失败：不更新阶段，下一轮重试。
         }
     }
 
