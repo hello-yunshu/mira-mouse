@@ -5,16 +5,21 @@ import {
   ArrowsClockwise,
   CaretDown,
   Clipboard,
+  Database,
   Eraser,
   Export,
   Funnel,
+  HardDrive,
+  MagnifyingGlass,
   Pause,
   Play,
   Trash,
+  Warning,
+  WarningCircle,
   Wrench,
 } from '@phosphor-icons/react';
 import { save } from '@tauri-apps/plugin-dialog';
-import { Modal } from '../overlay';
+import { Modal, Popover } from '../overlay';
 import { getLogClient } from './log-client';
 import {
   LOG_LEVELS,
@@ -267,11 +272,13 @@ function LogToolbar({
   const { t } = useTranslation();
   const [exportOpen, setExportOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const exportBtnRef = useRef<HTMLButtonElement>(null);
+  const deleteBtnRef = useRef<HTMLButtonElement>(null);
 
   return (
     <div className="log-toolbar">
       <div className="log-toolbar-row log-toolbar-filters">
-        <label className="log-filter-source">
+        <label className="log-filter-chip">
           <Funnel weight="regular" aria-hidden="true" />
           <select
             value={sourceFilter}
@@ -283,8 +290,9 @@ function LogToolbar({
             <option value="plugin">{t('logs.filter.plugin')}</option>
             <option value="local-ai">{t('logs.filter.localAi')}</option>
           </select>
+          <CaretDown className="log-filter-caret" weight="bold" aria-hidden="true" />
         </label>
-        <label className="log-filter-level">
+        <label className="log-filter-chip">
           <select
             value={minLevel}
             onChange={(e) => onLevelChange(e.target.value as LogLevel)}
@@ -300,93 +308,135 @@ function LogToolbar({
               </option>
             ))}
           </select>
+          <CaretDown className="log-filter-caret" weight="bold" aria-hidden="true" />
         </label>
-        <input
-          type="search"
-          className="log-filter-keyword"
-          placeholder={t('logs.filter.search')}
-          value={keyword}
-          onChange={(e) => onKeywordChange(e.target.value)}
-          aria-label={t('logs.filter.search')}
-        />
+        <label className="log-filter-search">
+          <MagnifyingGlass weight="regular" aria-hidden="true" />
+          <input
+            type="search"
+            placeholder={t('logs.filter.search')}
+            value={keyword}
+            onChange={(e) => onKeywordChange(e.target.value)}
+            aria-label={t('logs.filter.search')}
+          />
+        </label>
       </div>
       <div className="log-toolbar-row log-toolbar-actions">
-        <button
-          type="button"
-          className={`log-toggle ${follow ? 'active' : ''}`}
-          aria-pressed={follow}
-          onClick={() => onFollowChange(!follow)}
-        >{t('logs.toolbar.follow')}</button>
-        <button
-          type="button"
-          className="log-toggle"
-          aria-pressed={!paused}
-          onClick={onPauseToggle}
-        >
-          {paused ? <Play weight="regular" aria-hidden="true" /> : <Pause weight="regular" aria-hidden="true" />}
-          {paused ? t('logs.toolbar.resume') : t('logs.toolbar.pause')}
-        </button>
-        <button type="button" className="log-action" onClick={onClearView} aria-label={t('logs.toolbar.clearView')}>
-          <Eraser weight="regular" aria-hidden="true" />
-          <span>{t('logs.toolbar.clearView')}</span>
-        </button>
-        <button type="button" className="log-action" onClick={onCopyFiltered} disabled={copyDisabled} aria-label={t('logs.toolbar.copyFiltered')}>
-          <Clipboard weight="regular" aria-hidden="true" />
-          <span>{t('logs.toolbar.copyFiltered')}</span>
-        </button>
-        <div className="log-menu-wrap">
-          <button type="button" className="log-action" onClick={() => { setExportOpen((v) => !v); setDeleteOpen(false); }}>
-            <Export weight="regular" aria-hidden="true" />
-            <span>{t('logs.toolbar.export')}</span>
-            <CaretDown weight="bold" aria-hidden="true" />
+        <div className="log-toolbar-group">
+          <button
+            type="button"
+            className={`log-toggle ${follow ? 'active' : ''}`}
+            aria-pressed={follow}
+            onClick={() => onFollowChange(!follow)}
+          >{t('logs.toolbar.follow')}</button>
+          <button
+            type="button"
+            className="log-toggle"
+            aria-pressed={!paused}
+            onClick={onPauseToggle}
+          >
+            {paused ? <Play weight="regular" aria-hidden="true" /> : <Pause weight="regular" aria-hidden="true" />}
+            {paused ? t('logs.toolbar.resume') : t('logs.toolbar.pause')}
           </button>
-          {exportOpen && (
-            <div className="log-menu" role="menu">
+        </div>
+        <div className="log-toolbar-group">
+          <button type="button" className="log-action" onClick={onClearView} aria-label={t('logs.toolbar.clearView')}>
+            <Eraser weight="regular" aria-hidden="true" />
+            <span>{t('logs.toolbar.clearView')}</span>
+          </button>
+          <button type="button" className="log-action" onClick={onCopyFiltered} disabled={copyDisabled} aria-label={t('logs.toolbar.copyFiltered')}>
+            <Clipboard weight="regular" aria-hidden="true" />
+            <span>{t('logs.toolbar.copyFiltered')}</span>
+          </button>
+          <div className="log-menu-wrap">
+            <button
+              type="button"
+              ref={exportBtnRef}
+              className="log-action"
+              aria-expanded={exportOpen}
+              aria-haspopup="menu"
+              onClick={() => { setExportOpen((v) => !v); setDeleteOpen(false); }}
+            >
+              <Export weight="regular" aria-hidden="true" />
+              <span>{t('logs.toolbar.export')}</span>
+              <CaretDown weight="bold" aria-hidden="true" />
+            </button>
+            <Popover
+              open={exportOpen}
+              onClose={() => setExportOpen(false)}
+              triggerRef={exportBtnRef}
+              ariaLabel={t('logs.toolbar.export')}
+              className="log-menu"
+            >
               <button type="button" role="menuitem" onClick={() => { setExportOpen(false); onExportFiltered(); }}>{t('logs.toolbar.exportFiltered')}</button>
               <button type="button" role="menuitem" onClick={() => { setExportOpen(false); onExportSession(); }}>{t('logs.toolbar.exportSession')}</button>
               <button type="button" role="menuitem" onClick={() => { setExportOpen(false); onExportBundle(); }}>{t('logs.toolbar.exportBundle')}</button>
-            </div>
-          )}
-        </div>
-        <div className="log-menu-wrap">
-          <button type="button" className="log-action" onClick={() => { setDeleteOpen((v) => !v); setExportOpen(false); }}>
-            <Trash weight="regular" aria-hidden="true" />
-            <span>{t('logs.toolbar.delete')}</span>
-            <CaretDown weight="bold" aria-hidden="true" />
-          </button>
-          {deleteOpen && (
-            <div className="log-menu" role="menu">
+            </Popover>
+          </div>
+          <div className="log-menu-wrap">
+            <button
+              type="button"
+              ref={deleteBtnRef}
+              className="log-action"
+              aria-expanded={deleteOpen}
+              aria-haspopup="menu"
+              onClick={() => { setDeleteOpen((v) => !v); setExportOpen(false); }}
+            >
+              <Trash weight="regular" aria-hidden="true" />
+              <span>{t('logs.toolbar.delete')}</span>
+              <CaretDown weight="bold" aria-hidden="true" />
+            </button>
+            <Popover
+              open={deleteOpen}
+              onClose={() => setDeleteOpen(false)}
+              triggerRef={deleteBtnRef}
+              ariaLabel={t('logs.toolbar.delete')}
+              className="log-menu"
+            >
               <button type="button" role="menuitem" onClick={() => { setDeleteOpen(false); onDelete({ scope: 'olderThanDays', days: 7 }, t('logs.delete.olderThanDays')); }}>{t('logs.toolbar.deleteOlder')}</button>
               <button type="button" role="menuitem" onClick={() => { setDeleteOpen(false); onDelete({ scope: 'beforeCurrentSession' }, t('logs.delete.beforeCurrentSession')); }}>{t('logs.toolbar.deleteBeforeSession')}</button>
               <button type="button" role="menuitem" onClick={() => { setDeleteOpen(false); onDelete({ scope: 'all' }, t('logs.delete.all')); }}>{t('logs.toolbar.deleteAll')}</button>
-            </div>
+            </Popover>
+          </div>
+        </div>
+        <div className="log-toolbar-group">
+          <button type="button" className="log-action" onClick={onOpenDir} aria-label={t('logs.toolbar.openDir')}>
+            <ArrowsClockwise weight="regular" aria-hidden="true" />
+            <span>{t('logs.toolbar.openDir')}</span>
+          </button>
+          {diagnosticRemainingMinutes !== null ? (
+            <button type="button" className="log-action log-action-active" onClick={onDiagnosticStop}>
+              <Wrench weight="regular" aria-hidden="true" />
+              <span>{t('logs.toolbar.diagnosticActive', { minutes: diagnosticRemainingMinutes })}</span>
+            </button>
+          ) : (
+            <button type="button" className="log-action" onClick={onDiagnosticStart}>
+              <Wrench weight="regular" aria-hidden="true" />
+              <span>{t('logs.toolbar.diagnosticStart')}</span>
+            </button>
           )}
         </div>
-        <button type="button" className="log-action" onClick={onOpenDir} aria-label={t('logs.toolbar.openDir')}>
-          <ArrowsClockwise weight="regular" aria-hidden="true" />
-          <span>{t('logs.toolbar.openDir')}</span>
-        </button>
-        {diagnosticRemainingMinutes !== null ? (
-          <button type="button" className="log-action log-action-active" onClick={onDiagnosticStop}>
-            <Wrench weight="regular" aria-hidden="true" />
-            <span>{t('logs.toolbar.diagnosticActive', { minutes: diagnosticRemainingMinutes })}</span>
-          </button>
-        ) : (
-          <button type="button" className="log-action" onClick={onDiagnosticStart}>
-            <Wrench weight="regular" aria-hidden="true" />
-            <span>{t('logs.toolbar.diagnosticStart')}</span>
-          </button>
-        )}
       </div>
       {status && (
-        <div className="log-toolbar-row log-toolbar-status" aria-live="polite">
-          <span>{t('logs.status.bufferCount', { count: status.bufferCount })}</span>
-          <span>{t('logs.status.diskUsage', { usage: formatBytes(status.diskUsageBytes), quota: formatBytes(status.diskQuotaBytes) })}</span>
+        <div className="log-toolbar-status" aria-live="polite">
+          <span className="log-status-pill">
+            <Database weight="regular" aria-hidden="true" />
+            {t('logs.status.bufferCount', { count: status.bufferCount })}
+          </span>
+          <span className="log-status-pill">
+            <HardDrive weight="regular" aria-hidden="true" />
+            {t('logs.status.diskUsage', { usage: formatBytes(status.diskUsageBytes), quota: formatBytes(status.diskQuotaBytes) })}</span>
           {status.recentErrorCount > 0 && (
-            <span className="log-status-error">{t('logs.status.recentErrors', { count: status.recentErrorCount })}</span>
+            <span className="log-status-pill log-status-error">
+              <WarningCircle weight="regular" aria-hidden="true" />
+              {t('logs.status.recentErrors', { count: status.recentErrorCount })}
+            </span>
           )}
           {status.recentWarnCount > 0 && (
-            <span className="log-status-warn">{t('logs.status.recentWarns', { count: status.recentWarnCount })}</span>
+            <span className="log-status-pill log-status-warn">
+              <Warning weight="regular" aria-hidden="true" />
+              {t('logs.status.recentWarns', { count: status.recentWarnCount })}
+            </span>
           )}
         </div>
       )}
