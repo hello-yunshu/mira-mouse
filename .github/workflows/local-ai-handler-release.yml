@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       handler-version:
-        description: 'New Mira handler version (stable semver, e.g. 0.8.3)'
+        description: 'New Mira handler version (stable semver, e.g. 0.8.5)'
         required: true
         type: string
 
@@ -194,22 +194,30 @@ jobs:
             clientName: "mira-handler-release",
             clientVersion: $version
           }')
-          invoke_request=$(jq -nc '{
-            method: "invoke",
-            requestId: "handler-release-invoke",
-            apiVersion: 2,
-            capability: "batteryUsage",
-            input: {
-              nowUnixMs: 1784080800000,
-              nowTimezoneOffsetMinutes: 480,
-              samples: [{
-                atUnixMs: 1784077200000,
-                timezoneOffsetMinutes: 480,
-                percentage: 80,
-                charging: false
-              }]
+          # Exercise the real maximum request shape. Pairs are five minutes apart
+          # and sessions are thirty minutes apart, producing 2,047 completed
+          # observations plus one unfinished current segment. This catches both
+          # O(N²) handler regressions and an undersized Wasmtime fuel budget.
+          invoke_request=$(node -e '
+            const samples = [];
+            const base = Date.UTC(2026, 0, 1);
+            for (let index = 0; index < 2048; index += 1) {
+              const start = base + index * 30 * 60_000;
+              samples.push({ atUnixMs: start, percentage: 80, charging: false });
+              samples.push({ atUnixMs: start + 5 * 60_000, percentage: 79, charging: false });
             }
-          }')
+            process.stdout.write(JSON.stringify({
+              method: "invoke",
+              requestId: "handler-release-invoke-max-samples",
+              apiVersion: 2,
+              capability: "batteryUsage",
+              input: {
+                nowUnixMs: base + 2048 * 30 * 60_000,
+                nowTimezoneOffsetMinutes: 0,
+                samples
+              }
+            }));
+          ')
           responses=artifacts/handler-responses.jsonl
           printf '%s\n' "$handshake_request" "$invoke_request" \
           | artifacts/rill-runtime serve \
@@ -229,7 +237,11 @@ jobs:
             (.effectiveCapabilities | index("batteryUsage")) != null
           '
           sed -n '2p' "$responses" \
-          | jq -e '.kind == "result" and .requestId == "handler-release-invoke"'
+          | jq -e '
+              .kind == "result" and
+              .requestId == "handler-release-invoke-max-samples" and
+              .output.trainingSamples == 2047
+            '
 
       - name: Build, sign and verify next stable index
         env:

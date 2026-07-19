@@ -684,6 +684,7 @@ mod tests {
         let snapshot = DeviceSnapshot {
             display_name: "Test".into(),
             connection: Connection::Usb,
+            selection_priority: 0,
             battery_percent: percentage,
             charging,
             batteries,

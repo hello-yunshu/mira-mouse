@@ -19,7 +19,7 @@
 - [x] 发布索引签名覆盖版本、平台、URL、大小与 SHA-256，并拒绝降级。
 - [x] `staging → current → previous` 原子激活、单版本 `rollback` 与激活后自检。
 - [x] Runtime、模型与 handler 作为三个 release artifact 独立下载；候选组合完整探活后执行 `staging → current → previous` 原子切换。
-- [x] 常驻进程控制器:`local_ai_analysis_enabled` 开关 on 启动当前平台的 `rill-runtime`，off 停止；predict 复用 IPC 通道，失败 30s 冷却后自动重启。
+- [x] 常驻进程控制器:`local_ai_analysis_enabled` 开关 on 启动当前平台的 `rill-runtime`，off 停止；predict 复用 IPC 通道；IO/协议失败进入 30s 冷却，Wasmtime timeout/trap 则丢弃不可复用实例并在下一次预测立即重建。
 - [x] Sidecar 打包:`rill-runtime` 作为 Tauri `externalBin`，`model.rillpack` 与 `handler.rillhandler` 作为资源内置，首次安装无需独立下载。
 - [x] Runtime 缺失、超时、异常退出、不兼容、模型包损坏和质量门控失败时回退确定性预测。
 - [x] `rill-ml` 仅链接进 Mira handler 的 WASM component；Mira 主应用只依赖协议 crate，Rill runtime 保持业务无关。

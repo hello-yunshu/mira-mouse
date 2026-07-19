@@ -811,7 +811,7 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
               label={t('settings.localAi.toggle')}
             />
           </SettingRow>
-          <div className="contact-links plugin-update-actions">
+          <div className="contact-links plugin-update-actions align-end">
             <button
               className="secondary"
               onClick={() => void checkLocalAiUpdates()}
@@ -857,7 +857,7 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
           <SettingRow title={t('settings.pluginUpdateCheck.label')} hint={t('settings.pluginUpdateCheck.hint')}>
             <Toggle checked={settings.automaticPluginUpdateChecks} onChange={(v) => update({ automaticPluginUpdateChecks: v })} label={t('settings.pluginUpdateCheck.label')} />
           </SettingRow>
-          <div className="contact-links plugin-update-actions">
+          <div className="contact-links plugin-update-actions align-end">
             <button className="secondary" onClick={() => void checkPluginUpdates()} disabled={previewMode || pluginUpdatesChecking || Boolean(pluginInstalling)}>
               {pluginUpdatesChecking ? t('settings.pluginUpdate.checking') : t('settings.pluginUpdate.check')}
             </button>
