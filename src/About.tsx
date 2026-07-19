@@ -114,7 +114,7 @@ export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0 }:
         <button className="secondary" onClick={onBack}>{t('common.back')}</button>
       </header>
 
-      <section className="card about-section">
+      <section className="card about-section about-intro-card">
         <span className="about-logo-frame" aria-hidden="true">
           <img className="about-logo about-logo-light" src="/app-icon.png" alt="" />
           <img className="about-logo about-logo-dark" src="/app-icon-dark.png" alt="" />
@@ -185,26 +185,30 @@ export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0 }:
       {contact.github || contact.x || contact.telegram ? (
         <section className="card about-section">
           <div className="card-title"><h2>{t('about.section.contact')}</h2></div>
-          {contact.developerName && <p className="setting-hint">{t('about.developer', { name: contact.developerName })}</p>}
-          {contact.copyright && <p className="setting-hint">{t('about.copyright', { name: contact.copyright })}</p>}
-          <div className="contact-links align-start">
-            {contact.github && <ExternalLink className="secondary" href={contact.github} errorTitle={linkError}>GitHub</ExternalLink>}
-            {contact.x && <ExternalLink className="secondary" href={contact.x} errorTitle={linkError}>X</ExternalLink>}
-            {contact.telegram && <ExternalLink className="secondary" href={contact.telegram} errorTitle={linkError}>Telegram</ExternalLink>}
+          <div className="settings-action-body">
+            <div className="settings-action-copy">
+              {contact.developerName && <p className="setting-hint">{t('about.developer', { name: contact.developerName })}</p>}
+              {contact.copyright && <p className="setting-hint">{t('about.copyright', { name: contact.copyright })}</p>}
+            </div>
+            <div className="contact-links align-end">
+              {contact.github && <ExternalLink className="secondary" href={contact.github} errorTitle={linkError}>GitHub</ExternalLink>}
+              {contact.x && <ExternalLink className="secondary" href={contact.x} errorTitle={linkError}>X</ExternalLink>}
+              {contact.telegram && <ExternalLink className="secondary" href={contact.telegram} errorTitle={linkError}>Telegram</ExternalLink>}
+            </div>
           </div>
         </section>
       ) : null}
 
       <section id="about-update-section" className="card about-section" tabIndex={-1}>
         <div className="card-title"><h2>{t('about.section.checkUpdate')}</h2></div>
-        <p className="setting-hint">
-          {info.updaterActive
-            ? t('about.updateEnabledHint')
-            : t('about.updateDisabledHint')}
-        </p>
-        {info.updaterActive && (
-          <>
-            <div className="contact-links align-start">
+        <div className="settings-action-body">
+          <p className="setting-hint">
+            {info.updaterActive
+              ? t('about.updateEnabledHint')
+              : t('about.updateDisabledHint')}
+          </p>
+          {info.updaterActive && (
+            <div className="contact-links align-end">
               <button className="secondary" onClick={checkForUpdates} disabled={update.phase === 'checking' || update.phase === 'downloading'}>
                 {update.phase === 'checking' ? t('about.updateChecking') : t('about.updateCheck')}
               </button>
@@ -216,6 +220,10 @@ export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0 }:
               )}
               {update.phase === 'installed' && <button className="primary" onClick={() => void relaunchAfterUpdate()}>{t('about.relaunch')}</button>}
             </div>
+          )}
+        </div>
+        {info.updaterActive && (
+          <>
             {update.phase === 'available' && (
               <div className="update-details">
                 {update.date && <span className="setting-hint">{t('about.releaseDate', { date: new Date(update.date).toLocaleDateString() })}</span>}
@@ -237,20 +245,22 @@ export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0 }:
 
       <section className="card about-section">
         <div className="card-title"><h2>{t('about.section.license')}</h2></div>
-        <p className="setting-hint">
-          {t('about.licenseHint')}
-        </p>
-        <div className="contact-links align-start">
-          {repositoryUrl ? (
-            <ExternalLink className="secondary" href={`${repositoryUrl}/blob/main/LICENSE`} errorTitle={linkError}>{t('about.viewLicense')}</ExternalLink>
-          ) : (
-            <button className="secondary" disabled>{t('about.viewLicenseDisabled')}</button>
-          )}
-          {repositoryUrl ? (
-            <ExternalLink className="secondary" href={`${repositoryUrl}/tree/main/NOTICE`} errorTitle={linkError}>{t('about.viewThirdParty')}</ExternalLink>
-          ) : (
-            <button className="secondary" disabled>{t('about.viewThirdPartyDisabled')}</button>
-          )}
+        <div className="settings-action-body">
+          <p className="setting-hint">
+            {t('about.licenseHint')}
+          </p>
+          <div className="contact-links align-end">
+            {repositoryUrl ? (
+              <ExternalLink className="secondary" href={`${repositoryUrl}/blob/main/LICENSE`} errorTitle={linkError}>{t('about.viewLicense')}</ExternalLink>
+            ) : (
+              <button className="secondary" disabled>{t('about.viewLicenseDisabled')}</button>
+            )}
+            {repositoryUrl ? (
+              <ExternalLink className="secondary" href={`${repositoryUrl}/tree/main/NOTICE`} errorTitle={linkError}>{t('about.viewThirdParty')}</ExternalLink>
+            ) : (
+              <button className="secondary" disabled>{t('about.viewThirdPartyDisabled')}</button>
+            )}
+          </div>
         </div>
       </section>
 
@@ -261,15 +271,17 @@ export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0 }:
 
       <section className="card about-section">
         <div className="card-title"><h2>{t('about.section.reportIssue')}</h2></div>
-        <p className="setting-hint">
-          {t('about.reportIssueHint')}
-        </p>
-        <div className="contact-links align-start">
-          {repositoryUrl ? (
-            <ExternalLink className="secondary" href={`${repositoryUrl}/issues/new/choose`} errorTitle={linkError}>{t('about.reportIssue')}</ExternalLink>
-          ) : (
-            <button className="secondary" disabled>{t('about.reportIssueDisabled')}</button>
-          )}
+        <div className="settings-action-body">
+          <p className="setting-hint">
+            {t('about.reportIssueHint')}
+          </p>
+          <div className="contact-links align-end">
+            {repositoryUrl ? (
+              <ExternalLink className="secondary" href={`${repositoryUrl}/issues/new/choose`} errorTitle={linkError}>{t('about.reportIssue')}</ExternalLink>
+            ) : (
+              <button className="secondary" disabled>{t('about.reportIssueDisabled')}</button>
+            )}
+          </div>
         </div>
       </section>
     </main>

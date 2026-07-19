@@ -5,6 +5,8 @@
 
 白名单允许顶层的 `plugin.json`、`checksums.json`、`devices.json`、`capabilities.json`、`README.md`、`LICENSE` 和 `META-INF/signature.ed25519`，以及 `protocol/`、`locales/`、`tests/fixtures/` 和 `models/` 前缀下的 `.json` 文件。`models/` 目录是为按模型适配器覆盖 (per-model adapter overrides) 预留的父文件夹：未来的插件可以发布针对特定模型的 JSON（例如 `models/<model>/capabilities.json`），而无需更改包格式。
 
+`devices.json` 的设备描述可通过 `selectionPriority` 声明静态默认选择优先级，也可通过 `selectionPriorityByConnection` 按运行时解析出的 `usb`、`wireless`、`bluetooth` 或 `virtual` 连接类型覆盖；数值越大越优先。例如，同时发现直连鼠标和接收器时，插件可让直连路径成为主设备，而宿主不需要识别品牌或 VID/PID。
+
 `checksums.json` 的 schema 1 将除自身和 `META-INF/signature.ed25519` 之外的每个负载 (payload) 路径映射到小写的 SHA-256。覆盖范围必须精确。签名消息是 `plugin.json` 的规范 JSON (canonical JSON)，后接一个 LF 字节，再接 `checksums.json` 的规范 JSON。规范 JSON 递归排序对象键，保留数组顺序和 JSON 标量值，并输出紧凑的 UTF-8（不含无关空白字符）。密钥仅由 manifest 的密钥 ID 和已配置的信任库 (trust store) 选定。
 
 当前限制为 512 个文件、每个文件 4 MiB、未压缩总字节数 32 MiB。在限制、schema、摘要 (digest)、覆盖范围、密钥、签名、ID、API、权限或证据错误上，验证采用失败即关闭 (fail closed) 策略。

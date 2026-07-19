@@ -138,6 +138,8 @@ describe('SettingsPage', () => {
     fireEvent.click(screen.getByRole('button', { name: '插件' }));
     const pluginAiToggle = screen.getByRole('switch', { name: '本地 AI 分析' });
     expect(pluginAiToggle).toBeChecked();
+    expect(screen.getByRole('button', { name: '检查更新' }).closest('.plugin-update-actions')).toHaveClass('align-end');
+    expect(screen.getByRole('button', { name: '检查插件更新' }).closest('.plugin-update-actions')).toHaveClass('align-end');
     fireEvent.click(screen.getByRole('button', { name: '检查插件更新' }));
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('plugin_updates_check'));
     fireEvent.click(pluginAiToggle);

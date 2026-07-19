@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! 滚动文件存储。按大小与时间自动轮转、清理。
+//! 固定槽位滚动文件存储。按大小与时间自动轮转、清理。
 //!
 //! 设计：
-//! - 单文件约 5 MB 后轮转，命名 `mira-<timestamp>.log`。
-//! - 总磁盘占用上限约 20 MB，超出后删除最旧文件。
+//! - 固定使用 `mira-0.log` 到 `mira-3.log` 四个槽位，不随运行次数增加文件数。
+//! - `mira-0.log` 为当前文件；单文件约 5 MB 后依次后移并覆盖最旧槽位。
+//! - 总磁盘占用上限约 20 MB。
 //! - 默认保留 7 天；超期文件按时间清理。
+//! - 首次升级时将旧的 `mira-<timestamp>.log` 最近四份迁移到固定槽位。
 //! - 文件写入失败时降级为内存日志：调用方继续工作，但 `enabled=false`。
 //!
 //! 所有写入发生在专用 writer 线程，避免阻塞业务线程。
@@ -22,8 +24,10 @@ use std::time::{Duration, Instant};
 
 /// 单文件最大字节。约 5 MB。
 pub const MAX_FILE_BYTES: u64 = 5 * 1024 * 1024;
+/// 固定日志文件槽位数。
+pub const MAX_LOG_FILES: usize = 4;
 /// 总磁盘占用上限。约 20 MB。
-pub const DISK_QUOTA_BYTES: u64 = 20 * 1024 * 1024;
+pub const DISK_QUOTA_BYTES: u64 = MAX_FILE_BYTES * MAX_LOG_FILES as u64;
 /// 默认保留天数。
 pub const RETENTION_DAYS: i64 = 7;
 /// 每多少条写入后跑一次清理。
@@ -59,11 +63,6 @@ pub fn spawn(dir: PathBuf) -> (LogStorageHandle, JoinHandle<()>) {
     let disk_usage = Arc::new(Mutex::new(0u64));
     let enabled = Arc::new(Mutex::new(true));
 
-    // 初始磁盘占用快照（忽略错误）。
-    if let Ok(usage) = scan_disk_usage(&dir) {
-        *disk_usage.lock().unwrap() = usage;
-    }
-
     let handle = LogStorageHandle {
         tx: tx.clone(),
         dir: dir_arc.clone(),
@@ -71,9 +70,14 @@ pub fn spawn(dir: PathBuf) -> (LogStorageHandle, JoinHandle<()>) {
         enabled: enabled.clone(),
     };
 
-    // 尝试创建目录；失败时降级。
+    // 尝试创建目录；成功后先收敛旧时间戳文件，再打开当前槽位。
     if fs::create_dir_all(&dir).is_err() {
         *enabled.lock().unwrap() = false;
+    } else {
+        if let Err(err) = migrate_legacy_log_files(&dir) {
+            eprintln!("[mira-log] legacy log migration incomplete: {err}");
+        }
+        let _ = cleanup_disk(&dir, &disk_usage);
     }
 
     let join = std::thread::Builder::new()
@@ -267,7 +271,7 @@ impl RotatingWriter {
 }
 
 fn open_writer(dir: &Path) -> std::io::Result<RotatingWriter> {
-    let path = new_file_path(dir);
+    let path = slot_path(dir, 0);
     let file = OpenOptions::new().create(true).append(true).open(&path)?;
     let bytes_written = file.metadata().map(|m| m.len()).unwrap_or(0);
     Ok(RotatingWriter {
@@ -281,30 +285,94 @@ fn rotate(dir: &Path, prev: RotatingWriter) -> std::io::Result<RotatingWriter> {
     let mut prev = prev;
     prev.flush()?;
     drop(prev);
-    // 打开新文件。
+    // 固定槽位从后往前移动，最旧槽位先删除，文件总数始终不超过上限。
+    let oldest = slot_path(dir, MAX_LOG_FILES - 1);
+    if oldest.exists() {
+        fs::remove_file(oldest)?;
+    }
+    for index in (0..MAX_LOG_FILES - 1).rev() {
+        let from = slot_path(dir, index);
+        if from.exists() {
+            fs::rename(from, slot_path(dir, index + 1))?;
+        }
+    }
     open_writer(dir)
 }
 
-fn new_file_path(dir: &Path) -> PathBuf {
-    let now: DateTime<Utc> = Utc::now();
-    let name = format!("mira-{}.log", now.format("%Y%m%dT%H%M%S"));
-    dir.join(name)
+fn slot_path(dir: &Path, index: usize) -> PathBuf {
+    dir.join(format!("mira-{index}.log"))
 }
 
-/// 列出目录下所有 `mira-*.log` 文件，按文件名升序（最旧在前）。
+fn fixed_slot_index(path: &Path) -> Option<usize> {
+    let name = path.file_name()?.to_str()?;
+    let index = name.strip_prefix("mira-")?.strip_suffix(".log")?;
+    index.parse().ok()
+}
+
+fn is_legacy_log_file(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    name.starts_with("mira-")
+        && name.ends_with(".log")
+        && name.len() == "mira-20260719T120000.log".len()
+        && name.as_bytes().get(13) == Some(&b'T')
+}
+
+/// 将旧时间戳日志收敛到固定槽位。已有固定槽位时，旧文件视为迁移残留并移除。
+fn migrate_legacy_log_files(dir: &Path) -> std::io::Result<()> {
+    let mut legacy = Vec::new();
+    let mut has_fixed_slots = false;
+    let mut out_of_range_slots = Vec::new();
+
+    for entry in fs::read_dir(dir)? {
+        let path = entry?.path();
+        if let Some(index) = fixed_slot_index(&path) {
+            if index < MAX_LOG_FILES {
+                has_fixed_slots = true;
+            } else {
+                out_of_range_slots.push(path);
+            }
+        } else if is_legacy_log_file(&path) {
+            legacy.push(path);
+        }
+    }
+
+    for path in out_of_range_slots {
+        fs::remove_file(path)?;
+    }
+
+    legacy.sort();
+    if has_fixed_slots {
+        for path in legacy {
+            fs::remove_file(path)?;
+        }
+        return Ok(());
+    }
+
+    // 最新文件进入 0 号槽位，其余按新到旧进入后续槽位。
+    for (index, path) in legacy.iter().rev().take(MAX_LOG_FILES).enumerate() {
+        fs::rename(path, slot_path(dir, index))?;
+    }
+    for path in legacy
+        .iter()
+        .take(legacy.len().saturating_sub(MAX_LOG_FILES))
+    {
+        if path.exists() {
+            fs::remove_file(path)?;
+        }
+    }
+    Ok(())
+}
+
+/// 列出固定日志文件，按槽位从最旧到最新排序。
 fn list_log_files(dir: &Path) -> Vec<PathBuf> {
     let mut files: Vec<PathBuf> = match fs::read_dir(dir) {
         Ok(rd) => rd.filter_map(|e| e.ok()).map(|e| e.path()).collect(),
         Err(_) => Vec::new(),
     };
-    files.retain(|p| {
-        p.extension().and_then(|e| e.to_str()) == Some("log")
-            && p.file_name()
-                .and_then(|n| n.to_str())
-                .map(|n| n.starts_with("mira-"))
-                .unwrap_or(false)
-    });
-    files.sort();
+    files.retain(|path| fixed_slot_index(path).is_some_and(|index| index < MAX_LOG_FILES));
+    files.sort_by_key(|path| std::cmp::Reverse(fixed_slot_index(path).unwrap_or_default()));
     files
 }
 
@@ -323,18 +391,17 @@ fn scan_disk_usage(dir: &Path) -> std::io::Result<u64> {
 fn cleanup_disk(dir: &Path, disk_usage: &Arc<Mutex<u64>>) -> std::io::Result<u64> {
     let now = Utc::now();
     let cutoff = now - chrono::Duration::days(RETENTION_DAYS);
-    // cutoff 必须与文件名使用同一信封（mira-<ts>.log）比较：
-    // 之前用裸时间戳 "20260601T000000" 与 "mira-..." 比较，因 'm' > '2'，
-    // name < cutoff_str 恒为 false，导致按时间清理永不生效。
-    let cutoff_name = format!("mira-{}.log", cutoff.format("%Y%m%dT%H%M%S"));
 
     let mut files = list_log_files(dir);
     let mut freed_bytes = 0u64;
 
-    // 1. 按时间清理：文件名 < cutoff_name 的删除。
+    // 1. 固定槽位不含时间戳，按文件修改时间清理。
     files.retain(|p| {
-        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        if name < cutoff_name.as_str() {
+        let is_expired = fs::metadata(p)
+            .and_then(|meta| meta.modified())
+            .map(|modified| DateTime::<Utc>::from(modified) < cutoff)
+            .unwrap_or(false);
+        if is_expired {
             if let Ok(meta) = fs::metadata(p) {
                 freed_bytes += meta.len();
             }
@@ -354,7 +421,7 @@ fn cleanup_disk(dir: &Path, disk_usage: &Arc<Mutex<u64>>) -> std::io::Result<u64
     if accum > DISK_QUOTA_BYTES {
         let excess = accum - DISK_QUOTA_BYTES;
         let mut deleted_bytes = 0u64;
-        // files 已按文件名升序，最旧在前。从头删除直到补足 excess。
+        // files 已按槽位从最旧到最新排序。从头删除直到补足 excess。
         for file in &files {
             if deleted_bytes >= excess {
                 break;
@@ -375,16 +442,17 @@ fn cleanup_disk(dir: &Path, disk_usage: &Arc<Mutex<u64>>) -> std::io::Result<u64
     Ok(freed_bytes)
 }
 
-/// 删除指定日期之前的所有日志文件（基于文件名排序）。
+/// 删除指定日期之前的所有日志文件（基于文件修改时间）。
 fn delete_files_older_than(dir: &Path, cutoff: DateTime<Utc>) -> (u32, Option<String>) {
-    // 与文件名使用同一信封比较（mira-<ts>.log），见 cleanup_disk 注释。
-    let cutoff_name = format!("mira-{}.log", cutoff.format("%Y%m%dT%H%M%S"));
     let files = list_log_files(dir);
     let mut deleted = 0u32;
     let mut last_err: Option<String> = None;
     for file in &files {
-        let name = file.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        if name < cutoff_name.as_str() {
+        let is_older = fs::metadata(file)
+            .and_then(|meta| meta.modified())
+            .map(|modified| DateTime::<Utc>::from(modified) < cutoff)
+            .unwrap_or(false);
+        if is_older {
             if let Err(err) = fs::remove_file(file) {
                 last_err = Some(format!("remove {}: {err}", file.display()));
             } else {
@@ -399,6 +467,8 @@ fn delete_files_older_than(dir: &Path, cutoff: DateTime<Utc>) -> (u32, Option<St
 mod tests {
     use super::*;
     use crate::logging::model::{Fields, LogLevel, LogSource};
+    use std::fs::FileTimes;
+    use std::time::SystemTime;
     use tempfile::TempDir;
 
     fn make_entry(id: u64) -> LogEntry {
@@ -452,10 +522,13 @@ mod tests {
 
         let files = list_log_files(tmp.path());
         assert!(
-            files.len() >= 2,
+            (2..=MAX_LOG_FILES).contains(&files.len()),
             "expected rotation, got {} files",
             files.len()
         );
+        assert!(files
+            .iter()
+            .all(|path| { fixed_slot_index(path).is_some_and(|index| index < MAX_LOG_FILES) }));
         // 总量不应超过 quota 太多（清理在每 256 条后跑）。
         let total: u64 = files
             .iter()
@@ -485,45 +558,94 @@ mod tests {
     }
 
     #[test]
-    fn list_log_files_returns_sorted_ascending() {
+    fn restarting_reuses_the_current_slot() {
         let tmp = TempDir::new().unwrap();
-        // 创建 3 个不同时间戳的文件。
-        let names = [
-            "mira-20260701T120000.log",
-            "mira-20260702T120000.log",
-            "mira-20260703T120000.log",
-        ];
-        for name in &names {
-            let path = tmp.path().join(name);
-            fs::write(&path, b"[]").unwrap();
+        for id in 1..=2 {
+            let (handle, join) = spawn(tmp.path().to_path_buf());
+            handle.append(make_entry(id));
+            handle.shutdown();
+            join.join().unwrap();
+        }
+
+        let files = list_log_files(tmp.path());
+        assert_eq!(files, vec![slot_path(tmp.path(), 0)]);
+        let content = fs::read_to_string(&files[0]).unwrap();
+        assert_eq!(content.lines().count(), 2);
+    }
+
+    #[test]
+    fn list_log_files_returns_oldest_slot_first() {
+        let tmp = TempDir::new().unwrap();
+        for index in [0, 2, 3] {
+            fs::write(slot_path(tmp.path(), index), b"[]").unwrap();
         }
         let files = list_log_files(tmp.path());
-        assert_eq!(files.len(), 3);
-        assert!(files[0].to_str().unwrap().contains("20260701"));
-        assert!(files[2].to_str().unwrap().contains("20260703"));
+        assert_eq!(
+            files,
+            vec![
+                slot_path(tmp.path(), 3),
+                slot_path(tmp.path(), 2),
+                slot_path(tmp.path(), 0)
+            ]
+        );
+    }
+
+    #[test]
+    fn migrates_only_the_four_newest_legacy_files() {
+        let tmp = TempDir::new().unwrap();
+        for day in 1..=6 {
+            fs::write(
+                tmp.path().join(format!("mira-202607{day:02}T120000.log")),
+                format!("day-{day}"),
+            )
+            .unwrap();
+        }
+
+        migrate_legacy_log_files(tmp.path()).unwrap();
+
+        assert_eq!(list_log_files(tmp.path()).len(), MAX_LOG_FILES);
+        assert_eq!(
+            fs::read_to_string(slot_path(tmp.path(), 0)).unwrap(),
+            "day-6"
+        );
+        assert_eq!(
+            fs::read_to_string(slot_path(tmp.path(), 3)).unwrap(),
+            "day-3"
+        );
+        let legacy_count = fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| is_legacy_log_file(&entry.path()))
+            .count();
+        assert_eq!(legacy_count, 0);
     }
 
     #[test]
     fn delete_older_than_removes_old_files_only() {
         let tmp = TempDir::new().unwrap();
-        fs::write(tmp.path().join("mira-20260101T000000.log"), b"old").unwrap();
-        fs::write(tmp.path().join("mira-20260701T000000.log"), b"recent").unwrap();
-        // cutoff = 2026-06-01。
-        let cutoff = DateTime::parse_from_rfc3339("2026-06-01T00:00:00Z")
+        let old = slot_path(tmp.path(), 1);
+        let recent = slot_path(tmp.path(), 0);
+        fs::write(&old, b"old").unwrap();
+        fs::write(&recent, b"recent").unwrap();
+        File::options()
+            .write(true)
+            .open(&old)
             .unwrap()
-            .with_timezone(&Utc);
+            .set_times(FileTimes::new().set_modified(SystemTime::UNIX_EPOCH))
+            .unwrap();
+        let cutoff = Utc::now() - chrono::Duration::days(1);
         let (deleted, _) = delete_files_older_than(tmp.path(), cutoff);
         assert_eq!(deleted, 1);
-        assert!(tmp.path().join("mira-20260701T000000.log").exists());
-        assert!(!tmp.path().join("mira-20260101T000000.log").exists());
+        assert!(recent.exists());
+        assert!(!old.exists());
     }
 
     #[test]
     fn cleanup_disk_respects_quota() {
         let tmp = TempDir::new().unwrap();
-        // 创建 5 个 6 MB 文件，总计 30 MB > quota 20 MB。
-        for i in 0..5 {
-            let path = tmp.path().join(format!("mira-2026070{i}T000000.log"));
+        // 四个固定槽位各 6 MB，总计 24 MB > quota 20 MB。
+        for index in 0..MAX_LOG_FILES {
+            let path = slot_path(tmp.path(), index);
             let content = vec![b'x'; 6 * 1024 * 1024];
             fs::write(&path, &content).unwrap();
         }
@@ -535,5 +657,7 @@ mod tests {
             .map(|f| fs::metadata(f).map(|m| m.len()).unwrap_or(0))
             .sum();
         assert!(total <= DISK_QUOTA_BYTES);
+        assert!(!slot_path(tmp.path(), MAX_LOG_FILES - 1).exists());
+        assert!(slot_path(tmp.path(), 0).exists());
     }
 }
