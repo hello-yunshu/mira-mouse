@@ -1,6 +1,105 @@
 <!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
 # 更新日志
 
+## 0.9.7 - 2026-07-20
+
+- 补全 0.6.0 至 0.9.6 的历史更新日志，统一版本号来源校验。
+- 大幅扩展声明式插件 SDK 文档：补充 fields、editor、switch、zones、stageLayout、statusDisplay、stateMapping、accentSource、visibleWhen 等字段说明与示例。
+- 新增英文文档目录索引（docs/en/README.md），说明翻译策略。
+- 安装文档补充 Homebrew 4.x `brew trust` 步骤，Linux 安装改为 AppImage 说明。
+- 精简冗余代码注释，保留关键防回归说明（chunk 边界、锁作用域、快照写入等）。
+- 修复 BatteryUsage 弹窗时间范围切换区的 JSX 缩进对齐。
+- 为 comment-and-doc-style、local-ai-analysis-plan、mira-material-design-guidelines 文档补充 SPDX 许可头。
+
+## 0.9.6 - 2026-07-19
+
+- 修复日志页样式与模态弹窗标题重复问题，恢复被误删的 overlay/log CSS。
+- 完善声明式控件渲染，优化仪表盘动效与跨视图切换的过渡体验。
+- 加固 mira-battery-handler 的 Cargo.lock 校验，CI 新增 `xtask handler check-lock` 防止 lockfile 漂移。
+
+## 0.9.0 - 2026-07-18
+
+- 新增统一的本地日志与诊断系统：记录设备 mutation、采集诊断上下文、清理告警。
+- 新增统一 overlay root（Modal/Portal）层，支持堆栈跟踪；所有模态弹窗统一路由到 overlay root。
+- 优化日志页与背景毛玻璃效果，修复 backdrop-filter 与 transform 冲突。
+- 同步 CITATION.cff 与 ROADMAP.md 到 0.9.0。
+
+## 0.8.6 - 2026-07-17
+
+- 新增 demo 模式下的本地 mutation 模拟，无需真实设备即可演示配置变更流程。
+- 修复 macOS 毛玻璃效果，解决 backdrop-filter 与 transform 冲突导致的局部失效。
+- 修复 skipIfZero 布尔处理、接收器电量解析与弹窗样式问题。
+- 升级 ESLint、typescript-eslint、actions/setup-node 等依赖。
+
+## 0.8.3 - 2026-07-16
+
+- 从 rill-ml v0.7.1 releases 下载预编译 rill-runtime，移除 CI 中过时的 RillML symlink 步骤。
+- 将 Mira InvokeHandler 抽取为独立签名的 WASM 插件。
+- 统一应用版本来源至 sync-version 脚本。
+- 更新生产验证公钥。
+
+## 0.8.1 - 2026-07-15
+
+- 内部版本对齐与发布链调整。
+
+## 0.8.0 - 2026-07-15
+
+- 新增基于签名模型包的本地 AI 电量预测。
+- 优化电量使用对比图表。
+
+## 0.6.10 - 2026-07-13
+
+- 完善设备刷新机制与电量洞察。
+- 同步插件 release/v2026-07-13。
+
+## 0.6.9 - 2026-07-13
+
+- 修复窄屏对齐、设备切换器间距与电量图表布局。
+- 电量区间切换按钮改用基于主题色的色相渐变。
+
+## 0.6.8 - 2026-07-13
+
+- 重构为按需刷新模型，修复 macOS vibrancy 渗透问题。
+
+## 0.6.7 - 2026-07-12
+
+- 新增读取计划调度器与工作流投影，提升设备读取效率。
+- 新增 AM Infinity .97 RACE transport 与 motion language，解耦运行时。
+- 为下载链路添加 GitHub mirror 回退以提升可靠性。
+- 暴露 normalize_device_outputs_with_package 并追踪 reports_executed。
+
+## 0.6.6 - 2026-07-12
+
+- 优化电量图表网格、mock 数据与 X 轴刻度。
+
+## 0.6.5 - 2026-07-11
+
+- 重构为声明式插件架构，扩展声明式插件 SDK 并抽取插件更新器。
+- 从声明式 zones 解析灯光角色，优化 UI 细节。
+- 将 TypeScript 回退至 6.0.3 以保持 typescript-eslint 兼容性。
+- 升级 ed25519-dalek 至 3.0.0；忽略 RUSTSEC-2024-0429（glib unsoundness）。
+
+## 0.6.3 - 2026-07-09
+
+- 修复电量上报并精细化灯光开关 source。
+- 新增基于插件身份的历史合并与电量 UI 细节。
+
+## 0.6.2 - 2026-07-09
+
+- 调整电量图标生成与插件图标。
+- 修复插件更新区焦点样式，与关于页更新区保持一致。
+
+## 0.6.1 - 2026-07-09
+
+- 重构托盘模块，修复 Protocol A 电量问题。
+- 修复 Linux CI 上 macOS-only 托盘 helper 的 dead_code 警告。
+
+## 0.6.0 - 2026-07-08
+
+- 新增电量使用历史追踪与洞察分析。
+- 优化电量使用弹窗细节。
+- CI 移除 dependency-review-action，改用 Dependabot security updates。
+
 ## 0.5.7 - 2026-07-04
 
 - 文档清理：删除面向维护者的发布/版本管理文档（zero-cost-release、plugin-publishing、plugin-versioning），保留面向用户和开发者的文档。

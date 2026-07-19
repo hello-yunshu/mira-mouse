@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// 插件适配层：声明式 capability metadata 解析纯函数。
-// 此模块不含任何插件特定的字符串常量，所有插件知识均从 capability metadata 声明字段读取。
+// 插件适配层：声明式 capability metadata 解析纯函数。所有插件知识均从 metadata 声明字段读取。
 import type { DeviceState, DpiStage, PluginCapability, PluginField, PluginFieldOption, PluginMutation, PluginStageLayout, PluginStateMapping, PluginStatusDisplay, PluginSwitch, PluginVisibleWhen, PluginZone, RangeSpec } from './types';
 import { resolveLabelKey, resolveRuntimeText } from './i18n';
 
@@ -15,11 +14,9 @@ export function resolveMutation(mutation: PluginMutation | undefined, writableMu
   return mutation.find((candidate) => writableMutations.includes(candidate));
 }
 
-/// 通用路径读取函数。支持点号分隔路径如 'state.mouseLightColor'、
-/// 'capabilities.mouseLighting.effectName'、'batteries.0.percentage'。
-/// 路径前缀决定读取根对象：state. → device.state，capabilities. → device.capabilities，
-/// batteries. → device.batteries，其他则从 device 顶层属性读取。
-/// 支持数组索引（如 batteries.0.percentage）。路径不存在时返回 undefined。
+/// 通用路径读取函数。支持点号分隔路径如 'state.mouseLightColor'、'batteries.0.percentage'。
+/// 路径前缀决定根对象：state.→device.state, capabilities.→device.capabilities,
+/// batteries.→device.batteries, 其他→device 顶层属性。支持数组索引。
 export function readPath(device: DeviceState, path: string): unknown {
   const parts = path.split('.');
   if (parts.length === 0) return undefined;
@@ -51,11 +48,7 @@ export function readPath(device: DeviceState, path: string): unknown {
   return current;
 }
 
-/// 通用路径写入函数。语义与 readPath 对称：
-/// - 'state.X' → device.state.X
-/// - 'capabilities.Y.Z' → device.capabilities.Y.Z
-/// - 'batteries.0.percentage' → device.batteries[0].percentage
-/// - 其他前缀 → device 顶层属性
+/// 通用路径写入函数。语义与 readPath 对称。路径前缀同 readPath。
 /// 路径中任何中间节点为 null/非对象/数组越界时静默返回（不抛错）。
 export function writePath(device: DeviceState, path: string, value: unknown): void {
   const parts = path.split('.');
@@ -254,8 +247,7 @@ export function resolveDetailValueLabel(group: string, key: string, device: Devi
 }
 
 /// 选项解析：合并 field.options 和 field.optionSource。
-/// 无 optionSource 时直接返回 field.options。
-/// 有 optionSource 时用 readPath 读取设备运行时选项数组，与 field.options 合并
+/// 有 optionSource 时用 readPath 读取运行时选项数组，与 field.options 合并
 /// （optionSource 优先但限制在 MAX_CONTROL_OPTIONS 内）。
 export function resolveFieldOptions(field: PluginField, device: DeviceState): PluginFieldOption[] {
   const declared = field.options ?? [];
@@ -381,9 +373,8 @@ export function resolveLightingMutations(capabilities: PluginCapability[], writa
   return result;
 }
 
-/// 解析灯光角色可用性：基于 zones 中 id 为 'mouse'/'receiver' 的区域是否
-/// 存在可写 mutation 判断。与后端 Capability::lighting_role() 的 zone id
-/// 约定一致，UI 不再硬编码具体 mutation 名。
+/// 解析灯光角色可用性：基于 zones 中 id 为 'mouse'/'receiver' 的区域是否有可写 mutation。
+/// 与后端 Capability::lighting_role() 的 zone id 约定一致。
 export function resolveLightingRoles(capabilities: PluginCapability[], writableMutations: string[]): { mouse: boolean; receiver: boolean } {
   const roles = { mouse: false, receiver: false };
   for (const capability of capabilities) {
@@ -399,12 +390,9 @@ export function resolveLightingRoles(capabilities: PluginCapability[], writableM
   return roles;
 }
 
-/// 演示模式 mutation 模拟器。
-/// 深拷贝 device，遍历 pluginCapabilities 找到匹配 mutation 的可写字段，
-/// 通过 field.source 写入新值，并利用 stateMapping 同步 state.* 与 capabilities.*
-/// 两侧镜像字段，确保 UI 后续读取任一端都看到一致的演示状态。
-/// stageLayout（DPI 分档）单独处理 active/value 的语义性写入。
-/// 未知 mutation 静默返回原状态（不抛错），符合「演示模式不必报错」原则。
+/// 演示模式 mutation 模拟器。深拷贝 device，遍历 pluginCapabilities 找到匹配 mutation 的可写字段，
+/// 通过 field.source 写入新值，并利用 stateMapping 同步 state.* 与 capabilities.* 两侧镜像字段。
+/// stageLayout（DPI 分档）单独处理 active/value 的语义性写入。未知 mutation 静默返回原状态。
 export function simulateDemoMutation(
   device: DeviceState,
   mutation: string,
@@ -427,8 +415,7 @@ export function simulateDemoMutation(
       const snapshotPath = stateMapping[field];
       if (snapshotPath) writePath(next, snapshotPath, value);
     } else {
-      // path 是 snapshot 路径（capabilities.* 或 batteries.* 等），
-      // 同步写入对应的 state 字段。
+      // path 是 snapshot 路径，同步写入对应的 state 字段。
       const stateField = snapshotToStateField[path];
       if (stateField) next.state[stateField] = value;
     }

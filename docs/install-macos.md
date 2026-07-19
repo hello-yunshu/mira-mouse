@@ -7,8 +7,11 @@
 
 ```bash
 brew tap hello-yunshu/mira
+brew trust hello-yunshu/mira
 brew install --cask mira
 ```
+
+Homebrew 4.x 要求对第三方 tap 执行 `brew trust`，将 tap 标记为受信任来源；若不执行此步骤，`brew install --cask mira` 会以 `Refusing to load cask ... from untrusted tap` 失败。
 
 升级遵循标准 Homebrew 流程：
 

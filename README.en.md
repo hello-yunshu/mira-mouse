@@ -28,7 +28,10 @@
   <a href="#supported-devices">Supported Devices</a> ·
   <a href="#architecture">Architecture</a> ·
   <a href="#faq">FAQ</a> ·
-  <a href="#development">Development</a>
+  <a href="#development">Development</a> ·
+  <a href="CHANGELOG.md">Changelog</a> ·
+  <a href="ROADMAP.md">Roadmap</a> ·
+  <a href="SUPPORT.md">Support</a>
 </p>
 
 ---
@@ -57,11 +60,7 @@ The protocol DSL defaults to 64 steps, 16 reads, 2s total delay. No expression e
 
 ### Local AI battery prediction
 
-Battery estimation runs locally using a 9-dimensional device-context feature vector (DPI, polling rate, lighting mode). No data is uploaded; the model ships with the host app.
-
-### Install and go
-
-No vendor drivers, no account registration, no network required. Download, install, and use.
+Battery estimation runs locally using device context (DPI, polling rate, lighting mode). The model ships with the host app; no data is uploaded.
 
 ## Features
 
@@ -87,7 +86,7 @@ No vendor drivers, no account registration, no network required. Download, insta
 - Multi-device switching
 -->
 
-> Screenshots coming soon.
+> Screenshots will be added in a later release. For a preview of the interface design, see the [Material design guidelines](docs/mira-material-design-guidelines.md).
 
 ## Install
 
@@ -239,22 +238,25 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full contribution guide.
 | [Plugin security](docs/plugin-security.md) | Signing, trust roots, permission boundary |
 | [Plugin testing](docs/plugin-testing.md) | Fixture evidence and testing conventions |
 | [Threat model](docs/threat-model.md) | Assets, untrusted inputs, and controls |
+| [Local AI Runtime](docs/local-ai-analysis-plan.md) | Rill runtime, model, and WASM handler boundaries and release chain |
 | [macOS install](docs/install-macos.md) | DMG and Gatekeeper notes |
 | [Homebrew install](docs/install-homebrew.md) | Tap variables and upgrade flow |
 | [Linux permissions](docs/linux-permissions.md) | udev rules and hot-plug |
 | [Windows install](docs/install-windows.md) | NSIS installer notes |
 | [License notes](docs/license-notes.md) | AGPL and CC-BY-SA scope |
 | [Security notes](docs/unsigned-release-security.md) | Unsigned release security considerations |
+| [Material design guidelines](docs/mira-material-design-guidelines.md) | Interface material, glass, cards, buttons, and floating layers |
 | [Comment & doc style](docs/comment-and-doc-style.md) | Code comment and documentation conventions |
 
 ## Project Status
 
-Mira is under active development.
+Mira is under active development. Current version: **0.9.7** (2026-07-20).
 
 - macOS, Windows, and Linux installers released
 - AMaster (Protocol A) and Logitech (HID++ 2.0) protocols supported
-- Local AI battery prediction integrated, using a 9-dimensional device-context feature vector
-- See [ROADMAP.md](ROADMAP.md) for the roadmap
+- Declarative plugin packages and signature verification implemented
+- Local AI battery prediction integrated
+- See [CHANGELOG.md](CHANGELOG.md) for the changelog and [ROADMAP.md](ROADMAP.md) for the roadmap
 
 ## License
 

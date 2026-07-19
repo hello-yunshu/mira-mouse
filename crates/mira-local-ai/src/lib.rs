@@ -868,14 +868,12 @@ mod tests {
         assert_eq!(light_mode_intensity("starlight"), 0.85);
         assert_eq!(light_mode_intensity("rainbow"), 0.9);
         assert_eq!(light_mode_intensity("custom"), 1.0);
-        // 未知模式取中位值
         assert_eq!(light_mode_intensity("unknown_xyz"), 0.5);
     }
 
     /// 验证 context_features 归一化与缺失值回退。
     #[test]
     fn context_features_normalize_and_default_correctly() {
-        // 完整上下文
         let ctx = DeviceContextSnapshot {
             dpi: Some(16000),
             polling_rate_hz: Some(8000),
@@ -889,7 +887,6 @@ mod tests {
         // breathing=0.5 * brightness=0.8 = 0.4
         assert!((light - 0.4).abs() < 1e-9);
 
-        // 无亮度时仅用 mode_intensity
         let ctx_no_brightness = DeviceContextSnapshot {
             dpi: Some(16000),
             polling_rate_hz: Some(8000),
@@ -900,7 +897,6 @@ mod tests {
         let [_, _, light2] = context_features(Some(&ctx_no_brightness));
         assert!((light2 - 0.5).abs() < 1e-9);
 
-        // DPI 超出上界时 clamp 到 1.0
         let ctx_high = DeviceContextSnapshot {
             dpi: Some(65000),
             polling_rate_hz: Some(8000),
@@ -911,7 +907,6 @@ mod tests {
         let [dpi_high, _, _] = context_features(Some(&ctx_high));
         assert!((dpi_high - 1.0).abs() < 1e-9);
 
-        // 上下文缺失时返回全零
         let [d, r, l] = context_features(None);
         assert_eq!([d, r, l], [0.0, 0.0, 0.0]);
     }
@@ -923,7 +918,6 @@ mod tests {
     #[test]
     fn different_contexts_produce_different_predictions() {
         let start = Utc.with_ymd_and_hms(2026, 1, 5, 0, 0, 0).unwrap();
-        // 低功耗上下文：低 DPI、低回报率、灯光关闭
         let low_ctx = DeviceContextSnapshot {
             dpi: Some(800),
             polling_rate_hz: Some(125),
@@ -931,7 +925,6 @@ mod tests {
             light_brightness: None,
             profile: None,
         };
-        // 高功耗上下文：高 DPI、高回报率、彩虹灯全亮
         let high_ctx = DeviceContextSnapshot {
             dpi: Some(26000),
             polling_rate_hz: Some(8000),
@@ -939,7 +932,6 @@ mod tests {
             light_brightness: Some(100),
             profile: None,
         };
-        // 训练数据：低功耗场景放电慢（2%/h），高功耗场景放电快（10%/h）
         let observations: Vec<DrainObservation> = (0..60)
             .map(|i| {
                 let at = start + Duration::hours(i * 2);
@@ -1021,7 +1013,6 @@ mod tests {
                                                                // static=0.3 * brightness=0.5 = 0.15
         assert!((feats[8] - 0.15).abs() < 1e-9); // light_intensity
 
-        // 无上下文时后 3 维为 0
         let feats_none = features(80, now, 0, Some(5.0), None);
         assert_eq!(feats_none.len(), 9);
         assert_eq!(feats_none[6], 0.0);
