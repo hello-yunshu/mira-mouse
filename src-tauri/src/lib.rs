@@ -1539,10 +1539,18 @@ fn dependency_transport_files<'a>(
 const READ_DEBOUNCE_TTL: Duration = Duration::from_millis(500);
 
 /// 从多设备快照 map 中选择 primary 设备。
-/// 优先返回真正开放写入的设备，否则返回第一个。
+/// 优先遵循插件声明的选择优先级；同级时返回真正开放写入的设备，
+/// 最后才按稳定的设备路径排序，避免 HID 枚举顺序影响主设备。
 #[cfg(test)]
 fn primary_snapshot(snapshots: &BTreeMap<String, DeviceSnapshot>) -> Option<&DeviceSnapshot> {
     primary_snapshot_entry(snapshots).map(|(_, snapshot)| snapshot)
+}
+
+fn snapshot_selection_preference(snapshot: &DeviceSnapshot) -> (i32, bool) {
+    (
+        snapshot.selection_priority,
+        snapshot_allows_writes(snapshot),
+    )
 }
 
 fn primary_snapshot_entry(
@@ -1550,8 +1558,12 @@ fn primary_snapshot_entry(
 ) -> Option<(&String, &DeviceSnapshot)> {
     snapshots
         .iter()
-        .find(|(_, snapshot)| snapshot_allows_writes(snapshot))
-        .or_else(|| snapshots.iter().next())
+        .max_by(|(path_a, snapshot_a), (path_b, snapshot_b)| {
+            snapshot_selection_preference(snapshot_a)
+                .cmp(&snapshot_selection_preference(snapshot_b))
+                // max_by 在完全相等时会取后一项；反转路径比较以保留较小的稳定键。
+                .then_with(|| path_b.cmp(path_a))
+        })
 }
 
 fn selected_snapshot_entry<'a>(
@@ -2559,6 +2571,7 @@ mod settings_tests {
         let mut snapshot = DeviceSnapshot {
             display_name: "AM INFINITY 8K MOUSE".into(),
             connection: mira_core::Connection::Wireless,
+            selection_priority: 0,
             battery_percent: Some(64),
             charging: false,
             batteries: vec![
@@ -2638,6 +2651,7 @@ mod settings_tests {
         DeviceSnapshot {
             display_name: name.into(),
             connection: mira_core::Connection::Wireless,
+            selection_priority: 0,
             battery_percent: None,
             charging: false,
             batteries: Vec::new(),
@@ -2701,6 +2715,33 @@ mod settings_tests {
             primary_snapshot(&snapshots).map(|snapshot| snapshot.display_name.as_str()),
             Some("first readonly")
         );
+    }
+
+    #[test]
+    fn primary_snapshot_prefers_plugin_declared_mouse_over_receiver() {
+        let mut receiver = primary_test_snapshot(
+            "Receiver",
+            "hardware-verified",
+            false,
+            vec!["set-dpi".into()],
+        );
+        receiver.selection_priority = 0;
+        let mut mouse =
+            primary_test_snapshot("Mouse", "hardware-verified", true, vec!["set-dpi".into()]);
+        mouse.selection_priority = 100;
+        // 故意让接收器设备键排在前面，证明选择结果不再依赖 HID 路径字典序。
+        let snapshots =
+            BTreeMap::from([("a-receiver".into(), receiver), ("z-mouse".into(), mouse)]);
+
+        assert_eq!(
+            primary_snapshot(&snapshots).map(|snapshot| snapshot.display_name.as_str()),
+            Some("Mouse")
+        );
+
+        let selected_key = "z-mouse".to_string();
+        let entries = ordered_snapshot_entries(&snapshots, Some(&selected_key));
+        assert_eq!(entries[0].snapshot.display_name, "Mouse");
+        assert!(entries[0].selected);
     }
 
     #[test]
@@ -2851,6 +2892,7 @@ mod settings_tests {
         let snapshot = DeviceSnapshot {
             display_name: "Test Mouse".into(),
             connection: mira_core::Connection::Usb,
+            selection_priority: 0,
             battery_percent: None,
             charging: false,
             batteries: Vec::new(),
@@ -2958,6 +3000,7 @@ mod settings_tests {
         let snapshot = DeviceSnapshot {
             display_name: "AM35".into(),
             connection: mira_core::Connection::Wireless,
+            selection_priority: 0,
             battery_percent: None,
             charging: false,
             batteries: Vec::new(),
@@ -3013,6 +3056,7 @@ mod settings_tests {
         let snapshot = DeviceSnapshot {
             display_name: "Protocol A".into(),
             connection: mira_core::Connection::Wireless,
+            selection_priority: 0,
             battery_percent: None,
             charging: false,
             batteries: Vec::new(),
@@ -3321,6 +3365,7 @@ mod night_mode_tests {
         let mut snapshot = DeviceSnapshot {
             display_name: "Test".into(),
             connection: mira_core::Connection::Usb,
+            selection_priority: 0,
             battery_percent: Some(80),
             charging: true,
             batteries: Vec::new(),
@@ -3386,6 +3431,7 @@ mod night_mode_tests {
         let mut snapshot = DeviceSnapshot {
             display_name: "Test".into(),
             connection: mira_core::Connection::Usb,
+            selection_priority: 0,
             battery_percent: Some(15),
             charging: false,
             batteries: Vec::new(),
@@ -3454,6 +3500,7 @@ mod night_mode_tests {
         let snapshot = DeviceSnapshot {
             display_name: "Test".into(),
             connection: mira_core::Connection::Usb,
+            selection_priority: 0,
             battery_percent: Some(80),
             charging: true,
             batteries: Vec::new(),
@@ -3488,6 +3535,7 @@ mod night_mode_tests {
         let snapshot = DeviceSnapshot {
             display_name: "Test".into(),
             connection: mira_core::Connection::Usb,
+            selection_priority: 0,
             battery_percent: None,
             charging: false,
             batteries: Vec::new(),
@@ -3527,6 +3575,7 @@ mod night_mode_tests {
         let snapshot = DeviceSnapshot {
             display_name: "Test".into(),
             connection: mira_core::Connection::Usb,
+            selection_priority: 0,
             battery_percent: None,
             charging: false,
             batteries: Vec::new(),
@@ -3561,6 +3610,7 @@ mod night_mode_tests {
         let snapshot = DeviceSnapshot {
             display_name: "Test".into(),
             connection: mira_core::Connection::Usb,
+            selection_priority: 0,
             battery_percent: None,
             charging: false,
             batteries: Vec::new(),
@@ -3605,6 +3655,7 @@ mod night_mode_tests {
         let snapshot = DeviceSnapshot {
             display_name: "Test".into(),
             connection: mira_core::Connection::Usb,
+            selection_priority: 0,
             battery_percent: None,
             charging: false,
             batteries: Vec::new(),
@@ -3640,6 +3691,7 @@ mod night_mode_tests {
         let snapshot = DeviceSnapshot {
             display_name: "Test".into(),
             connection: mira_core::Connection::Usb,
+            selection_priority: 0,
             battery_percent: None,
             charging: false,
             batteries: Vec::new(),
@@ -3665,6 +3717,7 @@ mod night_mode_tests {
         let make_snapshot = |enabled: bool| DeviceSnapshot {
             display_name: "Test".into(),
             connection: mira_core::Connection::Usb,
+            selection_priority: 0,
             battery_percent: None,
             charging: false,
             batteries: Vec::new(),
@@ -3699,6 +3752,7 @@ mod night_mode_tests {
         let snapshot = DeviceSnapshot {
             display_name: "Test".into(),
             connection: mira_core::Connection::Usb,
+            selection_priority: 0,
             battery_percent: None,
             charging: false,
             batteries: Vec::new(),
@@ -3748,6 +3802,7 @@ mod night_mode_tests {
         let snapshot = DeviceSnapshot {
             display_name: "Test".into(),
             connection: mira_core::Connection::Usb,
+            selection_priority: 0,
             battery_percent: None,
             charging: false,
             batteries: Vec::new(),
@@ -3798,6 +3853,7 @@ mod night_mode_tests {
         let snapshot = DeviceSnapshot {
             display_name: "Test".into(),
             connection: mira_core::Connection::Usb,
+            selection_priority: 0,
             battery_percent: None,
             charging: false,
             batteries: Vec::new(),
@@ -3856,6 +3912,7 @@ mod night_mode_tests {
         let snapshot = DeviceSnapshot {
             display_name: "Test".into(),
             connection: mira_core::Connection::Usb,
+            selection_priority: 0,
             battery_percent: None,
             charging: false,
             batteries: Vec::new(),
@@ -4138,6 +4195,11 @@ mod capability_tests {
             usage: 4,
             model: None,
             identity: None,
+            selection_priority: 0,
+            selection_priority_by_connection: BTreeMap::from([
+                ("usb".into(), 100),
+                ("wireless".into(), 0),
+            ]),
         };
         let reading = DeviceReading {
             connection: Some(ConnectionKind::Usb),
@@ -4158,6 +4220,7 @@ mod capability_tests {
         );
 
         assert_eq!(snapshot.connection, mira_core::Connection::Usb);
+        assert_eq!(snapshot.selection_priority, 100);
         assert!(snapshot.plugin_capabilities[0].available);
     }
 
@@ -5750,6 +5813,8 @@ fn build_device_snapshot(
     DeviceSnapshot {
         display_name: resolved_name,
         connection: resolved_connection,
+        selection_priority: device
+            .selection_priority_for(snapshot_connection_value(resolved_connection)),
         battery_percent: reading.battery_percent,
         charging: reading.charging,
         batteries: reading.batteries,
@@ -5784,14 +5849,27 @@ fn device_snapshot_entries(state: &SessionState) -> Vec<DeviceSnapshotEntry> {
         Err(_) => return Vec::new(),
     };
     let selected_path = selected_snapshot_entry(state, &guard).map(|(path, _)| path.clone());
-    guard
+    ordered_snapshot_entries(&guard, selected_path.as_ref())
+}
+
+fn ordered_snapshot_entries(
+    snapshots: &BTreeMap<String, DeviceSnapshot>,
+    selected_path: Option<&String>,
+) -> Vec<DeviceSnapshotEntry> {
+    let mut entries: Vec<DeviceSnapshotEntry> = snapshots
         .iter()
         .map(|(device_key, snapshot)| DeviceSnapshotEntry {
             device_key: device_key.clone(),
             snapshot: snapshot.clone(),
-            selected: selected_path.as_ref() == Some(device_key),
+            selected: selected_path == Some(device_key),
         })
-        .collect()
+        .collect();
+    entries.sort_by(|entry_a, entry_b| {
+        snapshot_selection_preference(&entry_b.snapshot)
+            .cmp(&snapshot_selection_preference(&entry_a.snapshot))
+            .then_with(|| entry_a.device_key.cmp(&entry_b.device_key))
+    });
+    entries
 }
 
 /// 返回所有已连接设备的快照列表，供多设备 UI 使用。
@@ -6281,6 +6359,8 @@ fn apply_snapshot_patch(
                 }
                 if let Some(conn) = connection {
                     updated.connection = conn;
+                    updated.selection_priority = device
+                        .selection_priority_for(snapshot_connection_value(updated.connection));
                 }
                 updated
             } else {
@@ -6294,6 +6374,9 @@ fn apply_snapshot_patch(
                         &device.evidence,
                     ),
                     connection: connection.unwrap_or(fallback_connection),
+                    selection_priority: device.selection_priority_for(snapshot_connection_value(
+                        connection.unwrap_or(fallback_connection),
+                    )),
                     battery_percent: None,
                     charging: false,
                     batteries: Vec::new(),
@@ -6903,14 +6986,7 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
             // 在存储前从 new_map 直接构建 entries，避免再次锁定 last_snapshot 克隆快照。
             let selected_path =
                 selected_snapshot_entry(&state, &new_map).map(|(path, _)| path.clone());
-            let snapshot_entries: Vec<DeviceSnapshotEntry> = new_map
-                .iter()
-                .map(|(device_key, snapshot)| DeviceSnapshotEntry {
-                    device_key: device_key.clone(),
-                    snapshot: snapshot.clone(),
-                    selected: selected_path.as_ref() == Some(device_key),
-                })
-                .collect();
+            let snapshot_entries = ordered_snapshot_entries(&new_map, selected_path.as_ref());
             let fresh_snapshot_entries: Vec<DeviceSnapshotEntry> = snapshot_entries
                 .iter()
                 .filter(|entry| fresh_paths.contains(&entry.device_key))
@@ -10072,6 +10148,7 @@ mod read_plan_tests {
         DeviceSnapshot {
             display_name: "Mouse".into(),
             connection,
+            selection_priority: 0,
             battery_percent: Some(80),
             charging: false,
             batteries: Vec::new(),
