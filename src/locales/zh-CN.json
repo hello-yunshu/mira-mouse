@@ -615,7 +615,7 @@
     "abnormalDrain": "异常耗电",
     "noAbnormalDrain": "未发现异常耗电",
     "abnormalDrain2h": "过去 2 小时掉电 {{drop}}%，高于平时。",
-    "powerSavingTips": "省电建议",
+    "powerSavingTip": "省电建议",
     "powerSavingTipLow": "{{component}} 电量偏低，可以临时关闭灯光或降低回报率。",
     "batteryConsistency": "续航稳定性",
     "deviceComparison": "设备对比",

@@ -2891,6 +2891,14 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   font-size: 10px;
   font-weight: 650;
 }
+/* status-strip 内设备名称与电量百分比的淡入淡出当前值字号微调
+   （仅这两个位置，不影响其他 FadeText 实例） */
+.battery-status-device-info > span > .battery-fade-text > .battery-fade-current {
+  font-size: 12px;
+}
+.battery-status-metric > strong > .battery-fade-text > .battery-fade-current {
+  font-size: 11px;
+}
 .battery-status-strip.low {
   border-color: rgb(255 69 58 / 28%);
   background:
@@ -3090,6 +3098,60 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   white-space: nowrap;
 }
 /* summary grid 固定 4 列，窄屏不再降级，确保一行始终 4 个 */
+
+/* ─── 文本淡入淡出（FadeText 组件）──────────────────────────────────────────
+   双 span 交叉 opacity 过渡：current 淡出（1→0 + translateY 0→-1px），
+   next 淡入（0→1 + translateY 1px→0），220ms 时长。delay 通过 --fade-delay
+   CSS 变量传递，同时作用于 transition-delay，实现错落效果。
+   transition 仅在 .is-transitioning 状态启用，避免过渡结束时 current
+   从 0 回到 1 触发二次淡入（参见 lessons-learned：淡入淡出二次闪烁）。 */
+/* 单行模式：inline-grid 让 current/next 叠放在同一格子 */
+.battery-fade-text {
+  display: inline-grid;
+  vertical-align: bottom;
+}
+/* 多行模式：position:relative，next 用 absolute 定位脱离文档流，
+   外层容器高度仅由 current 决定，避免新旧文案行数不同时撑开容器导致重排
+   （参见 lessons-learned：FadeText 多行重排） */
+.battery-fade-multiline {
+  position: relative;
+  display: block;
+}
+.battery-fade-text .battery-fade-current,
+.battery-fade-text .battery-fade-next {
+  grid-area: 1 / 1;
+}
+.battery-fade-multiline .battery-fade-current {
+  grid-area: auto;
+}
+.battery-fade-multiline .battery-fade-next {
+  position: absolute;
+  inset: 0;
+}
+/* 默认状态：current 可见，next 隐藏并向下偏移 1px（准备淡入） */
+.battery-fade-current { opacity: 1; }
+.battery-fade-next { opacity: 0; transform: translateY(1px); }
+/* 过渡状态：current 淡出并向上偏移 1px，next 淡入并归位 */
+.battery-fade-text.is-transitioning .battery-fade-current,
+.battery-fade-multiline.is-transitioning .battery-fade-current {
+  opacity: 0;
+  transform: translateY(-1px);
+}
+.battery-fade-text.is-transitioning .battery-fade-next,
+.battery-fade-multiline.is-transitioning .battery-fade-next {
+  opacity: 1;
+  transform: translateY(0);
+}
+/* transition 仅在 .is-transitioning 时启用，delay 通过 --fade-delay 传递
+   （参见 lessons-learned：错落动画同步） */
+.battery-fade-text.is-transitioning .battery-fade-current,
+.battery-fade-text.is-transitioning .battery-fade-next,
+.battery-fade-multiline.is-transitioning .battery-fade-current,
+.battery-fade-multiline.is-transitioning .battery-fade-next {
+  transition:
+    opacity 220ms ease var(--fade-delay, 0ms),
+    transform 220ms ease var(--fade-delay, 0ms);
+}
 
 /* 图表卡片 */
 .battery-chart-card {

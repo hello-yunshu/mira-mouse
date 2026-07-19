@@ -615,7 +615,7 @@
     "abnormalDrain": "Abnormal drain",
     "noAbnormalDrain": "No abnormal drain detected",
     "abnormalDrain2h": "Battery dropped {{drop}}% in the last 2 hours, which is higher than usual.",
-    "powerSavingTips": "Power saving tips",
+    "powerSavingTip": "Power saving tip",
     "powerSavingTipLow": "{{component}} is low. You can temporarily turn off lighting or lower the polling rate.",
     "batteryConsistency": "Battery consistency",
     "deviceComparison": "Device comparison",
