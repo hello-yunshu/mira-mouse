@@ -6570,9 +6570,7 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
     let state = app.state::<SessionState>();
     // 系统主题缓存由 ThemeChanged 事件和窗口聚焦事件更新，
     // 轮询期间只读缓存，避免每轮都 fork 进程检测主题。
-    // Lock scope: only HID I/O and snapshot construction. Disk reads, tray
-    // updates and event emission run after the locks are released so they
-    // cannot block discover_devices or other commands.
+    // Lock scope: only HID I/O and snapshot construction; disk/tray/event emission after release to avoid blocking discover_devices.
     let outcome = (|| -> Option<DeviceReadOutcome> {
         let _io_guard = state.device_io.lock().ok()?;
         let plugins_guard = state.plugins.lock().ok()?;
@@ -6580,9 +6578,7 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
         if plugins.is_empty() {
             return None;
         }
-        // Reuse the cached HidApi instance and refresh the device list to
-        // detect newly plugged/unplugged devices. This avoids re-enumerating
-        // all HID devices from scratch on every poll.
+        // Reuse cached HidApi and refresh device list; avoids full re-enumeration on every poll.
         let mut hidapi_guard = state.cached_hidapi.lock().ok()?;
         if hidapi_guard.is_none() {
             *hidapi_guard = Some(HidApi::new().ok()?);
@@ -6974,8 +6970,7 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
     })()
     .unwrap_or(DeviceReadOutcome::Skip);
 
-    // Post-lock: disk I/O, tray updates and event emission run without holding
-    // device_io or plugins locks so concurrent commands are not blocked.
+    // Post-lock: disk I/O, tray updates and event emission run without device_io/plugins locks.
     match outcome {
         DeviceReadOutcome::Skip => {}
         DeviceReadOutcome::PreserveLast => {
@@ -7659,8 +7654,7 @@ fn device_mutate_blocking_impl(
         (device.path.clone(), snapshot, profile_remember)
     };
 
-    // Post-lock: disk I/O, tray updates and event emission run without holding
-    // device_io or plugins locks so concurrent reads are not blocked.
+    // Post-lock: disk I/O, tray updates and event emission run without device_io/plugins locks.
     // 修复 P-2：remember_software_profile 在锁外执行磁盘写入，保持与注释承诺一致。
     if let Some((device_clone, reading_clone, allowed_clone, capabilities_clone)) = profile_remember
     {
@@ -8562,7 +8556,7 @@ fn take_pending_notification_action(state: tauri::State<SessionState>) -> Option
         .unwrap_or(None)
 }
 
-// ─── 电量使用情况 Tauri 命令 ─────────────────────────────────────────────────
+// 电量使用情况 Tauri 命令
 
 /// 获取电量历史（24 小时或 10 天聚合 + 洞察分析）。
 #[tauri::command]
@@ -8996,10 +8990,6 @@ fn battery_title(snapshot: &DeviceSnapshot, settings: &AppSettings) -> Option<St
     }
     Some(title)
 }
-
-// Battery helpers and static PNG icon arrays have been migrated to:
-//   crate::tray::state::{mouse_battery_percentage, mouse_battery_charging, low_battery_notification_value}
-//   crate::tray::static_icon::{static_tray_icon_bytes, static_tray_app_icon_bytes, static_tray_app_icon_bytes_for_theme}
 
 #[cfg(any(not(target_os = "macos"), test))]
 fn app_icon_bytes_for_theme(dark: bool) -> &'static [u8] {

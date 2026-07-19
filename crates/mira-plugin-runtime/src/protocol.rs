@@ -209,7 +209,6 @@ fn map_semantic_fields_to_outputs(
             }
         }
         if matched == 0 {
-            // 记录缺失的语义字段（用于诊断）
             missing.insert(format!("{field:?}"));
         }
     }
@@ -407,7 +406,6 @@ pub fn read_device_with_projection(
             projected_step_count: projection.selected_step_count(),
         })
     } else {
-        // 4. 投影失败，回退到完整读取
         let reason = projection
             .fallback_reason()
             .unwrap_or("projection returned no steps")
@@ -473,7 +471,6 @@ fn maybe_merge_onboard_lighting(
             }
         }
     }
-    // Cache miss: execute onboard workflow and merge results.
     let onboard_outputs = package.execute_with_cache(
         ctx.api,
         ctx.path,
@@ -611,9 +608,7 @@ fn standard_reading(
         }
     }
 
-    // Receiver transports expose their status object alongside ordinary workflow
-    // outputs. Keeping this normalization in the runtime lets every UI consume the
-    // same multi-device battery contract without knowing a brand protocol.
+    // Receiver transports expose their status object alongside ordinary workflow outputs.
     let receiver_idle = object(&reading.capabilities, "receiverIdle");
     let receiver_proxy = object(&reading.capabilities, "receiver");
     let receiver = receiver_idle.or(receiver_proxy);
@@ -657,9 +652,7 @@ fn standard_reading(
     reading.profile = crate::onboard_profiles::active_profile_index(&reading.capabilities);
 
     // If the plugin already emitted a structured "profile" capability, keep it.
-    // Otherwise, when 0x8101 Profile Management outputs are present, normalize
-    // them into a single capability object so the UI does not need to know the
-    // exact workflow output names.
+    // Otherwise normalize 0x8101 Profile Management outputs into a single capability.
     if object(&reading.capabilities, "profile").is_none()
         && (crate::onboard_profiles::profile_count(&reading.capabilities).is_some()
             || crate::onboard_profiles::profile_management_info(&reading.capabilities).is_some())
@@ -725,9 +718,7 @@ fn standard_reading(
                 reading.dpi_stages = Some(stages);
             }
         } else if let Some(value) = number(dpi, "dpiValue") {
-            // Single-value DPI (e.g. HID++ 2.0 AdjustableDPI). The DSL parser
-            // returns one DPI value for the active stage; expose it as a single
-            // stage so the UI can render and edit it without a stage list.
+            // Single-value DPI (e.g. HID++ 2.0 AdjustableDPI).
             if let Ok(value) = u16::try_from(value) {
                 reading.dpi = Some(value);
                 reading.dpi_stages = Some(vec![mira_core::DpiStage {

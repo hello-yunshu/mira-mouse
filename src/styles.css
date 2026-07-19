@@ -2502,37 +2502,6 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
 }
 .donate-hint { margin-top: 6px; line-height: 1.7; }
 
-/* Responsive — 竖向窄屏适配 */
-@media (max-width: 440px) {
-  .app-shell { padding: 0 12px 10px; }
-  /* 窄屏下 app-shell 水平 padding 为 12px，Windows nav-links 右边缘需相应调整以对齐 dashboard 右边缘 */
-  .platform-windows .nav-links { right: max(12px, calc(50% - 234px)); top: 32px; }
-  .device-hero { grid-template-columns: minmax(0, 1fr) 175px; min-height: 170px; }
-  .device-copy { padding-left: 6px; }
-  .device-column .app-title { left: 6px; width: min(180px, calc(100% - 6px)); }
-  .platform-macos .device-column .app-title { left: 6px; }
-  .platform-windows .device-column .app-title { left: 10px; }
-  .device-copy h1 { font-size: 22px; }
-  .device-aura { width: 175px; height: 145px; }
-  .control-tabs { width: 78%; }
-  .status-strip { gap: 5px; }
-  .status-strip > div,
-  .status-strip > button { padding: 6px 8px; gap: 6px; }
-  .status-strip:is([data-status-count="1"], [data-status-count="2"], [data-status-count="3"]) > div,
-  .status-strip:is([data-status-count="1"], [data-status-count="2"], [data-status-count="3"]) > button {
-    justify-content: flex-start;
-    text-align: left;
-  }
-  .status-strip:is([data-status-count="1"], [data-status-count="2"], [data-status-count="3"]) span {
-    align-items: flex-start;
-  }
-  .setting-row { flex-direction: column; align-items: flex-start; }
-  .setting-control { width: 100%; justify-content: flex-end; }
-  input[type="range"] { width: 100%; }
-  .plugin-item { grid-template-columns: 1fr; }
-  .capability-groups { columns: 1; }
-}
-
 @media (max-height: 620px) {
   .control-stage {
     height: 210px;

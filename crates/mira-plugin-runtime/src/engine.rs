@@ -849,10 +849,8 @@ impl ProtocolPackage {
 
         let steps = &workflow.steps;
 
-        // 收集所有可用的 output 名称
         let available_outputs: BTreeSet<&String> = steps.iter().map(|s| &s.output).collect();
 
-        // 过滤目标 output：只保留工作流中实际存在的
         let mut valid_targets: BTreeSet<String> = BTreeSet::new();
         let mut missing_targets: BTreeSet<String> = BTreeSet::new();
         for target in target_outputs {
@@ -879,10 +877,7 @@ impl ProtocolPackage {
             }
         }
 
-        // 第二步：递归计算依赖闭包
-        // 对于每个已选中的 step，找到它依赖的所有 output，
-        // 然后找到产出这些 output 的 step，加入选中集合。
-        // 重复直到不再变化。
+        // 第二步：递归计算依赖闭包，重复直到不再变化。
         let mut changed = true;
         while changed {
             changed = false;
@@ -901,7 +896,6 @@ impl ProtocolPackage {
             }
         }
 
-        // 构建回退原因（如果有目标 output 不存在）
         let fallback_reason = if missing_targets.is_empty() {
             None
         } else {
@@ -3581,7 +3575,6 @@ mod tests {
 
     #[test]
     fn validate_mutation_inputs_still_validates_declared_params() {
-        // 多余参数被忽略，但已声明参数仍被校验
         let definitions = BTreeMap::from([(
             "effect".into(),
             MutationInput {
@@ -3601,7 +3594,6 @@ mod tests {
             ])
         )
         .is_ok());
-        // 无效值（不在 allowed 列表中）
         assert!(validate_mutation_inputs(
             &definitions,
             &Map::from_iter([

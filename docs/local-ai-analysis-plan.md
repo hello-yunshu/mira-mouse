@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
 # Mira 本地AI分析计划
 
 ## 目标与边界

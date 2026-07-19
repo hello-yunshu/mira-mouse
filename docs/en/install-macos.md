@@ -7,8 +7,11 @@ The community DMG is published on the [GitHub Releases](https://github.com/hello
 
 ```bash
 brew tap hello-yunshu/mira
+brew trust hello-yunshu/mira
 brew install --cask mira
 ```
+
+Homebrew 4.x requires `brew trust` for third-party taps to mark them as a trusted source; without this step, `brew install --cask mira` fails with `Refusing to load cask ... from untrusted tap`.
 
 Upgrades follow the standard Homebrew flow:
 
