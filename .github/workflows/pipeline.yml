@@ -29,6 +29,10 @@ jobs:
       - uses: actions/setup-node@v7
         with: { node-version: 22, cache: npm }
       - run: npm ci
+      # 先把 Cargo.toml [workspace.package].version 同步到 CITATION.cff / ROADMAP.md /
+      # handler Cargo.lock，避免开发者 bump 版本后漏跑 `npm run sync:version` 导致
+      # 下游 check:structured 或 xtask handler check-lock 失败。脚本幂等，无差异时不写入。
+      - run: npm run sync:version
       - run: npm run lint && npm run typecheck && npm test && npm run build
       - run: npm run check:boundaries && npm run check:structured
   rust:
@@ -53,6 +57,11 @@ jobs:
           key: cargo-rust-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             cargo-rust-${{ runner.os }}-
+      # 先把 workspace 版本号同步到 CITATION.cff / ROADMAP.md / handler Cargo.lock，
+      # 否则下面 `xtask handler check-lock` 会因 handler path 依赖锁版本旧而失败。
+      # 脚本里跑 `cargo update -p <path deps>` 同步 handler Cargo.lock，因此必须
+      # 在 rustup toolchain 安装之后、check-lock 之前执行。
+      - run: node scripts/sync-version.mjs
       - run: cargo fmt --all --check
       - run: cargo run --package xtask -- plugins sync --locked
       - name: Verify mira-battery-handler Cargo.lock is in sync with workspace
