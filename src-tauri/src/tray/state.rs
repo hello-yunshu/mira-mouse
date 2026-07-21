@@ -157,27 +157,44 @@ impl TrayStatusState {
     }
 }
 
-/// 鼠标电量百分比：优先从 `batteries` 中查找 `id == "mouse"`，
-/// 回退到第一个电池，最后回退 `battery_percent`。
+/// 鼠标电量百分比：优先从 `batteries` 中查找 `id == "mouse"`。
+///
+/// 回退规则（避免误把接收器电量当成鼠标电量显示）：
+/// - 找到 `id == "mouse"` → 返回其百分比
+/// - 缺 mouse 但**存在 receiver** → 不回退到 `first()`（first 很可能是 receiver），
+///   继续回退到 `battery_percent`（可能为 None，UI 显示电量未知）
+/// - 缺 mouse 且**没有 receiver** → 回退到 `first()`（兼容旧插件无 id 或 id 非 "mouse"
+///   的 mouse 条目，此时 first 就是鼠标电量）
+/// - `batteries` 为空 → 回退到 `battery_percent`（旧版字段兼容）
+///
+/// 这是数据层 `merge_batteries` 粘性缓存之外的双保险：即使 mouse 条目因
+/// 边缘情况丢失，只要 receiver 还在，就不会把 receiver 当成 mouse 显示。
 pub fn mouse_battery_percentage(snapshot: &DeviceSnapshot) -> Option<u8> {
-    snapshot
-        .batteries
-        .iter()
-        .find(|battery| battery.id == "mouse")
-        .or_else(|| snapshot.batteries.first())
-        .map(|battery| battery.percentage)
-        .or(snapshot.battery_percent)
+    if let Some(mouse) = snapshot.batteries.iter().find(|b| b.id == "mouse") {
+        return Some(mouse.percentage);
+    }
+    let has_receiver = snapshot.batteries.iter().any(|b| b.id == "receiver");
+    if !has_receiver {
+        if let Some(first) = snapshot.batteries.first() {
+            return Some(first.percentage);
+        }
+    }
+    snapshot.battery_percent
 }
 
-/// 鼠标是否正在充电。
+/// 鼠标是否正在充电。回退规则与 `mouse_battery_percentage` 对齐：
+/// 缺 mouse 但存在 receiver 时不回退到 `first()`。
 pub fn mouse_battery_charging(snapshot: &DeviceSnapshot) -> bool {
-    snapshot
-        .batteries
-        .iter()
-        .find(|battery| battery.id == "mouse")
-        .or_else(|| snapshot.batteries.first())
-        .map(|battery| battery.charging)
-        .unwrap_or(snapshot.charging)
+    if let Some(mouse) = snapshot.batteries.iter().find(|b| b.id == "mouse") {
+        return mouse.charging;
+    }
+    let has_receiver = snapshot.batteries.iter().any(|b| b.id == "receiver");
+    if !has_receiver {
+        if let Some(first) = snapshot.batteries.first() {
+            return first.charging;
+        }
+    }
+    snapshot.charging
 }
 
 /// 接收器电量百分比：从 `batteries` 中查找 `id == "receiver"`。
@@ -293,6 +310,41 @@ mod tests {
         }]);
         assert_eq!(mouse_battery_percentage(&snapshot), Some(42));
         assert!(mouse_battery_charging(&snapshot));
+    }
+
+    #[test]
+    fn mouse_battery_does_not_fall_back_to_receiver() {
+        // 鼠标休眠时后端 merge_batteries 应保留 mouse 条目；这里做双保险：
+        // 万一 mouse 条目丢失且 batteries 里只剩 receiver，不应把 receiver 当 mouse。
+        let snapshot = make_snapshot(vec![mira_core::DeviceBattery {
+            id: "receiver".into(),
+            label: "接收器".into(),
+            percentage: 100,
+            charging: false,
+        }]);
+        assert_eq!(mouse_battery_percentage(&snapshot), None);
+        assert!(!mouse_battery_charging(&snapshot));
+    }
+
+    #[test]
+    fn mouse_battery_does_not_fall_back_to_first_when_receiver_present() {
+        // 有 receiver 时，即使 first 是非 receiver 的未知条目，也不回退：
+        // 避免接收器在位时把任何非 mouse 条目当成鼠标电量。
+        let snapshot = make_snapshot(vec![
+            mira_core::DeviceBattery {
+                id: "unknown".into(),
+                label: "Unknown".into(),
+                percentage: 50,
+                charging: false,
+            },
+            mira_core::DeviceBattery {
+                id: "receiver".into(),
+                label: "接收器".into(),
+                percentage: 100,
+                charging: false,
+            },
+        ]);
+        assert_eq!(mouse_battery_percentage(&snapshot), None);
     }
 
     #[test]
