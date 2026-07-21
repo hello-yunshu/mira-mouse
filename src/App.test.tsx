@@ -296,6 +296,18 @@ describe('Mira shell', () => {
     expect(screen.getByText('还没找到支持的鼠标呢')).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: '设置' })).not.toBeInTheDocument();
   });
+  it('remembers the active settings tab when returning from the about page', () => {
+    render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: '设置' }));
+    // 切到设置页的「关于」标签，再进入完整的关于页
+    fireEvent.click(screen.getByRole('button', { name: '关于' }));
+    fireEvent.click(screen.getByRole('button', { name: '打开关于页' }));
+    // 从关于页返回后，应停留在原先的「关于」标签，而非每次都落回首个标签
+    fireEvent.click(screen.getByRole('button', { name: '返回' }));
+    expect(screen.getByRole('heading', { name: '设置' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '关于' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: '通用' })).toHaveAttribute('aria-pressed', 'false');
+  });
   it('applies demo mutations locally without calling device_mutate or showing errors', async () => {
     render(<App />);
     fireEvent.click(screen.getByText('查看演示'));

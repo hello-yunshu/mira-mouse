@@ -329,6 +329,30 @@ describe('real device snapshot mapping', () => {
     expect(screen.queryByRole('tab', { name: 'Control 7' })).not.toBeInTheDocument();
   });
 
+  it('prefers mouse battery over receiver in the card summary regardless of array order', async () => {
+    // 鼠标无线休眠场景的前端双保险：即使 batteries 里 receiver 排在 mouse 前面，
+    // 摘要按钮也应优先显示 mouse 电量（76%）而非 receiver 电量（100%）。
+    const receiverFirstSnapshot: DeviceSnapshot = {
+      ...snapshot,
+      batteries: [
+        { id: 'receiver', label: '接收器', percentage: 100, charging: false },
+        { id: 'mouse', label: '鼠标', percentage: 76, charging: false },
+      ],
+    };
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'settings_get') return Promise.resolve(settings);
+      if (command === 'device_snapshots') return Promise.resolve(entries(receiverFirstSnapshot));
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+
+    render(<App />);
+    await screen.findByRole('heading', { name: 'AM INFINITY 8K MOUSE' });
+    const summary = document.querySelector('.battery-state');
+    expect(summary).toBeInTheDocument();
+    expect(summary).toHaveTextContent('76%');
+    expect(summary).not.toHaveTextContent('100%');
+  });
+
   it('uses the shared continuous battery icon for plugin-declared dashboard battery status', async () => {
     const batteryStatusSnapshot: DeviceSnapshot = {
       displayName: 'Battery Status Mouse', connection: 'wireless', batteryPercent: 67,

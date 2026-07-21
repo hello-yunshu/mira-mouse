@@ -78,7 +78,7 @@ const EMPTY_LOCAL_AI_STATUS: LocalAiStatus = {
   rollbackAvailable: false,
 };
 
-type SettingsTab = 'general' | 'device' | 'plugins' | 'privacy' | 'about';
+export type SettingsTab = 'general' | 'device' | 'plugins' | 'privacy' | 'about';
 
 type PendingSettingsSave = {
   settings: AppSettings;
@@ -129,7 +129,7 @@ function isMacPlatform(): boolean {
     || (previewPlatform === null && /Macintosh|Mac OS X/.test(navigator.userAgent));
 }
 
-export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, onBatteryUsageSettingsChange, onThemeChange, previewMode = false, pluginCapabilities = [], writableMutations = [], focusPluginUpdateToken = 0, focusLocalAiUpdateToken = 0 }: { onNavigateAbout: () => void; onOpenBatteryUsage?: () => void; onBatteryUsageSettingsChange?: (settings: { batteryHistoryEnabled: boolean; aiAnalysisEnabled: boolean }) => void; onThemeChange: (theme: ThemeMode) => void; previewMode?: boolean; pluginCapabilities?: PluginCapability[]; writableMutations?: string[]; focusPluginUpdateToken?: number; focusLocalAiUpdateToken?: number }) {
+export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, onBatteryUsageSettingsChange, onThemeChange, previewMode = false, pluginCapabilities = [], writableMutations = [], focusPluginUpdateToken = 0, focusLocalAiUpdateToken = 0, initialTab = 'general', onTabChange }: { onNavigateAbout: () => void; onOpenBatteryUsage?: () => void; onBatteryUsageSettingsChange?: (settings: { batteryHistoryEnabled: boolean; aiAnalysisEnabled: boolean }) => void; onThemeChange: (theme: ThemeMode) => void; previewMode?: boolean; pluginCapabilities?: PluginCapability[]; writableMutations?: string[]; focusPluginUpdateToken?: number; focusLocalAiUpdateToken?: number; initialTab?: SettingsTab; onTabChange?: (tab: SettingsTab) => void }) {
   const { t } = useTranslation();
   const windowsPlatform = isWindowsPlatform();
   const macPlatform = isMacPlatform();
@@ -156,7 +156,7 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
   const [confirmingClearBattery, setConfirmingClearBattery] = useState(false);
   const [subview, setSubview] = useState<'main' | 'logs'>('main');
   const [tabState, setTabState] = useState<{ tab: SettingsTab; focusToken: number }>(() => ({
-    tab: focusPluginUpdateToken > 0 || focusLocalAiUpdateToken > 0 ? 'plugins' : 'general',
+    tab: focusPluginUpdateToken > 0 || focusLocalAiUpdateToken > 0 ? 'plugins' : initialTab,
     focusToken: focusPluginUpdateToken,
   }));
   const pendingPluginFocus = useRef(false);
@@ -288,6 +288,12 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
     target?.scrollIntoView?.({ block: 'start', behavior: 'smooth' });
     target?.focus?.({ preventScroll: true });
   }, [tab, focusLocalAiUpdateToken]);
+
+  // 把当前激活的标签上抛给父组件，使设置页在卸载/重建（例如进入关于页再返回）
+  // 后能恢复到用户先前所在的标签，而不是每次都落回首个标签。
+  useEffect(() => {
+    onTabChange?.(tab);
+  }, [tab, onTabChange]);
 
   const TABS: { id: SettingsTab; label: string }[] = [
     { id: 'general', label: t('settings.tab.general') },
