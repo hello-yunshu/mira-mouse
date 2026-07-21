@@ -121,7 +121,11 @@ jobs:
     # Release/dispatch builds always need the signed pack. Same-repository PRs
     # can use the repository secret as well; fork PRs skip packaging entirely
     # instead of publishing an artifact with the zero-byte source placeholder.
-    if: ${{ always() && needs.rust.result != 'failure' && needs.rill-release.result == 'success' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    # Dependabot PRs are skipped because GitHub Actions does not expose secrets
+    # to pull requests opened by dependabot[bot], causing rill-pack to fail with
+    # "RILL_SIGNING_KEY_HEX must contain exactly one 32-byte hexadecimal signing
+    # seed". Skipping here avoids a false-positive CI failure on dependency bumps.
+    if: ${{ always() && needs.rust.result != 'failure' && needs.rill-release.result == 'success' && github.actor != 'dependabot[bot]' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     needs: [rust, rill-release]
     uses: ./.github/workflows/model-pack.yml
     with:
