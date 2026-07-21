@@ -41,14 +41,15 @@ describe('plugin updater', () => {
       .mockResolvedValueOnce({ pluginId: 'mira.example', version: '0.3.0', previousVersion: '0.2.0', restartedRuntime: true })
       .mockResolvedValueOnce([{
         pluginId: 'mira.example', currentVersion: '0.3.0', updateAvailable: false,
-      }]);
+      }])
+      .mockResolvedValue(undefined);
     const { installPluginUpdate, pluginUpdateState } = await import('./plugin-updater');
 
     await installPluginUpdate('mira.example');
 
     expect(invokeMock).toHaveBeenNthCalledWith(1, 'plugin_update_install', { pluginId: 'mira.example' });
     expect(invokeMock).toHaveBeenNthCalledWith(2, 'plugin_updates_check');
-    expect(pluginUpdateState()).toMatchObject({ phase: 'up-to-date', updates: [{ pluginId: 'mira.example', updateAvailable: false }] });
+    expect(pluginUpdateState()).toMatchObject({ phase: 'installed', updates: [{ pluginId: 'mira.example', updateAvailable: false }] });
   });
 
   it('keeps automatic checks alive for long-running sessions', async () => {
