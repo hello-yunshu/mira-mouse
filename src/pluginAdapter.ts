@@ -7,6 +7,12 @@ export const MAX_CONTROL_GROUPS = 6;
 export const MAX_STATUS_ITEMS = 6;
 export const MAX_CONTROL_OPTIONS = 8;
 
+/** 原型污染防护：这些键写入对象会污染原型链，路径解析时必须拒绝。 */
+const UNSAFE_PROTOTYPE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+function isUnsafePrototypeKey(key: string): boolean {
+  return UNSAFE_PROTOTYPE_KEYS.has(key);
+}
+
 /** 从插件声明的 mutation 候选中选择设备实际允许的第一项。 */
 export function resolveMutation(mutation: PluginMutation | undefined, writableMutations: string[]): string | undefined {
   if (typeof mutation === 'string') return writableMutations.includes(mutation) ? mutation : undefined;
@@ -64,6 +70,7 @@ export function writePath(device: DeviceState, path: string, value: unknown): vo
   for (let i = 1; i < parts.length - 1; i++) {
     if (current == null) return;
     const part = parts[i];
+    if (isUnsafePrototypeKey(part)) return;
     if (Array.isArray(current)) {
       const idx = Number(part);
       if (!Number.isInteger(idx)) return;
@@ -76,6 +83,7 @@ export function writePath(device: DeviceState, path: string, value: unknown): vo
   }
   const lastPart = parts[parts.length - 1];
   if (current == null) return;
+  if (isUnsafePrototypeKey(lastPart)) return;
   if (Array.isArray(current)) {
     const idx = Number(lastPart);
     if (!Number.isInteger(idx)) return;
