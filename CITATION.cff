@@ -2,7 +2,7 @@ cff-version: 1.2.0
 message: "If you use Mira in research, cite this software release."
 title: "Mira Mouse"
 type: software
-version: 0.9.9
+version: 0.9.10
 date-released: 2026-07-19
 license: AGPL-3.0-or-later
 abstract: "An unofficial declarative-plugin mouse settings client for macOS, Windows, and Linux."

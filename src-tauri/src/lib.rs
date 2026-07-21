@@ -1112,11 +1112,21 @@ fn install_macos_power_watcher(app: AppHandle) {
     type CFRunLoopRef = *mut c_void;
     type CFRunLoopSourceRef = *const c_void;
     type CFStringRef = *const c_void;
-    type IONotificationHandler = extern "C" fn(*mut c_void, u32, *mut c_void);
+    // IONotificationHandler 官方签名（IOKit/IOKitLib.h）：
+    //   void (*)(void *refcon, io_service_t service, uint32_t messageType, void *p)
+    // io_service_t 是 mach_port_t（u32）。必须 4 个参数，否则 message_type 位置
+    // 收到的是 service 句柄而非消息类型，唤醒事件判断永远不成立。
+    type IONotificationHandler = extern "C" fn(*mut c_void, u32, u32, *mut c_void);
 
     // IOKit framework：IORegisterForSystemPower 等电源管理 API。
     // CoreFoundation framework（CFRunLoop*）已由其他依赖（hidapi/objc2）间接链接，
     // 不需要在此重复标注（clippy 会因重复 kind 属性报警）。
+    //
+    // ⚠️ 关键：`kCFRunLoopDefaultMode` 是 extern 全局常量（CFStringRef 类型的 NSString
+    // 对象指针），不是函数。若错误声明为 `fn kCFRunLoopDefaultMode() -> CFStringRef`
+    // 并调用，编译器会生成跳转到该常量地址的指令，CPU 尝试把 NSString 对象内存当作
+    // 指令执行 → __DATA_CONST 段无执行权限 → Instruction Abort (SIGBUS)。
+    // 该 bug 曾导致 v0.9.9 启动 2 秒后必崩（崩溃地址 = NSDefaultRunLoopMode 符号地址）。
     #[link(name = "IOKit", kind = "framework")]
     extern "C" {
         fn IORegisterForSystemPower(
@@ -1130,7 +1140,7 @@ fn install_macos_power_watcher(app: AppHandle) {
         fn CFRunLoopGetCurrent() -> CFRunLoopRef;
         fn CFRunLoopAddSource(rl: CFRunLoopRef, source: CFRunLoopSourceRef, mode: CFStringRef);
         fn CFRunLoopRun();
-        fn kCFRunLoopDefaultMode() -> CFStringRef;
+        static kCFRunLoopDefaultMode: CFStringRef;
     }
 
     // kIOMessageSystemHasPoweredOn = iokit_common_msg(0x300)
@@ -1138,7 +1148,12 @@ fn install_macos_power_watcher(app: AppHandle) {
     // 来自 IOKit/IOMessage.h
     const K_IO_MESSAGE_SYSTEM_HAS_POWERED_ON: u32 = 0x8100_0300;
 
-    extern "C" fn power_callback(refcon: *mut c_void, message_type: u32, _data: *mut c_void) {
+    extern "C" fn power_callback(
+        refcon: *mut c_void,
+        _service: u32,
+        message_type: u32,
+        _data: *mut c_void,
+    ) {
         if message_type == K_IO_MESSAGE_SYSTEM_HAS_POWERED_ON {
             // refcon 指向 Box::leak 的 AppHandle（生命周期与进程相同）
             let app: &AppHandle = unsafe { &*(refcon as *const AppHandle) };
@@ -1173,7 +1188,10 @@ fn install_macos_power_watcher(app: AppHandle) {
 
         let run_loop = unsafe { CFRunLoopGetCurrent() };
         unsafe {
-            CFRunLoopAddSource(run_loop, source, kCFRunLoopDefaultMode());
+            // kCFRunLoopDefaultMode 是 extern 全局常量（NSString 对象指针），直接传引用。
+            // 绝不能写成 kCFRunLoopDefaultMode()——那会把它当函数调用，跳到 NSString
+            // 对象地址执行，触发 Instruction Abort (SIGBUS)。
+            CFRunLoopAddSource(run_loop, source, kCFRunLoopDefaultMode);
             // CFRunLoopRun 阻塞当前线程，直到 run loop 停止。
             // 这个线程专用于运行电源事件 run loop。
             CFRunLoopRun();
