@@ -7,12 +7,6 @@ export const MAX_CONTROL_GROUPS = 6;
 export const MAX_STATUS_ITEMS = 6;
 export const MAX_CONTROL_OPTIONS = 8;
 
-/** 原型污染防护：这些键写入对象会污染原型链，路径解析时必须拒绝。 */
-const UNSAFE_PROTOTYPE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
-function isUnsafePrototypeKey(key: string): boolean {
-  return UNSAFE_PROTOTYPE_KEYS.has(key);
-}
-
 /** 从插件声明的 mutation 候选中选择设备实际允许的第一项。 */
 export function resolveMutation(mutation: PluginMutation | undefined, writableMutations: string[]): string | undefined {
   if (typeof mutation === 'string') return writableMutations.includes(mutation) ? mutation : undefined;
@@ -56,6 +50,10 @@ export function readPath(device: DeviceState, path: string): unknown {
 
 /// 通用路径写入函数。语义与 readPath 对称。路径前缀同 readPath。
 /// 路径中任何中间节点为 null/非对象/数组越界时静默返回（不抛错）。
+/// 原型污染防护：__proto__/constructor/prototype 这三个键会污染原型链，
+/// 必须在中间遍历和最终赋值处都拒绝。CodeQL 的 js/prototype-pollution-utility
+/// 查询需要直接的字符串字面量比较才能将守卫识别为 sanitizer，因此这里使用
+/// 内联比较而非 Set.has() 辅助函数。
 export function writePath(device: DeviceState, path: string, value: unknown): void {
   const parts = path.split('.');
   if (parts.length === 0) return;
@@ -70,7 +68,8 @@ export function writePath(device: DeviceState, path: string, value: unknown): vo
   for (let i = 1; i < parts.length - 1; i++) {
     if (current == null) return;
     const part = parts[i];
-    if (isUnsafePrototypeKey(part)) return;
+    // 原型污染防护：拒绝 __proto__/constructor/prototype 作为中间路径段。
+    if (part === '__proto__' || part === 'constructor' || part === 'prototype') return;
     if (Array.isArray(current)) {
       const idx = Number(part);
       if (!Number.isInteger(idx)) return;
@@ -83,7 +82,8 @@ export function writePath(device: DeviceState, path: string, value: unknown): vo
   }
   const lastPart = parts[parts.length - 1];
   if (current == null) return;
-  if (isUnsafePrototypeKey(lastPart)) return;
+  // 原型污染防护：最终赋值前再次拒绝 __proto__/constructor/prototype。
+  if (lastPart === '__proto__' || lastPart === 'constructor' || lastPart === 'prototype') return;
   if (Array.isArray(current)) {
     const idx = Number(lastPart);
     if (!Number.isInteger(idx)) return;
