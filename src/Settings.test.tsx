@@ -22,6 +22,7 @@ const settings: AppSettings = {
   nightModeTargetMouse: true, nightModeTargetReceiver: false,
   telemetryDisabled: true,
   automaticUpdateChecks: true, automaticUpdateInstall: false, automaticPluginUpdateChecks: true,
+  automaticLocalAiUpdateChecks: true,
   localAiAnalysisEnabled: false,
   localAiFeatures: { batteryUsage: true },
   batteryHistoryEnabled: true, batteryHistoryRetentionDays: 30, unusualDrainAlerts: false,

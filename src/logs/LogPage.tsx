@@ -3,19 +3,18 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   ArrowsClockwise,
+  ArrowLineDown,
   CaretDown,
   Clipboard,
   Database,
+  DotsThree,
   Eraser,
   Export,
-  Funnel,
   HardDrive,
   MagnifyingGlass,
   Pause,
   Play,
   Trash,
-  Warning,
-  WarningCircle,
   Wrench,
 } from '@phosphor-icons/react';
 import { save } from '@tauri-apps/plugin-dialog';
@@ -64,18 +63,12 @@ type DiagnosticDialogState = {
   level: LogLevel;
 };
 
-/** 格式化本地时间。 */
+/** 格式化本地时间：列表只显示时分秒（与设计稿一致），完整时间保留在 dateTime 属性中。 */
 function formatLocalTime(rfc3339: string): string {
   try {
     const date = new Date(rfc3339);
-    return date.toLocaleString(undefined, {
-      year: '2-digit',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    });
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
   } catch {
     return rfc3339;
   }
@@ -118,8 +111,8 @@ async function copyEntryToClipboard(entry: LogEntry): Promise<void> {
   }
 }
 
-/** 单条日志条目。 */
-function LogEntryRow({ entry, onCopy }: { entry: LogEntry; onCopy: (entry: LogEntry) => void }) {
+/** 单条日志条目（行式布局，与设计稿一致）。 */
+function LogEntryRow({ entry, onCopy, index }: { entry: LogEntry; onCopy: (entry: LogEntry) => void; index: number }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -134,8 +127,9 @@ function LogEntryRow({ entry, onCopy }: { entry: LogEntry; onCopy: (entry: LogEn
 
   const fieldEntries = entry.fields ? Object.entries(entry.fields) : [];
 
+  const staggerDelay = Math.min(index, 10) * 20;
   return (
-    <article className={`log-entry${expanded ? ' expanded' : ''}`} data-level={entry.level}>
+    <article className={`log-entry${expanded ? ' expanded' : ''}`} data-level={entry.level} style={{ '--entry-delay': `${staggerDelay}ms` } as React.CSSProperties}>
       <button
         type="button"
         className="log-entry-summary"
@@ -151,29 +145,31 @@ function LogEntryRow({ entry, onCopy }: { entry: LogEntry; onCopy: (entry: LogEn
       </button>
       {expanded && (
         <div className="log-entry-detail">
-          <dl className="log-entry-fields">
-            <div><dt>{t('logs.fields.target')}</dt><dd><code>{entry.target}</code></dd></div>
-            <div><dt>{t('logs.fields.sessionId')}</dt><dd><code>{entry.sessionId}</code></dd></div>
-            {entry.correlationId && (
-              <div><dt>{t('logs.fields.correlationId')}</dt><dd><code>{entry.correlationId}</code></dd></div>
-            )}
+          <div className="log-entry-detail-card">
+            <div className="log-entry-detail-head">
+              <dl className="log-entry-fields">
+                <div><dt>{t('logs.fields.target')}</dt><dd><code>{entry.target}</code></dd></div>
+                <div><dt>{t('logs.fields.sessionId')}</dt><dd><code>{entry.sessionId}</code></dd></div>
+                {entry.correlationId && (
+                  <div><dt>{t('logs.fields.correlationId')}</dt><dd><code>{entry.correlationId}</code></dd></div>
+                )}
+              </dl>
+              <button type="button" className="log-entry-copy" onClick={handleCopy} aria-label={t('logs.list.copy')}>
+                <Clipboard weight="regular" aria-hidden="true" />
+                <span>{copied ? t('logs.list.copied') : t('logs.list.copy')}</span>
+              </button>
+            </div>
             {fieldEntries.length > 0 && (
               <div className="log-entry-structured">
-                <dt>{t('logs.fields.fields')}</dt>
-                <dd>
-                  <dl className="log-entry-structured-grid">
-                    {fieldEntries.map(([key, value]) => (
-                      <div key={key}><dt><code>{key}</code></dt><dd><code>{String(value)}</code></dd></div>
-                    ))}
-                  </dl>
-                </dd>
+                <div className="log-entry-structured-title">{t('logs.fields.fields')}</div>
+                <dl className="log-entry-structured-grid">
+                  {fieldEntries.map(([key, value]) => (
+                    <div key={key}><dt><code>{key}</code></dt><dd><code>{String(value)}</code></dd></div>
+                  ))}
+                </dl>
               </div>
             )}
-          </dl>
-          <button type="button" className="log-entry-copy" onClick={handleCopy} aria-label={t('logs.list.copy')}>
-            <Clipboard weight="regular" aria-hidden="true" />
-            <span>{copied ? t('logs.list.copied') : t('logs.list.copy')}</span>
-          </button>
+          </div>
         </div>
       )}
     </article>
@@ -187,7 +183,8 @@ function LoadMoreFooter({ hasMore, onLoadMore, loading }: { hasMore: boolean; on
   return (
     <div className="log-list-footer">
       <button type="button" className="log-list-more" onClick={onLoadMore} disabled={loading}>
-        {loading ? t('logs.list.loading') : t('logs.list.more')}
+        <span>{loading ? t('logs.list.loading') : t('logs.list.more')}</span>
+        <CaretDown weight="bold" aria-hidden="true" />
       </button>
     </div>
   );
@@ -212,7 +209,7 @@ function LogList({
         {entries.length === 0 ? (
           <p className="log-list-empty">{loading ? t('logs.list.loading') : t('logs.list.empty')}</p>
         ) : (
-          entries.map((entry) => <LogEntryRow key={entry.id} entry={entry} onCopy={() => undefined} />)
+          entries.map((entry, i) => <LogEntryRow key={entry.id} entry={entry} onCopy={() => undefined} index={i} />)
         )}
         {/* 列表按最新到最旧排列，所以加载更旧记录的入口留在底部。 */}
         <LoadMoreFooter hasMore={hasMore} onLoadMore={onLoadMore} loading={loading} />
@@ -221,7 +218,7 @@ function LogList({
   );
 }
 
-/** 工具栏：筛选 / 搜索 / 自动跟随 / 暂停 / 清空 / 导出 / 删除 / 诊断 / 状态。 */
+/** 工具栏：两行布局 — 统一搜索筛选条 + 控制与状态条。 */
 function LogToolbar({
   sourceFilter,
   minLevel,
@@ -270,20 +267,42 @@ function LogToolbar({
   onDiagnosticStop: () => void;
 }) {
   const { t } = useTranslation();
-  const [exportOpen, setExportOpen] = useState(false);
-  const [deleteOpen, setDeleteOpen] = useState(false);
-  const exportBtnRef = useRef<HTMLButtonElement>(null);
-  const deleteBtnRef = useRef<HTMLButtonElement>(null);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const moreBtnRef = useRef<HTMLButtonElement>(null);
+  const prevLevelRef = useRef<LogLevel | null>(null);
+
+  const levelLabel = (level: LogLevel): string => {
+    if (level === 'error') return t('logs.filter.error');
+    if (level === 'warn') return t('logs.filter.warn');
+    if (level === 'info') return t('logs.filter.info');
+    if (level === 'debug') return t('logs.filter.debug');
+    return t('logs.filter.trace');
+  };
+
+  /** 点击错误/警告徽章切换筛选：已处于该级别时恢复之前的级别，否则记录当前级别并切换。 */
+  const toggleLevelFilter = (target: LogLevel) => {
+    if (minLevel === target) {
+      onLevelChange(prevLevelRef.current ?? 'info');
+      prevLevelRef.current = null;
+    } else {
+      prevLevelRef.current = minLevel;
+      onLevelChange(target);
+    }
+  };
 
   return (
     <div className="log-toolbar">
-      <div className="log-toolbar-row log-toolbar-filters">
-        <label className="log-filter-chip">
-          <Funnel weight="regular" aria-hidden="true" />
+      {/* Row 1 — 统一搜索筛选条：来源 pill + 级别 pill + 分隔线 + 搜索框 */}
+      <div className="log-toolbar-row log-search-bar">
+        <label className="log-filter-pill">
+          <span className="log-filter-pill-label">
+            {sourceFilter === 'all' ? t('logs.filter.all') : sourceLabel(sourceFilter)}
+          </span>
           <select
             value={sourceFilter}
             onChange={(e) => onSourceChange(e.target.value as SourceFilter)}
             aria-label={t('logs.filter.source')}
+            tabIndex={-1}
           >
             <option value="all">{t('logs.filter.all')}</option>
             <option value="app">{t('logs.filter.app')}</option>
@@ -292,25 +311,22 @@ function LogToolbar({
           </select>
           <CaretDown className="log-filter-caret" weight="bold" aria-hidden="true" />
         </label>
-        <label className="log-filter-chip">
+        <label className="log-filter-pill">
+          <span className="log-filter-pill-label">{levelLabel(minLevel)}</span>
           <select
             value={minLevel}
             onChange={(e) => onLevelChange(e.target.value as LogLevel)}
             aria-label={t('logs.filter.level')}
+            tabIndex={-1}
           >
             {LOG_LEVELS.map((level) => (
-              <option key={level} value={level}>
-                {level === 'error' ? t('logs.filter.error')
-                  : level === 'warn' ? t('logs.filter.warn')
-                  : level === 'info' ? t('logs.filter.info')
-                  : level === 'debug' ? t('logs.filter.debug')
-                  : t('logs.filter.trace')}
-              </option>
+              <option key={level} value={level}>{levelLabel(level)}</option>
             ))}
           </select>
           <CaretDown className="log-filter-caret" weight="bold" aria-hidden="true" />
         </label>
-        <label className="log-filter-search">
+        <span className="log-search-divider" aria-hidden="true" />
+        <label className="log-search-input">
           <MagnifyingGlass weight="regular" aria-hidden="true" />
           <input
             type="search"
@@ -321,125 +337,138 @@ function LogToolbar({
           />
         </label>
       </div>
-      <div className="log-toolbar-row log-toolbar-actions">
-        <div className="log-toolbar-group">
+
+      {/* Row 2 — 控制与状态条：左侧跟随/暂停，右侧状态 pills + 操作按钮 + 更多菜单 */}
+      <div className="log-toolbar-row log-toolbar-control">
+        <div className="log-toolbar-group log-toolbar-follow">
           <button
             type="button"
-            className={`log-toggle ${follow ? 'active' : ''}`}
+            className={`log-toggle${follow ? ' active' : ''}`}
             aria-pressed={follow}
             onClick={() => onFollowChange(!follow)}
-          >{t('logs.toolbar.follow')}</button>
+          >
+            <ArrowLineDown weight="regular" aria-hidden="true" />
+            <span>{t('logs.toolbar.follow')}</span>
+          </button>
           <button
             type="button"
-            className="log-toggle"
+            className="log-icon-btn"
             aria-pressed={!paused}
+            aria-label={paused ? t('logs.toolbar.resume') : t('logs.toolbar.pause')}
             onClick={onPauseToggle}
           >
             {paused ? <Play weight="regular" aria-hidden="true" /> : <Pause weight="regular" aria-hidden="true" />}
-            {paused ? t('logs.toolbar.resume') : t('logs.toolbar.pause')}
           </button>
         </div>
-        <div className="log-toolbar-group">
-          <button type="button" className="log-action" onClick={onClearView} aria-label={t('logs.toolbar.clearView')}>
-            <Eraser weight="regular" aria-hidden="true" />
-            <span>{t('logs.toolbar.clearView')}</span>
-          </button>
-          <button type="button" className="log-action" onClick={onCopyFiltered} disabled={copyDisabled} aria-label={t('logs.toolbar.copyFiltered')}>
-            <Clipboard weight="regular" aria-hidden="true" />
-            <span>{t('logs.toolbar.copyFiltered')}</span>
-          </button>
+        {status && (
+          <div className="log-toolbar-status" aria-live="polite">
+            <span className="log-status-pill log-status-buffer">
+              <Database weight="regular" aria-hidden="true" />
+              {t('logs.status.bufferCount', { count: status.bufferCount })}
+            </span>
+            <span className="log-status-pill log-status-disk">
+              <HardDrive weight="regular" aria-hidden="true" />
+              <span>{t('logs.status.diskUsageUsageOnly', { usage: formatBytes(status.diskUsageBytes) })}</span>
+              <span className="log-status-disk-quota"> / {formatBytes(status.diskQuotaBytes)}</span>
+            </span>
+            {status.recentErrorCount > 0 && (
+              <button
+                type="button"
+                className={`log-status-count log-status-error${minLevel === 'error' ? ' active' : ''}`}
+                aria-label={t('logs.status.recentErrors', { count: status.recentErrorCount })}
+                title={minLevel === 'error' ? t('logs.status.restoreFilter') : t('logs.status.filterByLevel', { level: t('logs.filter.error') })}
+                onClick={() => toggleLevelFilter('error')}
+              >
+                {status.recentErrorCount}
+              </button>
+            )}
+            {status.recentWarnCount > 0 && (
+              <button
+                type="button"
+                className={`log-status-count log-status-warn${minLevel === 'warn' ? ' active' : ''}`}
+                aria-label={t('logs.status.recentWarns', { count: status.recentWarnCount })}
+                title={minLevel === 'warn' ? t('logs.status.restoreFilter') : t('logs.status.filterByLevel', { level: t('logs.filter.warn') })}
+                onClick={() => toggleLevelFilter('warn')}
+              >
+                {status.recentWarnCount}
+              </button>
+            )}
+          </div>
+        )}
+        <div className="log-toolbar-group log-toolbar-actions">
           <div className="log-menu-wrap">
             <button
               type="button"
-              ref={exportBtnRef}
-              className="log-action"
-              aria-expanded={exportOpen}
+              ref={moreBtnRef}
+              className="log-icon-btn"
+              aria-expanded={moreOpen}
               aria-haspopup="menu"
-              onClick={() => { setExportOpen((v) => !v); setDeleteOpen(false); }}
+              aria-label={t('logs.toolbar.moreActions')}
+              onClick={() => setMoreOpen((v) => !v)}
             >
-              <Export weight="regular" aria-hidden="true" />
-              <span>{t('logs.toolbar.export')}</span>
-              <CaretDown weight="bold" aria-hidden="true" />
+              <DotsThree weight="bold" aria-hidden="true" />
             </button>
             <Popover
-              open={exportOpen}
-              onClose={() => setExportOpen(false)}
-              triggerRef={exportBtnRef}
-              ariaLabel={t('logs.toolbar.export')}
-              className="log-menu"
+              open={moreOpen}
+              onClose={() => setMoreOpen(false)}
+              triggerRef={moreBtnRef}
+              ariaLabel={t('logs.toolbar.moreActions')}
+              className="log-menu log-menu-wide"
             >
-              <button type="button" role="menuitem" onClick={() => { setExportOpen(false); onExportFiltered(); }}>{t('logs.toolbar.exportFiltered')}</button>
-              <button type="button" role="menuitem" onClick={() => { setExportOpen(false); onExportSession(); }}>{t('logs.toolbar.exportSession')}</button>
-              <button type="button" role="menuitem" onClick={() => { setExportOpen(false); onExportBundle(); }}>{t('logs.toolbar.exportBundle')}</button>
+              <button type="button" role="menuitem" onClick={() => { setMoreOpen(false); onClearView(); }} disabled={copyDisabled}>
+                <Eraser weight="regular" aria-hidden="true" />
+                <span>{t('logs.toolbar.clearView')}</span>
+              </button>
+              <button type="button" role="menuitem" onClick={() => { setMoreOpen(false); onCopyFiltered(); }} disabled={copyDisabled}>
+                <Clipboard weight="regular" aria-hidden="true" />
+                <span>{t('logs.toolbar.copyFiltered')}</span>
+              </button>
+              <div className="log-menu-separator" />
+              <button type="button" role="menuitem" onClick={() => { setMoreOpen(false); onExportFiltered(); }}>
+                <Export weight="regular" aria-hidden="true" />
+                <span>{t('logs.toolbar.exportFiltered')}</span>
+              </button>
+              <button type="button" role="menuitem" onClick={() => { setMoreOpen(false); onExportSession(); }}>
+                <Export weight="regular" aria-hidden="true" />
+                <span>{t('logs.toolbar.exportSession')}</span>
+              </button>
+              <button type="button" role="menuitem" onClick={() => { setMoreOpen(false); onExportBundle(); }}>
+                <Export weight="regular" aria-hidden="true" />
+                <span>{t('logs.toolbar.exportBundle')}</span>
+              </button>
+              <div className="log-menu-separator" />
+              <button type="button" role="menuitem" onClick={() => { setMoreOpen(false); onDelete({ scope: 'olderThanDays', days: 7 }, t('logs.delete.olderThanDays')); }}>
+                <Trash weight="regular" aria-hidden="true" />
+                <span>{t('logs.toolbar.deleteOlder')}</span>
+              </button>
+              <button type="button" role="menuitem" onClick={() => { setMoreOpen(false); onDelete({ scope: 'beforeCurrentSession' }, t('logs.delete.beforeCurrentSession')); }}>
+                <Trash weight="regular" aria-hidden="true" />
+                <span>{t('logs.toolbar.deleteBeforeSession')}</span>
+              </button>
+              <button type="button" role="menuitem" onClick={() => { setMoreOpen(false); onDelete({ scope: 'all' }, t('logs.delete.all')); }}>
+                <Trash weight="regular" aria-hidden="true" />
+                <span>{t('logs.delete.all')}</span>
+              </button>
+              <div className="log-menu-separator" />
+              <button type="button" role="menuitem" onClick={() => { setMoreOpen(false); onOpenDir(); }}>
+                <ArrowsClockwise weight="regular" aria-hidden="true" />
+                <span>{t('logs.toolbar.openDir')}</span>
+              </button>
+              {diagnosticRemainingMinutes !== null ? (
+                <button type="button" role="menuitem" onClick={() => { setMoreOpen(false); onDiagnosticStop(); }}>
+                  <Wrench weight="regular" aria-hidden="true" />
+                  <span>{t('logs.toolbar.diagnosticActive', { minutes: diagnosticRemainingMinutes })}</span>
+                </button>
+              ) : (
+                <button type="button" role="menuitem" onClick={() => { setMoreOpen(false); onDiagnosticStart(); }}>
+                  <Wrench weight="regular" aria-hidden="true" />
+                  <span>{t('logs.toolbar.diagnosticStart')}</span>
+                </button>
+              )}
             </Popover>
           </div>
-          <div className="log-menu-wrap">
-            <button
-              type="button"
-              ref={deleteBtnRef}
-              className="log-action"
-              aria-expanded={deleteOpen}
-              aria-haspopup="menu"
-              onClick={() => { setDeleteOpen((v) => !v); setExportOpen(false); }}
-            >
-              <Trash weight="regular" aria-hidden="true" />
-              <span>{t('logs.toolbar.delete')}</span>
-              <CaretDown weight="bold" aria-hidden="true" />
-            </button>
-            <Popover
-              open={deleteOpen}
-              onClose={() => setDeleteOpen(false)}
-              triggerRef={deleteBtnRef}
-              ariaLabel={t('logs.toolbar.delete')}
-              className="log-menu"
-            >
-              <button type="button" role="menuitem" onClick={() => { setDeleteOpen(false); onDelete({ scope: 'olderThanDays', days: 7 }, t('logs.delete.olderThanDays')); }}>{t('logs.toolbar.deleteOlder')}</button>
-              <button type="button" role="menuitem" onClick={() => { setDeleteOpen(false); onDelete({ scope: 'beforeCurrentSession' }, t('logs.delete.beforeCurrentSession')); }}>{t('logs.toolbar.deleteBeforeSession')}</button>
-              <button type="button" role="menuitem" onClick={() => { setDeleteOpen(false); onDelete({ scope: 'all' }, t('logs.delete.all')); }}>{t('logs.toolbar.deleteAll')}</button>
-            </Popover>
-          </div>
-        </div>
-        <div className="log-toolbar-group">
-          <button type="button" className="log-action" onClick={onOpenDir} aria-label={t('logs.toolbar.openDir')}>
-            <ArrowsClockwise weight="regular" aria-hidden="true" />
-            <span>{t('logs.toolbar.openDir')}</span>
-          </button>
-          {diagnosticRemainingMinutes !== null ? (
-            <button type="button" className="log-action log-action-active" onClick={onDiagnosticStop}>
-              <Wrench weight="regular" aria-hidden="true" />
-              <span>{t('logs.toolbar.diagnosticActive', { minutes: diagnosticRemainingMinutes })}</span>
-            </button>
-          ) : (
-            <button type="button" className="log-action" onClick={onDiagnosticStart}>
-              <Wrench weight="regular" aria-hidden="true" />
-              <span>{t('logs.toolbar.diagnosticStart')}</span>
-            </button>
-          )}
         </div>
       </div>
-      {status && (
-        <div className="log-toolbar-status" aria-live="polite">
-          <span className="log-status-pill">
-            <Database weight="regular" aria-hidden="true" />
-            {t('logs.status.bufferCount', { count: status.bufferCount })}
-          </span>
-          <span className="log-status-pill">
-            <HardDrive weight="regular" aria-hidden="true" />
-            {t('logs.status.diskUsage', { usage: formatBytes(status.diskUsageBytes), quota: formatBytes(status.diskQuotaBytes) })}</span>
-          {status.recentErrorCount > 0 && (
-            <span className="log-status-pill log-status-error">
-              <WarningCircle weight="regular" aria-hidden="true" />
-              {t('logs.status.recentErrors', { count: status.recentErrorCount })}
-            </span>
-          )}
-          {status.recentWarnCount > 0 && (
-            <span className="log-status-pill log-status-warn">
-              <Warning weight="regular" aria-hidden="true" />
-              {t('logs.status.recentWarns', { count: status.recentWarnCount })}
-            </span>
-          )}
-        </div>
-      )}
     </div>
   );
 }
@@ -562,6 +591,7 @@ export function LogPage({ onBack }: { onBack: () => void }) {
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');
   const [minLevel, setMinLevel] = useState<LogLevel>('info');
   const [keyword, setKeyword] = useState('');
+  const [listKey, setListKey] = useState(0);
 
   const [follow, setFollow] = useState(true);
   const [paused, setPaused] = useState(false);
@@ -785,6 +815,7 @@ export function LogPage({ onBack }: { onBack: () => void }) {
     let cancelled = false;
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
+    setListKey((k) => k + 1);
     const query = buildQuery(sourceFilter, minLevel, keyword);
     clientRef.current.query(query)
       .then((page) => {
@@ -1041,7 +1072,7 @@ export function LogPage({ onBack }: { onBack: () => void }) {
             <p className="eyebrow">{t('logs.eyebrow')}</p>
             <h1>{t('logs.title')}</h1>
           </div>
-          <button className="secondary" onClick={onBack}>{t('logs.back')}</button>
+          <button className="secondary" onClick={onBack}>{t('common.back')}</button>
         </header>
         <p className="setting-hint">{t('logs.previewEmpty')}</p>
       </main>
@@ -1055,7 +1086,7 @@ export function LogPage({ onBack }: { onBack: () => void }) {
           <p className="eyebrow">{t('logs.eyebrow')}</p>
           <h1>{t('logs.title')}</h1>
         </div>
-        <button className="secondary" onClick={onBack}>{t('logs.back')}</button>
+        <button className="secondary" onClick={onBack}>{t('common.back')}</button>
       </header>
       {error && <p className="setting-hint">{t('logs.loadFailed', { error })}</p>}
       <LogToolbar
@@ -1084,10 +1115,12 @@ export function LogPage({ onBack }: { onBack: () => void }) {
       />
       {follow && newCount > 0 && (
         <button type="button" className="log-new-count" onClick={jumpToNewest}>
-          {t('logs.list.newCount', { count: newCount })}
+          <span className="log-new-count-dot" aria-hidden="true" />
+          <span>{t('logs.list.newCount', { count: newCount })}</span>
         </button>
       )}
       <LogList
+        key={listKey}
         entries={entries}
         hasMore={hasMore}
         loading={loading}

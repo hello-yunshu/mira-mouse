@@ -54,6 +54,8 @@ import {
 import { onAppNotification, notifyError, notifySuccess, type AppNotification } from './notify';
 import { relaunchAfterUpdate, startAutomaticAppUpdateCheck } from './updater';
 import { startAutomaticPluginUpdateCheck } from './plugin-updater';
+import { startAutomaticLocalAiUpdateCheck } from './local-ai-updater';
+import { initUpdatePriorityCoordinator } from './update-priority';
 import { LOCAL_AI_FEATURE, localAiFeatureEnabled } from './localAi';
 import { segmentedIndicatorStyle } from './segmentedControl';
 import { Modal, OverlayPortal, useHasOpenModal } from './overlay';
@@ -2672,6 +2674,7 @@ export default function App() {
   const [view, setView] = useState<View>('dashboard');
   const [aboutFocusToken, setAboutFocusToken] = useState(0);
   const [settingsPluginFocusToken, setSettingsPluginFocusToken] = useState(0);
+  const [settingsLocalAiFocusToken, setSettingsLocalAiFocusToken] = useState(0);
   const [demoMode, setDemoMode] = useState(pureWeb);
   const [refreshNonce, setRefreshNonce] = useState(0);
   const [appNotification, setAppNotification] = useState<AppNotification>();
@@ -2705,6 +2708,10 @@ export default function App() {
     setView('settings');
     setSettingsPluginFocusToken((value) => value + 1);
   }, []);
+  const openSettingsLocalAiUpdate = useCallback(() => {
+    setView('settings');
+    setSettingsLocalAiFocusToken((value) => value + 1);
+  }, []);
   const openBatteryUsage = useCallback(() => {
     setBatteryUsageSession((value) => value + 1);
     setShowBatteryUsage(true);
@@ -2734,6 +2741,10 @@ export default function App() {
     listen('navigate-plugin-update', () => openSettingsPluginUpdate())
       .then((un) => { unlistenPluginUpdate = un; })
       .catch(() => {});
+    let unlistenLocalAiUpdate: (() => void) | undefined;
+    listen('navigate-local-ai-update', () => openSettingsLocalAiUpdate())
+      .then((un) => { unlistenLocalAiUpdate = un; })
+      .catch(() => {});
     listen('open-battery-usage', () => openBatteryUsage())
       .then((un) => { unlistenBatteryUsage = un; })
       .catch(() => {});
@@ -2754,6 +2765,7 @@ export default function App() {
           .then((action) => {
             if (action === 'about-update') openAboutUpdate();
             if (action === 'settings-plugin-update') openSettingsPluginUpdate();
+            if (action === 'settings-local-ai-update') openSettingsLocalAiUpdate();
             if (action === 'battery-usage') openBatteryUsage();
           })
           .catch(() => {});
@@ -2764,12 +2776,13 @@ export default function App() {
     return () => {
       if (unlisten) unlisten();
       if (unlistenPluginUpdate) unlistenPluginUpdate();
+      if (unlistenLocalAiUpdate) unlistenLocalAiUpdate();
       if (unlistenResume) unlistenResume();
       if (unlistenFocus) unlistenFocus();
       if (unlistenBatteryUsage) unlistenBatteryUsage();
       if (unlistenPluginLocales) unlistenPluginLocales();
     };
-  }, [openAboutUpdate, openBatteryUsage, openSettingsPluginUpdate, pureWeb, reloadPluginLocales]);
+  }, [openAboutUpdate, openBatteryUsage, openSettingsPluginUpdate, openSettingsLocalAiUpdate, pureWeb, reloadPluginLocales]);
 
   // 加载插件 locale，注册为 i18n namespace（以插件 ID 命名）。
   // 异步加载完成后刷新插件标签 memo，加载前使用 host 回退标签。
@@ -2802,9 +2815,17 @@ export default function App() {
             .catch(() => { /* Pre-release and offline builds skip automatic application checks. */ });
         }
         void startAutomaticPluginUpdateCheck(settings.automaticPluginUpdateChecks);
+        void startAutomaticLocalAiUpdateCheck(settings.automaticLocalAiUpdateChecks ?? true);
       })
       .catch(() => setThemeLoaded(true));
   }, [pureWeb, syncBatteryUsageSettings]);
+
+  // 主程序更新优先级协调：当主程序有可用更新/正在下载/已安装待重启时，
+  // 抑制 AI 引擎与插件更新通知，避免用户被多个来源同时打断。
+  useEffect(() => {
+    if (pureWeb) return;
+    initUpdatePriorityCoordinator();
+  }, [pureWeb]);
 
   // 周期性从后端读取真实设备状态
   useEffect(() => {
@@ -2915,7 +2936,7 @@ export default function App() {
       {demoMode && <button className="nav-link nav-exit" onClick={exitDemo} aria-label={t('nav.exitDemo')} title={t('nav.exitDemo')}><SignOut weight="regular" /></button>}
     </div>
     {view === 'dashboard' && (device ? <Dashboard device={device} deviceEntries={deviceEntries} onDeviceChange={setDevice} onDeviceSelect={selectDevice} onOpenBatteryUsage={openBatteryUsage} pluginLocaleRevision={pluginLocaleRevision} demoMode={demoMode} /> : <EmptyState onRefresh={() => { setDemoMode(false); setDevice(undefined); setDeviceEntries([]); deviceEntriesRef.current = []; setRefreshNonce((value) => value + 1); invoke('device_refresh').catch(() => {}); }} onDemo={() => { setDemoMode(true); setDevice(MOCK_DEVICE); setDeviceEntries(MOCK_DEVICE_ENTRIES); deviceEntriesRef.current = MOCK_DEVICE_ENTRIES; }} onOpenSettings={() => setView('settings')} />)}
-    {view === 'settings' && <SettingsPage previewMode={pureWeb} focusPluginUpdateToken={settingsPluginFocusToken} onNavigateAbout={() => setView('about')} onOpenBatteryUsage={openBatteryUsage} onBatteryUsageSettingsChange={syncBatteryUsageSettings} onThemeChange={setTheme} pluginCapabilities={device?.pluginCapabilities ?? []} writableMutations={device?.writableMutations ?? []} />}
+    {view === 'settings' && <SettingsPage previewMode={pureWeb} focusPluginUpdateToken={settingsPluginFocusToken} focusLocalAiUpdateToken={settingsLocalAiFocusToken} onNavigateAbout={() => setView('about')} onOpenBatteryUsage={openBatteryUsage} onBatteryUsageSettingsChange={syncBatteryUsageSettings} onThemeChange={setTheme} pluginCapabilities={device?.pluginCapabilities ?? []} writableMutations={device?.writableMutations ?? []} />}
     {view === 'about' && <AboutPage previewMode={pureWeb} focusUpdateToken={aboutFocusToken} onBack={() => setView('settings')} />}
     <BatteryUsageModal
       key={batteryUsageSession}

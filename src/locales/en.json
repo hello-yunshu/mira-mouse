@@ -306,6 +306,15 @@
       "updating": "Updating…",
       "updateBundle": "Update",
       "rollbackBundle": "Roll back",
+      "automaticCheckLabel": "Automatically check for AI engine updates",
+      "automaticCheckHint": "Checks the local AI engine on launch, every 6 hours, and after returning online or to the foreground",
+      "stage": {
+        "runtime": "Runtime",
+        "model": "Model",
+        "handler": "Handler",
+        "verifying": "Verifying signature",
+        "activating": "Switching and starting"
+      },
       "status": {
         "runtimeOrModelNotInstalled": "Runtime or model is not installed; Battery Usage still uses Mira's existing algorithm."
       }
@@ -405,7 +414,12 @@
       "defaultBundled": "Bundled by default",
       "updatable": "Updatable to v{{version}}",
       "updating": "Updating…",
-      "update": "Update plugin"
+      "update": "Update plugin",
+      "stage": {
+        "downloading": "Downloading plugin bundle",
+        "verifying": "Verifying signature",
+        "activating": "Switching and activating"
+      }
     },
     "privacy": {
       "telemetryLabel": "Disable telemetry",
@@ -477,6 +491,7 @@
     "relaunch": "Relaunch to finish update",
     "releaseDate": "Release date: {{date}}",
     "downloadedPercent": "Downloaded {{percent}}%",
+    "downloadedPercentWithStage": "{{stage}}: Downloaded {{percent}}%",
     "downloadedMib": "Downloaded {{mib}} MiB",
     "licenseHint": "Mira is licensed under AGPL-3.0-or-later; original documentation uses CC-BY-SA-4.0. Third-party dependencies retain their original licenses.",
     "viewLicense": "View open source license",
@@ -505,6 +520,18 @@
     "pluginUpdateFound": {
       "title": "Plugin updates available",
       "body": "{{count}} installed plugin(s) have new versions available. Update them in Settings → Plugins."
+    },
+    "pluginUpdateInstalled": {
+      "title": "Plugin update installed",
+      "body": "{{count}} plugin(s) updated to the latest version."
+    },
+    "localAiUpdateFound": {
+      "title": "AI engine update available",
+      "body": "The local AI engine can be updated to v{{version}}. Update it in Settings → Plugins."
+    },
+    "localAiUpdateInstalled": {
+      "title": "AI engine update installed",
+      "body": "The local AI engine has been updated to v{{version}}."
     },
     "saveFailed": "Save failed",
     "writeFailed": "Write failed",
@@ -711,13 +738,17 @@
       "openDir": "Open log directory",
       "diagnosticStart": "Start diagnostic session",
       "diagnosticStop": "Stop diagnostic session",
-      "diagnosticActive": "Diagnostic active · {{minutes}} min left"
+      "diagnosticActive": "Diagnostic active · {{minutes}} min left",
+      "moreActions": "More actions"
     },
     "status": {
       "bufferCount": "Memory: {{count}} entries",
       "diskUsage": "Disk: {{usage}} / {{quota}}",
+      "diskUsageUsageOnly": "Disk: {{usage}}",
       "recentErrors": "Recent errors: {{count}}",
       "recentWarns": "Recent warnings: {{count}}",
+      "filterByLevel": "Filter {{level}} level logs",
+      "restoreFilter": "Restore previous filter",
       "sessionId": "Session: {{id}}"
     },
     "delete": {
