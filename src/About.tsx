@@ -202,33 +202,41 @@ export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0 }:
       <section id="about-update-section" className="card about-section" tabIndex={-1}>
         <div className="card-title"><h2>{t('about.section.checkUpdate')}</h2></div>
         <div className="settings-action-body">
-          <p className="setting-hint">
-            {info.updaterActive
-              ? t('about.updateEnabledHint')
-              : t('about.updateDisabledHint')}
-          </p>
+          <div className="settings-action-copy">
+            <p className="setting-hint">
+              {info.updaterActive
+                ? t('about.updateEnabledHint')
+                : t('about.updateDisabledHint')}
+            </p>
+          </div>
           {info.updaterActive && (
             <div className="contact-links align-end">
               <button className="secondary" onClick={checkForUpdates} disabled={update.phase === 'checking' || update.phase === 'downloading'}>
                 {update.phase === 'checking' ? t('about.updateChecking') : t('about.updateCheck')}
               </button>
               {update.phase === 'up-to-date' && <span className="save-badge">{t('about.updateUpToDate')}</span>}
-              {update.phase === 'available' && (
-                <button className="primary" onClick={installUpdate}>
-                  {t('about.downloadInstall', { version: update.version })}
-                </button>
-              )}
-              {update.phase === 'installed' && <button className="primary" onClick={() => void relaunchAfterUpdate()}>{t('about.relaunch')}</button>}
             </div>
           )}
         </div>
-        {info.updaterActive && (
-          <>
+        {info.updaterActive && (update.phase === 'available' || update.phase === 'downloading' || update.phase === 'installed' || update.phase === 'error') && (
+          <div className="update-status-block">
             {update.phase === 'available' && (
-              <div className="update-details">
-                {update.date && <span className="setting-hint">{t('about.releaseDate', { date: new Date(update.date).toLocaleDateString() })}</span>}
-                {update.notes && <p>{update.notes}</p>}
-              </div>
+              <>
+                <div className="plugin-update-row">
+                  <span className="setting-hint">
+                    v{update.version}
+                    {update.date && ` · ${new Date(update.date).toLocaleDateString()}`}
+                  </span>
+                  <button className="primary" onClick={installUpdate}>
+                    {t('about.downloadInstall', { version: update.version })}
+                  </button>
+                </div>
+                {update.notes && (
+                  <div className="update-details">
+                    <p>{update.notes}</p>
+                  </div>
+                )}
+              </>
             )}
             {update.phase === 'downloading' && (
               <div className="update-progress" aria-live="polite">
@@ -238,8 +246,13 @@ export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0 }:
                   : t('about.downloadedMib', { mib: (update.downloadedBytes / 1024 / 1024).toFixed(1) })}</span>
               </div>
             )}
+            {update.phase === 'installed' && (
+              <div className="plugin-item-actions">
+                <button className="primary" onClick={() => void relaunchAfterUpdate()}>{t('about.relaunch')}</button>
+              </div>
+            )}
             {update.phase === 'error' && <p className="setting-hint update-error">{update.error}</p>}
-          </>
+          </div>
         )}
       </section>
 

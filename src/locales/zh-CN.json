@@ -306,6 +306,15 @@
       "updating": "更新中…",
       "updateBundle": "更新",
       "rollbackBundle": "回退",
+      "automaticCheckLabel": "自动检查 AI 引擎更新",
+      "automaticCheckHint": "启动后每 6 小时，以及网络恢复或回到前台后，检查本地 AI 引擎是否有新版本",
+      "stage": {
+        "runtime": "运行时",
+        "model": "模型",
+        "handler": "处理器",
+        "verifying": "校验签名",
+        "activating": "切换并启动"
+      },
       "status": {
         "runtimeOrModelNotInstalled": "Runtime 或模型尚未安装；电量页仍使用原有算法。"
       }
@@ -405,7 +414,12 @@
       "defaultBundled": "默认内置",
       "updatable": "可更新至 v{{version}}",
       "updating": "正在更新…",
-      "update": "更新插件"
+      "update": "更新插件",
+      "stage": {
+        "downloading": "下载插件包",
+        "verifying": "校验签名",
+        "activating": "切换并激活"
+      }
     },
     "privacy": {
       "telemetryLabel": "禁用遥测",
@@ -477,6 +491,7 @@
     "relaunch": "重启完成更新",
     "releaseDate": "发布日期：{{date}}",
     "downloadedPercent": "已下载 {{percent}}%",
+    "downloadedPercentWithStage": "{{stage}}：已下载 {{percent}}%",
     "downloadedMib": "已下载 {{mib}} MiB",
     "licenseHint": "Mira 使用 AGPL-3.0-or-later 许可证，原创文档使用 CC-BY-SA-4.0。第三方依赖保留各自原许可证。",
     "viewLicense": "查看开源许可证",
@@ -505,6 +520,18 @@
     "pluginUpdateFound": {
       "title": "发现插件更新",
       "body": "{{count}} 个已安装插件有新版本可用，请在「设置 → 插件」中更新。"
+    },
+    "pluginUpdateInstalled": {
+      "title": "插件更新完成",
+      "body": "{{count}} 个插件已更新至最新版本。"
+    },
+    "localAiUpdateFound": {
+      "title": "发现 AI 引擎更新",
+      "body": "本地 AI 引擎可更新至 v{{version}}，请在「设置 → 插件」中更新。"
+    },
+    "localAiUpdateInstalled": {
+      "title": "AI 引擎更新完成",
+      "body": "本地 AI 引擎已更新至 v{{version}}。"
     },
     "saveFailed": "保存失败",
     "writeFailed": "写入失败",
@@ -711,13 +738,17 @@
       "openDir": "打开日志目录",
       "diagnosticStart": "开始临时诊断",
       "diagnosticStop": "停止临时诊断",
-      "diagnosticActive": "临时诊断中 · 剩余 {{minutes}} 分钟"
+      "diagnosticActive": "临时诊断中 · 剩余 {{minutes}} 分钟",
+      "moreActions": "更多操作"
     },
     "status": {
       "bufferCount": "内存：{{count}} 条",
       "diskUsage": "磁盘：{{usage}} / {{quota}}",
+      "diskUsageUsageOnly": "磁盘：{{usage}}",
       "recentErrors": "最近错误：{{count}}",
       "recentWarns": "最近警告：{{count}}",
+      "filterByLevel": "筛选{{level}}级别日志",
+      "restoreFilter": "恢复之前的筛选",
       "sessionId": "会话：{{id}}"
     },
     "delete": {

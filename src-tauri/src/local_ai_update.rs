@@ -24,16 +24,29 @@ use rill_runtime_protocol::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::{
-    decode_key, fetch_bounded,
+    decode_key, fetch_bounded, fetch_bounded_with_progress,
     local_ai_runtime::{
         resolve_installation, rill_handler_trust_keys, rill_trust_keys, runtime_executable_name,
         RuntimeInstallation, MIRA_HANDLER_ID,
     },
     RILL_V2_PRODUCTION_KEY_ID, RILL_V2_PRODUCTION_PUBLIC_KEY_HEX,
 };
+
+/// `local-ai-install-progress` 事件载荷。
+/// `stage` 标识当前阶段：`runtime`/`model`/`handler` 分别表示正在下载三个组件；
+/// `verifying` 表示签名/哈希校验阶段；`activating` 表示原子切换部署阶段。
+/// `downloaded_bytes`/`total_bytes` 仅在下载阶段有意义，校验/激活阶段会回推满值以便 UI 收尾。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalAiInstallProgress {
+    pub component: String,
+    pub stage: &'static str,
+    pub downloaded_bytes: u64,
+    pub total_bytes: Option<u64>,
+}
 
 const RELEASE_INDEX_URLS: &[&str] = &[
     "https://github.com/hello-yunshu/mira-mouse/releases/download/local-ai-stable/local-ai-stable-index.json",
@@ -210,8 +223,22 @@ pub fn install_update(app: &AppHandle, component: &str) -> Result<LocalAiInstall
     let parent = root.join("bundle");
     fs::create_dir_all(&parent).map_err(|error| format!("create deployment directory: {error}"))?;
     let staging = create_staging_dir(&parent)?;
-    let result = stage_deployment(source.as_ref(), &staging, artifacts, plan)
-        .and_then(|()| validate_staged_deployment(&staging, artifacts, plan))
+    let progress = |stage: &'static str, downloaded: u64, total: Option<u64>| {
+        let _ = app.emit(
+            "local-ai-install-progress",
+            LocalAiInstallProgress {
+                component: "bundle".into(),
+                stage,
+                downloaded_bytes: downloaded,
+                total_bytes: total,
+            },
+        );
+    };
+    let result = stage_deployment(source.as_ref(), &staging, artifacts, plan, &progress)
+        .and_then(|()| {
+            progress("verifying", 0, None);
+            validate_staged_deployment(&staging, artifacts, plan)
+        })
         .and_then(|probe| {
             let deployment_version = selected_deployment_version(artifacts, plan).to_string();
             write_metadata(
@@ -220,6 +247,7 @@ pub fn install_update(app: &AppHandle, component: &str) -> Result<LocalAiInstall
                 &staging,
                 &probe,
             )?;
+            progress("activating", 0, None);
             activate_directory(
                 &staging,
                 &deployment_current_dir(&root),
@@ -493,12 +521,15 @@ fn stage_deployment(
     staging: &Path,
     artifacts: SelectedArtifacts<'_>,
     plan: UpdatePlan,
+    on_progress: &dyn Fn(&'static str, u64, Option<u64>),
 ) -> Result<(), String> {
     stage_component(
         source.map(|item| item.executable.as_path()),
         &staging.join(runtime_executable_name()),
         artifacts.runtime,
         plan.runtime,
+        "runtime",
+        on_progress,
     )?;
     set_executable_permissions(&staging.join(runtime_executable_name()))?;
     verify_platform_signature(&staging.join(runtime_executable_name()))?;
@@ -507,12 +538,16 @@ fn stage_deployment(
         &staging.join("model.rillpack"),
         artifacts.model,
         plan.model,
+        "model",
+        on_progress,
     )?;
     stage_component(
         source.map(|item| item.handler_pack.as_path()),
         &staging.join("handler.rillhandler"),
         artifacts.handler,
         plan.handler,
+        "handler",
+        on_progress,
     )
 }
 
@@ -521,6 +556,8 @@ fn stage_component(
     destination: &Path,
     artifact: &ReleaseArtifact,
     download: bool,
+    stage: &'static str,
+    on_progress: &dyn Fn(&'static str, u64, Option<u64>),
 ) -> Result<(), String> {
     if let (false, Some(source)) = (download, source) {
         crate::local_ai_runtime::ensure_safe_runtime_file(source)?;
@@ -534,16 +571,26 @@ fn stage_component(
             .and_then(|file| file.sync_all())
             .map_err(|error| format!("sync staged artifact {}: {error}", destination.display()))
     } else {
-        let bytes = download_artifact(artifact)?;
+        let bytes = download_artifact(artifact, stage, on_progress)?;
         write_synced(destination, &bytes)
     }
 }
 
-fn download_artifact(artifact: &ReleaseArtifact) -> Result<Vec<u8>, String> {
+fn download_artifact(
+    artifact: &ReleaseArtifact,
+    stage: &'static str,
+    on_progress: &dyn Fn(&'static str, u64, Option<u64>),
+) -> Result<Vec<u8>, String> {
     if artifact.size == 0 || artifact.size > MAX_ARTIFACT_BYTES {
         return Err("local AI artifact exceeds the size limit".into());
     }
-    let bytes = fetch_bounded(&artifact.url, MAX_ARTIFACT_BYTES)?;
+    let bytes = fetch_bounded_with_progress(
+        &artifact.url,
+        MAX_ARTIFACT_BYTES,
+        &mut |downloaded, total| {
+            on_progress(stage, downloaded, total);
+        },
+    )?;
     if bytes.len() as u64 != artifact.size {
         return Err(format!(
             "local AI artifact size mismatch: expected {}, got {}",
