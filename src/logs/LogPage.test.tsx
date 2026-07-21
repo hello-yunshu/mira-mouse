@@ -226,7 +226,8 @@ describe('Logs page navigation and rendering', () => {
     fireEvent.click(openButton);
 
     expect(await screen.findByText('hello')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: '清空当前视图' }));
+    fireEvent.click(screen.getByRole('button', { name: '更多操作' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '清空当前视图' }));
 
     // 清空视图后空状态显示，且未调用 log_delete
     await waitFor(() => expect(screen.getByText('没有符合条件的日志')).toBeInTheDocument());
@@ -262,10 +263,8 @@ describe('Logs page navigation and rendering', () => {
     const openButton = await screen.findByRole('button', { name: '打开日志与诊断' });
     fireEvent.click(openButton);
 
-    // 打开删除菜单
-    const deleteMenuButtons = screen.getAllByRole('button').filter((b) => b.textContent?.includes('删除'));
-    fireEvent.click(deleteMenuButtons[0]);
-    // 选择「删除 7 天前日志」
+    // 打开更多操作菜单，选择「删除 7 天前日志」
+    fireEvent.click(screen.getByRole('button', { name: '更多操作' }));
     const olderOption = await screen.findByRole('menuitem', { name: '删除 7 天前日志' });
     fireEvent.click(olderOption);
 
@@ -334,7 +333,7 @@ describe('LogPage toolbar and dialogs', () => {
 
   it('lists three delete-scope options in the delete menu', async () => {
     renderLogPage();
-    fireEvent.click(screen.getByRole('button', { name: '删除' }));
+    fireEvent.click(screen.getByRole('button', { name: '更多操作' }));
 
     expect(await screen.findByRole('menuitem', { name: '删除 7 天前日志' })).toBeInTheDocument();
     expect(screen.getByRole('menuitem', { name: '删除本次会话之前的日志' })).toBeInTheDocument();
@@ -353,7 +352,8 @@ describe('LogPage toolbar and dialogs', () => {
     renderLogPage();
     expect(await screen.findByText('copy-me')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: '复制筛选结果' }));
+    fireEvent.click(screen.getByRole('button', { name: '更多操作' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '复制筛选结果' }));
     await waitFor(() => expect(writeText).toHaveBeenCalled());
 
     const payload = writeText.mock.calls[0][0] as string;
@@ -402,7 +402,7 @@ describe('LogPage toolbar and dialogs', () => {
 
   it('renders an accessible delete confirmation dialog focused on the cancel button', async () => {
     renderLogPage();
-    fireEvent.click(screen.getByRole('button', { name: '删除' }));
+    fireEvent.click(screen.getByRole('button', { name: '更多操作' }));
     fireEvent.click(await screen.findByRole('menuitem', { name: '删除 7 天前日志' }));
 
     const dialog = await screen.findByRole('dialog', { name: '删除本地日志' });

@@ -227,6 +227,7 @@ export interface AppSettings {
   automaticUpdateChecks: boolean;
   automaticUpdateInstall: boolean;
   automaticPluginUpdateChecks: boolean;
+  automaticLocalAiUpdateChecks: boolean;
   localAiAnalysisEnabled: boolean;
   localAiFeatures: Record<string, boolean>;
   batteryHistoryEnabled: boolean;

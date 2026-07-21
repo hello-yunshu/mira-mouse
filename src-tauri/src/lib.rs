@@ -572,6 +572,12 @@ struct NightModeRuntime {
     /// 调度器每分钟重试时，避免对同一 (current, target) 组合重复弹通知；
     /// 阶段成功切换后由 `update_night_mode_phase` 重置。
     notified: bool,
+    /// 设备热插入时设置：要求下一轮调度强制重跑关灯路径，即便
+    /// `current_phase == target_phase` 也不早返回。新设备灯光状态未知，
+    /// apply_night_mode_transition 在 target=Night 时会清除本地 saved 让
+    /// 关灯路径重新读取并保存当前状态。任何 `update_night_mode_phase`
+    /// 调用都会清除该标志（视为本轮已处理）。
+    force_reeval: bool,
 }
 
 impl Default for NightModeRuntime {
@@ -581,6 +587,7 @@ impl Default for NightModeRuntime {
             saved_mouse_light: None,
             saved_receiver_light: None,
             notified: false,
+            force_reeval: false,
         }
     }
 }
@@ -1030,6 +1037,397 @@ fn spawn_hotplug_watcher(app: AppHandle) {
     });
 }
 
+/// 跨平台系统唤醒事件监听器。
+///
+/// 唤醒后处理与 `spawn_hotplug_watcher` 对齐：
+/// 1. 清空可能失效的 HID 缓存（`cached_hidapi` / `cached_handles` / `last_read_at`）
+///    —— 系统休眠期间设备句柄可能失效，缓存的 HidApi 实例可能持有过时设备列表
+///    （休眠期间插入的鼠标不会出现在旧列表中）。
+/// 2. 重置所有设备的退避状态——唤醒是明确的设备活动证据，旧退避不再适用。
+/// 3. 发起一次 `PresenceOnly`（不执行协议读取，不打扰设备）
+///    —— 让 readiness 状态机自然推进：`Detected → (90ms 后) → Quick/Full`。
+///
+/// # 节能保证
+///
+/// - **不直接发起 Quick 协议读取**：唤醒瞬间 USB 栈/IOKit 刚恢复，鼠标 HID 接口可能
+///   未完全就绪，直接 Quick 大概率失败。
+/// - **协议读取失败后保留原有 60s 退避**：不疯狂重试，避免无线鼠标被频繁唤醒耗电。
+/// - **比原启发式实现更省电**：原 `woke_from_sleep` 分支立即请求 Quick，唤醒瞬间失败
+///   会触发退避重试，反而更耗电。
+///
+/// 启发式时间跳跃检测（`spawn_device_reader` 中的 `woke_from_sleep`）作为 fallback，
+/// 在原生事件漏报时兜底。两者通过 `handle_system_wake_state` 共享处理逻辑。
+fn spawn_power_watcher(app: AppHandle) {
+    #[cfg(target_os = "macos")]
+    install_macos_power_watcher(app);
+
+    #[cfg(target_os = "windows")]
+    spawn_windows_power_watcher(app);
+
+    #[cfg(target_os = "linux")]
+    spawn_linux_power_watcher(app);
+}
+
+/// 系统唤醒后的统一处理。
+/// 由原生电源事件监听器和启发式时间跳跃检测共同调用。
+///
+/// 注意：只调用 `request_presence_refresh`（PresenceOnly），不直接发起协议读取。
+/// `spawn_device_reader` 的 readiness 状态机会在 90ms 后自然推进到 Quick/Full。
+fn handle_system_wake_state(state: &SessionState) {
+    // 清空可能失效的 HID 缓存：系统休眠期间设备句柄可能失效，
+    // 缓存的 HidApi 实例可能持有过时的设备列表（休眠期间插入的设备不在列表中）。
+    if let Ok(mut api) = state.cached_hidapi.lock() {
+        *api = None;
+    }
+    if let Ok(mut handles) = state.cached_handles.lock() {
+        handles.clear();
+    }
+    if let Ok(mut reads) = state.last_read_at.lock() {
+        reads.clear();
+    }
+    // 重置退避：唤醒是明确的设备活动证据，旧退避不再适用。
+    reset_all_backoff(state);
+    // 只发 PresenceOnly：让 readiness 状态机自然推进到 Quick/Full。
+    // 90ms 后触发首次协议读取，给设备初始化时间。
+    // 协议读取失败后保留原 60s 退避，不疯狂重试。
+    request_presence_refresh(state);
+    // 全局诊断：记录睡眠恢复次数。
+    if let Ok(mut g) = state.global_metrics.lock() {
+        g.sleep_resume_count += 1;
+    }
+}
+
+// ─── macOS: IOKit IORegisterForSystemPower ─────────────────────────────────
+//
+// IOKit 的 `IORegisterForSystemPower` 是 macOS 上监听电源事件的标准 API：
+// - 在专用线程上运行 CFRunLoop 接收回调
+// - 通过 `kIOMessageSystemHasPoweredOn` 识别"系统已上电"（从休眠恢复）
+// - 不依赖 Objective-C 框架特性，纯 FFI 调用
+#[cfg(target_os = "macos")]
+fn install_macos_power_watcher(app: AppHandle) {
+    use std::ffi::c_void;
+    use std::ptr;
+
+    type IONotificationPortRef = *mut c_void;
+    type CFRunLoopRef = *mut c_void;
+    type CFRunLoopSourceRef = *const c_void;
+    type CFStringRef = *const c_void;
+    type IONotificationHandler = extern "C" fn(*mut c_void, u32, *mut c_void);
+
+    // IOKit framework：IORegisterForSystemPower 等电源管理 API。
+    // CoreFoundation framework（CFRunLoop*）已由其他依赖（hidapi/objc2）间接链接，
+    // 不需要在此重复标注（clippy 会因重复 kind 属性报警）。
+    #[link(name = "IOKit", kind = "framework")]
+    extern "C" {
+        fn IORegisterForSystemPower(
+            refcon: *mut c_void,
+            the_port_ref: *mut IONotificationPortRef,
+            callback: IONotificationHandler,
+            notifier: *mut *mut c_void,
+        ) -> *mut c_void;
+        fn IONotificationPortGetRunLoopSource(notify: IONotificationPortRef) -> CFRunLoopSourceRef;
+        fn IONotificationPortDestroy(notify: IONotificationPortRef);
+        fn CFRunLoopGetCurrent() -> CFRunLoopRef;
+        fn CFRunLoopAddSource(rl: CFRunLoopRef, source: CFRunLoopSourceRef, mode: CFStringRef);
+        fn CFRunLoopRun();
+        fn kCFRunLoopDefaultMode() -> CFStringRef;
+    }
+
+    // kIOMessageSystemHasPoweredOn = iokit_common_msg(0x300)
+    //   = sys_iokit(0x80000000) | host_config(0x01000000) | 0x300 = 0x81000300
+    // 来自 IOKit/IOMessage.h
+    const K_IO_MESSAGE_SYSTEM_HAS_POWERED_ON: u32 = 0x8100_0300;
+
+    extern "C" fn power_callback(refcon: *mut c_void, message_type: u32, _data: *mut c_void) {
+        if message_type == K_IO_MESSAGE_SYSTEM_HAS_POWERED_ON {
+            // refcon 指向 Box::leak 的 AppHandle（生命周期与进程相同）
+            let app: &AppHandle = unsafe { &*(refcon as *const AppHandle) };
+            let state = app.state::<SessionState>();
+            handle_system_wake_state(&state);
+        }
+    }
+
+    std::thread::spawn(move || {
+        // AppHandle 泄漏到静态内存：refcon 生命周期需与 run loop 相同。
+        // 应用退出时进程终止，内存自动回收。
+        let app_box: &'static AppHandle = Box::leak(Box::new(app));
+        let refcon = app_box as *const AppHandle as *mut c_void;
+
+        let mut port_ref: IONotificationPortRef = ptr::null_mut();
+        let mut notifier: *mut c_void = ptr::null_mut();
+
+        let _registered = unsafe {
+            IORegisterForSystemPower(refcon, &mut port_ref, power_callback, &mut notifier)
+        };
+        if port_ref.is_null() {
+            eprintln!("[mira] power watcher: IORegisterForSystemPower failed");
+            return;
+        }
+
+        let source = unsafe { IONotificationPortGetRunLoopSource(port_ref) };
+        if source.is_null() {
+            unsafe { IONotificationPortDestroy(port_ref) };
+            eprintln!("[mira] power watcher: no run loop source");
+            return;
+        }
+
+        let run_loop = unsafe { CFRunLoopGetCurrent() };
+        unsafe {
+            CFRunLoopAddSource(run_loop, source, kCFRunLoopDefaultMode());
+            // CFRunLoopRun 阻塞当前线程，直到 run loop 停止。
+            // 这个线程专用于运行电源事件 run loop。
+            CFRunLoopRun();
+        }
+        // run loop 退出后清理 port（理论上进程终止前不会执行到这里）
+        unsafe { IONotificationPortDestroy(port_ref) };
+    });
+}
+
+// ─── Windows: WM_POWERBROADCAST 隐藏消息窗口 ───────────────────────────────
+//
+// Windows 上电源事件通过 `WM_POWERBROADCAST` 消息投递到窗口。
+// 创建一个 message-only 窗口（HWND_MESSAGE 父窗口）接收消息：
+// - `PBT_APMRESUMEAUTOMATIC`：系统自动恢复（如定时唤醒）
+// - `PBT_APMRESUMESUSPEND`：用户触发恢复（如按键/开盖）
+// 两者都视为唤醒事件，触发 `handle_system_wake_state`。
+#[cfg(target_os = "windows")]
+fn spawn_windows_power_watcher(app: AppHandle) {
+    use std::ffi::c_void;
+    use std::ptr;
+
+    type HWND = *mut c_void;
+    type HINSTANCE = *mut c_void;
+    type HMENU = *mut c_void;
+    type LPVOID = *mut c_void;
+    type WPARAM = usize;
+    type LPARAM = isize;
+    type LRESULT = isize;
+    type HBRUSH = *mut c_void;
+    type HCURSOR = *mut c_void;
+    type HICON = *mut c_void;
+    type ATOM = u16;
+    type LPCWSTR = *const u16;
+
+    #[repr(C)]
+    struct WndClassW {
+        style: u32,
+        lpfn_wnd_proc: Option<extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT>,
+        cb_cls_extra: i32,
+        cb_wnd_extra: i32,
+        h_instance: HINSTANCE,
+        h_icon: HICON,
+        h_cursor: HCURSOR,
+        h_brush_background: HBRUSH,
+        lpsz_menu_name: LPCWSTR,
+        lpsz_class_name: LPCWSTR,
+    }
+
+    #[repr(C)]
+    struct Msg {
+        hwnd: HWND,
+        message: u32,
+        w_param: WPARAM,
+        l_param: LPARAM,
+        time: u32,
+        pt_x: i32,
+        pt_y: i32,
+    }
+
+    extern "system" {
+        fn GetModuleHandleW(lp_module_name: LPCWSTR) -> HINSTANCE;
+        fn RegisterClassW(lp_wnd_class: *const WndClassW) -> ATOM;
+        fn CreateWindowExW(
+            dw_ex_style: u32,
+            lp_class_name: LPCWSTR,
+            lp_window_name: LPCWSTR,
+            dw_style: u32,
+            x: i32,
+            y: i32,
+            n_width: i32,
+            n_height: i32,
+            h_wnd_parent: HWND,
+            h_menu: HMENU,
+            h_instance: HINSTANCE,
+            lp_param: LPVOID,
+        ) -> HWND;
+        fn DefWindowProcW(hwnd: HWND, msg: u32, w_param: WPARAM, l_param: LPARAM) -> LRESULT;
+        fn GetMessageW(
+            lp_msg: *mut Msg,
+            hwnd: HWND,
+            w_msg_filter_min: u32,
+            w_msg_filter_max: u32,
+        ) -> i32;
+        fn TranslateMessage(lp_msg: *const Msg) -> i32;
+        fn DispatchMessageW(lp_msg: *const Msg) -> LRESULT;
+    }
+
+    const WM_POWERBROADCAST: u32 = 0x0218;
+    const PBT_APMRESUMEAUTOMATIC: u32 = 0x0012;
+    const PBT_APMRESUMESUSPEND: u32 = 0x0007;
+    // WS_EX_TOOLWINDOW：不在任务栏显示，不出现在 Alt+Tab。
+    // WS_POPUP：无装饰的弹出式窗口；不可见时无任何视觉表现。
+    // 用普通隐藏顶级窗口（而非 HWND_MESSAGE message-only 窗口）：
+    // message-only 窗口默认不接收 BroadcastSystemMessage 投递的 WM_POWERBROADCAST，
+    // 而顶级隐藏窗口能可靠接收系统电源广播。
+    const WS_EX_TOOLWINDOW: u32 = 0x0000_0080;
+    const WS_POPUP: u32 = 0x8000_0000;
+
+    // 全局 AppHandle，窗口过程通过此句柄访问 SessionState。
+    // 应用退出时进程终止，静态内存自动回收。
+    static POWER_APP_HANDLE: std::sync::OnceLock<tauri::AppHandle> = std::sync::OnceLock::new();
+
+    extern "system" fn power_wnd_proc(
+        hwnd: HWND,
+        msg: u32,
+        w_param: WPARAM,
+        l_param: LPARAM,
+    ) -> LRESULT {
+        if msg == WM_POWERBROADCAST {
+            match w_param as u32 {
+                PBT_APMRESUMEAUTOMATIC | PBT_APMRESUMESUSPEND => {
+                    if let Some(app) = POWER_APP_HANDLE.get() {
+                        let state = app.state::<SessionState>();
+                        handle_system_wake_state(&state);
+                    }
+                }
+                _ => {}
+            }
+        }
+        unsafe { DefWindowProcW(hwnd, msg, w_param, l_param) }
+    }
+
+    let _ = POWER_APP_HANDLE.set(app);
+
+    std::thread::spawn(|| {
+        let class_name: Vec<u16> = "MiraPowerWatcher\0".encode_utf16().collect();
+        let h_instance = unsafe { GetModuleHandleW(ptr::null()) };
+
+        let wnd_class = WndClassW {
+            style: 0,
+            lpfn_wnd_proc: Some(power_wnd_proc),
+            cb_cls_extra: 0,
+            cb_wnd_extra: 0,
+            h_instance,
+            h_icon: ptr::null_mut(),
+            h_cursor: ptr::null_mut(),
+            h_brush_background: ptr::null_mut(),
+            lpsz_menu_name: ptr::null(),
+            lpsz_class_name: class_name.as_ptr(),
+        };
+
+        let atom = unsafe { RegisterClassW(&wnd_class) };
+        if atom == 0 {
+            eprintln!("[mira] power watcher: RegisterClassW failed");
+            return;
+        }
+
+        // 创建不可见的顶级窗口接收系统电源广播。
+        // 不调用 ShowWindow，窗口保持隐藏；WS_EX_TOOLWINDOW 防止出现在任务栏/Alt+Tab。
+        let hwnd = unsafe {
+            CreateWindowExW(
+                WS_EX_TOOLWINDOW,
+                class_name.as_ptr(),
+                ptr::null(),
+                WS_POPUP,
+                0,
+                0,
+                0,
+                0,
+                ptr::null_mut(), // 顶级窗口，无父窗口
+                ptr::null_mut(),
+                h_instance,
+                ptr::null(),
+            )
+        };
+        if hwnd.is_null() {
+            eprintln!("[mira] power watcher: CreateWindowExW failed");
+            return;
+        }
+
+        // 标准消息循环：阻塞当前线程，直到 WM_QUIT。
+        let mut msg = Msg {
+            hwnd: ptr::null_mut(),
+            message: 0,
+            w_param: 0,
+            l_param: 0,
+            time: 0,
+            pt_x: 0,
+            pt_y: 0,
+        };
+        loop {
+            let ret = unsafe { GetMessageW(&mut msg, ptr::null_mut(), 0, 0) };
+            if ret <= 0 {
+                // 0 = WM_QUIT；-1 = 错误
+                break;
+            }
+            unsafe {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
+    });
+}
+
+// ─── Linux: gdbus monitor logind PrepareForSleep ───────────────────────────
+//
+// Linux 上电源事件通过 logind D-Bus 信号投递：
+// - `org.freedesktop.login1.Manager.PrepareForSleep(false)`：从休眠恢复
+// - `org.freedesktop.login1.Manager.PrepareForSleep(true)`：即将进入休眠
+//
+// 用 `gdbus monitor` 子进程方式监听（与 `spawn_linux_theme_watcher` 用
+// `gsettings monitor` 模式一致），避免引入 zbus 异步运行时依赖。
+// `gdbus` 是 GLib 工具，大多数桌面 Linux 都有；不可用时回退到启发式检测。
+#[cfg(target_os = "linux")]
+fn spawn_linux_power_watcher(app: AppHandle) {
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        use std::process::{Command, Stdio};
+
+        loop {
+            // `gdbus monitor` 持续输出 logind 信号，每行一次。
+            // 比 D-Bus 轮询更高效，且是真正的事件驱动。
+            let result = Command::new("gdbus")
+                .args([
+                    "monitor",
+                    "--system",
+                    "--dest",
+                    "org.freedesktop.login1",
+                    "--object-path",
+                    "/org/freedesktop/login1",
+                ])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn();
+
+            let Ok(mut child) = result else {
+                // gdbus 不可用（非 GLib 桌面），等待后重试。
+                // 启发式时间跳跃检测仍作为 fallback 兜底。
+                std::thread::sleep(std::time::Duration::from_secs(30));
+                continue;
+            };
+
+            if let Some(stdout) = child.stdout.take() {
+                let reader = std::io::BufReader::new(stdout);
+                for line in reader.lines() {
+                    let Ok(text) = line else {
+                        break;
+                    };
+                    // PrepareForSleep(false) 表示从休眠中恢复
+                    // PrepareForSleep(true)  表示即将进入休眠，忽略
+                    if text.contains("PrepareForSleep") && text.contains("false") {
+                        let state = app.state::<SessionState>();
+                        handle_system_wake_state(&state);
+                    }
+                }
+            }
+
+            let _ = child.wait();
+            // gdbus 进程意外退出，等待后重启。
+            std::thread::sleep(std::time::Duration::from_secs(10));
+        }
+    });
+}
+
 /// Send a wake-up signal to the night mode scheduler thread.
 fn request_night_mode_eval(state: &SessionState) {
     if let Ok(tx) = state.night_mode_tx.lock() {
@@ -1071,18 +1469,34 @@ fn selected_full_snapshot(state: &SessionState) -> Option<DeviceSnapshot> {
 fn apply_night_mode_transition(app: &AppHandle, target_phase: NightPhase) {
     let state = app.state::<SessionState>();
     // 读取当前运行时状态（持锁时间极短，仅 clone）。
-    let (current_phase, saved_mouse, saved_receiver, already_notified) = {
+    let (current_phase, saved_mouse, saved_receiver, already_notified, force_reeval) = {
         let guard = state.night_mode.lock().unwrap_or_else(|e| e.into_inner());
         (
             guard.phase,
             guard.saved_mouse_light.clone(),
             guard.saved_receiver_light.clone(),
             guard.notified,
+            guard.force_reeval,
         )
     };
-    if current_phase == target_phase {
+    // 阶段相等时跳过，除非 force_reeval（设备热插入要求重跑关灯路径）。
+    if current_phase == target_phase && !force_reeval {
         return;
     }
+
+    // force_reeval：新设备刚插入，旧 saved 来自上一个设备不再适用。
+    // 仅在关灯路径（target=Night）清除本地 saved，让关灯路径重新读取并
+    // 保存当前设备的状态；恢复路径（target=Day）保留 saved 以正常恢复。
+    let saved_mouse = if force_reeval && target_phase == NightPhase::Night {
+        None
+    } else {
+        saved_mouse
+    };
+    let saved_receiver = if force_reeval && target_phase == NightPhase::Night {
+        None
+    } else {
+        saved_receiver
+    };
 
     let settings = cached_settings(app);
     let lang = effective_language(&settings.language);
@@ -1263,8 +1677,8 @@ fn apply_night_mode_transition(app: &AppHandle, target_phase: NightPhase) {
             let mut any_failed = false;
             // 已成功恢复的目标清除其 saved，下一轮重试时只针对失败的目标，
             // 避免对已恢复的目标重复写入打扰设备固件渲染（如接收器 effect=1
-            // 常亮会被每分钟的 HID 代理通信打断造成视觉闪烁）。与 Day→Night
-            // 路径的 `new_saved_*.is_none()` 跳过逻辑对称。
+            // 常亮会被每分钟的 HID 代理通信打断造成视觉闪烁）。与关灯路径的
+            // `new_saved_*.is_none()` 跳过逻辑对称。
             let mut new_saved_mouse = saved_mouse.clone();
             let mut new_saved_receiver = saved_receiver.clone();
 
@@ -1420,6 +1834,11 @@ fn update_night_mode_phase(
         guard.phase = phase;
         guard.saved_mouse_light = saved_mouse;
         guard.saved_receiver_light = saved_receiver;
+        // 任何阶段更新都视为本轮已处理 force_reeval：
+        // - 关灯路径成功/失败都已通过 update_night_mode_phase 持久化新 saved，
+        //   不再需要强制重跑（即使失败也走 phase=Day→Night 自然重试）。
+        // - 恢复路径不需要 force_reeval，但若之前残留也一并清除避免死循环。
+        guard.force_reeval = false;
     }
     if let Err(error) = save_night_mode_state(app, &store) {
         eprintln!("[mira] night mode: failed to persist state: {error}");
@@ -1639,9 +2058,22 @@ fn store_snapshots(state: &SessionState, snapshots: &BTreeMap<String, DeviceSnap
         .last_snapshot
         .lock()
         .unwrap_or_else(|e| e.into_inner());
+    // 检测热插入：新 map 中存在 old map 中没有的设备 key。
+    // 仅对真正的“新增设备”设置 force_reeval，避免每次灯光/电量等值变化都触发。
+    let has_new_device = snapshots.keys().any(|k| !guard.contains_key(k));
     let changed = *guard != *snapshots;
     *guard = snapshots.clone();
     drop(guard);
+    if has_new_device {
+        // 新设备插入：设置 force_reeval，让夜间模式调度器立即重跑关灯路径，
+        // 即使 current_phase == target_phase 也不早返回。apply_night_mode_transition
+        // 在 target=Night 时会清除本地 saved（旧设备的状态不再适用），关灯路径
+        // 重新读取并保存当前设备状态。force_reeval 由 update_night_mode_phase 清除，
+        // saved 持久化也由其完成，此处只更新运行时标志。
+        if let Ok(mut nm) = state.night_mode.lock() {
+            nm.force_reeval = true;
+        }
+    }
     if changed {
         // 设备状态变化（连接/断开/灯光状态变化）时唤醒夜间模式调度器，
         // 确保设备连接后立即关闭/恢复灯光，不必等下一轮 60 秒检查。
@@ -1966,6 +2398,8 @@ struct AppSettings {
     /// 各业务功能是否使用本地 AI。键是稳定的功能 ID，不与插件或页面名称绑定。
     #[serde(default = "default_local_ai_features")]
     local_ai_features: BTreeMap<String, bool>,
+    /// 本地 AI 引擎自动检查更新（默认开启，与插件一致）。
+    automatic_local_ai_update_checks: bool,
     /// 电量使用情况：是否记录电量历史。默认开启。
     battery_history_enabled: bool,
     /// 电量历史保留天数。默认 30 天。
@@ -2016,6 +2450,7 @@ impl Default for AppSettings {
             automatic_plugin_update_checks: true,
             local_ai_analysis_enabled: false,
             local_ai_features: default_local_ai_features(),
+            automatic_local_ai_update_checks: true,
             battery_history_enabled: true,
             battery_history_retention_days: 30,
             unusual_drain_alerts: false,
@@ -4031,6 +4466,77 @@ mod night_mode_tests {
         let store = NightModeStore::default();
         assert!(store.saved_mouse_light.is_none());
     }
+
+    fn make_minimal_snapshot(name: &str) -> DeviceSnapshot {
+        DeviceSnapshot {
+            display_name: name.into(),
+            connection: Connection::Wireless,
+            selection_priority: 0,
+            battery_percent: None,
+            charging: false,
+            batteries: Vec::new(),
+            dpi: None,
+            dpi_stages: None,
+            polling_rate_hz: None,
+            supported_polling_rates_hz: None,
+            profile: None,
+            confirmed_light_color: None,
+            capabilities: BTreeMap::new(),
+            plugin_capabilities: Vec::new(),
+            writable_mutations: Vec::new(),
+            evidence: "test".into(),
+            readonly: false,
+            plugin_id: None,
+            history_identity: None,
+        }
+    }
+
+    #[test]
+    fn store_snapshots_sets_force_reeval_when_new_device_inserted() {
+        let state = SessionState::default();
+        // 初始状态：force_reeval=false
+        assert!(!state.night_mode.lock().unwrap().force_reeval);
+
+        // 首次插入设备 A：应设置 force_reeval=true
+        let mut v1 = BTreeMap::new();
+        v1.insert("device-a".to_string(), make_minimal_snapshot("A"));
+        store_snapshots(&state, &v1);
+        assert!(
+            state.night_mode.lock().unwrap().force_reeval,
+            "新设备插入应设置 force_reeval"
+        );
+
+        // 模拟 update_night_mode_phase 清除 force_reeval
+        state.night_mode.lock().unwrap().force_reeval = false;
+
+        // 同一设备仅值变化（如电量更新）：不应触发 force_reeval
+        let mut v2 = v1.clone();
+        v2.get_mut("device-a").unwrap().battery_percent = Some(80);
+        store_snapshots(&state, &v2);
+        assert!(
+            !state.night_mode.lock().unwrap().force_reeval,
+            "同设备值变化不应触发 force_reeval"
+        );
+
+        // 插入第二个新设备 B：应再次设置 force_reeval=true
+        let mut v3 = v2.clone();
+        v3.insert("device-b".to_string(), make_minimal_snapshot("B"));
+        store_snapshots(&state, &v3);
+        assert!(
+            state.night_mode.lock().unwrap().force_reeval,
+            "新增设备 key 应再次触发 force_reeval"
+        );
+
+        // 仅保留 B（A 被移除），不新增 key：不应触发 force_reeval
+        state.night_mode.lock().unwrap().force_reeval = false;
+        let mut v4 = BTreeMap::new();
+        v4.insert("device-b".to_string(), make_minimal_snapshot("B"));
+        store_snapshots(&state, &v4);
+        assert!(
+            !state.night_mode.lock().unwrap().force_reeval,
+            "仅移除设备不新增 key 时不应触发 force_reeval"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -4499,14 +5005,36 @@ struct PluginInstallResult {
     restarted_runtime: bool,
 }
 
+/// `plugin-install-progress` 事件载荷。
+/// `stage` 反映当前阶段：`downloading` → `verifying` → `activating`。
+/// `downloaded_bytes`/`total_bytes` 仅在 `downloading` 阶段有意义，其他阶段允许重复推送最后一次的累计值。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PluginInstallProgress {
+    plugin_id: String,
+    stage: &'static str,
+    downloaded_bytes: u64,
+    total_bytes: Option<u64>,
+}
+
 /// 下载资源，自动在多个 GitHub 镜像之间切换。
 /// 国内访问 GitHub 常出现连接失败、超时或下载断流，本函数按镜像列表顺序尝试，
 /// 任意候选成功即返回；所有候选失败时返回汇总错误。
 fn fetch_bounded(url: &str, max_bytes: u64) -> Result<Vec<u8>, String> {
+    fetch_bounded_with_progress(url, max_bytes, &mut |_, _| {})
+}
+
+/// 与 `fetch_bounded` 行为一致，但每次读取块后回调 `on_progress`。
+/// 镜像切换会重置 `downloaded_bytes`，前端需要按"重置为 0 再增长"处理。
+fn fetch_bounded_with_progress(
+    url: &str,
+    max_bytes: u64,
+    on_progress: &mut dyn FnMut(u64, Option<u64>),
+) -> Result<Vec<u8>, String> {
     let candidates = mirror_candidates(url);
     let mut errors = Vec::new();
     for (name, candidate) in &candidates {
-        match try_fetch_bounded(candidate, max_bytes) {
+        match try_fetch_bounded_with_progress(candidate, max_bytes, on_progress) {
             Ok(bytes) => return Ok(bytes),
             Err(error) => errors.push(format!("{name} ({candidate}): {error}")),
         }
@@ -4578,7 +5106,11 @@ fn gh_proxy_mirror(url: &str) -> Option<String> {
 /// 从单个 URL 下载，带速度监控。
 /// 连接超时(10s)、HTTP 错误、下载速度过低(<100KB/s 持续 5s)、总超时(180s)都会返回错误，
 /// 由 `fetch_bounded` 触发到下一个镜像的 fallback。
-fn try_fetch_bounded(url: &str, max_bytes: u64) -> Result<Vec<u8>, String> {
+fn try_fetch_bounded_with_progress(
+    url: &str,
+    max_bytes: u64,
+    on_progress: &mut dyn FnMut(u64, Option<u64>),
+) -> Result<Vec<u8>, String> {
     let mut response = reqwest::blocking::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(10))
         .timeout(std::time::Duration::from_secs(180))
@@ -4590,12 +5122,11 @@ fn try_fetch_bounded(url: &str, max_bytes: u64) -> Result<Vec<u8>, String> {
         .map_err(|error| format!("connect: {error}"))?
         .error_for_status()
         .map_err(|error| format!("HTTP status: {error}"))?;
-    if response
-        .content_length()
-        .is_some_and(|length| length > max_bytes)
-    {
+    let total = response.content_length();
+    if total.is_some_and(|length| length > max_bytes) {
         return Err(format!("download exceeds {max_bytes} byte limit"));
     }
+    on_progress(0, total);
     let mut bytes = Vec::new();
     let mut buffer = [0u8; 16 * 1024];
     let mut total_read: u64 = 0;
@@ -4603,6 +5134,7 @@ fn try_fetch_bounded(url: &str, max_bytes: u64) -> Result<Vec<u8>, String> {
     let min_speed: u64 = 100 * 1024; // 100 KB/s：正常镜像均 > 500KB/s
     let mut last_check = std::time::Instant::now();
     let mut last_total: u64 = 0;
+    let mut last_progress_at = std::time::Instant::now();
     loop {
         let n = response
             .read(&mut buffer)
@@ -4615,6 +5147,12 @@ fn try_fetch_bounded(url: &str, max_bytes: u64) -> Result<Vec<u8>, String> {
             return Err(format!("download exceeds {max_bytes} byte limit"));
         }
         bytes.extend_from_slice(&buffer[..n]);
+        // 进度回调节流：每 100ms 或首次/末次各回调一次，避免事件洪水拖慢 UI。
+        // 速度监控与原实现保持一致，避免回归慢镜像卡死 UI 的老问题。
+        if last_progress_at.elapsed() >= std::time::Duration::from_millis(100) {
+            on_progress(total_read, total);
+            last_progress_at = std::time::Instant::now();
+        }
         // 速度监控：每隔 5s 检查一次，速度低于阈值则中止当前下载
         if last_check.elapsed() >= check_interval {
             let elapsed = last_check.elapsed().as_secs_f64();
@@ -4627,6 +5165,7 @@ fn try_fetch_bounded(url: &str, max_bytes: u64) -> Result<Vec<u8>, String> {
             last_total = total_read;
         }
     }
+    on_progress(total_read, total);
     Ok(bytes)
 }
 
@@ -7276,13 +7815,11 @@ fn spawn_device_reader(app: AppHandle) {
         }
         if woke_from_sleep {
             if let Some(state) = app.try_state::<SessionState>() {
-                // 系统恢复后清除退避，重新检测所有设备。
-                reset_all_backoff(&state);
-                request_refresh_with_plan(&state, ReadPlan::Quick);
-                // 全局诊断：记录睡眠恢复次数。
-                if let Ok(mut g) = state.global_metrics.lock() {
-                    g.sleep_resume_count += 1;
-                }
+                // 启发式时间跳跃检测作为 fallback：原生电源事件（spawn_power_watcher）
+                // 漏报时兜底。两者共享 handle_system_wake_state 处理逻辑：
+                // 清空 HID 缓存 + 重置退避 + PresenceOnly（不直接 Quick，避免设备
+                // 未就绪时失败触发退避重试，节能优先）。
+                handle_system_wake_state(&state);
             }
         }
         continue;
@@ -8001,7 +8538,31 @@ fn install_plugin_update(app: &AppHandle, plugin_id: &str) -> Result<PluginInsta
     if !entry.url.starts_with(allowed_prefix) {
         return Err("plugin asset URL is outside the trusted release origin".into());
     }
-    let bytes = fetch_bounded(&entry.url, MAX_PLUGIN_BYTES)?;
+    let bytes = {
+        let app_for_progress = app.clone();
+        let plugin_id_owned = plugin_id.to_string();
+        let mut on_progress = move |downloaded: u64, total: Option<u64>| {
+            let _ = app_for_progress.emit(
+                "plugin-install-progress",
+                PluginInstallProgress {
+                    plugin_id: plugin_id_owned.clone(),
+                    stage: "downloading",
+                    downloaded_bytes: downloaded,
+                    total_bytes: total,
+                },
+            );
+        };
+        fetch_bounded_with_progress(&entry.url, MAX_PLUGIN_BYTES, &mut on_progress)?
+    };
+    let _ = app.emit(
+        "plugin-install-progress",
+        PluginInstallProgress {
+            plugin_id: plugin_id.to_string(),
+            stage: "verifying",
+            downloaded_bytes: bytes.len() as u64,
+            total_bytes: Some(bytes.len() as u64),
+        },
+    );
     let actual_sha = hex::encode(Sha256::digest(&bytes));
     if actual_sha != entry.sha256 {
         return Err(format!(
@@ -8034,6 +8595,15 @@ fn install_plugin_update(app: &AppHandle, plugin_id: &str) -> Result<PluginInsta
             .ok_or("signed package has no devices.json")?,
     )?;
 
+    let _ = app.emit(
+        "plugin-install-progress",
+        PluginInstallProgress {
+            plugin_id: plugin_id.to_string(),
+            stage: "activating",
+            downloaded_bytes: bytes.len() as u64,
+            total_bytes: Some(bytes.len() as u64),
+        },
+    );
     let directory = installed_plugins_dir(app)?;
     fs::create_dir_all(&directory).map_err(|error| format!("create plugin directory: {error}"))?;
     let previous_path = find_installed_plugin_path(&directory, plugin_id, &trust);
@@ -8475,8 +9045,14 @@ fn navigate_plugin_update(app: &AppHandle) {
     let _ = app.emit("navigate-plugin-update", ());
 }
 
+#[cfg(any(target_os = "windows", all(unix, not(target_os = "macos"))))]
+fn navigate_local_ai_update(app: &AppHandle) {
+    focus_main(app.get_webview_window("main"));
+    let _ = app.emit("navigate-local-ai-update", ());
+}
+
 /// 发送原生系统通知，可选地携带点击跳转动作。
-/// `action` 目前支持 `"about-update"`、`"settings-plugin-update"` 与 `"battery-usage"`。
+/// `action` 目前支持 `"about-update"`、`"settings-plugin-update"`、`"settings-local-ai-update"` 与 `"battery-usage"`。
 /// - macOS：`tauri-plugin-notification` 不暴露点击回调，改将 action 写入
 ///   `pending_notification_action`，由前端窗口 focus 时通过
 ///   `take_pending_notification_action` 取走并执行跳转。
@@ -8529,6 +9105,7 @@ fn show_update_notification(
                                 match action.as_str() {
                                     "about-update" => navigate_about_update(&app),
                                     "settings-plugin-update" => navigate_plugin_update(&app),
+                                    "settings-local-ai-update" => navigate_local_ai_update(&app),
                                     _ => {}
                                 }
                             }
@@ -9772,19 +10349,12 @@ pub fn run() {
                     .load_from_disk(&bg_handle);
             });
 
-            // Spawn background thread that reads the device periodically.
-            // This keeps `device_snapshot` instant — the UI never blocks on HID I/O.
-            spawn_device_reader(app.handle().clone());
-
-            // Native USB hotplug events wake PresenceOnly immediately; periodic
-            // enumeration remains active as a recovery fallback.
-            spawn_hotplug_watcher(app.handle().clone());
-
-            // 启动系统主题变化监听器（事件驱动，跨平台）。
-            // 窗口隐藏到托盘后仍可接收主题变化事件，无需轮询。
-            spawn_theme_watcher(app.handle().clone());
-
             // 安静灯光：从磁盘加载持久化状态（saved_mouse_light），然后启动调度器线程。
+            //
+            // 必须在 spawn_device_reader 之前完成：device_reader 检测到新设备时
+            // 会在 store_snapshots 中设置 force_reeval=true，要求重跑关灯路径；
+            // 若运行时尚未初始化，device_reader 的 force_reeval 写入会被下方
+            // `*guard = runtime` 覆盖丢失，导致已连接设备在夜间时段不关灯。
             //
             // 初始 phase 的选择策略（关键）：
             // - saved_mouse_light 存在 → phase = Night：说明上次 Mira 退出/崩溃时
@@ -9810,12 +10380,30 @@ pub fn run() {
                     saved_mouse_light: store.saved_mouse_light,
                     saved_receiver_light: store.saved_receiver_light,
                     notified: false,
+                    force_reeval: false,
                 };
                 let state = app.state::<SessionState>();
                 let mut guard = state.night_mode.lock().unwrap_or_else(|e| e.into_inner());
                 *guard = runtime;
             }
             spawn_night_mode_scheduler(app.handle().clone());
+
+            // Spawn background thread that reads the device periodically.
+            // This keeps `device_snapshot` instant — the UI never blocks on HID I/O.
+            spawn_device_reader(app.handle().clone());
+
+            // Native USB hotplug events wake PresenceOnly immediately; periodic
+            // enumeration remains active as a recovery fallback.
+            spawn_hotplug_watcher(app.handle().clone());
+
+            // 原生系统电源事件监听：macOS IOKit / Windows WM_POWERBROADCAST /
+            // Linux logind D-Bus。唤醒后清空 HID 缓存 + PresenceOnly，让 readiness
+            // 状态机自然推进。启发式时间跳跃检测仍作为 fallback 兜底。
+            spawn_power_watcher(app.handle().clone());
+
+            // 启动系统主题变化监听器（事件驱动，跨平台）。
+            // 窗口隐藏到托盘后仍可接收主题变化事件，无需轮询。
+            spawn_theme_watcher(app.handle().clone());
 
             if let Some(window) = app.get_webview_window("main") {
                 if launch_hidden {
@@ -9972,6 +10560,78 @@ mod backoff_tests {
         b.reset();
         assert!(!b.is_backing_off());
         assert_eq!(b.consecutive_failures, 0);
+    }
+}
+
+#[cfg(test)]
+mod power_watcher_tests {
+    use super::*;
+    use std::time::Instant;
+
+    /// 唤醒后应重置所有设备的退避状态：旧退避不再适用，允许立即重新读取设备。
+    /// 节能保证：退避重置后只发 PresenceOnly（不执行协议读取），不会疯狂重试。
+    #[test]
+    fn handle_system_wake_resets_backoff() {
+        let state = SessionState::default();
+        {
+            let mut backoff = state.backoff_state.lock().unwrap();
+            let b = backoff.entry("fake-path".into()).or_default();
+            b.record_failure();
+            b.record_failure();
+            assert!(b.is_backing_off());
+        }
+        handle_system_wake_state(&state);
+        let backoff = state.backoff_state.lock().unwrap();
+        let b = backoff.get("fake-path").unwrap();
+        assert!(!b.is_backing_off());
+        assert_eq!(b.consecutive_failures, 0);
+    }
+
+    /// 唤醒后应清空 last_read_at TTL 防抖缓存：
+    /// 休眠前的时间戳不再适用（设备可能已断开重连，TTL 失效）。
+    #[test]
+    fn handle_system_wake_clears_read_debounce_cache() {
+        let state = SessionState::default();
+        {
+            let mut cache = state.last_read_at.lock().unwrap();
+            cache.insert("fake-path".into(), Instant::now());
+            assert!(!cache.is_empty());
+        }
+        handle_system_wake_state(&state);
+        assert!(state.last_read_at.lock().unwrap().is_empty());
+    }
+
+    /// 唤醒后应请求 PresenceOnly（而非 Quick）：
+    /// - 不直接 Quick：避免设备未就绪时失败触发退避重试（节能）
+    /// - 让 readiness 状态机自然推进：Detected → (90ms) → Quick/Full
+    #[test]
+    fn handle_system_wake_requests_presence_only() {
+        let state = SessionState::default();
+        handle_system_wake_state(&state);
+        let plan = *state.forced_read_plan.lock().unwrap();
+        assert_eq!(plan, Some(ReadPlan::PresenceOnly));
+    }
+
+    /// 唤醒处理不应覆盖更强的 forced plan（如用户同时触发的 Quick）：
+    /// `request_refresh_with_plan` 用 max 合并，PresenceOnly 不会降级现有 Quick。
+    #[test]
+    fn handle_system_wake_does_not_downgrade_stronger_plan() {
+        let state = SessionState::default();
+        *state.forced_read_plan.lock().unwrap() = Some(ReadPlan::Quick);
+        handle_system_wake_state(&state);
+        let plan = *state.forced_read_plan.lock().unwrap();
+        assert_eq!(plan, Some(ReadPlan::Quick));
+    }
+
+    /// 唤醒后应递增 sleep_resume_count 全局诊断指标。
+    #[test]
+    fn handle_system_wake_increments_sleep_resume_count() {
+        let state = SessionState::default();
+        assert_eq!(state.global_metrics.lock().unwrap().sleep_resume_count, 0);
+        handle_system_wake_state(&state);
+        assert_eq!(state.global_metrics.lock().unwrap().sleep_resume_count, 1);
+        handle_system_wake_state(&state);
+        assert_eq!(state.global_metrics.lock().unwrap().sleep_resume_count, 2);
     }
 }
 
