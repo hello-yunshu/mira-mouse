@@ -6920,6 +6920,34 @@ enum SnapshotPatch {
     Full(DeviceSnapshot),
 }
 
+/// 按 id 合并 batteries 数组，实现鼠标电量的粘性缓存。
+///
+/// 行为：
+/// - `incoming` 中的条目按 id 覆盖 `existing` 中同 id 的旧条目（更新百分比/充电状态）
+/// - `existing` 中存在但 `incoming` 中缺失的 id（如鼠标休眠时插件只返回 receiver）
+///   保留旧条目不动——这是粘性缓存的核心：鼠标电量一旦读到过就保留，
+///   直到设备真正断联（接收器消失，matched 为空 → Clear 分支）才清除
+/// - `incoming` 中新增的 id 追加到末尾
+/// - 保持 `existing` 条目的相对顺序，`incoming` 新条目按出现顺序追加
+///
+/// 这避免了 `apply_snapshot_patch` 的 Quick/Battery 分支整体替换 batteries
+/// 导致鼠标休眠时 mouse 条目被 receiver-only 的部分结果覆盖丢失的问题。
+/// 参考现有 `merge_capability_patch` 的字段级合并模式。
+fn merge_batteries(
+    existing: &[mira_core::DeviceBattery],
+    incoming: &[mira_core::DeviceBattery],
+) -> Vec<mira_core::DeviceBattery> {
+    let mut merged: Vec<mira_core::DeviceBattery> = existing.to_vec();
+    for battery in incoming {
+        if let Some(slot) = merged.iter_mut().find(|b| b.id == battery.id) {
+            *slot = battery.clone();
+        } else {
+            merged.push(battery.clone());
+        }
+    }
+    merged
+}
+
 /// 将补丁应用到现有快照上，返回更新后的快照。
 ///
 /// 如果 `existing` 为 None，Presence 和 Full 会创建新快照；
@@ -7009,7 +7037,10 @@ fn apply_snapshot_patch(
                     updated.charging = c;
                 }
                 if let Some(bats) = batteries {
-                    updated.batteries = bats;
+                    // 按 id 合并而非整体替换：鼠标无线休眠时插件可能只返回 receiver，
+                    // 整体替换会丢掉旧 mouse 条目导致 UI 误显示接收器电量。
+                    // 合并保证 mouse 条目粘性保留，直到设备真正断联（Clear 分支）。
+                    updated.batteries = merge_batteries(&updated.batteries, &bats);
                 }
                 if let Some(d) = dpi {
                     updated.dpi = Some(d);
@@ -7058,7 +7089,10 @@ fn apply_snapshot_patch(
                     updated.charging = c;
                 }
                 if let Some(bats) = batteries {
-                    updated.batteries = bats;
+                    // 按 id 合并而非整体替换：鼠标无线休眠时插件可能只返回 receiver，
+                    // 整体替换会丢掉旧 mouse 条目导致 UI 误显示接收器电量。
+                    // 合并保证 mouse 条目粘性保留，直到设备真正断联（Clear 分支）。
+                    updated.batteries = merge_batteries(&updated.batteries, &bats);
                 }
                 updated
             } else {
@@ -10960,6 +10994,274 @@ mod read_plan_tests {
                 "color": "#123456",
                 "brightness": 80
             }))
+        );
+    }
+}
+
+#[cfg(test)]
+mod snapshot_patch_tests {
+    use super::*;
+
+    fn battery(id: &str, percentage: u8, charging: bool) -> mira_core::DeviceBattery {
+        mira_core::DeviceBattery {
+            id: id.into(),
+            label: id.into(),
+            percentage,
+            charging,
+        }
+    }
+
+    fn snapshot_with_batteries(batteries: Vec<mira_core::DeviceBattery>) -> DeviceSnapshot {
+        DeviceSnapshot {
+            display_name: "Test".into(),
+            connection: Connection::Wireless,
+            selection_priority: 0,
+            battery_percent: None,
+            charging: false,
+            batteries,
+            dpi: None,
+            dpi_stages: None,
+            polling_rate_hz: None,
+            supported_polling_rates_hz: None,
+            profile: None,
+            confirmed_light_color: None,
+            capabilities: BTreeMap::new(),
+            plugin_capabilities: Vec::new(),
+            writable_mutations: Vec::new(),
+            evidence: "test".into(),
+            readonly: false,
+            plugin_id: None,
+            history_identity: None,
+        }
+    }
+
+    fn mock_inspection() -> PackageInspection {
+        PackageInspection {
+            plugin_id: "test.plugin".into(),
+            version: "0.0.1".into(),
+            evidence: "test".into(),
+            signature_verified: false,
+            writes_enabled: false,
+            capabilities: Vec::new(),
+            exportable_fields: Vec::new(),
+            depends_on: Vec::new(),
+            file_count: 0,
+        }
+    }
+
+    fn mock_device() -> hid::MatchedDevice {
+        hid::MatchedDevice {
+            plugin_id: "test.plugin".into(),
+            family: "TestMouse".into(),
+            evidence: "test".into(),
+            connection: "wireless".into(),
+            path: "mock-path".into(),
+            vendor_id: 0x1234,
+            product_id: 0x5678,
+            usage_page: 1,
+            usage: 2,
+            model: None,
+            identity: None,
+            selection_priority: 0,
+            selection_priority_by_connection: BTreeMap::new(),
+        }
+    }
+
+    fn mock_devices() -> hid::DevicesFile {
+        hid::DevicesFile {
+            schema_version: 1,
+            devices: Vec::new(),
+            hardware_verified_models: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn merge_batteries_overrides_same_id() {
+        let existing = vec![battery("mouse", 64, false), battery("receiver", 100, false)];
+        let incoming = vec![battery("mouse", 60, false)];
+        let merged = merge_batteries(&existing, &incoming);
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].id, "mouse");
+        assert_eq!(merged[0].percentage, 60);
+        assert_eq!(merged[1].id, "receiver");
+        assert_eq!(merged[1].percentage, 100);
+    }
+
+    #[test]
+    fn merge_batteries_keeps_missing_ids_for_sticky_cache() {
+        // 核心场景：鼠标休眠时插件只返回 receiver，mouse 条目应粘性保留。
+        let existing = vec![battery("mouse", 64, false), battery("receiver", 100, false)];
+        let incoming = vec![battery("receiver", 98, false)];
+        let merged = merge_batteries(&existing, &incoming);
+        assert_eq!(merged.len(), 2);
+        assert_eq!(
+            merged
+                .iter()
+                .find(|b| b.id == "mouse")
+                .map(|b| b.percentage),
+            Some(64),
+            "mouse 条目必须保留，实现粘性缓存"
+        );
+        assert_eq!(
+            merged
+                .iter()
+                .find(|b| b.id == "receiver")
+                .map(|b| b.percentage),
+            Some(98)
+        );
+    }
+
+    #[test]
+    fn merge_batteries_appends_new_ids() {
+        let existing = vec![battery("mouse", 64, false)];
+        let incoming = vec![battery("receiver", 100, false)];
+        let merged = merge_batteries(&existing, &incoming);
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].id, "mouse");
+        assert_eq!(merged[1].id, "receiver");
+    }
+
+    #[test]
+    fn merge_batteries_preserves_existing_order() {
+        let existing = vec![battery("mouse", 64, false), battery("receiver", 100, false)];
+        // incoming 顺序与 existing 不同，合并后 existing 顺序应稳定。
+        let incoming = vec![battery("receiver", 90, false), battery("mouse", 60, false)];
+        let merged = merge_batteries(&existing, &incoming);
+        assert_eq!(merged[0].id, "mouse");
+        assert_eq!(merged[1].id, "receiver");
+    }
+
+    #[test]
+    fn merge_batteries_empty_existing_returns_incoming() {
+        let existing: Vec<_> = Vec::new();
+        let incoming = vec![battery("mouse", 50, true)];
+        let merged = merge_batteries(&existing, &incoming);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].id, "mouse");
+    }
+
+    #[test]
+    fn merge_batteries_empty_incoming_preserves_existing() {
+        let existing = vec![battery("mouse", 64, false)];
+        let incoming: Vec<_> = Vec::new();
+        let merged = merge_batteries(&existing, &incoming);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].percentage, 64);
+    }
+
+    #[test]
+    fn apply_snapshot_patch_battery_keeps_mouse_when_only_receiver_returned() {
+        // 鼠标无线休眠场景：existing 有 mouse+receiver，BatteryOnly 只读到 receiver。
+        // 修复前：整体替换会丢掉 mouse 条目；修复后：按 id 合并，mouse 粘性保留。
+        let existing = snapshot_with_batteries(vec![
+            battery("mouse", 64, false),
+            battery("receiver", 100, false),
+        ]);
+        let patch = SnapshotPatch::Battery {
+            battery_percent: None,
+            charging: None,
+            batteries: Some(vec![battery("receiver", 98, false)]),
+        };
+        let result = apply_snapshot_patch(
+            Some(&existing),
+            patch,
+            &mock_inspection(),
+            &mock_device(),
+            &mock_devices(),
+            Connection::Wireless,
+        );
+        assert_eq!(result.batteries.len(), 2);
+        assert_eq!(
+            result
+                .batteries
+                .iter()
+                .find(|b| b.id == "mouse")
+                .map(|b| b.percentage),
+            Some(64),
+            "mouse 条目必须保留，不能被 receiver-only 的部分结果覆盖"
+        );
+        assert_eq!(
+            result
+                .batteries
+                .iter()
+                .find(|b| b.id == "receiver")
+                .map(|b| b.percentage),
+            Some(98)
+        );
+    }
+
+    #[test]
+    fn apply_snapshot_patch_battery_updates_mouse_when_present() {
+        // 鼠标唤醒后正常场景：插件返回 mouse+receiver 完整结果，mouse 被新值更新。
+        let existing = snapshot_with_batteries(vec![
+            battery("mouse", 64, false),
+            battery("receiver", 100, false),
+        ]);
+        let patch = SnapshotPatch::Battery {
+            battery_percent: Some(60),
+            charging: Some(false),
+            batteries: Some(vec![
+                battery("mouse", 60, false),
+                battery("receiver", 98, false),
+            ]),
+        };
+        let result = apply_snapshot_patch(
+            Some(&existing),
+            patch,
+            &mock_inspection(),
+            &mock_device(),
+            &mock_devices(),
+            Connection::Wireless,
+        );
+        assert_eq!(result.batteries.len(), 2);
+        assert_eq!(
+            result
+                .batteries
+                .iter()
+                .find(|b| b.id == "mouse")
+                .map(|b| b.percentage),
+            Some(60)
+        );
+        assert_eq!(result.battery_percent, Some(60));
+    }
+
+    #[test]
+    fn apply_snapshot_patch_quick_also_merges_batteries() {
+        // Quick 分支同样使用 merge_batteries，确保 mouse 条目粘性保留。
+        let existing = snapshot_with_batteries(vec![
+            battery("mouse", 64, false),
+            battery("receiver", 100, false),
+        ]);
+        let patch = SnapshotPatch::Quick {
+            battery_percent: None,
+            charging: None,
+            batteries: Some(vec![battery("receiver", 98, false)]),
+            dpi: None,
+            dpi_stages: None,
+            polling_rate_hz: None,
+            profile: None,
+            confirmed_light_color: None,
+            capabilities: BTreeMap::new(),
+            projection_valid: true,
+            fallback_reason: None,
+        };
+        let result = apply_snapshot_patch(
+            Some(&existing),
+            patch,
+            &mock_inspection(),
+            &mock_device(),
+            &mock_devices(),
+            Connection::Wireless,
+        );
+        assert_eq!(result.batteries.len(), 2);
+        assert_eq!(
+            result
+                .batteries
+                .iter()
+                .find(|b| b.id == "mouse")
+                .map(|b| b.percentage),
+            Some(64),
+            "Quick 分支也应保留 mouse 条目"
         );
     }
 }
