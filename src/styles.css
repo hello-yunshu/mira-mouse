@@ -488,6 +488,10 @@ body:has(.platform-fallback:not(.web-preview)) {
   }
 }
 .device-copy { min-width: 0; padding-left: 32px; }
+/* Windows 下 device-copy 上移 25px */
+.platform-windows .device-copy {
+  margin-top: -15px;
+}
 .connection-state {
   display: flex;
   align-items: center;
