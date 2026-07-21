@@ -2034,7 +2034,7 @@ body:has(.platform-fallback:not(.web-preview)) {
 .setting-hint { max-width: 100%; margin: 4px 0 0; color: var(--muted); font-size: 11px; line-height: 1.45; }
 
 .status-strip {
-  --status-card-bg: color-mix(in srgb, var(--surface-bg), transparent 28%);
+  --status-card-bg: rgb(255 255 255 / 54%);
   --status-card-border: color-mix(in srgb, var(--surface-border), transparent 20%);
   min-height: 64px;
   padding: 0 20px;
@@ -2051,6 +2051,14 @@ body:has(.platform-fallback:not(.web-preview)) {
 }
 .platform-macos .status-strip {
   margin-bottom: 15px;
+}
+:root[data-theme="dark"] .status-strip {
+  --status-card-bg: rgb(255 255 255 / 14%);
+}
+@media (prefers-color-scheme: dark) {
+  :root[data-theme="system"] .status-strip {
+    --status-card-bg: rgb(255 255 255 / 14%);
+  }
 }
 .status-strip > div,
 .status-strip > button {

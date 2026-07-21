@@ -22,7 +22,7 @@ import { useTranslation } from 'react-i18next';
 import { MOCK_DEVICE, MOCK_DEVICE_ENTRIES } from './mock';
 import { applyTheme, pastelDisplayColor } from './theme';
 import i18n, { applyLanguage, loadPluginLocales, resolveLabelKey } from './i18n';
-import { SettingsPage } from './Settings';
+import { SettingsPage, type SettingsTab } from './Settings';
 import { AboutPage } from './About';
 import { BatteryUsageModal, type BatteryUsageConnectedTarget } from './BatteryUsage';
 import { BatteryLevelIcon } from './BatteryLevelIcon';
@@ -2425,7 +2425,12 @@ function Dashboard({
             ) : (
               <h1>{device.name}</h1>
             )}
-            {device.batteries.length > 0 && (
+            {device.batteries.length > 0 && (() => {
+              // 优先显示鼠标电量，而非数组顺序的第一个：鼠标无线休眠时
+              // batteries 可能只剩 receiver（后端 merge_batteries 已尽量保留
+              // mouse 条目，这里做前端双保险），避免摘要按钮误显示接收器电量。
+              const primaryBattery = device.batteries.find((b) => b.id === 'mouse') ?? device.batteries[0];
+              return (
             <div ref={batteryControlRef} className={`battery-control ${showBatteries ? 'open' : ''}`}>
               <button
                 className="battery-state"
@@ -2439,13 +2444,14 @@ function Dashboard({
                   setShowBatteries((visible) => !visible);
                 }}
               >
-                <BatteryLevelIcon percentage={device.batteries[0].percentage} charging={device.batteries[0].charging} />
-                {device.batteries[0].percentage}%
-                {device.batteries[0].charging ? ` · ${t('common.charging')}` : ''}
+                <BatteryLevelIcon percentage={primaryBattery.percentage} charging={primaryBattery.charging} />
+                {primaryBattery.percentage}%
+                {primaryBattery.charging ? ` · ${t('common.charging')}` : ''}
                 <span className="battery-count">{t('dashboard.deviceCount', { count: device.batteries.length })}</span>
               </button>
             </div>
-            )}
+              );
+            })()}
           </div>
         </div>
         <DeviceAura color={declaredAccentColor(device)} />
@@ -2672,6 +2678,8 @@ export default function App() {
   const [theme, setTheme] = useState<ThemeMode>('system');
   const [themeLoaded, setThemeLoaded] = useState(pureWeb);
   const [view, setView] = useState<View>('dashboard');
+  // 记住设置页上次所在的标签，使从关于页返回时恢复到原标签而非首个标签。
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>('general');
   const [aboutFocusToken, setAboutFocusToken] = useState(0);
   const [settingsPluginFocusToken, setSettingsPluginFocusToken] = useState(0);
   const [settingsLocalAiFocusToken, setSettingsLocalAiFocusToken] = useState(0);
@@ -2936,7 +2944,7 @@ export default function App() {
       {demoMode && <button className="nav-link nav-exit" onClick={exitDemo} aria-label={t('nav.exitDemo')} title={t('nav.exitDemo')}><SignOut weight="regular" /></button>}
     </div>
     {view === 'dashboard' && (device ? <Dashboard device={device} deviceEntries={deviceEntries} onDeviceChange={setDevice} onDeviceSelect={selectDevice} onOpenBatteryUsage={openBatteryUsage} pluginLocaleRevision={pluginLocaleRevision} demoMode={demoMode} /> : <EmptyState onRefresh={() => { setDemoMode(false); setDevice(undefined); setDeviceEntries([]); deviceEntriesRef.current = []; setRefreshNonce((value) => value + 1); invoke('device_refresh').catch(() => {}); }} onDemo={() => { setDemoMode(true); setDevice(MOCK_DEVICE); setDeviceEntries(MOCK_DEVICE_ENTRIES); deviceEntriesRef.current = MOCK_DEVICE_ENTRIES; }} onOpenSettings={() => setView('settings')} />)}
-    {view === 'settings' && <SettingsPage previewMode={pureWeb} focusPluginUpdateToken={settingsPluginFocusToken} focusLocalAiUpdateToken={settingsLocalAiFocusToken} onNavigateAbout={() => setView('about')} onOpenBatteryUsage={openBatteryUsage} onBatteryUsageSettingsChange={syncBatteryUsageSettings} onThemeChange={setTheme} pluginCapabilities={device?.pluginCapabilities ?? []} writableMutations={device?.writableMutations ?? []} />}
+    {view === 'settings' && <SettingsPage initialTab={settingsTab} onTabChange={setSettingsTab} previewMode={pureWeb} focusPluginUpdateToken={settingsPluginFocusToken} focusLocalAiUpdateToken={settingsLocalAiFocusToken} onNavigateAbout={() => setView('about')} onOpenBatteryUsage={openBatteryUsage} onBatteryUsageSettingsChange={syncBatteryUsageSettings} onThemeChange={setTheme} pluginCapabilities={device?.pluginCapabilities ?? []} writableMutations={device?.writableMutations ?? []} />}
     {view === 'about' && <AboutPage previewMode={pureWeb} focusUpdateToken={aboutFocusToken} onBack={() => setView('settings')} />}
     <BatteryUsageModal
       key={batteryUsageSession}
