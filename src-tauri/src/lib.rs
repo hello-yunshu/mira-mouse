@@ -1336,7 +1336,7 @@ fn spawn_windows_power_watcher(app: AppHandle) {
                 ptr::null_mut(), // 顶级窗口，无父窗口
                 ptr::null_mut(),
                 h_instance,
-                ptr::null(),
+                ptr::null_mut(), // lp_param: LPVOID = *mut c_void，需用 null_mut
             )
         };
         if hwnd.is_null() {
