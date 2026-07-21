@@ -669,10 +669,21 @@ fn probe_runtime(
     for key in &installation.handler_trust_keys {
         command.arg("--handler-trust-key").arg(key);
     }
-    let mut child = command
+    command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    // Windows: 抑制子进程控制台窗口。probe_runtime 在每次打开设置页
+    // (local_ai_status → status → probe_runtime) 时被触发,缺少此标志会导致
+    // rill-runtime 子进程瞬间闪现黑色控制台窗口。与 local_ai_controller
+    // ::spawn_and_handshake 保持一致。
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    let mut child = command
         .spawn()
         .map_err(|error| format!("start local AI runtime: {error}"))?;
     let mut stdin = child
