@@ -41,7 +41,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 
 pub const PLUGIN_SCHEMA_VERSION: u32 = 1;
-pub const PLUGIN_API_VERSION: &str = "1.0.0";
+pub const PLUGIN_API_VERSION: &str = "1.1.0";
 const MAX_DASHBOARD_ITEMS: usize = 6;
 const MAX_CONTROL_OPTIONS: usize = 8;
 const MAX_SUMMARY_ITEMS: usize = 4;
@@ -61,6 +61,11 @@ pub struct PluginManifest {
     pub evidence: EvidenceLevel,
     #[serde(default)]
     pub permissions: Vec<Permission>,
+    /// Host-owned runtime behavior that the plugin explicitly opts into.
+    /// The plugin declares semantics; retry timing and platform integration
+    /// remain owned by the Host.
+    #[serde(default)]
+    pub runtime: PluginRuntime,
     #[serde(default)]
     pub capabilities: Vec<Capability>,
     #[serde(default)]
@@ -75,6 +80,34 @@ pub struct PluginManifest {
     /// 未声明时插件独立运行（向后兼容）。
     #[serde(default)]
     pub depends_on: Vec<PluginDependency>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PluginRuntime {
+    /// Recover a sleeping component after real pointer activity. The Host
+    /// observes platform input without accessibility privileges and performs a
+    /// bounded read; the plugin owns whether that signal is meaningful.
+    #[serde(default)]
+    pub wake_recovery: Option<WakeRecoveryContract>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WakeRecoveryContract {
+    pub activity_source: WakeActivitySource,
+    /// Stable component id emitted in `DeviceReading.batteries`, such as
+    /// `mouse`. The Host uses the raw reading, before sticky display merging,
+    /// to decide whether recovery succeeded.
+    pub component_id: String,
+    /// Host-facing connection values on which recovery is applicable.
+    pub connections: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum WakeActivitySource {
+    SystemPointer,
 }
 
 /// #11 配置导入/导出：可导出字段声明。
@@ -140,6 +173,31 @@ impl PluginManifest {
         }
         if self.writes_enabled && self.evidence != EvidenceLevel::HardwareVerified {
             return Err(ApiError::UnsafeWriteEvidence);
+        }
+        if let Some(recovery) = &self.runtime.wake_recovery {
+            let valid_component_id = !recovery.component_id.is_empty()
+                && recovery.component_id.len() <= 32
+                && recovery
+                    .component_id
+                    .chars()
+                    .enumerate()
+                    .all(|(index, ch)| {
+                        if index == 0 {
+                            ch.is_ascii_lowercase()
+                        } else {
+                            ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-'
+                        }
+                    });
+            let valid_connections = !recovery.connections.is_empty()
+                && recovery.connections.len() <= 4
+                && recovery.connections.iter().all(|value| {
+                    matches!(value.as_str(), "usb" | "wireless" | "bluetooth" | "virtual")
+                })
+                && recovery.connections.iter().collect::<BTreeSet<_>>().len()
+                    == recovery.connections.len();
+            if !valid_component_id || !valid_connections {
+                return Err(ApiError::WakeRecovery);
+            }
         }
         let mut control_groups = BTreeSet::new();
         let mut status_items = 0usize;
@@ -1002,6 +1060,8 @@ pub enum ApiError {
     UnsafeWriteEvidence,
     #[error("plugin has an invalid UI presentation contract")]
     PluginPresentation,
+    #[error("plugin has an invalid wake recovery contract")]
+    WakeRecovery,
     #[error("capability {0} has an invalid placement")]
     CapabilityPlacement(String),
     #[error("capability {0} has an invalid summary declaration")]
@@ -1024,6 +1084,67 @@ pub enum ApiError {
 mod tests {
     use super::*;
 
+    fn manifest_with_runtime(runtime: PluginRuntime) -> PluginManifest {
+        PluginManifest {
+            schema_version: 1,
+            plugin_id: "mira.example".into(),
+            name: "Example".into(),
+            version: "1.0.0".into(),
+            plugin_api: ">=1.1.0, <2.0.0".parse().unwrap(),
+            publisher_key_id: None,
+            evidence: EvidenceLevel::FixtureVerified,
+            permissions: vec![],
+            runtime,
+            capabilities: vec![],
+            writes_enabled: false,
+            exportable_fields: vec![],
+            depends_on: vec![],
+        }
+    }
+
+    #[test]
+    fn accepts_system_pointer_wake_recovery_contract() {
+        let manifest = manifest_with_runtime(PluginRuntime {
+            wake_recovery: Some(WakeRecoveryContract {
+                activity_source: WakeActivitySource::SystemPointer,
+                component_id: "mouse".into(),
+                connections: vec!["wireless".into()],
+            }),
+        });
+
+        assert_eq!(manifest.validate(), Ok(()));
+        assert_eq!(
+            serde_json::to_value(&manifest).unwrap()["runtime"]["wakeRecovery"]["activitySource"],
+            "system-pointer"
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_wake_recovery_contract() {
+        for contract in [
+            WakeRecoveryContract {
+                activity_source: WakeActivitySource::SystemPointer,
+                component_id: "Mouse".into(),
+                connections: vec!["wireless".into()],
+            },
+            WakeRecoveryContract {
+                activity_source: WakeActivitySource::SystemPointer,
+                component_id: "mouse".into(),
+                connections: vec!["receiver".into()],
+            },
+            WakeRecoveryContract {
+                activity_source: WakeActivitySource::SystemPointer,
+                component_id: "mouse".into(),
+                connections: vec!["wireless".into(), "wireless".into()],
+            },
+        ] {
+            let manifest = manifest_with_runtime(PluginRuntime {
+                wake_recovery: Some(contract),
+            });
+            assert_eq!(manifest.validate(), Err(ApiError::WakeRecovery));
+        }
+    }
+
     #[test]
     fn refuses_writes_without_hardware_evidence() {
         let manifest = PluginManifest {
@@ -1035,6 +1156,7 @@ mod tests {
             publisher_key_id: None,
             evidence: EvidenceLevel::FixtureVerified,
             permissions: vec![],
+            runtime: PluginRuntime::default(),
             capabilities: vec![],
             writes_enabled: true,
             exportable_fields: vec![],
@@ -1054,6 +1176,7 @@ mod tests {
             publisher_key_id: None,
             evidence: EvidenceLevel::FixtureVerified,
             permissions: vec![],
+            runtime: PluginRuntime::default(),
             capabilities: vec![],
             writes_enabled: false,
             exportable_fields: vec![],
@@ -1087,6 +1210,7 @@ mod tests {
             publisher_key_id: None,
             evidence: EvidenceLevel::FixtureVerified,
             permissions: vec![],
+            runtime: PluginRuntime::default(),
             capabilities: vec![capability],
             writes_enabled: false,
             exportable_fields: vec![],
@@ -1131,6 +1255,7 @@ mod tests {
             publisher_key_id: None,
             evidence: EvidenceLevel::FixtureVerified,
             permissions: vec![],
+            runtime: PluginRuntime::default(),
             capabilities: vec![capability],
             writes_enabled: false,
             exportable_fields: vec![],
@@ -1180,6 +1305,7 @@ mod tests {
             publisher_key_id: None,
             evidence: EvidenceLevel::FixtureVerified,
             permissions: vec![],
+            runtime: PluginRuntime::default(),
             capabilities: vec![capability],
             writes_enabled: false,
             exportable_fields: vec![],
@@ -1221,6 +1347,7 @@ mod tests {
             publisher_key_id: None,
             evidence: EvidenceLevel::FixtureVerified,
             permissions: vec![],
+            runtime: PluginRuntime::default(),
             capabilities: vec![capability],
             writes_enabled: false,
             exportable_fields: vec![],
@@ -1264,6 +1391,7 @@ mod tests {
             publisher_key_id: None,
             evidence: EvidenceLevel::FixtureVerified,
             permissions: vec![],
+            runtime: PluginRuntime::default(),
             capabilities: vec![capability],
             writes_enabled: false,
             exportable_fields: vec![],
@@ -1297,6 +1425,7 @@ mod tests {
             publisher_key_id: None,
             evidence: EvidenceLevel::FixtureVerified,
             permissions: vec![],
+            runtime: PluginRuntime::default(),
             capabilities: vec![capability],
             writes_enabled: false,
             exportable_fields: vec![],
@@ -1349,6 +1478,7 @@ mod tests {
             publisher_key_id: None,
             evidence: EvidenceLevel::FixtureVerified,
             permissions: vec![],
+            runtime: PluginRuntime::default(),
             capabilities: vec![capability.clone()],
             writes_enabled: false,
             exportable_fields: vec![],
@@ -1399,6 +1529,7 @@ mod tests {
             publisher_key_id: None,
             evidence: EvidenceLevel::FixtureVerified,
             permissions: vec![],
+            runtime: PluginRuntime::default(),
             capabilities: vec![capability],
             writes_enabled: false,
             exportable_fields: vec![],
@@ -1440,6 +1571,7 @@ mod tests {
             publisher_key_id: None,
             evidence: EvidenceLevel::FixtureVerified,
             permissions: vec![],
+            runtime: PluginRuntime::default(),
             capabilities,
             writes_enabled: false,
             exportable_fields: vec![],

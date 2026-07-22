@@ -14,6 +14,7 @@ mod local_ai_controller;
 mod local_ai_runtime;
 mod local_ai_update;
 mod logging;
+mod pointer_activity;
 mod tray;
 use battery_history::{AbnormalDrainNotifyState, BatteryHistoryResponse, BatteryHistoryState};
 use mira_plugin_runtime::{
@@ -769,6 +770,30 @@ struct HostDiagnostics {
     hid_io: HidIoDiagnostics,
 }
 
+const WAKE_RECOVERY_SETTLE_DELAY: Duration = Duration::from_millis(150);
+const WAKE_RECOVERY_RETRY_DELAYS: [Duration; 3] = [
+    Duration::from_millis(450),
+    Duration::from_millis(1400),
+    Duration::from_secs(4),
+];
+const WAKE_RECOVERY_COOLDOWN: Duration = Duration::from_secs(8);
+
+#[derive(Debug)]
+struct PendingWakeRecovery {
+    attempt: usize,
+    due_at: Instant,
+}
+
+#[derive(Default, Debug)]
+struct WakeRecoveryState {
+    /// Paths whose plugin-declared component was absent from the latest raw
+    /// protocol result. This is deliberately separate from the sticky display
+    /// snapshot, which may still contain the last known battery value.
+    armed_paths: BTreeSet<String>,
+    pending: Option<PendingWakeRecovery>,
+    last_started_at: Option<Instant>,
+}
+
 #[derive(Default)]
 struct SessionState {
     write_in_progress: Mutex<bool>,
@@ -803,6 +828,9 @@ struct SessionState {
     forced_read_plan: Mutex<Option<ReadPlan>>,
     /// 用户活跃交互后的短时 Quick 观察窗口。窗口隐藏时不执行协议读取。
     quick_observe_until: Mutex<Option<Instant>>,
+    /// Plugin-declared component wake recovery driven by permission-free
+    /// platform pointer activity hints.
+    wake_recovery: Mutex<WakeRecoveryState>,
     applied_software_profiles: Mutex<BTreeSet<String>>,
     /// 低电量跨阈值检测：仅在电量从高跨入低时通知一次，避免反复弹窗。
     low_battery: Mutex<LowBatteryCrossing>,
@@ -980,6 +1008,169 @@ fn quick_observation_active(state: &SessionState, visible: bool, now: Instant) -
             false
         }
         None => false,
+    }
+}
+
+fn wake_recovery_contract_for(
+    inspection: &PackageInspection,
+    connection: Connection,
+) -> Option<&mira_plugin_runtime::WakeRecoveryContract> {
+    let contract = inspection.runtime.wake_recovery.as_ref()?;
+    if contract.activity_source != mira_plugin_runtime::WakeActivitySource::SystemPointer {
+        return None;
+    }
+    let current = snapshot_connection_value(connection);
+    contract
+        .connections
+        .iter()
+        .any(|candidate| candidate == current)
+        .then_some(contract)
+}
+
+fn reading_has_recovery_component(
+    reading: &DeviceReading,
+    contract: &mira_plugin_runtime::WakeRecoveryContract,
+) -> bool {
+    reading
+        .batteries
+        .iter()
+        .any(|battery| battery.id == contract.component_id)
+}
+
+fn mark_wake_recovery_observation(
+    state: &SessionState,
+    path: &str,
+    inspection: &PackageInspection,
+    connection: Connection,
+    reading: &DeviceReading,
+) {
+    let Some(contract) = wake_recovery_contract_for(inspection, connection) else {
+        if let Ok(mut recovery) = state.wake_recovery.lock() {
+            recovery.armed_paths.remove(path);
+        }
+        return;
+    };
+    let present = reading_has_recovery_component(reading, contract);
+    if let Ok(mut recovery) = state.wake_recovery.lock() {
+        if present {
+            recovery.armed_paths.remove(path);
+            if recovery.armed_paths.is_empty() {
+                recovery.pending = None;
+            }
+        } else {
+            recovery.armed_paths.insert(path.to_string());
+        }
+    }
+}
+
+fn mark_wake_recovery_failure(
+    state: &SessionState,
+    path: &str,
+    inspection: &PackageInspection,
+    connection: Connection,
+) {
+    if wake_recovery_contract_for(inspection, connection).is_none() {
+        return;
+    }
+    if let Ok(mut recovery) = state.wake_recovery.lock() {
+        recovery.armed_paths.insert(path.to_string());
+    }
+}
+
+fn note_system_pointer_activity(state: &SessionState) {
+    let now = Instant::now();
+    let scheduled = if let Ok(mut recovery) = state.wake_recovery.lock() {
+        if recovery.armed_paths.is_empty()
+            || recovery.pending.is_some()
+            || recovery.last_started_at.is_some_and(|started| {
+                now.saturating_duration_since(started) < WAKE_RECOVERY_COOLDOWN
+            })
+        {
+            false
+        } else {
+            recovery.pending = Some(PendingWakeRecovery {
+                attempt: 0,
+                due_at: now + WAKE_RECOVERY_SETTLE_DELAY,
+            });
+            recovery.last_started_at = Some(now);
+            true
+        }
+    } else {
+        false
+    };
+    if scheduled {
+        if let Ok(tx) = state.refresh_tx.lock() {
+            if let Some(sender) = tx.as_ref() {
+                let _ = sender.send(());
+            }
+        }
+    }
+}
+
+fn wake_recovery_probe_due(state: &SessionState, now: Instant) -> bool {
+    state
+        .wake_recovery
+        .lock()
+        .ok()
+        .and_then(|recovery| {
+            recovery
+                .pending
+                .as_ref()
+                .map(|pending| pending.due_at <= now)
+        })
+        .unwrap_or(false)
+}
+
+fn wake_recovery_wait(state: &SessionState, now: Instant) -> Option<Duration> {
+    state
+        .wake_recovery
+        .lock()
+        .ok()
+        .and_then(|recovery| recovery.pending.as_ref().map(|pending| pending.due_at))
+        .map(|due_at| due_at.saturating_duration_since(now))
+}
+
+fn reset_wake_recovery_backoff(state: &SessionState) {
+    let paths = state
+        .wake_recovery
+        .lock()
+        .ok()
+        .map(|recovery| recovery.armed_paths.clone())
+        .unwrap_or_default();
+    if let Ok(mut backoff) = state.backoff_state.lock() {
+        for path in paths {
+            if let Some(device) = backoff.get_mut(&path) {
+                device.reset();
+            }
+        }
+    }
+}
+
+fn finish_wake_recovery_probe(state: &SessionState, now: Instant) {
+    let Ok(mut recovery) = state.wake_recovery.lock() else {
+        return;
+    };
+    if recovery.armed_paths.is_empty() {
+        recovery.pending = None;
+        return;
+    }
+    let Some(pending) = recovery.pending.as_mut() else {
+        return;
+    };
+    if let Some(delay) = WAKE_RECOVERY_RETRY_DELAYS.get(pending.attempt) {
+        pending.attempt += 1;
+        pending.due_at = now + *delay;
+    } else {
+        recovery.pending = None;
+    }
+}
+
+fn retain_wake_recovery_paths(state: &SessionState, connected: &BTreeSet<String>) {
+    if let Ok(mut recovery) = state.wake_recovery.lock() {
+        recovery.armed_paths.retain(|path| connected.contains(path));
+        if recovery.armed_paths.is_empty() {
+            recovery.pending = None;
+        }
     }
 }
 
@@ -2199,6 +2390,9 @@ fn clear_snapshots(state: &SessionState) {
     // 设备断开时清除退避状态，重连后不受历史失败影响。
     if let Ok(mut backoff) = state.backoff_state.lock() {
         backoff.clear();
+    }
+    if let Ok(mut recovery) = state.wake_recovery.lock() {
+        *recovery = WakeRecoveryState::default();
     }
     // 设备断开时清除诊断指标，避免累积离线设备数据。
     if let Ok(mut metrics) = state.device_metrics.lock() {
@@ -3445,6 +3639,7 @@ mod settings_tests {
             evidence: "hardware-verified".into(),
             signature_verified: true,
             writes_enabled: true,
+            runtime: mira_plugin_runtime::PluginRuntime::default(),
             capabilities: vec![capability],
             exportable_fields: vec![],
             depends_on: vec![],
@@ -3475,6 +3670,7 @@ mod settings_tests {
             evidence: "hardware-verified".into(),
             signature_verified: true,
             writes_enabled: true,
+            runtime: mira_plugin_runtime::PluginRuntime::default(),
             capabilities: Vec::new(),
             exportable_fields: Vec::new(),
             depends_on: Vec::new(),
@@ -3531,6 +3727,7 @@ mod settings_tests {
             evidence: "hardware-verified".into(),
             signature_verified: true,
             writes_enabled: true,
+            runtime: mira_plugin_runtime::PluginRuntime::default(),
             capabilities: Vec::new(),
             exportable_fields: Vec::new(),
             depends_on: Vec::new(),
@@ -4587,6 +4784,7 @@ mod capability_tests {
             evidence: "hardware-verified".into(),
             signature_verified: true,
             writes_enabled: true,
+            runtime: mira_plugin_runtime::PluginRuntime::default(),
             capabilities,
             exportable_fields: vec![],
             depends_on: vec![],
@@ -6948,6 +7146,59 @@ fn merge_batteries(
     merged
 }
 
+fn snapshot_has_recovery_component(
+    snapshot: &DeviceSnapshot,
+    contract: &mira_plugin_runtime::WakeRecoveryContract,
+) -> bool {
+    snapshot
+        .batteries
+        .iter()
+        .any(|battery| battery.id == contract.component_id)
+}
+
+/// A Full read may still be partial when a wireless target sleeps behind an
+/// enumerated receiver. Preserve the last component-backed fields while
+/// accepting receiver fields from the new result. A true receiver disconnect
+/// still clears the entire snapshot through `DeviceReadOutcome::Clear`.
+fn merge_sleeping_full_snapshot(
+    existing: &DeviceSnapshot,
+    mut incoming: DeviceSnapshot,
+) -> DeviceSnapshot {
+    incoming.batteries = merge_batteries(&existing.batteries, &incoming.batteries);
+    if incoming.battery_percent.is_none() {
+        incoming.battery_percent = existing.battery_percent;
+        incoming.charging = existing.charging;
+    }
+    if incoming.dpi.is_none() {
+        incoming.dpi = existing.dpi;
+    }
+    if incoming.dpi_stages.is_none() {
+        incoming.dpi_stages = existing.dpi_stages.clone();
+    }
+    if incoming.polling_rate_hz.is_none() {
+        incoming.polling_rate_hz = existing.polling_rate_hz;
+    }
+    if incoming.supported_polling_rates_hz.is_none() {
+        incoming.supported_polling_rates_hz = existing.supported_polling_rates_hz.clone();
+    }
+    if incoming.profile.is_none() {
+        incoming.profile = existing.profile.clone();
+    }
+    if incoming.confirmed_light_color.is_none() {
+        incoming.confirmed_light_color = existing.confirmed_light_color.clone();
+    }
+    let mut capabilities = existing.capabilities.clone();
+    merge_capability_patch(&mut capabilities, incoming.capabilities);
+    incoming.capabilities = capabilities;
+    if incoming.plugin_capabilities.is_empty() {
+        incoming.plugin_capabilities = existing.plugin_capabilities.clone();
+    }
+    if incoming.writable_mutations.is_empty() {
+        incoming.writable_mutations = existing.writable_mutations.clone();
+    }
+    incoming
+}
+
 /// 将补丁应用到现有快照上，返回更新后的快照。
 ///
 /// 如果 `existing` 为 None，Presence 和 Full 会创建新快照；
@@ -6961,7 +7212,19 @@ fn apply_snapshot_patch(
     fallback_connection: Connection,
 ) -> DeviceSnapshot {
     match patch {
-        SnapshotPatch::Full(snapshot) => snapshot,
+        SnapshotPatch::Full(snapshot) => {
+            let Some(existing) = existing else {
+                return snapshot;
+            };
+            let Some(contract) = wake_recovery_contract_for(inspection, snapshot.connection) else {
+                return snapshot;
+            };
+            if snapshot_has_recovery_component(&snapshot, contract) {
+                snapshot
+            } else {
+                merge_sleeping_full_snapshot(existing, snapshot)
+            }
+        }
         SnapshotPatch::Presence {
             plugin_id,
             connection,
@@ -7353,6 +7616,16 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
             match read_result {
                 Ok((mut reading, projection_valid, projection_fallback_reason)) => {
                     clear_device_read_error(&state, &device.path);
+                    // Observe the raw protocol result before sticky snapshot
+                    // merging. A missing plugin-declared component arms wake
+                    // recovery even though the UI keeps its last known value.
+                    mark_wake_recovery_observation(
+                        &state,
+                        &device.path,
+                        inspection,
+                        connection,
+                        &reading,
+                    );
                     // 读取成功：清除该设备的退避状态。
                     if let Ok(mut backoff) = state.backoff_state.lock() {
                         if let Some(b) = backoff.get_mut(&device.path) {
@@ -7465,7 +7738,7 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
                         ) {
                             reading = updated;
                         }
-                        build_device_snapshot(
+                        let full_snapshot = build_device_snapshot(
                             reading,
                             inspection,
                             devices,
@@ -7476,6 +7749,19 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
                                 writable_mutations,
                                 mutation_result: None,
                             },
+                        );
+                        let existing = state
+                            .last_snapshot
+                            .lock()
+                            .ok()
+                            .and_then(|map| map.get(&device.path).cloned());
+                        apply_snapshot_patch(
+                            existing.as_ref(),
+                            SnapshotPatch::Full(full_snapshot),
+                            inspection,
+                            device,
+                            devices,
+                            connection,
                         )
                     };
                     if let Ok(mut readiness) = state.snapshot_readiness.lock() {
@@ -7518,6 +7804,7 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
                     });
                 }
                 Err(error) => {
+                    mark_wake_recovery_failure(&state, &device.path, inspection, connection);
                     record_device_read_error(&state, device, error.clone());
                     // 读取失败：记录指数退避。
                     let fail_count = if let Ok(mut backoff) = state.backoff_state.lock() {
@@ -7599,6 +7886,7 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
             if let Ok(mut cache) = state.cached_handles.lock() {
                 cache.retain(|path, _| new_map.contains_key(path));
             }
+            retain_wake_recovery_paths(&state, &new_map.keys().cloned().collect::<BTreeSet<_>>());
             // 在存储前从 new_map 直接构建 entries，避免再次锁定 last_snapshot 克隆快照。
             let selected_path =
                 selected_snapshot_entry(&state, &new_map).map(|(path, _)| path.clone());
@@ -7760,6 +8048,12 @@ fn spawn_device_reader(app: AppHandle) {
         let battery_due = connected_before
             && last_battery_read_at.is_none_or(|last| now.duration_since(last) >= battery_interval);
         let observing_quick = quick_observation_active(&state, visible, now);
+        let wake_probe_due = wake_recovery_probe_due(&state, now);
+        if wake_probe_due {
+            // A real pointer-activity hint is explicit evidence that an armed
+            // target may have woken. Clear only those devices' old backoff.
+            reset_wake_recovery_backoff(&state);
+        }
 
         // Choose ReadPlan:
         // - Connected but no Full snapshot yet → Full (首次读取需要获取能力)
@@ -7770,11 +8064,14 @@ fn spawn_device_reader(app: AppHandle) {
             connected_before,
             next_initial_plan,
             forced_plan,
-            observing_quick,
+            observing_quick || wake_probe_due,
             battery_due,
         );
 
         read_device_once(&app, plan);
+        if wake_probe_due {
+            finish_wake_recovery_probe(&state, Instant::now());
+        }
         if matches!(
             plan,
             ReadPlan::BatteryOnly | ReadPlan::Quick | ReadPlan::Full
@@ -7810,7 +8107,7 @@ fn spawn_device_reader(app: AppHandle) {
             (connected, initializing)
         };
         let observing_quick = quick_observation_active(&state, visible, Instant::now());
-        let wait = if initializing && plan == ReadPlan::PresenceOnly {
+        let base_wait = if initializing && plan == ReadPlan::PresenceOnly {
             INITIAL_FULL_START_DELAY
         } else if initializing {
             // A failed or externally interrupted Full read still respects the
@@ -7827,6 +8124,9 @@ fn spawn_device_reader(app: AppHandle) {
         } else {
             std::time::Duration::from_secs(15)
         };
+        let wait = wake_recovery_wait(&state, Instant::now())
+            .map(|recovery_wait| base_wait.min(recovery_wait))
+            .unwrap_or(base_wait);
 
         // 将等待分成最多 10s 的块，检测系统睡眠/唤醒。
         // Instant（单调时钟）在系统睡眠期间暂停，recv_timeout 不会在唤醒后立即超时；
@@ -10375,6 +10675,12 @@ pub fn run() {
                                 apply_macos_vibrancy(&window);
                             }
                             request_presence_refresh(&app_handle.state::<SessionState>());
+                            // Native Wayland without XWayland intentionally has
+                            // no permission-free global pointer stream. Only in
+                            // that case does focus stand in for pointer activity.
+                            if pointer_activity::focus_fallback_needed() {
+                                note_system_pointer_activity(&app_handle.state::<SessionState>());
+                            }
                         }
                         tauri::WindowEvent::ThemeChanged(_) => {
                             // 窗口可见时系统主题变化会触发此事件。
@@ -10447,6 +10753,17 @@ pub fn run() {
             // Native USB hotplug events wake PresenceOnly immediately; periodic
             // enumeration remains active as a recovery fallback.
             spawn_hotplug_watcher(app.handle().clone());
+
+            // Permission-free pointer hints are ignored unless an active,
+            // signed plugin explicitly declares wakeRecovery for the current
+            // connection. macOS uses Quartz input age, Windows cursor position,
+            // and Linux uses X11 with focus fallback on native Wayland.
+            {
+                let pointer_app = app.handle().clone();
+                pointer_activity::spawn(move || {
+                    note_system_pointer_activity(&pointer_app.state::<SessionState>());
+                });
+            }
 
             // 原生系统电源事件监听：macOS IOKit / Windows WM_POWERBROADCAST /
             // Linux logind D-Bus。唤醒后清空 HID 缓存 + PresenceOnly，让 readiness
@@ -11042,11 +11359,24 @@ mod snapshot_patch_tests {
             evidence: "test".into(),
             signature_verified: false,
             writes_enabled: false,
+            runtime: mira_plugin_runtime::PluginRuntime::default(),
             capabilities: Vec::new(),
             exportable_fields: Vec::new(),
             depends_on: Vec::new(),
             file_count: 0,
         }
+    }
+
+    fn mock_wake_inspection() -> PackageInspection {
+        let mut inspection = mock_inspection();
+        inspection.runtime = mira_plugin_runtime::PluginRuntime {
+            wake_recovery: Some(mira_plugin_runtime::WakeRecoveryContract {
+                activity_source: mira_plugin_runtime::WakeActivitySource::SystemPointer,
+                component_id: "mouse".into(),
+                connections: vec!["wireless".into()],
+            }),
+        };
+        inspection
     }
 
     fn mock_device() -> hid::MatchedDevice {
@@ -11263,6 +11593,169 @@ mod snapshot_patch_tests {
             Some(64),
             "Quick 分支也应保留 mouse 条目"
         );
+    }
+
+    #[test]
+    fn full_snapshot_preserves_sleeping_component_fields_when_plugin_opts_in() {
+        let mut existing = snapshot_with_batteries(vec![
+            battery("mouse", 64, false),
+            battery("receiver", 100, false),
+        ]);
+        existing.battery_percent = Some(64);
+        existing.dpi = Some(1600);
+        existing.polling_rate_hz = Some(1000);
+
+        let incoming = snapshot_with_batteries(vec![battery("receiver", 98, false)]);
+        let result = apply_snapshot_patch(
+            Some(&existing),
+            SnapshotPatch::Full(incoming),
+            &mock_wake_inspection(),
+            &mock_device(),
+            &mock_devices(),
+            Connection::Wireless,
+        );
+
+        assert_eq!(result.battery_percent, Some(64));
+        assert_eq!(result.dpi, Some(1600));
+        assert_eq!(result.polling_rate_hz, Some(1000));
+        assert_eq!(
+            result
+                .batteries
+                .iter()
+                .find(|battery| battery.id == "mouse")
+                .map(|battery| battery.percentage),
+            Some(64)
+        );
+        assert_eq!(
+            result
+                .batteries
+                .iter()
+                .find(|battery| battery.id == "receiver")
+                .map(|battery| battery.percentage),
+            Some(98)
+        );
+    }
+
+    #[test]
+    fn full_snapshot_accepts_fresh_component_fields_after_wake() {
+        let mut existing = snapshot_with_batteries(vec![battery("mouse", 64, false)]);
+        existing.battery_percent = Some(64);
+        existing.dpi = Some(1600);
+
+        let mut incoming = snapshot_with_batteries(vec![battery("mouse", 61, false)]);
+        incoming.battery_percent = Some(61);
+        incoming.dpi = Some(3200);
+        let result = apply_snapshot_patch(
+            Some(&existing),
+            SnapshotPatch::Full(incoming),
+            &mock_wake_inspection(),
+            &mock_device(),
+            &mock_devices(),
+            Connection::Wireless,
+        );
+
+        assert_eq!(result.battery_percent, Some(61));
+        assert_eq!(result.dpi, Some(3200));
+        assert_eq!(result.batteries[0].percentage, 61);
+    }
+
+    #[test]
+    fn cold_start_receiver_only_read_arms_pointer_recovery() {
+        let state = SessionState::default();
+        let reading = DeviceReading {
+            batteries: vec![battery("receiver", 100, false)],
+            ..DeviceReading::default()
+        };
+
+        mark_wake_recovery_observation(
+            &state,
+            "mock-path",
+            &mock_wake_inspection(),
+            Connection::Wireless,
+            &reading,
+        );
+        note_system_pointer_activity(&state);
+
+        let recovery = state.wake_recovery.lock().unwrap();
+        assert!(recovery.armed_paths.contains("mock-path"));
+        assert!(recovery.pending.is_some());
+    }
+
+    #[test]
+    fn fresh_mouse_read_disarms_pending_recovery() {
+        let state = SessionState::default();
+        let inspection = mock_wake_inspection();
+        let sleeping = DeviceReading {
+            batteries: vec![battery("receiver", 100, false)],
+            ..DeviceReading::default()
+        };
+        mark_wake_recovery_observation(
+            &state,
+            "mock-path",
+            &inspection,
+            Connection::Wireless,
+            &sleeping,
+        );
+        note_system_pointer_activity(&state);
+
+        let awake = DeviceReading {
+            battery_percent: Some(62),
+            batteries: vec![battery("mouse", 62, false), battery("receiver", 100, false)],
+            ..DeviceReading::default()
+        };
+        mark_wake_recovery_observation(
+            &state,
+            "mock-path",
+            &inspection,
+            Connection::Wireless,
+            &awake,
+        );
+
+        let recovery = state.wake_recovery.lock().unwrap();
+        assert!(recovery.armed_paths.is_empty());
+        assert!(recovery.pending.is_none());
+    }
+
+    #[test]
+    fn pointer_recovery_retry_sequence_is_bounded() {
+        let state = SessionState::default();
+        {
+            let mut recovery = state.wake_recovery.lock().unwrap();
+            recovery.armed_paths.insert("mock-path".into());
+            recovery.pending = Some(PendingWakeRecovery {
+                attempt: 0,
+                due_at: Instant::now(),
+            });
+        }
+
+        for _ in 0..WAKE_RECOVERY_RETRY_DELAYS.len() {
+            assert!(state.wake_recovery.lock().unwrap().pending.is_some());
+            finish_wake_recovery_probe(&state, Instant::now());
+        }
+        assert!(state.wake_recovery.lock().unwrap().pending.is_some());
+        finish_wake_recovery_probe(&state, Instant::now());
+        assert!(state.wake_recovery.lock().unwrap().pending.is_none());
+    }
+
+    #[test]
+    fn plugin_without_contract_does_not_arm_pointer_recovery() {
+        let state = SessionState::default();
+        let reading = DeviceReading {
+            batteries: vec![battery("receiver", 100, false)],
+            ..DeviceReading::default()
+        };
+        mark_wake_recovery_observation(
+            &state,
+            "mock-path",
+            &mock_inspection(),
+            Connection::Wireless,
+            &reading,
+        );
+        note_system_pointer_activity(&state);
+
+        let recovery = state.wake_recovery.lock().unwrap();
+        assert!(recovery.armed_paths.is_empty());
+        assert!(recovery.pending.is_none());
     }
 }
 
