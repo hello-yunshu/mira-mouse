@@ -2443,6 +2443,7 @@ dependencies = [
  "nusb",
  "objc2",
  "objc2-app-kit",
+ "objc2-core-graphics",
  "objc2-foundation",
  "png 0.18.1",
  "reqwest",
@@ -2462,7 +2463,9 @@ dependencies = [
  "tempfile",
  "udev",
  "window-vibrancy",
+ "windows-sys 0.61.2",
  "winreg 0.56.0",
+ "x11-dl",
  "zip 2.4.2",
 ]
 
