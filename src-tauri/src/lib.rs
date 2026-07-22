@@ -17,6 +17,7 @@ mod logging;
 mod pointer_activity;
 mod tray;
 use battery_history::{AbnormalDrainNotifyState, BatteryHistoryResponse, BatteryHistoryState};
+use logging::model::{FieldValue, LogInput, LogLevel, LogSource};
 use mira_plugin_runtime::{
     extract_package, hid, inspect_package, mutate_device_with_package,
     normalize_device_outputs_with_package, read_device_with_package, read_device_with_projection,
@@ -776,7 +777,7 @@ const WAKE_RECOVERY_RETRY_DELAYS: [Duration; 3] = [
     Duration::from_millis(1400),
     Duration::from_secs(4),
 ];
-const WAKE_RECOVERY_COOLDOWN: Duration = Duration::from_secs(8);
+const MAX_WAKE_RECOVERY_BATCHES_PER_EPISODE: u8 = 2;
 
 #[derive(Debug)]
 struct PendingWakeRecovery {
@@ -791,7 +792,26 @@ struct WakeRecoveryState {
     /// snapshot, which may still contain the last known battery value.
     armed_paths: BTreeSet<String>,
     pending: Option<PendingWakeRecovery>,
-    last_started_at: Option<Instant>,
+    /// Continuous movement shares one activity generation, so exhausting a
+    /// retry batch cannot start another batch until a real idle -> active edge.
+    pointer_active: bool,
+    activity_generation: u64,
+    consumed_generation: Option<u64>,
+    batches_started: u8,
+}
+
+#[derive(Debug)]
+struct PendingDeviceSessionLog {
+    correlation_id: String,
+    started_at: Instant,
+    had_failure: bool,
+    failure_logged: bool,
+}
+
+#[derive(Default, Debug)]
+struct DeviceSessionLoggingState {
+    active_paths: BTreeSet<String>,
+    pending: BTreeMap<String, PendingDeviceSessionLog>,
 }
 
 #[derive(Default)]
@@ -809,6 +829,9 @@ struct SessionState {
     /// Last sanitized read error per matched HID path. Exposed only through
     /// diagnostics and the manual HID scan to explain Windows access/timeouts.
     last_read_errors: Mutex<BTreeMap<String, DeviceReadDiagnostic>>,
+    /// Tracks one structured `device::session` episode per connected HID path.
+    /// A failed read and its later recovery share the same correlation ID.
+    device_session_logging: Mutex<DeviceSessionLoggingState>,
     plugins: Mutex<Option<CachedPlugins>>,
     /// 托盘图标控制器：内部维护动态图标缓存和 diff 逻辑。
     /// 替换旧的 tray_icon_level / tray_is_charging / tray_uses_dark 三个缓存字段。
@@ -917,6 +940,15 @@ struct SessionState {
 }
 
 impl SessionState {
+    /// 通过统一日志服务写入完整结构化日志。
+    fn log_input(&self, input: LogInput) {
+        if let Some(svc) = self.log_service.lock().unwrap().as_ref() {
+            svc.write(input);
+        } else {
+            eprintln!("[mira] {}: {}", input.target, input.message);
+        }
+    }
+
     /// 通过统一日志服务写入 error 级别日志。
     /// LogService 未初始化时（极早期启动）回退到 eprintln。
     fn log_error(&self, target: &'static str, message: impl Into<String>) {
@@ -937,16 +969,39 @@ impl SessionState {
             eprintln!("[mira] {target}: {msg}");
         }
     }
+}
 
-    /// 通过统一日志服务写入 info 级别日志。
-    fn log_info(&self, target: &'static str, message: impl Into<String>) {
-        let msg = message.into();
-        if let Some(svc) = self.log_service.lock().unwrap().as_ref() {
-            svc.info(target, msg);
-        } else {
-            eprintln!("[mira] {target}: {msg}");
-        }
+fn event_log_input(
+    level: LogLevel,
+    source: LogSource,
+    target: impl Into<String>,
+    event: &'static str,
+    message: impl Into<String>,
+    mut fields: BTreeMap<String, FieldValue>,
+) -> LogInput {
+    fields.insert("event".to_string(), FieldValue::from(event));
+    LogInput {
+        level,
+        source,
+        target: target.into(),
+        message: message.into(),
+        correlation_id: None,
+        fields,
     }
+}
+
+fn local_ai_disabled_log_input() -> LogInput {
+    event_log_input(
+        LogLevel::Info,
+        LogSource::LocalAi,
+        "local_ai::lifecycle",
+        "local-ai-disabled",
+        "local AI disabled; deterministic battery estimate active",
+        BTreeMap::from([
+            ("enabled".to_string(), FieldValue::from(false)),
+            ("fallback".to_string(), FieldValue::from(true)),
+        ]),
+    )
 }
 
 fn hid_io_stats_ref(state: &SessionState) -> Option<&Mutex<HidIoStats>> {
@@ -1047,19 +1102,33 @@ fn mark_wake_recovery_observation(
     let Some(contract) = wake_recovery_contract_for(inspection, connection) else {
         if let Ok(mut recovery) = state.wake_recovery.lock() {
             recovery.armed_paths.remove(path);
+            if recovery.armed_paths.is_empty() {
+                recovery.pending = None;
+                recovery.batches_started = 0;
+            }
         }
         return;
     };
     let present = reading_has_recovery_component(reading, contract);
+    let mut armed = false;
     if let Ok(mut recovery) = state.wake_recovery.lock() {
         if present {
             recovery.armed_paths.remove(path);
             if recovery.armed_paths.is_empty() {
                 recovery.pending = None;
+                recovery.batches_started = 0;
             }
         } else {
+            let starts_new_episode = recovery.armed_paths.is_empty();
             recovery.armed_paths.insert(path.to_string());
+            if starts_new_episode {
+                recovery.batches_started = 0;
+            }
+            armed = true;
         }
+    }
+    if armed {
+        try_schedule_wake_recovery(state);
     }
 }
 
@@ -1073,18 +1142,24 @@ fn mark_wake_recovery_failure(
         return;
     }
     if let Ok(mut recovery) = state.wake_recovery.lock() {
+        let starts_new_episode = recovery.armed_paths.is_empty();
         recovery.armed_paths.insert(path.to_string());
+        if starts_new_episode {
+            recovery.batches_started = 0;
+        }
     }
+    try_schedule_wake_recovery(state);
 }
 
-fn note_system_pointer_activity(state: &SessionState) {
+fn try_schedule_wake_recovery(state: &SessionState) {
     let now = Instant::now();
     let scheduled = if let Ok(mut recovery) = state.wake_recovery.lock() {
-        if recovery.armed_paths.is_empty()
+        let generation = recovery.activity_generation;
+        if !recovery.pointer_active
+            || recovery.armed_paths.is_empty()
             || recovery.pending.is_some()
-            || recovery.last_started_at.is_some_and(|started| {
-                now.saturating_duration_since(started) < WAKE_RECOVERY_COOLDOWN
-            })
+            || recovery.consumed_generation == Some(generation)
+            || recovery.batches_started >= MAX_WAKE_RECOVERY_BATCHES_PER_EPISODE
         {
             false
         } else {
@@ -1092,7 +1167,8 @@ fn note_system_pointer_activity(state: &SessionState) {
                 attempt: 0,
                 due_at: now + WAKE_RECOVERY_SETTLE_DELAY,
             });
-            recovery.last_started_at = Some(now);
+            recovery.consumed_generation = Some(generation);
+            recovery.batches_started += 1;
             true
         }
     } else {
@@ -1105,6 +1181,29 @@ fn note_system_pointer_activity(state: &SessionState) {
             }
         }
     }
+}
+
+fn note_system_pointer_activity(state: &SessionState, activity: pointer_activity::PointerActivity) {
+    if let Ok(mut recovery) = state.wake_recovery.lock() {
+        match activity {
+            pointer_activity::PointerActivity::Idle => {
+                recovery.pointer_active = false;
+                return;
+            }
+            pointer_activity::PointerActivity::Active => {
+                if !recovery.pointer_active {
+                    recovery.pointer_active = true;
+                    recovery.activity_generation = recovery.activity_generation.wrapping_add(1);
+                }
+                if recovery.pending.is_some() {
+                    // The existing batch already covers this new activity edge.
+                    recovery.consumed_generation = Some(recovery.activity_generation);
+                    return;
+                }
+            }
+        }
+    }
+    try_schedule_wake_recovery(state);
 }
 
 fn wake_recovery_probe_due(state: &SessionState, now: Instant) -> bool {
@@ -1170,7 +1269,65 @@ fn retain_wake_recovery_paths(state: &SessionState, connected: &BTreeSet<String>
         recovery.armed_paths.retain(|path| connected.contains(path));
         if recovery.armed_paths.is_empty() {
             recovery.pending = None;
+            recovery.batches_started = 0;
         }
+    }
+}
+
+fn reset_wake_recovery_episode(state: &SessionState) {
+    if let Ok(mut recovery) = state.wake_recovery.lock() {
+        // Cancel probes tied to stale handles and require a fresh activity edge.
+        recovery.pending = None;
+        recovery.pointer_active = false;
+        recovery.batches_started = 0;
+    }
+}
+
+fn arm_wake_recovery_after_system_wake(state: &SessionState) {
+    let snapshots: Vec<(String, Option<String>, Connection)> = state
+        .last_snapshot
+        .lock()
+        .ok()
+        .map(|snapshots| {
+            snapshots
+                .iter()
+                .map(|(path, snapshot)| {
+                    (
+                        path.clone(),
+                        snapshot.plugin_id.clone(),
+                        snapshot.connection,
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let eligible_paths = state
+        .plugins
+        .lock()
+        .ok()
+        .and_then(|plugins| {
+            plugins.as_ref().map(|plugins| {
+                snapshots
+                    .into_iter()
+                    .filter_map(|(path, plugin_id, connection)| {
+                        let plugin_id = plugin_id?;
+                        plugins
+                            .iter()
+                            .find(|(inspection, _, _)| inspection.plugin_id == plugin_id)
+                            .and_then(|(inspection, _, _)| {
+                                wake_recovery_contract_for(inspection, connection)
+                            })
+                            .map(|_| path)
+                    })
+                    .collect::<BTreeSet<_>>()
+            })
+        })
+        .unwrap_or_default();
+
+    if let Ok(mut recovery) = state.wake_recovery.lock() {
+        // Keyboard/lid wake alone does not touch the mouse. These paths remain
+        // armed until a fresh post-resume pointer activity edge arrives.
+        recovery.armed_paths.extend(eligible_paths);
     }
 }
 
@@ -1223,6 +1380,7 @@ fn spawn_hotplug_watcher(app: AppHandle) {
             }
             // 原生热插拔是设备状态变化的明确信号，可以安全解除旧路径的退避。
             reset_all_backoff(&state);
+            reset_wake_recovery_episode(&state);
             request_presence_refresh(&state);
         }
     });
@@ -1235,8 +1393,9 @@ fn spawn_hotplug_watcher(app: AppHandle) {
 ///    —— 系统休眠期间设备句柄可能失效，缓存的 HidApi 实例可能持有过时设备列表
 ///    （休眠期间插入的鼠标不会出现在旧列表中）。
 /// 2. 重置所有设备的退避状态——唤醒是明确的设备活动证据，旧退避不再适用。
-/// 3. 发起一次 `PresenceOnly`（不执行协议读取，不打扰设备）
-///    —— 让 readiness 状态机自然推进：`Detected → (90ms 后) → Quick/Full`。
+/// 3. 将插件声明的无线恢复路径标记为待验证，再发起一次 `PresenceOnly`
+///    （不执行协议读取，不打扰设备）。恢复后的第一次真实指针活动才会触发
+///    有界 Quick 探测；已有 Full readiness 不会被错误降级或自动重读。
 ///
 /// # 节能保证
 ///
@@ -1263,7 +1422,7 @@ fn spawn_power_watcher(app: AppHandle) {
 /// 由原生电源事件监听器和启发式时间跳跃检测共同调用。
 ///
 /// 注意：只调用 `request_presence_refresh`（PresenceOnly），不直接发起协议读取。
-/// `spawn_device_reader` 的 readiness 状态机会在 90ms 后自然推进到 Quick/Full。
+/// 已有快照保持 Full readiness；插件声明的路径等待恢复后的新指针活动再验证。
 fn handle_system_wake_state(state: &SessionState) {
     // 清空可能失效的 HID 缓存：系统休眠期间设备句柄可能失效，
     // 缓存的 HidApi 实例可能持有过时的设备列表（休眠期间插入的设备不在列表中）。
@@ -1276,11 +1435,21 @@ fn handle_system_wake_state(state: &SessionState) {
     if let Ok(mut reads) = state.last_read_at.lock() {
         reads.clear();
     }
+    if let Ok(mut cache) = state.feature_index_cache.lock() {
+        cache.clear();
+    }
+    if let Ok(mut cache) = state.onboard_memory_cache.lock() {
+        cache.clear();
+    }
+    if let Ok(mut errors) = state.last_read_errors.lock() {
+        errors.clear();
+    }
     // 重置退避：唤醒是明确的设备活动证据，旧退避不再适用。
     reset_all_backoff(state);
-    // 只发 PresenceOnly：让 readiness 状态机自然推进到 Quick/Full。
-    // 90ms 后触发首次协议读取，给设备初始化时间。
-    // 协议读取失败后保留原 60s 退避，不疯狂重试。
+    reset_wake_recovery_episode(state);
+    arm_wake_recovery_after_system_wake(state);
+    // 只发 PresenceOnly：重新枚举设备但不发送协议报告。已有 Full 快照保持
+    // 完整状态；只有恢复后的新指针活动才会触发插件声明的有界 Quick。
     request_presence_refresh(state);
     // 全局诊断：记录睡眠恢复次数。
     if let Ok(mut g) = state.global_metrics.lock() {
@@ -2401,6 +2570,9 @@ fn clear_snapshots(state: &SessionState) {
     if let Ok(mut errors) = state.last_read_errors.lock() {
         errors.clear();
     }
+    if let Ok(mut sessions) = state.device_session_logging.lock() {
+        *sessions = DeviceSessionLoggingState::default();
+    }
     // 设备断开时清除不可用能力通知追踪，重连后重新检测。
     if let Ok(mut notified) = state.notified_unavailable_capabilities.lock() {
         notified.clear();
@@ -2460,6 +2632,132 @@ fn record_device_read_error(state: &SessionState, device: &hid::MatchedDevice, e
 fn clear_device_read_error(state: &SessionState, device_path: &str) {
     if let Ok(mut errors) = state.last_read_errors.lock() {
         errors.remove(device_path);
+    }
+}
+
+fn new_device_session_correlation_id(device_path: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(device_path.as_bytes());
+    hasher.update(
+        chrono::Utc::now()
+            .timestamp_nanos_opt()
+            .unwrap_or_default()
+            .to_le_bytes(),
+    );
+    let digest = hasher.finalize();
+    format!(
+        "device-{:02x}{:02x}{:02x}{:02x}",
+        digest[0], digest[1], digest[2], digest[3]
+    )
+}
+
+fn begin_device_session_trace(state: &SessionState, device_path: &str) {
+    let Ok(mut sessions) = state.device_session_logging.lock() else {
+        return;
+    };
+    if sessions.active_paths.contains(device_path) {
+        return;
+    }
+    sessions
+        .pending
+        .entry(device_path.to_string())
+        .or_insert_with(|| PendingDeviceSessionLog {
+            correlation_id: new_device_session_correlation_id(device_path),
+            started_at: Instant::now(),
+            had_failure: false,
+            failure_logged: false,
+        });
+}
+
+fn fail_device_session_trace(state: &SessionState, device_path: &str) -> Option<String> {
+    let mut sessions = state.device_session_logging.lock().ok()?;
+    sessions.active_paths.remove(device_path);
+    let pending = sessions
+        .pending
+        .entry(device_path.to_string())
+        .or_insert_with(|| PendingDeviceSessionLog {
+            correlation_id: new_device_session_correlation_id(device_path),
+            started_at: Instant::now(),
+            had_failure: false,
+            failure_logged: false,
+        });
+    pending.had_failure = true;
+    if pending.failure_logged {
+        return None;
+    }
+    pending.failure_logged = true;
+    Some(pending.correlation_id.clone())
+}
+
+fn complete_device_session_trace(
+    state: &SessionState,
+    device_path: &str,
+) -> Option<(String, Duration, bool)> {
+    let mut sessions = state.device_session_logging.lock().ok()?;
+    if sessions.active_paths.contains(device_path) {
+        return None;
+    }
+    let pending = sessions
+        .pending
+        .remove(device_path)
+        .unwrap_or_else(|| PendingDeviceSessionLog {
+            correlation_id: new_device_session_correlation_id(device_path),
+            started_at: Instant::now(),
+            had_failure: false,
+            failure_logged: false,
+        });
+    sessions.active_paths.insert(device_path.to_string());
+    Some((
+        pending.correlation_id,
+        pending.started_at.elapsed(),
+        pending.had_failure,
+    ))
+}
+
+fn retain_device_session_paths(state: &SessionState, connected: &BTreeSet<String>) {
+    if let Ok(mut sessions) = state.device_session_logging.lock() {
+        sessions
+            .active_paths
+            .retain(|path| connected.contains(path));
+        sessions.pending.retain(|path, _| connected.contains(path));
+    }
+}
+
+struct DeviceSessionLogFields {
+    device: String,
+    connection: &'static str,
+    duration_ms: Option<u64>,
+    error_kind: Option<String>,
+}
+
+fn device_session_log_input(
+    level: LogLevel,
+    event: &'static str,
+    message: &'static str,
+    correlation_id: String,
+    detail: DeviceSessionLogFields,
+) -> LogInput {
+    let mut fields = BTreeMap::from([
+        ("event".to_string(), FieldValue::from(event)),
+        ("device".to_string(), FieldValue::from(detail.device)),
+        (
+            "connection".to_string(),
+            FieldValue::from(detail.connection),
+        ),
+    ]);
+    if let Some(duration_ms) = detail.duration_ms {
+        fields.insert("durationMs".to_string(), FieldValue::from(duration_ms));
+    }
+    if let Some(error_kind) = detail.error_kind {
+        fields.insert("errorKind".to_string(), FieldValue::from(error_kind));
+    }
+    LogInput {
+        level,
+        source: LogSource::App,
+        target: "device::session".to_string(),
+        message: message.to_string(),
+        correlation_id: Some(correlation_id),
+        fields,
     }
 }
 
@@ -2964,6 +3262,24 @@ fn read_receiver_light_state(snapshot: &DeviceSnapshot) -> Option<SavedReceiverL
 #[cfg(test)]
 mod settings_tests {
     use super::*;
+
+    #[test]
+    fn disabled_local_ai_still_emits_a_structured_status_log() {
+        let input = local_ai_disabled_log_input();
+        assert_eq!(input.source, LogSource::LocalAi);
+        assert!(matches!(
+            input.fields.get("event"),
+            Some(FieldValue::Text(value)) if value == "local-ai-disabled"
+        ));
+        assert!(matches!(
+            input.fields.get("enabled"),
+            Some(FieldValue::Boolean(false))
+        ));
+        assert!(matches!(
+            input.fields.get("fallback"),
+            Some(FieldValue::Boolean(true))
+        ));
+    }
 
     #[test]
     fn defaults_match_the_frontend_contract() {
@@ -5668,6 +5984,8 @@ fn load_bundled_plugin_devices(
         .into_iter()
         .filter(|plugin| plugin.bundle_by_default)
         .filter_map(|plugin| {
+            let plugin_id_for_log = plugin.plugin_id.clone();
+            let plugin_version_for_log = plugin.version.clone();
             let result = (|| -> Result<_, String> {
                 let asset_path = plugins_dir.join(&plugin.asset);
                 let bytes = fs::read(&asset_path)
@@ -5703,8 +6021,21 @@ fn load_bundled_plugin_devices(
             match result {
                 Ok(plugin) => Some(plugin),
                 Err(error) => {
-                    app.state::<SessionState>()
-                        .log_error("plugin::load", format!("plugin load failed: {error}"));
+                    app.state::<SessionState>().log_input(event_log_input(
+                        LogLevel::Error,
+                        LogSource::App,
+                        "plugin::load",
+                        "plugin-load-failed",
+                        format!("plugin load failed: {error}"),
+                        BTreeMap::from([
+                            ("pluginId".to_string(), FieldValue::from(plugin_id_for_log)),
+                            (
+                                "pluginVersion".to_string(),
+                                FieldValue::from(plugin_version_for_log),
+                            ),
+                            ("reason".to_string(), FieldValue::from(error)),
+                        ]),
+                    ));
                     None
                 }
             }
@@ -5775,12 +6106,26 @@ fn load_bundled_plugin_devices(
                             let plugin_id = installed.0.plugin_id.clone();
                             let new_version = installed.0.version.clone();
                             let old_version = plugins[index].0.version.clone();
-                            app.state::<SessionState>().log_info(
+                            app.state::<SessionState>().log_input(event_log_input(
+                                LogLevel::Info,
+                                LogSource::App,
                                 "plugin::load",
+                                "plugin-installed-override",
                                 format!(
                                     "installed plugin overrides bundled: id={plugin_id} {old_version} -> {new_version}"
                                 ),
-                            );
+                                BTreeMap::from([
+                                    ("pluginId".to_string(), FieldValue::from(plugin_id)),
+                                    (
+                                        "pluginVersion".to_string(),
+                                        FieldValue::from(new_version),
+                                    ),
+                                    (
+                                        "previousVersion".to_string(),
+                                        FieldValue::from(old_version),
+                                    ),
+                                ]),
+                            ));
                             plugins[index] = installed;
                         } else if !plugins
                             .iter()
@@ -5788,16 +6133,28 @@ fn load_bundled_plugin_devices(
                         {
                             let plugin_id = installed.0.plugin_id.clone();
                             let version = installed.0.version.clone();
-                            app.state::<SessionState>().log_info(
+                            app.state::<SessionState>().log_input(event_log_input(
+                                LogLevel::Info,
+                                LogSource::App,
                                 "plugin::load",
+                                "plugin-installed-added",
                                 format!("installed plugin added: id={plugin_id} version={version}"),
-                            );
+                                BTreeMap::from([
+                                    ("pluginId".to_string(), FieldValue::from(plugin_id)),
+                                    ("pluginVersion".to_string(), FieldValue::from(version)),
+                                ]),
+                            ));
                             plugins.push(installed);
                         }
                     }
-                    Err(error) => app
-                        .state::<SessionState>()
-                        .log_warn("plugin::load", format!("installed plugin ignored: {error}")),
+                    Err(error) => app.state::<SessionState>().log_input(event_log_input(
+                        LogLevel::Warn,
+                        LogSource::App,
+                        "plugin::load",
+                        "plugin-installed-ignored",
+                        format!("installed plugin ignored: {error}"),
+                        BTreeMap::from([("reason".to_string(), FieldValue::from(error))]),
+                    )),
                 }
             }
         }
@@ -7422,6 +7779,7 @@ enum DeviceReadOutcome {
 /// 读取部分字段并通过 SnapshotPatch 合并；Full 执行完整工作流。
 fn read_device_once(app: &AppHandle, plan: ReadPlan) {
     let state = app.state::<SessionState>();
+    let mut session_log_events: Vec<LogInput> = Vec::new();
     // 系统主题缓存由 ThemeChanged 事件和窗口聚焦事件更新，
     // 轮询期间只读缓存，避免每轮都 fork 进程检测主题。
     // Lock scope: only HID I/O and snapshot construction; disk/tray/event emission after release to avoid blocking discover_devices.
@@ -7604,6 +7962,7 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
             // Phase 1: 根据读取计划执行工作流。
             // projection_valid=true 表示投影成功，用 SnapshotPatch 合并；
             // projection_valid=false 表示 Full 或投影回退，用 build_device_snapshot 完整构建。
+            begin_device_session_trace(&state, &device.path);
             let read_start = Instant::now();
             let read_result: Result<(DeviceReading, bool, Option<String>), String> =
                 if plan.uses_projection() {
@@ -7764,6 +8123,33 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
                             connection,
                         )
                     };
+                    if let Some((correlation_id, duration, recovered)) =
+                        complete_device_session_trace(&state, &device.path)
+                    {
+                        let event = if recovered {
+                            "device-session-recovered"
+                        } else {
+                            "device-session-ready"
+                        };
+                        let message = if recovered {
+                            "device session recovered; live readings restored"
+                        } else {
+                            "device session ready; live readings available"
+                        };
+                        let duration_ms = u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
+                        session_log_events.push(device_session_log_input(
+                            LogLevel::Info,
+                            event,
+                            message,
+                            correlation_id,
+                            DeviceSessionLogFields {
+                                device: snapshot.display_name.clone(),
+                                connection: snapshot_connection_value(snapshot.connection),
+                                duration_ms: Some(duration_ms),
+                                error_kind: None,
+                            },
+                        ));
+                    }
                     if let Ok(mut readiness) = state.snapshot_readiness.lock() {
                         let next = if projection_valid {
                             SnapshotReadiness::Quick
@@ -7805,6 +8191,20 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
                 }
                 Err(error) => {
                     mark_wake_recovery_failure(&state, &device.path, inspection, connection);
+                    if let Some(correlation_id) = fail_device_session_trace(&state, &device.path) {
+                        session_log_events.push(device_session_log_input(
+                            LogLevel::Warn,
+                            "device-session-interrupted",
+                            "device session interrupted; waiting for recovery",
+                            correlation_id,
+                            DeviceSessionLogFields {
+                                device: device.family.clone(),
+                                connection: snapshot_connection_value(connection),
+                                duration_ms: None,
+                                error_kind: Some(classify_device_read_error(&error)),
+                            },
+                        ));
+                    }
                     record_device_read_error(&state, device, error.clone());
                     // 读取失败：记录指数退避。
                     let fail_count = if let Ok(mut backoff) = state.backoff_state.lock() {
@@ -7848,6 +8248,11 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
     })()
     .unwrap_or(DeviceReadOutcome::Skip);
 
+    // 日志投递放在 device_io / plugins 锁之外，避免诊断路径延长 HID 临界区。
+    for input in session_log_events {
+        state.log_input(input);
+    }
+
     // Post-lock: disk I/O, tray updates and event emission run without device_io/plugins locks.
     match outcome {
         DeviceReadOutcome::Skip => {}
@@ -7886,7 +8291,9 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
             if let Ok(mut cache) = state.cached_handles.lock() {
                 cache.retain(|path, _| new_map.contains_key(path));
             }
-            retain_wake_recovery_paths(&state, &new_map.keys().cloned().collect::<BTreeSet<_>>());
+            let connected_paths = new_map.keys().cloned().collect::<BTreeSet<_>>();
+            retain_wake_recovery_paths(&state, &connected_paths);
+            retain_device_session_paths(&state, &connected_paths);
             // 在存储前从 new_map 直接构建 entries，避免再次锁定 last_snapshot 克隆快照。
             let selected_path =
                 selected_snapshot_entry(&state, &new_map).map(|(path, _)| path.clone());
@@ -8342,15 +8749,35 @@ async fn device_mutate(
     match rx.recv_timeout(std::time::Duration::from_secs(30)) {
         Ok(result) => result,
         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-            app.state::<SessionState>()
-                .log_warn("device::mutate", format!("timeout: {mutation_label}"));
+            app.state::<SessionState>().log_input(event_log_input(
+                LogLevel::Warn,
+                LogSource::App,
+                "device::mutate",
+                "device-mutation-timeout",
+                format!("timeout: {mutation_label}"),
+                BTreeMap::from([
+                    ("mutation".to_string(), FieldValue::from(mutation_label)),
+                    ("timeoutMs".to_string(), FieldValue::from(30_000_u64)),
+                    ("errorKind".to_string(), FieldValue::from("timeout")),
+                ]),
+            ));
             Err(tr_device_write_timeout(lang).into())
         }
         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-            app.state::<SessionState>().log_error(
+            app.state::<SessionState>().log_input(event_log_input(
+                LogLevel::Error,
+                LogSource::App,
                 "device::mutate",
+                "device-mutation-worker-failed",
                 format!("worker thread disconnected: {mutation_label}"),
-            );
+                BTreeMap::from([
+                    ("mutation".to_string(), FieldValue::from(mutation_label)),
+                    (
+                        "errorKind".to_string(),
+                        FieldValue::from("worker-disconnected"),
+                    ),
+                ]),
+            ));
             Err(tr_device_write_thread_failed(lang).into())
         }
     }
@@ -8367,11 +8794,50 @@ fn device_mutate_blocking(
     let state = app.state::<SessionState>();
     let param_keys: Vec<&str> = params.keys().map(|k| k.as_str()).collect();
     let summary = format!("{} [{}]", mutation, param_keys.join(","));
-    state.log_info("device::mutate", format!("attempt: {summary}"));
+    let started_at = Instant::now();
+    let base_fields = BTreeMap::from([
+        ("mutation".to_string(), FieldValue::from(mutation)),
+        (
+            "paramCount".to_string(),
+            FieldValue::from(param_keys.len() as u64),
+        ),
+    ]);
+    state.log_input(event_log_input(
+        LogLevel::Info,
+        LogSource::App,
+        "device::mutate",
+        "device-mutation-attempt",
+        format!("attempt: {summary}"),
+        base_fields.clone(),
+    ));
     let result = device_mutate_blocking_impl(app, mutation, params);
+    let duration_ms = started_at.elapsed().as_millis() as u64;
     match &result {
-        Ok(_) => state.log_info("device::mutate", format!("succeeded: {summary}")),
-        Err(err) => state.log_warn("device::mutate", format!("failed: {summary}: {err}")),
+        Ok(_) => {
+            let mut fields = base_fields;
+            fields.insert("durationMs".to_string(), FieldValue::from(duration_ms));
+            state.log_input(event_log_input(
+                LogLevel::Info,
+                LogSource::App,
+                "device::mutate",
+                "device-mutation-succeeded",
+                format!("succeeded: {summary}"),
+                fields,
+            ));
+        }
+        Err(err) => {
+            let mut fields = base_fields;
+            fields.insert("durationMs".to_string(), FieldValue::from(duration_ms));
+            fields.insert("reason".to_string(), FieldValue::from(err.as_str()));
+            state.log_input(event_log_input(
+                LogLevel::Warn,
+                LogSource::App,
+                "device::mutate",
+                "device-mutation-failed",
+                format!("failed: {summary}: {err}"),
+                fields,
+            ));
+        }
     }
     result
 }
@@ -9218,7 +9684,9 @@ fn settings_set(app: tauri::AppHandle, settings: AppSettings) -> Result<AppSetti
             // Rill 启动与握手必须留在后台，不能阻塞设置保存或主界面事件循环。
             start_local_ai_in_background(app.clone());
         } else {
-            app.state::<SessionState>().local_ai_controller.stop();
+            let state = app.state::<SessionState>();
+            state.local_ai_controller.stop();
+            state.log_input(local_ai_disabled_log_input());
         }
     }
     Ok(settings)
@@ -10530,15 +10998,29 @@ pub fn run() {
                 let redactor = logging::redaction::Redactor::default();
                 let service =
                     logging::LogService::new(session_id, log_dir, redactor, app.handle().clone());
-                service.info(
+                service.write(event_log_input(
+                    LogLevel::Info,
+                    LogSource::App,
                     "app::startup",
+                    "app-starting",
                     format!(
                         "Mira v{} starting on {} {}",
                         app.package_info().version,
                         std::env::consts::OS,
                         std::env::consts::ARCH,
                     ),
-                );
+                    BTreeMap::from([
+                        (
+                            "version".to_string(),
+                            FieldValue::from(app.package_info().version.to_string()),
+                        ),
+                        (
+                            "platform".to_string(),
+                            FieldValue::from(std::env::consts::OS),
+                        ),
+                        ("arch".to_string(), FieldValue::from(std::env::consts::ARCH)),
+                    ]),
+                ));
                 // 让 Tauri 命令通过 State<'_, LogService> 访问。
                 app.manage(service.clone());
                 // 让内部 lib.rs 代码通过 SessionState 写入日志。
@@ -10571,6 +11053,11 @@ pub fn run() {
                     crash_rx,
                     auto_state,
                 );
+            }
+
+            if !startup_settings.local_ai_analysis_enabled {
+                app.state::<SessionState>()
+                    .log_input(local_ai_disabled_log_input());
             }
 
             // macOS native Vibrancy backdrop.
@@ -10607,10 +11094,17 @@ pub fn run() {
             // Load bundled plugins once and cache them for the app lifetime.
             let plugins = load_bundled_plugin_devices(app.handle());
             #[cfg(debug_assertions)]
-            app.state::<SessionState>().log_info(
+            app.state::<SessionState>().log_input(event_log_input(
+                LogLevel::Info,
+                LogSource::App,
                 "plugin::load",
+                "plugins-loaded",
                 format!("loaded {} bundled plugin(s)", plugins.len()),
-            );
+                BTreeMap::from([(
+                    "pluginCount".to_string(),
+                    FieldValue::from(plugins.len() as u64),
+                )]),
+            ));
             {
                 let state = app.state::<SessionState>();
                 *state.plugins.lock().unwrap_or_else(|e| e.into_inner()) = Some(plugins);
@@ -10679,8 +11173,19 @@ pub fn run() {
                             // no permission-free global pointer stream. Only in
                             // that case does focus stand in for pointer activity.
                             if pointer_activity::focus_fallback_needed() {
-                                note_system_pointer_activity(&app_handle.state::<SessionState>());
+                                note_system_pointer_activity(
+                                    &app_handle.state::<SessionState>(),
+                                    pointer_activity::PointerActivity::Active,
+                                );
                             }
+                        }
+                        tauri::WindowEvent::Focused(false)
+                            if pointer_activity::focus_fallback_needed() =>
+                        {
+                            note_system_pointer_activity(
+                                &app_handle.state::<SessionState>(),
+                                pointer_activity::PointerActivity::Idle,
+                            );
                         }
                         tauri::WindowEvent::ThemeChanged(_) => {
                             // 窗口可见时系统主题变化会触发此事件。
@@ -10760,14 +11265,14 @@ pub fn run() {
             // and Linux uses X11 with focus fallback on native Wayland.
             {
                 let pointer_app = app.handle().clone();
-                pointer_activity::spawn(move || {
-                    note_system_pointer_activity(&pointer_app.state::<SessionState>());
+                pointer_activity::spawn(move |activity| {
+                    note_system_pointer_activity(&pointer_app.state::<SessionState>(), activity);
                 });
             }
 
             // 原生系统电源事件监听：macOS IOKit / Windows WM_POWERBROADCAST /
-            // Linux logind D-Bus。唤醒后清空 HID 缓存 + PresenceOnly，让 readiness
-            // 状态机自然推进。启发式时间跳跃检测仍作为 fallback 兜底。
+            // Linux logind D-Bus。唤醒后重建 HID/session 缓存、标记插件声明的
+            // 路径待活动验证，并执行 PresenceOnly。启发式时间跳跃检测仍兜底。
             spawn_power_watcher(app.handle().clone());
 
             // 启动系统主题变化监听器（事件驱动，跨平台）。
@@ -10970,9 +11475,44 @@ mod power_watcher_tests {
         assert!(state.last_read_at.lock().unwrap().is_empty());
     }
 
-    /// 唤醒后应请求 PresenceOnly（而非 Quick）：
-    /// - 不直接 Quick：避免设备未就绪时失败触发退避重试（节能）
-    /// - 让 readiness 状态机自然推进：Detected → (90ms) → Quick/Full
+    #[test]
+    fn handle_system_wake_clears_device_session_caches() {
+        let state = SessionState::default();
+        state.feature_index_cache.lock().unwrap().insert(
+            "fake-path".into(),
+            HashMap::from([(0x1000, serde_json::json!({"index": 1}))]),
+        );
+        state
+            .onboard_memory_cache
+            .lock()
+            .unwrap()
+            .insert("fake-path".into(), (BTreeMap::new(), vec![1, 2, 3]));
+
+        handle_system_wake_state(&state);
+
+        assert!(state.feature_index_cache.lock().unwrap().is_empty());
+        assert!(state.onboard_memory_cache.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn handle_system_wake_preserves_full_readiness() {
+        let state = SessionState::default();
+        state
+            .snapshot_readiness
+            .lock()
+            .unwrap()
+            .insert("fake-path".into(), SnapshotReadiness::Full);
+
+        handle_system_wake_state(&state);
+
+        assert_eq!(
+            state.snapshot_readiness.lock().unwrap().get("fake-path"),
+            Some(&SnapshotReadiness::Full)
+        );
+    }
+
+    /// 唤醒后应请求 PresenceOnly（而非 Quick）：已有 Full readiness 保持不变，
+    /// 插件声明的路径等待恢复后的真实指针活动再做有界验证。
     #[test]
     fn handle_system_wake_requests_presence_only() {
         let state = SessionState::default();
@@ -11674,7 +12214,7 @@ mod snapshot_patch_tests {
             Connection::Wireless,
             &reading,
         );
-        note_system_pointer_activity(&state);
+        note_system_pointer_activity(&state, pointer_activity::PointerActivity::Active);
 
         let recovery = state.wake_recovery.lock().unwrap();
         assert!(recovery.armed_paths.contains("mock-path"));
@@ -11696,7 +12236,7 @@ mod snapshot_patch_tests {
             Connection::Wireless,
             &sleeping,
         );
-        note_system_pointer_activity(&state);
+        note_system_pointer_activity(&state, pointer_activity::PointerActivity::Active);
 
         let awake = DeviceReading {
             battery_percent: Some(62),
@@ -11738,6 +12278,110 @@ mod snapshot_patch_tests {
     }
 
     #[test]
+    fn continuous_pointer_activity_cannot_restart_an_exhausted_batch() {
+        let state = SessionState::default();
+        let reading = DeviceReading {
+            batteries: vec![battery("receiver", 100, false)],
+            ..DeviceReading::default()
+        };
+        mark_wake_recovery_observation(
+            &state,
+            "mock-path",
+            &mock_wake_inspection(),
+            Connection::Wireless,
+            &reading,
+        );
+        note_system_pointer_activity(&state, pointer_activity::PointerActivity::Active);
+        for _ in 0..=WAKE_RECOVERY_RETRY_DELAYS.len() {
+            finish_wake_recovery_probe(&state, Instant::now());
+        }
+        assert!(state.wake_recovery.lock().unwrap().pending.is_none());
+
+        // Polling the same continuous activity generation cannot start another
+        // batch after the bounded retries are exhausted.
+        note_system_pointer_activity(&state, pointer_activity::PointerActivity::Active);
+        assert!(state.wake_recovery.lock().unwrap().pending.is_none());
+
+        // A real quiet -> active edge creates a new user-activity generation.
+        note_system_pointer_activity(&state, pointer_activity::PointerActivity::Idle);
+        note_system_pointer_activity(&state, pointer_activity::PointerActivity::Active);
+        assert!(state.wake_recovery.lock().unwrap().pending.is_some());
+
+        // A missing-device episode has a hard global cap. Further activity
+        // edges cannot create an unlimited sequence of HID reads.
+        for _ in 0..=WAKE_RECOVERY_RETRY_DELAYS.len() {
+            finish_wake_recovery_probe(&state, Instant::now());
+        }
+        note_system_pointer_activity(&state, pointer_activity::PointerActivity::Idle);
+        note_system_pointer_activity(&state, pointer_activity::PointerActivity::Active);
+        let recovery = state.wake_recovery.lock().unwrap();
+        assert!(recovery.pending.is_none());
+        assert_eq!(
+            recovery.batches_started,
+            MAX_WAKE_RECOVERY_BATCHES_PER_EPISODE
+        );
+    }
+
+    #[test]
+    fn activity_before_receiver_only_observation_still_schedules_recovery() {
+        let state = SessionState::default();
+        note_system_pointer_activity(&state, pointer_activity::PointerActivity::Active);
+        assert!(state.wake_recovery.lock().unwrap().pending.is_none());
+
+        let reading = DeviceReading {
+            batteries: vec![battery("receiver", 100, false)],
+            ..DeviceReading::default()
+        };
+        mark_wake_recovery_observation(
+            &state,
+            "mock-path",
+            &mock_wake_inspection(),
+            Connection::Wireless,
+            &reading,
+        );
+        assert!(state.wake_recovery.lock().unwrap().pending.is_some());
+    }
+
+    #[test]
+    fn system_wake_arms_declared_paths_without_protocol_read() {
+        let state = SessionState::default();
+        *state.plugins.lock().unwrap() = Some(vec![(
+            mock_wake_inspection(),
+            mock_devices(),
+            BTreeMap::new(),
+        )]);
+        let mut snapshot = snapshot_with_batteries(vec![battery("mouse", 64, false)]);
+        snapshot.plugin_id = Some("test.plugin".into());
+        state
+            .last_snapshot
+            .lock()
+            .unwrap()
+            .insert("mock-path".into(), snapshot);
+        {
+            let mut recovery = state.wake_recovery.lock().unwrap();
+            recovery.pointer_active = true;
+            recovery.batches_started = MAX_WAKE_RECOVERY_BATCHES_PER_EPISODE;
+            recovery.pending = Some(PendingWakeRecovery {
+                attempt: 0,
+                due_at: Instant::now(),
+            });
+        }
+
+        handle_system_wake_state(&state);
+
+        let recovery = state.wake_recovery.lock().unwrap();
+        assert!(recovery.armed_paths.contains("mock-path"));
+        assert!(recovery.pending.is_none());
+        assert!(!recovery.pointer_active);
+        assert_eq!(recovery.batches_started, 0);
+        drop(recovery);
+        assert_eq!(
+            *state.forced_read_plan.lock().unwrap(),
+            Some(ReadPlan::PresenceOnly)
+        );
+    }
+
+    #[test]
     fn plugin_without_contract_does_not_arm_pointer_recovery() {
         let state = SessionState::default();
         let reading = DeviceReading {
@@ -11751,11 +12395,71 @@ mod snapshot_patch_tests {
             Connection::Wireless,
             &reading,
         );
-        note_system_pointer_activity(&state);
+        note_system_pointer_activity(&state, pointer_activity::PointerActivity::Active);
 
         let recovery = state.wake_recovery.lock().unwrap();
         assert!(recovery.armed_paths.is_empty());
         assert!(recovery.pending.is_none());
+    }
+}
+
+#[cfg(test)]
+mod device_session_log_tests {
+    use super::*;
+
+    #[test]
+    fn failure_and_recovery_share_one_correlation_id() {
+        let state = SessionState::default();
+        begin_device_session_trace(&state, "mock-path");
+
+        let failure_id = fail_device_session_trace(&state, "mock-path").unwrap();
+        assert!(failure_id.starts_with("device-"));
+        assert!(fail_device_session_trace(&state, "mock-path").is_none());
+
+        let (recovery_id, _, recovered) =
+            complete_device_session_trace(&state, "mock-path").unwrap();
+        assert_eq!(recovery_id, failure_id);
+        assert!(recovered);
+        assert!(complete_device_session_trace(&state, "mock-path").is_none());
+    }
+
+    #[test]
+    fn a_new_successful_session_is_not_marked_as_recovery() {
+        let state = SessionState::default();
+        begin_device_session_trace(&state, "mock-path");
+        let (_, _, recovered) = complete_device_session_trace(&state, "mock-path").unwrap();
+        assert!(!recovered);
+
+        retain_device_session_paths(&state, &BTreeSet::new());
+        begin_device_session_trace(&state, "mock-path");
+        assert!(complete_device_session_trace(&state, "mock-path").is_some());
+    }
+
+    #[test]
+    fn structured_device_session_log_contains_real_detail_fields() {
+        let input = device_session_log_input(
+            LogLevel::Info,
+            "device-session-ready",
+            "device session ready; live readings available",
+            "device-1234abcd".into(),
+            DeviceSessionLogFields {
+                device: "Mira Mouse".into(),
+                connection: "wireless",
+                duration_ms: Some(184),
+                error_kind: None,
+            },
+        );
+
+        assert_eq!(input.target, "device::session");
+        assert_eq!(input.correlation_id.as_deref(), Some("device-1234abcd"));
+        assert!(matches!(
+            input.fields.get("device"),
+            Some(FieldValue::Text(value)) if value == "Mira Mouse"
+        ));
+        assert!(matches!(
+            input.fields.get("durationMs"),
+            Some(FieldValue::Integer(184))
+        ));
     }
 }
 

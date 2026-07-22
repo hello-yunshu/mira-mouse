@@ -929,13 +929,19 @@ fn aggregate_active_usage(
         prev = Some(sample);
     }
 
-    // 原始样本继续完整保留给分析；图表只在超过 48 点时按相邻样本压缩。
-    // 不足 48 点时一条真实记录对应一根柱，休眠/断连时段不会生成空柱或假数据。
+    // 原始样本继续完整保留给分析；不足 48 点时一条真实记录对应一根柱，
+    // 达到上限后始终均衡聚合为 48 组。不能使用固定 chunk_size：49 条记录
+    // 会被骤然压成 25 组，造成柱数在时间推进时反复跳变。
+    // 休眠/断连时段仍然不会生成空柱或假数据。
     let max_points = 48usize;
-    let chunk_size = active_samples.len().div_ceil(max_points).max(1);
-    active_samples
-        .chunks(chunk_size)
-        .map(|chunk| build_active_usage_point(chunk, low_battery_threshold))
+    let sample_count = active_samples.len();
+    let point_count = sample_count.min(max_points);
+    (0..point_count)
+        .map(|index| {
+            let start = index * sample_count / point_count;
+            let end = (index + 1) * sample_count / point_count;
+            build_active_usage_point(&active_samples[start..end], low_battery_threshold)
+        })
         .collect()
 }
 
@@ -2267,6 +2273,44 @@ mod tests {
         assert_eq!(points.len(), 48);
         assert!(points.iter().all(|point| point.sample_count == 4));
         assert_eq!(points.last().unwrap().usage_elapsed_minutes, Some(955));
+    }
+
+    #[test]
+    fn aggregate_active_usage_stays_at_48_after_reaching_the_cap() {
+        let now = Utc::now();
+        for sample_count in [47usize, 48, 49, 95, 96, 97] {
+            let samples: Vec<BatterySample> = (0..sample_count)
+                .map(|index| {
+                    make_sample(
+                        now - Duration::minutes(((sample_count - 1 - index) * 5) as i64),
+                        90,
+                        false,
+                    )
+                })
+                .collect();
+            let refs: Vec<&BatterySample> = samples.iter().collect();
+            let points = aggregate_active_usage(&refs, now, 20);
+
+            assert_eq!(
+                points.len(),
+                sample_count.min(48),
+                "sample_count={sample_count}"
+            );
+            assert_eq!(
+                points
+                    .iter()
+                    .map(|point| point.sample_count as usize)
+                    .sum::<usize>(),
+                sample_count,
+                "every real sample must remain represented"
+            );
+            let smallest_group = points.iter().map(|point| point.sample_count).min().unwrap();
+            let largest_group = points.iter().map(|point| point.sample_count).max().unwrap();
+            assert!(
+                largest_group - smallest_group <= 1,
+                "groups must stay balanced for sample_count={sample_count}"
+            );
+        }
     }
 
     #[test]

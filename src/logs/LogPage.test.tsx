@@ -379,6 +379,60 @@ describe('LogPage toolbar and dialogs', () => {
     expect(summaries[2]).toContain('oldest');
   });
 
+  it('collapses every expanded log from the toolbar', async () => {
+    const entries: LogEntry[] = [
+      { id: 2, timestamp: '2026-07-17T10:00:02+08:00', level: 'info', source: 'app', target: 'm', message: 'second', sessionId: 's1', fields: { value: 2 } },
+      { id: 1, timestamp: '2026-07-17T10:00:01+08:00', level: 'info', source: 'app', target: 'm', message: 'first', sessionId: 's1', fields: { value: 1 } },
+    ];
+    invokeMock.mockImplementation(makeInvokeImpl({ entries }));
+
+    renderLogPage();
+    await screen.findByText('second');
+    const expandButtons = screen.getAllByRole('button', { name: '展开详情' });
+    fireEvent.click(expandButtons[0]);
+    fireEvent.click(expandButtons[1]);
+
+    expect(screen.getAllByRole('button', { name: '收起详情' })).toHaveLength(2);
+    const collapseAll = screen.getByRole('button', { name: '收起全部详情（2）' });
+    fireEvent.click(collapseAll);
+
+    expect(screen.getAllByRole('button', { name: '展开详情' })).toHaveLength(2);
+    expect(screen.queryByRole('button', { name: /收起全部详情/ })).not.toBeInTheDocument();
+  });
+
+  it('localizes structured AI events and field labels', async () => {
+    const entry: LogEntry = {
+      id: 9,
+      timestamp: '2026-07-17T10:00:09+08:00',
+      level: 'info',
+      source: 'local-ai',
+      target: 'local_ai::predict',
+      message: 'prediction batch ok',
+      sessionId: 's1',
+      fields: {
+        event: 'local-ai-prediction-completed',
+        status: 'ok',
+        batchCount: 2,
+        resultCount: 2,
+        fallback: false,
+        durationMs: 38,
+      },
+    };
+    invokeMock.mockImplementation(makeInvokeImpl({ entries: [entry] }));
+
+    renderLogPage();
+    expect(await screen.findByText('本地 AI 续航预测已完成')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '展开详情' }));
+
+    expect(screen.getByText('结果')).toBeInTheDocument();
+    expect(screen.getByText('成功')).toBeInTheDocument();
+    expect(screen.getByText('设备数量')).toBeInTheDocument();
+    expect(screen.getByText('预测成功')).toBeInTheDocument();
+    expect(screen.getByText('是否回退')).toBeInTheDocument();
+    expect(screen.getByText('否')).toBeInTheDocument();
+    expect(screen.getByText('耗时')).toBeInTheDocument();
+  });
+
   it('does not list frontend as a top-level source filter option', async () => {
     renderLogPage();
     const sourceSelect = await screen.findByRole('combobox', { name: '来源' }) as HTMLSelectElement;
@@ -503,13 +557,36 @@ describe('LogPage toolbar and dialogs', () => {
     await waitFor(() => expect(unlistenSpy).toHaveBeenCalled());
   });
 
-  it('renders the preview empty state without Tauri internals', () => {
-    // 纯 Web 预览（无 Tauri 运行时）：LogPage 显示空状态而不崩溃。
+  it('renders interactive sample logs without Tauri internals', () => {
+    // 纯 Web 预览（无 Tauri 运行时）：复用正式日志页结构并使用本地示例数据。
     delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__;
     try {
-      renderLogPage();
+      const { container } = renderLogPage();
       expect(screen.getByRole('heading', { name: '日志与诊断' })).toBeInTheDocument();
-      expect(screen.getByText('Web 预览模式下日志系统不可用。')).toBeInTheDocument();
+      expect(screen.getByText('当前显示用于调试界面和交互的示例日志。')).toBeInTheDocument();
+      expect(screen.getByText('设备会话已恢复，实时读数已更新')).toBeInTheDocument();
+      expect(container.querySelector('.log-status-buffer')).toHaveTextContent('10');
+      expect(container.querySelector('.log-status-buffer')).not.toHaveTextContent('内存');
+      expect(container.querySelector('.log-status-disk')).toHaveTextContent('7.0 MB');
+      expect(container.querySelector('.log-status-disk')).not.toHaveTextContent('磁盘');
+      expect(container.querySelector('.log-status-disk-quota')).not.toBeInTheDocument();
+      expect(screen.getByText('当前 8 条')).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: '暂停刷新' }));
+      expect(within(container.querySelector('.log-toolbar-divider') as HTMLElement)
+        .getByRole('button', { name: '有 3 条新日志' })).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: '继续刷新' }));
+      expect(screen.getByText('当前 8 条')).toBeInTheDocument();
+      expect(screen.getByRole('combobox', { name: '来源' })).toBeInTheDocument();
+      fireEvent.change(screen.getByRole('combobox', { name: '来源' }), { target: { value: 'plugin' } });
+      expect(screen.getByText('当前 2 条')).toBeInTheDocument();
+      fireEvent.change(screen.getByRole('combobox', { name: '来源' }), { target: { value: 'all' } });
+      const expandButtons = screen.getAllByRole('button', { name: '展开详情' });
+      expect(expandButtons.length).toBeGreaterThan(0);
+      fireEvent.click(expandButtons[0]);
+      expect(screen.getByText('device::session')).toBeInTheDocument();
+      expect(screen.getByText('device-7f2a31c4')).toBeInTheDocument();
+      expect(screen.getByText('无线')).toBeInTheDocument();
+      expect(invokeMock.mock.calls.some(([command]) => command === 'log_query')).toBe(false);
     } finally {
       Object.defineProperty(window, '__TAURI_INTERNALS__', { configurable: true, value: {} });
     }
@@ -522,7 +599,7 @@ describe('LogPage toolbar and dialogs', () => {
       return () => undefined;
     });
 
-    renderLogPage();
+    const { container } = renderLogPage();
     await screen.findByText('没有符合条件的日志');
     await waitFor(() => expect(batchListener).not.toBeNull());
 
@@ -539,7 +616,10 @@ describe('LogPage toolbar and dialogs', () => {
     });
 
     // 暂停期间徽章出现
-    expect(screen.getByRole('button', { name: '有 2 条新日志' })).toBeInTheDocument();
+    const divider = container.querySelector('.log-toolbar-divider');
+    expect(divider).toBeTruthy();
+    expect(within(divider as HTMLElement).getByRole('button', { name: '有 2 条新日志' })).toBeInTheDocument();
+    expect(within(divider as HTMLElement).queryByText(/当前 \d+ 条/)).not.toBeInTheDocument();
     // 暂停期间日志被缓冲，不进入列表
     expect(screen.queryByText('paused-1')).not.toBeInTheDocument();
 

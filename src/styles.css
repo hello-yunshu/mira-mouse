@@ -160,7 +160,7 @@ body {
   min-width: 320px;
   /* 背景透明，让 macOS 原生 Vibrancy 毛玻璃效果透出来 */
   background: transparent;
-  transition: background-color 380ms ease;
+  transition: background-color var(--motion-deliberate) var(--motion-ease-standard);
 }
 
 button, select, option { font: inherit; }
@@ -172,7 +172,7 @@ button {
   color: #fff;
   background: var(--control-bg);
   cursor: pointer;
-  transition: transform .12s ease, background .2s ease;
+  transition: transform var(--motion-fast) var(--motion-ease-out), background var(--motion-base) var(--motion-ease-standard);
 }
 button:hover { background: var(--control-bg-hover); }
 button:active { transform: scale(.97); }
@@ -193,13 +193,25 @@ button:focus-visible, select:focus-visible, .tooltip:focus-visible {
   background: var(--window-tint);
   -webkit-backdrop-filter: var(--glass-blur);
   backdrop-filter: var(--glass-blur);
-  transition: background-color 220ms ease, color 220ms ease;
+  transition: background-color var(--motion-base) var(--motion-ease-standard), color var(--motion-base) var(--motion-ease-standard);
 }
 .app-shell.platform-macos:not(.web-preview),
 .app-shell.platform-windows:not(.web-preview),
 .app-shell.platform-fallback:not(.web-preview) {
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
+}
+/* 浏览器没有桌面端材质层，给 Web 预览补上等效底色，避免透明画布干扰主题判断。 */
+.app-shell.web-preview {
+  --window-tint: #f7f5f8;
+}
+:root[data-theme="dark"] .app-shell.web-preview {
+  --window-tint: #1d1a22;
+}
+@media (prefers-color-scheme: dark) {
+  :root[data-theme="system"] .app-shell.web-preview {
+    --window-tint: #1d1a22;
+  }
 }
 .top-nav {
   /* 仅作为窗口拖拽区域，不再容纳 nav-links（已外置为绝对定位） */
@@ -1414,7 +1426,7 @@ body:has(.platform-fallback:not(.web-preview)) {
   width: 100%;
   min-height: 42px;
   margin: 18px 0 22px;
-  padding: 0 12px;
+  padding: 2px 12px;
 }
 .dpi-scale::before {
   content: '';
@@ -1893,11 +1905,6 @@ body:has(.platform-fallback:not(.web-preview)) {
   outline: 2px solid color-mix(in oklch, var(--accent), #4c4cff 30%);
   outline-offset: 2px;
 }
-@keyframes mira-modal-enter {
-  from { opacity: 0; }
-  to   { opacity: 1; }
-}
-
 /* Compact edit popovers use the same glass treatment as the battery popover.
    小型弹窗（DPI / 回报率 / 灯光 / 插件字段 / 日志确认 / 诊断对话框）：
    不对整个页面背景施加毛玻璃虚化，仅保留极轻遮罩维持视觉聚焦，
@@ -2240,6 +2247,10 @@ h2 { margin: 2px 0 0; letter-spacing: -.02em; font-size: 16px; }
 .tooltip-content[data-show="true"] {
   opacity: 1;
   margin-top: 0;
+}
+.tooltip-content-fit {
+  width: max-content;
+  max-width: min(240px, 50vw, calc(100vw - 32px));
 }
 :root[data-theme="dark"] .tooltip-content {
   background: var(--tooltip-glass-bg);
@@ -3087,10 +3098,6 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   box-shadow: var(--floating-glass-shadow);
   animation: battery-menu-in-margin .14s ease;
 }
-@keyframes battery-menu-in {
-  from { opacity: 0; transform: translateY(-4px); }
-  to { opacity: 1; transform: none; }
-}
 /* 设备切换菜单入场（margin 版）：仅 opacity + margin-top，保留 4px 下拉位移，
    避免 transform 创建 compositing layer 导致 backdrop-filter 失效。 */
 @keyframes battery-menu-in-margin {
@@ -3538,10 +3545,6 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   pointer-events: none;
   animation: overflow-tip-in-margin .12s ease;
 }
-@keyframes overflow-tip-in {
-  from { opacity: 0; transform: translateX(-50%) translateY(2px); }
-  to { opacity: 1; transform: translateX(-50%) translateY(0); }
-}
 /* 溢出提示入场（margin 版）：仅 opacity + margin-bottom，保留 2px 位移，
    避免 transform 创建 compositing layer 导致 backdrop-filter 失效。 */
 @keyframes overflow-tip-in-margin {
@@ -3624,6 +3627,7 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   color: var(--muted);
   font-size: 10px;
   line-height: 1.22;
+  min-height: 2.44em;
   overflow: hidden;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -3766,21 +3770,11 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   to { opacity: 1; }
 }
 
-@keyframes mira-notification-enter {
-  from { opacity: 0; transform: translateY(-7px) scale(.985); }
-  to { opacity: 1; transform: translateY(0) scale(1); }
-}
-
 /* 通知入场（margin 版）：仅 opacity + margin-top，保留 7px 下滑位移，
    避免 transform 创建 compositing layer 导致 backdrop-filter 失效。 */
 @keyframes mira-notification-enter-margin {
   from { opacity: 0; margin-top: -7px; }
   to { opacity: 1; margin-top: 0; }
-}
-
-@keyframes mira-chart-tooltip-enter {
-  from { opacity: 0; transform: translateX(-50%) translateY(5px) scale(.985); }
-  to { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
 }
 
 /* 图表 tooltip 入场（margin 版）：仅 opacity + margin-top，保留 5px 位移，
@@ -3924,12 +3918,6 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   animation: mira-page-enter var(--motion-base) var(--motion-ease-out) backwards;
 }
 
-.settings-page,
-.about-page,
-.log-page {
-  animation: mira-page-enter var(--motion-fast) var(--motion-ease-out) backwards;
-}
-
 .dashboard > .device-hero {
   /* Hero-owned transient UI must stay above the controls it overlaps. */
   position: relative;
@@ -4014,6 +4002,14 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
 .about-page > section:nth-of-type(n+3) { animation-delay: 160ms; }
 .log-page > .log-toolbar { animation-delay: 40ms; }
 .log-page > .log-list-wrapper { animation-delay: 80ms; }
+
+.log-preview-hint {
+  margin: -2px 0 8px;
+  padding: 5px 8px;
+  border: 1px solid var(--surface-group-border);
+  border-radius: 8px;
+  background: var(--surface-group-bg);
+}
 
 /* Navigation uses color/shape continuity. Segmented controls below share one
    travelling selection layer so every single-row slider explains state the
@@ -4370,7 +4366,7 @@ input[type="color"] {
    - 等级颜色仅用于小胶囊标签（--log-level-{error,warn,info}-{bg,fg}）
    - 复用项目毛玻璃、圆角、层级等设计 token
    - 模态弹窗入场动画使用 mira-modal-enter（仅 opacity 变化）
-   - 新日志徽章使用 position:sticky;top:0 */
+   - 新日志提示复用分割线中央的当前计数位置 */
 
 /* 日志等级颜色 token：仅用于小胶囊标签，不污染正文文字色 */
 :root {
@@ -4384,6 +4380,12 @@ input[type="color"] {
   --log-level-debug-fg: var(--muted);
   --log-level-trace-bg: rgb(150 100 180 / 12%);
   --log-level-trace-fg: #8a5fa8;
+  --log-new-bg: color-mix(in oklch, var(--accent), white 58%);
+  --log-new-bg-hover: color-mix(in oklch, var(--accent), white 48%);
+  --log-new-fg: color-mix(in oklch, var(--accent), #322b38 64%);
+  --log-new-border: color-mix(in oklch, var(--accent), transparent 48%);
+  --log-new-dot: color-mix(in oklch, var(--accent), #322b38 18%);
+  --log-new-shadow: color-mix(in oklch, var(--accent), transparent 76%);
   --z-popover: 20;
 }
 :root[data-theme="dark"] {
@@ -4397,6 +4399,12 @@ input[type="color"] {
   --log-level-debug-fg: var(--muted);
   --log-level-trace-bg: rgb(180 130 210 / 14%);
   --log-level-trace-fg: #b88fd4;
+  --log-new-bg: color-mix(in oklch, var(--accent), #27222d 52%);
+  --log-new-bg-hover: color-mix(in oklch, var(--accent), #27222d 42%);
+  --log-new-fg: color-mix(in oklch, var(--accent), white 52%);
+  --log-new-border: color-mix(in oklch, var(--accent), transparent 42%);
+  --log-new-dot: color-mix(in oklch, var(--accent), white 24%);
+  --log-new-shadow: color-mix(in oklch, var(--accent), transparent 64%);
 }
 @media (prefers-color-scheme: dark) {
   :root[data-theme="system"] {
@@ -4410,6 +4418,12 @@ input[type="color"] {
     --log-level-debug-fg: var(--muted);
     --log-level-trace-bg: rgb(180 130 210 / 14%);
     --log-level-trace-fg: #b88fd4;
+    --log-new-bg: color-mix(in oklch, var(--accent), #27222d 52%);
+    --log-new-bg-hover: color-mix(in oklch, var(--accent), #27222d 42%);
+    --log-new-fg: color-mix(in oklch, var(--accent), white 52%);
+    --log-new-border: color-mix(in oklch, var(--accent), transparent 42%);
+    --log-new-dot: color-mix(in oklch, var(--accent), white 24%);
+    --log-new-shadow: color-mix(in oklch, var(--accent), transparent 64%);
   }
 }
 
@@ -4434,15 +4448,13 @@ input[type="color"] {
 .log-page > header .eyebrow { margin-bottom: 0; }
 .log-page > .setting-hint { flex-shrink: 0; }
 
-/* 工具栏：两行布局（统一搜索筛选条 + 控制与状态条），分组之间用细分隔线区隔 */
+/* 工具栏：两行布局（统一搜索筛选条 + 控制与状态条）。 */
 .log-toolbar {
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
   gap: 6px;
-  margin-bottom: 10px;
-  padding: 0 0 8px;
-  border-bottom: 1px solid var(--surface-group-border);
+  margin-bottom: 4px;
 }
 .log-toolbar-row {
   display: flex;
@@ -4452,6 +4464,36 @@ input[type="color"] {
   min-width: 0;
 }
 /* 行间不再需要细分隔线：搜索条是独立卡片，控制行是裸按钮组 */
+
+/* 列表入口分隔线：让当前筛选结果数量成为视觉锚点，避免一条空长线。 */
+.log-toolbar-divider {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  padding: 0 12px;
+  color: var(--muted);
+  font-size: 9.5px;
+  line-height: 1;
+  white-space: nowrap;
+}
+.log-toolbar-divider::before,
+.log-toolbar-divider::after {
+  content: '';
+  height: 1px;
+  flex: 1 1 auto;
+  min-width: 12px;
+  opacity: .86;
+}
+.log-toolbar-divider::before {
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--muted), transparent 76%));
+}
+.log-toolbar-divider::after {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--muted), transparent 76%), transparent);
+}
+.log-toolbar-current-count {
+  color: color-mix(in srgb, var(--muted), transparent 42%);
+}
 
 /* Row 1 — 统一搜索筛选条：来源 pill + 级别 pill + 分隔线 + 搜索框，全部在一个圆角容器内 */
 .log-search-bar {
@@ -4695,7 +4737,7 @@ input[type="color"] {
   background: var(--surface-group-border);
 }
 
-/* 状态 pill：图标 + 文本（内存 / 磁盘） */
+/* 状态 pill：只显示图标与关键数值，完整信息交给 Tooltip。 */
 .log-status-pill {
   display: inline-flex;
   align-items: center;
@@ -4710,13 +4752,6 @@ input[type="color"] {
   flex-shrink: 0;
 }
 .log-status-pill > svg { width: 11px; height: 11px; opacity: .8; flex: 0 0 auto; }
-/* 默认窗口宽度 (460px) 及以下隐藏磁盘配额后缀，接近最小宽度时隐藏内存 pill */
-@media (max-width: 460px) {
-  .log-status-disk-quota { display: none; }
-}
-@media (max-width: 390px) {
-  .log-status-buffer { display: none; }
-}
 /* 错误/警告数量徽章：圆形数字徽章，对齐设计稿 */
 .log-status-count {
   display: inline-flex;
@@ -4751,11 +4786,11 @@ input[type="color"] {
   50% { box-shadow: 0 0 0 2px var(--surface-group-bg), 0 0 14px 2px var(--accent-alpha, rgb(255 140 140 / .5)); }
 }
 .log-status-count.log-status-error.active {
-  animation: log-status-glow 2.2s ease-in-out infinite;
+  animation: log-status-glow 2.2s ease-in-out 3;
   --accent-alpha: rgb(255 100 100 / .4);
 }
 .log-status-count.log-status-warn.active {
-  animation: log-status-glow 2.2s ease-in-out infinite;
+  animation: log-status-glow 2.2s ease-in-out 3;
   --accent-alpha: rgb(255 170 50 / .4);
 }
 
@@ -4799,7 +4834,7 @@ input[type="color"] {
   position: relative;
   background: transparent;
   border-radius: 5px;
-  transition: background .18s ease;
+  transition: background-color var(--motion-base) var(--motion-ease-standard);
   margin-bottom: 8px;
   animation: mira-section-enter var(--motion-base) var(--motion-ease-out) backwards;
   animation-delay: var(--entry-delay, 0ms);
@@ -4807,10 +4842,12 @@ input[type="color"] {
 .log-entry::after {
   content: '';
   position: absolute;
-  left: 12px;
+  left: 84px;
   right: 12px;
   bottom: -4px;
-  border-bottom: 1px solid var(--surface-group-border);
+  height: 1px;
+  background: linear-gradient(90deg, var(--surface-group-border), transparent);
+  opacity: .82;
 }
 .log-entry:hover { background: var(--surface-data-bg-hover); }
 .log-entry:last-of-type { margin-bottom: 0; }
@@ -4865,7 +4902,7 @@ input[type="color"] {
   width: 12px;
   height: 12px;
   color: var(--muted);
-  transition: transform .18s ease;
+  transition: transform var(--motion-fast) var(--motion-ease-out);
 }
 .log-entry.expanded .log-entry-caret { transform: rotate(180deg); }
 
@@ -4889,9 +4926,21 @@ input[type="color"] {
 .log-level-debug  { background: var(--log-level-debug-bg);  color: var(--log-level-debug-fg); }
 .log-level-trace  { background: var(--log-level-trace-bg);  color: var(--log-level-trace-fg); }
 
-/* 详情区：左侧 80px 缩进（对齐时间列 + 等级列），内嵌圆角小卡片 */
+/* 详情区：窄窗口优先保证字段宽度，仅保留与日志行一致的水平内边距。 */
 .log-entry-detail {
-  padding: 0 12px 10px 84px;
+  padding: 0 12px 10px;
+  transform-origin: top center;
+  animation: log-entry-detail-open var(--motion-base) var(--motion-ease-out) both;
+}
+@keyframes log-entry-detail-open {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(.99);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 .log-entry-detail-card {
   padding: 10px 12px;
@@ -4939,7 +4988,7 @@ input[type="color"] {
 .log-entry-structured-grid {
   margin: 0;
   display: grid;
-  grid-template-columns: repeat(2, minmax(60px, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 3px 14px;
 }
 .log-entry-structured-grid > div {
@@ -4971,39 +5020,34 @@ input[type="color"] {
 .log-entry-copy:hover:not(:disabled) { background: var(--control-hover-bg); }
 .log-entry-copy svg { width: 11px; height: 11px; }
 
-/* 新日志徽章：sticky top-0，渐变背景 + pulse 圆点。最新日志位于顶部，入口固定在顶部。 */
-.log-new-count {
-  position: sticky;
-  top: 0;
-  z-index: var(--z-popover);
-  align-self: center;
+/* 新日志入口复用分割线中间的计数位置，避免额外占用一行。 */
+.log-toolbar-new-count {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 5px 14px;
-  margin: 6px auto;
-  font-size: 11px;
+  gap: 5px;
+  padding: 3px 9px;
+  font-size: 10px;
   font-weight: 600;
-  color: #fff;
-  background: linear-gradient(115deg, color-mix(in oklch, var(--accent), #8fa8e4 36%), color-mix(in oklch, var(--accent), #d67fb2 28%));
-  border: 0;
+  color: var(--log-new-fg);
+  background: var(--log-new-bg);
+  border: 1px solid var(--log-new-border);
   border-radius: 999px;
-  box-shadow: 0 6px 18px color-mix(in oklch, var(--accent), transparent 60%);
+  box-shadow: 0 3px 12px var(--log-new-shadow);
   cursor: pointer;
   animation: mira-modal-enter var(--motion-base) var(--motion-ease-out);
 }
-.log-new-count:hover {
-  /* 显式保留渐变背景，防止全局 button:hover 的 var(--control-bg-hover) 覆盖 */
-  background: linear-gradient(115deg, color-mix(in oklch, var(--accent), #8fa8e4 36%), color-mix(in oklch, var(--accent), #d67fb2 28%));
+.log-toolbar-new-count:hover {
+  /* 显式保留主题背景，防止全局 button:hover 覆盖。 */
+  background: var(--log-new-bg-hover);
   transform: translateY(-1px);
 }
-.log-new-count:active { transform: scale(.97); }
+.log-toolbar-new-count:active { transform: scale(.97); }
 .log-new-count-dot {
   width: 6px;
   height: 6px;
   border-radius: 999px;
-  background: #fff;
-  animation: mira-pulse-dot 1.4s var(--motion-ease-standard) infinite;
+  background: var(--log-new-dot);
+  animation: mira-pulse-dot 1.4s var(--motion-ease-standard) 3;
 }
 @keyframes mira-pulse-dot {
   0%, 100% { opacity: 1; transform: scale(1); }
@@ -5018,17 +5062,17 @@ input[type="color"] {
   .log-search-divider { display: none; }
   .log-entry-source { display: none; }
   .log-entry-time { flex: 0 0 56px; font-size: 10px; }
-  .log-entry-detail { padding-left: 76px; }
-  .log-entry-structured-grid { grid-template-columns: 1fr; }
+  .log-entry::after { left: 76px; }
 }
 
 /* 减弱动画偏好 */
 @media (prefers-reduced-motion: reduce) {
   .log-page,
   .log-menu,
-  .log-new-count,
+  .log-toolbar-new-count,
   .log-new-count-dot,
   .log-entry,
+  .log-entry-detail,
   .log-entry-caret {
     animation: none !important;
     transition: none !important;

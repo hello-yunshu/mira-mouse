@@ -35,7 +35,7 @@ use crate::{
     battery_history::BatterySample,
     local_ai_runtime,
     local_ai_runtime::RuntimeInstallation,
-    logging::model::{LogInput, LogLevel, LogSource},
+    logging::model::{FieldValue, Fields, LogInput, LogLevel, LogSource},
     logging::LogService,
 };
 
@@ -148,6 +148,24 @@ impl Default for ControllerInner {
     }
 }
 
+fn local_ai_log_input(
+    level: LogLevel,
+    target: impl Into<String>,
+    event: &'static str,
+    message: impl Into<String>,
+    mut fields: Fields,
+) -> LogInput {
+    fields.insert("event".to_string(), FieldValue::from(event));
+    LogInput {
+        level,
+        source: LogSource::LocalAi,
+        target: target.into(),
+        message: message.into(),
+        correlation_id: None,
+        fields,
+    }
+}
+
 impl LocalAiController {
     /// 在 lib.rs setup 阶段注入 crash 事件 sender,启动 supervisor 监听。
     pub fn set_crash_sender(&self, tx: Sender<CrashEvent>) {
@@ -166,10 +184,12 @@ impl LocalAiController {
         guard: &std::sync::MutexGuard<'_, ControllerInner>,
         level: LogLevel,
         target: &str,
+        event: &'static str,
         message: impl Into<String>,
+        fields: Fields,
     ) {
         if let Some(svc) = guard.log_service.as_ref() {
-            svc.write(LogInput::new(level, LogSource::LocalAi, target, message));
+            svc.write(local_ai_log_input(level, target, event, message, fields));
         }
     }
 
@@ -192,7 +212,12 @@ impl LocalAiController {
             &guard,
             LogLevel::Info,
             "local_ai::lifecycle",
+            "local-ai-starting",
             "local AI starting",
+            BTreeMap::from([
+                ("enabled".to_string(), FieldValue::from(true)),
+                ("stage".to_string(), FieldValue::from("starting")),
+            ]),
         );
         let Some(installation) = local_ai_runtime::resolve_installation(app) else {
             guard.state = ControllerState::Failed {
@@ -202,7 +227,12 @@ impl LocalAiController {
                 &guard,
                 LogLevel::Error,
                 "local_ai::lifecycle",
+                "local-ai-unavailable",
                 "runtime or model pack not available",
+                BTreeMap::from([
+                    ("fallback".to_string(), FieldValue::from(true)),
+                    ("stage".to_string(), FieldValue::from("resolve-assets")),
+                ]),
             );
             let crash_tx = guard.crash_tx.clone();
             drop(guard);
@@ -215,33 +245,61 @@ impl LocalAiController {
             );
             return Err("local AI runtime or model pack not available".to_string());
         };
-        if let Err(error) = spawn_and_handshake(&installation, &mut guard) {
-            guard.state = ControllerState::Failed {
-                last_attempt: Instant::now(),
-            };
-            Self::log_with_guard(
-                &guard,
-                LogLevel::Error,
-                "local_ai::lifecycle",
-                format!("handshake failed: {error}"),
-            );
-            let crash_tx = guard.crash_tx.clone();
-            drop(guard);
-            send_crash_event(
-                crash_tx,
-                CrashEvent::Failed {
-                    at: Instant::now(),
-                    reason: error.clone(),
-                },
-            );
-            return Err(error);
-        }
+        let probe = match spawn_and_handshake(&installation, &mut guard) {
+            Ok(probe) => probe,
+            Err(error) => {
+                guard.state = ControllerState::Failed {
+                    last_attempt: Instant::now(),
+                };
+                Self::log_with_guard(
+                    &guard,
+                    LogLevel::Error,
+                    "local_ai::lifecycle",
+                    "local-ai-handshake-failed",
+                    format!("handshake failed: {error}"),
+                    BTreeMap::from([
+                        ("reason".to_string(), FieldValue::from(error.clone())),
+                        ("fallback".to_string(), FieldValue::from(true)),
+                        ("stage".to_string(), FieldValue::from("handshake")),
+                    ]),
+                );
+                let crash_tx = guard.crash_tx.clone();
+                drop(guard);
+                send_crash_event(
+                    crash_tx,
+                    CrashEvent::Failed {
+                        at: Instant::now(),
+                        reason: error.clone(),
+                    },
+                );
+                return Err(error);
+            }
+        };
         guard.state = ControllerState::Running;
         Self::log_with_guard(
             &guard,
             LogLevel::Info,
             "local_ai::lifecycle",
+            "local-ai-ready",
             "local AI runtime started, handshake ok",
+            BTreeMap::from([
+                (
+                    "runtimeVersion".to_string(),
+                    FieldValue::from(probe.runtime_version),
+                ),
+                (
+                    "modelVersion".to_string(),
+                    FieldValue::from(probe.model_pack_version),
+                ),
+                (
+                    "handlerVersion".to_string(),
+                    FieldValue::from(probe.handler_version),
+                ),
+                (
+                    "handlerApiVersion".to_string(),
+                    FieldValue::from(u64::from(probe.handler_api_version)),
+                ),
+            ]),
         );
         Ok(())
     }
@@ -257,7 +315,9 @@ impl LocalAiController {
             &guard,
             LogLevel::Info,
             "local_ai::lifecycle",
+            "local-ai-stopping",
             "local AI stopping",
+            BTreeMap::from([("stage".to_string(), FieldValue::from("stopping"))]),
         );
         // drop stdin 触发 EOF,rill-runtime 的 BufReader::read_until 返回 0 退出主循环。
         drop(runtime.stdin);
@@ -286,6 +346,7 @@ impl LocalAiController {
         if batches.is_empty() {
             return BTreeMap::new();
         }
+        let prediction_started_at = Instant::now();
         // 1. 检查状态,必要时触发重启。
         {
             let guard = self.lock();
@@ -420,11 +481,15 @@ impl LocalAiController {
                 Ok(PredictionDecision::BaselineRecommended { reason }) => {
                     fallback_count += 1;
                     if let Some(svc) = prediction_log_service.as_ref() {
-                        svc.write(LogInput::new(
+                        svc.write(local_ai_log_input(
                             LogLevel::Debug,
-                            LogSource::LocalAi,
                             "local_ai::predict",
+                            "local-ai-baseline-selected",
                             format!("deterministic baseline selected: {reason}"),
+                            BTreeMap::from([
+                                ("reason".to_string(), FieldValue::from(reason)),
+                                ("fallback".to_string(), FieldValue::from(true)),
+                            ]),
                         ));
                     }
                 }
@@ -439,7 +504,13 @@ impl LocalAiController {
                         &guard,
                         LogLevel::Warn,
                         "local_ai::predict",
+                        "local-ai-handler-interrupted",
                         format!("handler interrupted, runtime will restart: {reason}"),
+                        BTreeMap::from([
+                            ("reason".to_string(), FieldValue::from(reason.clone())),
+                            ("restart".to_string(), FieldValue::from(true)),
+                            ("fallback".to_string(), FieldValue::from(true)),
+                        ]),
                     );
                     discard_interrupted_runtime(&mut guard);
                     let crash_tx = report_failure.then(|| guard.crash_tx.clone()).flatten();
@@ -457,11 +528,15 @@ impl LocalAiController {
                     // 记录一次失败并继续排空本轮剩余响应，避免已写入 runtime 的响应
                     // 留在 channel 中污染下一次 request_id；其他设备仍可正常使用 AI 结果。
                     if let Some(svc) = prediction_log_service.as_ref() {
-                        svc.write(LogInput::new(
+                        svc.write(local_ai_log_input(
                             LogLevel::Warn,
-                            LogSource::LocalAi,
                             "local_ai::predict",
+                            "local-ai-handler-failed",
                             format!("handler bug, falling back: {reason}"),
+                            BTreeMap::from([
+                                ("reason".to_string(), FieldValue::from(reason.clone())),
+                                ("fallback".to_string(), FieldValue::from(true)),
+                            ]),
                         ));
                     }
                     handler_failure_reason.get_or_insert(reason);
@@ -479,32 +554,57 @@ impl LocalAiController {
         let has_results = !results.is_empty();
         let batch_count = batches.len();
         let result_count = results.len();
+        let duration_ms = prediction_started_at.elapsed().as_millis() as u64;
         if handler_failure_reason.is_some() {
             Self::log_with_guard(
                 &guard,
                 LogLevel::Warn,
                 "local_ai::predict",
+                "local-ai-prediction-partial",
                 format!(
                     "prediction batch completed with handler errors: {result_count}/{batch_count} devices returned estimates"
                 ),
+                BTreeMap::from([
+                    ("status".to_string(), FieldValue::from("partial")),
+                    ("batchCount".to_string(), FieldValue::from(batch_count as u64)),
+                    ("resultCount".to_string(), FieldValue::from(result_count as u64)),
+                    ("fallbackCount".to_string(), FieldValue::from(fallback_count as u64)),
+                    ("durationMs".to_string(), FieldValue::from(duration_ms)),
+                ]),
             );
         } else if has_results {
             Self::log_with_guard(
                 &guard,
-                LogLevel::Debug,
+                LogLevel::Info,
                 "local_ai::predict",
+                "local-ai-prediction-completed",
                 format!(
                     "prediction batch ok: {result_count}/{batch_count} devices returned estimates; {fallback_count} used deterministic fallback"
                 ),
+                BTreeMap::from([
+                    ("status".to_string(), FieldValue::from("ok")),
+                    ("batchCount".to_string(), FieldValue::from(batch_count as u64)),
+                    ("resultCount".to_string(), FieldValue::from(result_count as u64)),
+                    ("fallbackCount".to_string(), FieldValue::from(fallback_count as u64)),
+                    ("durationMs".to_string(), FieldValue::from(duration_ms)),
+                ]),
             );
         } else if batch_count > 0 {
             Self::log_with_guard(
                 &guard,
-                LogLevel::Debug,
+                LogLevel::Info,
                 "local_ai::predict",
+                "local-ai-prediction-completed",
                 format!(
                     "prediction batch completed normally: {fallback_count}/{batch_count} devices used deterministic fallback"
                 ),
+                BTreeMap::from([
+                    ("status".to_string(), FieldValue::from("fallback")),
+                    ("batchCount".to_string(), FieldValue::from(batch_count as u64)),
+                    ("resultCount".to_string(), FieldValue::from(0_u64)),
+                    ("fallbackCount".to_string(), FieldValue::from(fallback_count as u64)),
+                    ("durationMs".to_string(), FieldValue::from(duration_ms)),
+                ]),
             );
         }
         drop(guard);
@@ -536,7 +636,12 @@ fn mark_failed(guard: &mut std::sync::MutexGuard<'_, ControllerInner>, reason: &
         guard,
         LogLevel::Error,
         "local_ai::runtime",
+        "local-ai-runtime-failed",
         format!("local AI marked failed: {reason}"),
+        BTreeMap::from([
+            ("reason".to_string(), FieldValue::from(reason)),
+            ("fallback".to_string(), FieldValue::from(true)),
+        ]),
     );
     if let Some(mut runtime) = guard.running.take() {
         let _ = runtime.child.kill();
@@ -570,7 +675,7 @@ fn discard_interrupted_runtime(guard: &mut std::sync::MutexGuard<'_, ControllerI
 fn spawn_and_handshake(
     installation: &RuntimeInstallation,
     guard: &mut std::sync::MutexGuard<'_, ControllerInner>,
-) -> Result<(), String> {
+) -> Result<local_ai_runtime::RuntimeProbe, String> {
     local_ai_runtime::ensure_safe_runtime_file(&installation.executable)?;
     local_ai_runtime::ensure_safe_runtime_file(&installation.model_pack)?;
     local_ai_runtime::ensure_safe_runtime_file(&installation.handler_pack)?;
@@ -687,13 +792,17 @@ fn spawn_and_handshake(
                     if now.duration_since(window_start) >= Duration::from_secs(1) {
                         if suppressed_count > 0 {
                             if let Some(svc) = log_service.as_ref() {
-                                svc.write(LogInput::new(
+                                svc.write(local_ai_log_input(
                                     LogLevel::Warn,
-                                    LogSource::LocalAi,
                                     "local_ai::stderr",
+                                    "local-ai-stderr-suppressed",
                                     format!(
                                         "stderr rate limit: {suppressed_count} additional lines suppressed"
                                     ),
+                                    BTreeMap::from([(
+                                        "suppressedCount".to_string(),
+                                        FieldValue::from(suppressed_count),
+                                    )]),
                                 ));
                             }
                             suppressed_count = 0;
@@ -708,7 +817,9 @@ fn spawn_and_handshake(
                     lines_in_window += 1;
 
                     // 截断超长行(按字符边界,避免破坏 UTF-8)。
-                    let display_line: String = if line.chars().count() > MAX_STDERR_LINE {
+                    let line_char_count = line.chars().count();
+                    let was_truncated = line_char_count > MAX_STDERR_LINE;
+                    let display_line: String = if was_truncated {
                         let truncated: String = line.chars().take(MAX_STDERR_LINE).collect();
                         format!("{truncated}…(truncated)")
                     } else {
@@ -730,11 +841,19 @@ fn spawn_and_handshake(
                     };
 
                     if let Some(svc) = log_service.as_ref() {
-                        svc.write(LogInput::new(
+                        svc.write(local_ai_log_input(
                             level,
-                            LogSource::LocalAi,
                             "local_ai::stderr",
+                            "local-ai-stderr",
                             display_line,
+                            BTreeMap::from([
+                                ("source".to_string(), FieldValue::from("stderr")),
+                                ("truncated".to_string(), FieldValue::from(was_truncated)),
+                                (
+                                    "characterCount".to_string(),
+                                    FieldValue::from(line_char_count as u64),
+                                ),
+                            ]),
                         ));
                     }
                 }
@@ -744,11 +863,15 @@ fn spawn_and_handshake(
         // 收尾:刷新最后窗口中被抑制的行计数。
         if suppressed_count > 0 {
             if let Some(svc) = log_service.as_ref() {
-                svc.write(LogInput::new(
+                svc.write(local_ai_log_input(
                     LogLevel::Warn,
-                    LogSource::LocalAi,
                     "local_ai::stderr",
+                    "local-ai-stderr-suppressed",
                     format!("stderr rate limit: {suppressed_count} additional lines suppressed"),
+                    BTreeMap::from([(
+                        "suppressedCount".to_string(),
+                        FieldValue::from(suppressed_count),
+                    )]),
                 ));
             }
         }
@@ -790,18 +913,21 @@ fn spawn_and_handshake(
             return Err("local AI runtime closed stdout during handshake".into());
         }
     };
-    if let Err(error) = local_ai_runtime::validate_handshake_response(&response) {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(error);
-    }
+    let probe = match local_ai_runtime::validate_handshake_response(&response) {
+        Ok(probe) => probe,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
+    };
     guard.running = Some(RunningRuntime {
         child,
         stdin,
         responses: response_rx,
         request_seq: AtomicU64::new(0),
     });
-    Ok(())
+    Ok(probe)
 }
 
 fn read_line(reader: &mut impl Read, buf: &mut Vec<u8>) -> Result<Option<()>, String> {
@@ -970,6 +1096,27 @@ mod tests {
     use rill_runtime_protocol::HANDLER_API_VERSION;
 
     const REQUEST_ID: &str = "mira-battery-predict-test";
+
+    #[test]
+    fn local_ai_log_input_always_contains_a_structured_event() {
+        let input = local_ai_log_input(
+            LogLevel::Info,
+            "local_ai::predict",
+            "local-ai-prediction-completed",
+            "prediction complete",
+            BTreeMap::from([("resultCount".to_string(), FieldValue::from(2_u64))]),
+        );
+
+        assert_eq!(input.source, LogSource::LocalAi);
+        assert!(matches!(
+            input.fields.get("event"),
+            Some(FieldValue::Text(value)) if value == "local-ai-prediction-completed"
+        ));
+        assert!(matches!(
+            input.fields.get("resultCount"),
+            Some(FieldValue::Integer(2))
+        ));
+    }
 
     fn result_response(output: BatteryPredictionOutput) -> RuntimeResponse {
         RuntimeResponse::Result {
