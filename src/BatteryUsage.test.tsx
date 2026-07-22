@@ -88,7 +88,7 @@ describe('BatteryUsageModal', () => {
     expect(screen.queryByText('本地 AI')).toBeNull();
     expect(screen.queryByText('本地 AI 洞察')).toBeNull();
     expect(screen.getByText('用电洞察')).toBeInTheDocument();
-    expect(screen.getByText('根据本地电量历史生成趋势、耗电与充电习惯摘要')).toBeInTheDocument();
+    expect(screen.getByText('根据本地电量历史生成趋势、耗电与充电摘要')).toBeInTheDocument();
   });
 
   it('uses caller-provided settings so an already-open settings page cannot drift from the modal', async () => {
@@ -136,7 +136,44 @@ describe('BatteryUsageModal', () => {
 
     expect(document.querySelector('.battery-insight-card')).toBeNull();
     expect(screen.queryByText('本地 AI 洞察')).toBeNull();
-    expect(screen.queryByText('由趋势建模、异常掉电检测与充电习惯推断生成')).toBeNull();
+    expect(screen.queryByText('根据趋势、异常掉电与充电记录生成')).toBeNull();
+  });
+
+  it('shows active-use prediction separately from natural remaining time', async () => {
+    mockInvoke({
+      response: {
+        ...MOCK_BATTERY_HISTORY_24H,
+        insights: [
+          {
+            type: 'estimatedRemaining',
+            severity: 'info',
+            title: 'estimatedRemaining',
+            message: 'remainingDaysHours|6|0',
+            deviceKey: 'mouse:abc123:mouse',
+          },
+          {
+            type: 'estimatedActiveRemaining',
+            severity: 'info',
+            title: 'estimatedActiveRemaining',
+            message: 'remainingDaysHours|2|8',
+            deviceKey: 'mouse:abc123:mouse',
+          },
+          {
+            type: 'chargingHabit',
+            severity: 'info',
+            title: 'chargingHabit',
+            message: 'chargingHabitStartEnd|18|92|3',
+            deviceKey: 'mouse:abc123:mouse',
+          },
+        ],
+      },
+    });
+    render(<BatteryUsageModal open onClose={() => {}} hasBattery />);
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('battery_history_get', { range: '24h' }));
+
+    expect(document.querySelector('.battery-summary-grid')).toHaveTextContent('预计剩余时间6 天 0 小时');
+    expect(screen.getByText('预计活跃使用')).toBeInTheDocument();
+    expect(screen.getByText('2 天 8 小时')).toBeInTheDocument();
   });
 
   it('renders the four summary blocks in one row above the 24h chart', async () => {
@@ -145,7 +182,7 @@ describe('BatteryUsageModal', () => {
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('battery_history_get', { range: '24h' }));
     expect(screen.getByRole('heading', { name: '电量使用情况' })).toBeInTheDocument();
     expect(screen.getByText('本地 AI')).toBeInTheDocument();
-    expect(screen.getByText('由趋势建模、异常掉电检测与充电习惯推断生成')).toBeInTheDocument();
+    expect(screen.getByText('根据趋势、异常掉电与充电记录生成')).toBeInTheDocument();
     const range24h = screen.getByRole('tab', { name: '24 小时' });
     expect(range24h).toHaveAttribute('aria-selected', 'true');
     const chartCard = document.querySelector('.battery-chart-card');
@@ -153,6 +190,8 @@ describe('BatteryUsageModal', () => {
     expect(chartCard).not.toBeNull();
     expect(summaryGrid).not.toBeNull();
     if (!chartCard || !summaryGrid) throw new Error('battery chart or summary grid missing');
+    expect(chartCard.querySelector('.battery-chart-header')).toHaveTextContent('近 24 小时 · 累计使用');
+    expect(summaryGrid).toHaveTextContent('近 24 小时状态');
     expect(document.querySelectorAll('.battery-chart g[role="button"]')).toHaveLength(48);
     const usageGridLines = Array.from(document.querySelectorAll<SVGLineElement>('.battery-chart-x-grid'));
     const usageExtensions = Array.from(document.querySelectorAll<SVGLineElement>('.battery-chart-x-extension'));
@@ -164,9 +203,8 @@ describe('BatteryUsageModal', () => {
     expect(usageGridLines.every((line) => line.getAttribute('clip-path') === 'url(#battery-chart-plot-clip)')).toBe(true);
     expect(usageExtensions.every((line) => line.getAttribute('y1') === '144' && line.getAttribute('y2') === '159')).toBe(true);
     const usageLabelText = usageLabels.map((label) => label.textContent);
-    expect(usageLabelText).toContain('上午12时');
-    expect(usageLabelText).toContain('下午12时');
-    expect(usageLabelText.every((label) => /^(上午12时|下午12时|3|6|9)$/.test(label ?? ''))).toBe(true);
+    expect(usageLabelText).toEqual(['0', '0.5', '1 小时', '1.5', '2 小时', '2.5', '3 小时', '3.5']);
+    expect(document.querySelectorAll('.battery-chart-x-grid.major')).toHaveLength(3);
     expect(document.querySelectorAll('.battery-chart-x-boundary')).toHaveLength(0);
     expect(document.querySelector('.battery-chart')).toHaveAttribute('viewBox', '0 0 520 162');
     expect(document.querySelector('.battery-chart-plot-content')).toHaveClass('range-24h');
@@ -189,6 +227,12 @@ describe('BatteryUsageModal', () => {
     expect(summaryGrid.children).toHaveLength(4);
     expect(screen.getByText('当前电量')).toBeInTheDocument();
     expect(screen.getByText('充电习惯')).toBeInTheDocument();
+
+    const firstUsagePoint = document.querySelector<SVGGElement>('.battery-chart g[role="button"]');
+    if (!firstUsagePoint) throw new Error('24-hour chart has no usage point');
+    fireEvent.mouseEnter(firstUsagePoint);
+    expect(document.querySelector('.battery-chart-tooltip')).toHaveTextContent('累计使用: 0m');
+    expect(document.querySelector('.battery-chart-tooltip')).toHaveTextContent('实际时间:');
   });
 
   it('switches to 10d range using cached response without refetching', async () => {
@@ -246,6 +290,42 @@ describe('BatteryUsageModal', () => {
     expect(document.querySelector('.battery-chart-tooltip')).toHaveTextContent('时段内充电: 是');
   });
 
+  it('leaves 24h slots blank when they have no battery data', async () => {
+    const response24h: BatteryHistoryResponse = {
+      ...MOCK_BATTERY_HISTORY_24H,
+      series: MOCK_BATTERY_HISTORY_24H.series.map((series, seriesIndex) => ({
+        ...series,
+        points: series.points.map((point, pointIndex) => (
+          seriesIndex === 0 && pointIndex === 0
+            ? {
+              ...point,
+              // Rust `Option::None` 经 Tauri IPC 序列化为 null；必须按真实数据形态
+              // 验证，避免 null 被当作 0% 后画出最小高度短柱。
+              percentage: null,
+              minPercentage: null,
+              maxPercentage: null,
+              charging: null,
+              lowBattery: null,
+              sampleCount: 0,
+            }
+            : point
+        )),
+      })),
+    };
+    invokeMock.mockImplementation((command: string, payload?: { range?: string }) => {
+      if (command === 'settings_get') return Promise.resolve(settingsEnabled);
+      if (command === 'battery_history_get') {
+        return Promise.resolve(payload?.range === '10d' ? MOCK_BATTERY_HISTORY_10D : response24h);
+      }
+      return Promise.resolve(undefined);
+    });
+
+    render(<BatteryUsageModal open onClose={() => {}} hasBattery />);
+    await waitFor(() => expect(document.querySelectorAll('.battery-chart g[role="button"]')).toHaveLength(48));
+    expect(document.querySelectorAll('.battery-chart-bar')).toHaveLength(47);
+    expect(document.querySelector('.battery-chart-empty')).toBeNull();
+  });
+
   it('does not remount stable blocks when switching range', async () => {
     let callCount = 0;
     invokeMock.mockImplementation((command: string, payload?: { range?: string }) => {
@@ -285,7 +365,7 @@ describe('BatteryUsageModal', () => {
     expect(rangeToggleBefore).toBe(rangeToggleAfter);
   });
 
-  it('formats English hour, weekday, and date labels compactly', async () => {
+  it('formats English cumulative usage, weekday, and date labels compactly', async () => {
     await i18n.changeLanguage('en');
     let callCount = 0;
     invokeMock.mockImplementation((command: string, payload?: { range?: string }) => {
@@ -300,16 +380,16 @@ describe('BatteryUsageModal', () => {
     render(<BatteryUsageModal open onClose={() => {}} hasBattery />);
     // 打开时并行拉取 24h + 10d（callCount=2）。
     await waitFor(() => expect(callCount).toBe(2));
-    const hourLabels = Array.from(document.querySelectorAll<SVGTextElement>('.battery-chart-x-label'))
+    const usageLabels = Array.from(document.querySelectorAll<SVGTextElement>('.battery-chart-x-label'))
       .map((label) => label.textContent);
-    expect(hourLabels).toContain('12 AM');
-    expect(hourLabels).toContain('12 PM');
-    expect(hourLabels.every((label) => /^(12 AM|12 PM|3|6|9)$/.test(label ?? ''))).toBe(true);
+    expect(usageLabels).toEqual(['0', '0.5', '1 hr', '1.5', '2 hr', '2.5', '3 hr', '3.5']);
+    expect(document.querySelector('.battery-chart-header')).toHaveTextContent('Last 24 hours · Usage elapsed');
 
     fireEvent.click(screen.getByRole('tab', { name: '10 days' }));
     // 切换命中缓存，callCount 仍为 2；等待 10d 标签渲染完成。
     await waitFor(() => expect(document.querySelectorAll('.battery-chart-x-label')).toHaveLength(10));
     expect(callCount).toBe(2);
+    expect(document.querySelector('.battery-chart-header')).toHaveTextContent('Past 10 days');
     const weekdayLabels = Array.from(document.querySelectorAll<SVGTextElement>('.battery-chart-x-label'))
       .map((label) => label.textContent ?? '');
     const dateLabels = Array.from(document.querySelectorAll<SVGTextElement>('.battery-chart-x-date'))
@@ -420,8 +500,8 @@ describe('BatteryUsageModal', () => {
     expect(document.querySelector('.battery-insight-card')).toBeNull();
     expect(screen.queryByText('本地 AI 洞察')).toBeNull();
     expect(screen.queryByText('用电洞察')).toBeNull();
-    expect(screen.queryByText('由趋势建模、异常掉电检测与充电习惯推断生成')).toBeNull();
-    expect(screen.queryByText('根据本地电量历史生成趋势、耗电与充电习惯摘要')).toBeNull();
+    expect(screen.queryByText('根据趋势、异常掉电与充电记录生成')).toBeNull();
+    expect(screen.queryByText('根据本地电量历史生成趋势、耗电与充电摘要')).toBeNull();
 
     // 切换到 10d：minInsightCount 仍是 0（来自缓存），10d 即使有 4 个洞察也不显示。
     fireEvent.click(screen.getByRole('tab', { name: '10 天' }));

@@ -304,8 +304,15 @@ const FILL_RADIUS: i32 = SHAPE_RADIUS - OUTLINE_WIDTH - OUTLINE_GAP - FILL_INSET
 
 /// 充电闪电多边形顶点。轮廓与静态 PNG 生成器保持一致；在 20px
 /// 菜单栏尺寸仍保留清晰的折角，而不会显得又细又长。
-const CHARGING_BOLT: [(i32, i32); 6] = [(38, 13), (32, 28), (46, 28), (29, 47), (35, 32), (23, 32)];
+const CHARGING_BOLT_SHAPE: [(i32, i32); 6] =
+    [(38, 13), (32, 28), (46, 28), (29, 47), (35, 32), (23, 32)];
+const CHARGING_BOLT_X_OFFSET: i32 = -2;
 const CHARGING_BOLT_HALO_WIDTH: i32 = 9;
+
+/// 保留既有闪电轮廓，仅水平平移，使面积重心贴近鼠标中轴。
+fn charging_bolt_points() -> [(i32, i32); 6] {
+    CHARGING_BOLT_SHAPE.map(|(x, y)| (x + CHARGING_BOLT_X_OFFSET, y))
+}
 
 /// 鼠标外形边界：宽 46, 高 60, 居中。
 fn mouse_shape_bounds(size: u32) -> (i32, i32, i32, i32) {
@@ -423,9 +430,10 @@ pub fn draw_mouse_icon(canvas: &mut IconCanvas, state: &TrayStatusState, style: 
 
     // 4. 充电闪电（多边形，叠加在中心）
     if state.mouse_charging {
-        canvas.clear_polygon_halo(&CHARGING_BOLT, CHARGING_BOLT_HALO_WIDTH);
+        let charging_bolt = charging_bolt_points();
+        canvas.clear_polygon_halo(&charging_bolt, CHARGING_BOLT_HALO_WIDTH);
         canvas.fill_polygon(
-            &CHARGING_BOLT,
+            &charging_bolt,
             RgbaColor::rgb(
                 style.outline_secondary.r,
                 style.outline_secondary.g,
@@ -701,17 +709,17 @@ mod tests {
         let state = make_state(Some(100), true);
         let bytes = render_mouse_icon_rgba(&state, &style);
 
-        let bolt_idx = ((28 * ICON_SIZE as i32 + 34) * 4) as usize;
+        let bolt_idx = ((28 * ICON_SIZE as i32 + 32) * 4) as usize;
         assert_eq!(&bytes[bolt_idx..bolt_idx + 4], &[255, 255, 255, 255]);
 
-        let gap_idx = ((29 * ICON_SIZE as i32 + 47) * 4) as usize;
+        let gap_idx = ((29 * ICON_SIZE as i32 + 45) * 4) as usize;
         assert_eq!(
             bytes[gap_idx + 3],
             0,
             "charging bolt should leave transparent spacing around the solid shape"
         );
 
-        for (x, y) in [(40, 12), (22, 31), (47, 29), (28, 48)] {
+        for (x, y) in [(38, 12), (20, 31), (45, 29), (26, 48)] {
             let idx = ((y * ICON_SIZE as i32 + x) * 4) as usize;
             assert_eq!(
                 bytes[idx + 3],
@@ -723,6 +731,28 @@ mod tests {
         let light_style = TrayVisualStyle::from_settings(&test_settings(), TrayTheme::Light);
         let light_bytes = render_mouse_icon_rgba(&state, &light_style);
         assert_eq!(&light_bytes[bolt_idx..bolt_idx + 4], &[0, 0, 0, 255]);
+    }
+
+    #[test]
+    fn charging_bolt_visual_centroid_is_aligned_with_mouse_axis() {
+        let points = charging_bolt_points();
+        let mut twice_area = 0.0;
+        let mut centroid_x_numerator = 0.0;
+
+        for index in 0..points.len() {
+            let (x0, y0) = points[index];
+            let (x1, y1) = points[(index + 1) % points.len()];
+            let cross = (x0 * y1 - x1 * y0) as f64;
+            twice_area += cross;
+            centroid_x_numerator += (x0 + x1) as f64 * cross;
+        }
+
+        let centroid_x = centroid_x_numerator / (3.0 * twice_area);
+        let mouse_axis = ICON_SIZE as f64 / 2.0;
+        assert!(
+            (centroid_x - mouse_axis).abs() <= 0.25,
+            "charging bolt centroid {centroid_x:.2} should align with mouse axis {mouse_axis:.2}"
+        );
     }
 
     #[test]

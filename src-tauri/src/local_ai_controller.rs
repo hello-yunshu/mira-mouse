@@ -55,6 +55,13 @@ const STDERR_RATE_LIMIT: u32 = 50;
 /// enough recent samples for the quality gate. At the normal five-minute
 /// cadence this is roughly two weeks per battery component.
 const MAX_PREDICTION_SAMPLES: usize = 4_096;
+/// The handler's relative quality gate is necessary but not sufficient when
+/// battery percentages are quantized. Reject a model whose absolute drain-rate
+/// error is still too large to support a user-facing remaining-time estimate.
+const MAX_ACCEPTABLE_CANDIDATE_MAE_PER_HOUR: f64 = 2.0;
+const MIN_HOST_TRAINING_SAMPLES: u64 = 12;
+const MIN_HOST_VALIDATION_SAMPLES: u64 = 8;
+const MAX_CANDIDATE_TO_BASELINE_MAE_RATIO: f64 = 0.95;
 
 /// 控制器向上层 supervisor 投递的崩溃/成功事件。
 ///
@@ -92,6 +99,12 @@ enum PredictionError {
         report_failure: bool,
     },
     HandlerBug(String),
+}
+
+#[derive(Debug, PartialEq)]
+enum PredictionDecision {
+    Estimate(f64),
+    BaselineRecommended { reason: String },
 }
 
 /// 控制器状态。所有字段通过单一 Mutex 串行化访问,避免并发竞争。
@@ -297,6 +310,7 @@ impl LocalAiController {
         // 2. 串行发送所有请求并读取响应。
         let mut results = BTreeMap::new();
         let mut handler_failure_reason: Option<String> = None;
+        let mut fallback_count = 0usize;
         let mut guard = self.lock();
         let prediction_log_service = guard.log_service.clone();
         let Some(runtime) = guard.running.as_mut() else {
@@ -398,12 +412,22 @@ impl LocalAiController {
                 }
             };
             match parse_prediction(&response, request_id) {
-                Ok(Some(remaining)) => {
+                Ok(PredictionDecision::Estimate(remaining)) => {
                     if let Some((key, _)) = batches.get(index) {
                         results.insert(key.clone(), remaining);
                     }
                 }
-                Ok(None) => {}
+                Ok(PredictionDecision::BaselineRecommended { reason }) => {
+                    fallback_count += 1;
+                    if let Some(svc) = prediction_log_service.as_ref() {
+                        svc.write(LogInput::new(
+                            LogLevel::Debug,
+                            LogSource::LocalAi,
+                            "local_ai::predict",
+                            format!("deterministic baseline selected: {reason}"),
+                        ));
+                    }
+                }
                 Err(PredictionError::HandlerInterrupted {
                     reason,
                     report_failure,
@@ -448,7 +472,9 @@ impl LocalAiController {
                 }
             }
         }
-        // 完整跑完所有 batch 且至少返回 1 个结果 → 通知 supervisor 清零失败窗口。
+        // A normal baseline recommendation still proves that runtime + handler
+        // completed the request. Clear the supervisor failure window even when
+        // the safety gate intentionally declines every model estimate.
         // 必须先 drop guard 再 emit,否则 emit_crash_event 重新 lock 会死锁。
         let has_results = !results.is_empty();
         let batch_count = batches.len();
@@ -468,15 +494,17 @@ impl LocalAiController {
                 LogLevel::Debug,
                 "local_ai::predict",
                 format!(
-                    "prediction batch ok: {result_count}/{batch_count} devices returned estimates"
+                    "prediction batch ok: {result_count}/{batch_count} devices returned estimates; {fallback_count} used deterministic fallback"
                 ),
             );
         } else if batch_count > 0 {
             Self::log_with_guard(
                 &guard,
-                LogLevel::Warn,
+                LogLevel::Debug,
                 "local_ai::predict",
-                format!("prediction batch returned no estimates for {batch_count} devices"),
+                format!(
+                    "prediction batch completed normally: {fallback_count}/{batch_count} devices used deterministic fallback"
+                ),
             );
         }
         drop(guard);
@@ -485,7 +513,7 @@ impl LocalAiController {
                 at: Instant::now(),
                 reason,
             });
-        } else if has_results {
+        } else {
             self.emit_crash_event(CrashEvent::Success);
         }
         results
@@ -802,7 +830,7 @@ fn read_line(reader: &mut impl Read, buf: &mut Vec<u8>) -> Result<Option<()>, St
 fn parse_prediction(
     response: &RuntimeResponse,
     expected_request_id: &str,
-) -> Result<Option<f64>, PredictionError> {
+) -> Result<PredictionDecision, PredictionError> {
     match response {
         RuntimeResponse::Result {
             request_id,
@@ -823,9 +851,56 @@ fn parse_prediction(
                                 "local AI returned an invalid estimate".into(),
                             )
                         })?;
-                    Ok(Some(remaining))
+                    if output.training_samples < MIN_HOST_TRAINING_SAMPLES {
+                        return Ok(PredictionDecision::BaselineRecommended {
+                            reason: format!(
+                                "hostInsufficientTrainingData({}/{})",
+                                output.training_samples, MIN_HOST_TRAINING_SAMPLES
+                            ),
+                        });
+                    }
+                    if output.validation_samples < MIN_HOST_VALIDATION_SAMPLES {
+                        return Ok(PredictionDecision::BaselineRecommended {
+                            reason: format!(
+                                "hostInsufficientValidationData({}/{})",
+                                output.validation_samples, MIN_HOST_VALIDATION_SAMPLES
+                            ),
+                        });
+                    }
+                    let Some(candidate_mae) = output
+                        .candidate_mae
+                        .filter(|value| value.is_finite() && *value >= 0.0)
+                    else {
+                        return Ok(PredictionDecision::BaselineRecommended {
+                            reason: "hostQualityMetricsUnavailable".into(),
+                        });
+                    };
+                    if candidate_mae > MAX_ACCEPTABLE_CANDIDATE_MAE_PER_HOUR {
+                        return Ok(PredictionDecision::BaselineRecommended {
+                            reason: format!(
+                                "hostCandidateMaeTooHigh({candidate_mae:.3}>{MAX_ACCEPTABLE_CANDIDATE_MAE_PER_HOUR:.3})"
+                            ),
+                        });
+                    }
+                    if let Some(baseline_mae) = output
+                        .baseline_mae
+                        .filter(|value| value.is_finite() && *value > 0.0)
+                    {
+                        if candidate_mae > baseline_mae * MAX_CANDIDATE_TO_BASELINE_MAE_RATIO {
+                            return Ok(PredictionDecision::BaselineRecommended {
+                                reason: format!(
+                                    "hostCandidateImprovementTooSmall({candidate_mae:.3}/{baseline_mae:.3})"
+                                ),
+                            });
+                        }
+                    }
+                    Ok(PredictionDecision::Estimate(remaining))
                 }
-                PredictionSource::BaselineRecommended => Ok(None),
+                PredictionSource::BaselineRecommended => {
+                    Ok(PredictionDecision::BaselineRecommended {
+                        reason: output.reason,
+                    })
+                }
             }
         }
         // rill-runtime 能返回结构化响应说明 IPC 仍健康，但 Wasmtime 的 timeout/trap
@@ -1023,14 +1098,19 @@ mod tests {
     }
 
     #[test]
-    fn parse_prediction_returns_none_for_baseline_recommended() {
+    fn parse_prediction_returns_baseline_decision_for_handler_fallback() {
         // BaselineRecommended 是 handler 的正常回退路径,不是错误。
         let response = result_response(prediction_output(
             PredictionSource::BaselineRecommended,
             None,
         ));
         let result = parse_prediction(&response, REQUEST_ID);
-        assert_eq!(result.unwrap(), None);
+        assert_eq!(
+            result.unwrap(),
+            PredictionDecision::BaselineRecommended {
+                reason: "test".into()
+            }
+        );
     }
 
     #[test]
@@ -1038,7 +1118,32 @@ mod tests {
         // LocalAi 通过质量门的有效预测。
         let response = result_response(prediction_output(PredictionSource::LocalAi, Some(12.5)));
         let result = parse_prediction(&response, REQUEST_ID);
-        assert_eq!(result.unwrap(), Some(12.5));
+        assert_eq!(result.unwrap(), PredictionDecision::Estimate(12.5));
+    }
+
+    #[test]
+    fn parse_prediction_rejects_large_absolute_error_without_blaming_runtime() {
+        let mut output = prediction_output(PredictionSource::LocalAi, Some(24.4));
+        output.baseline_mae = Some(9.45);
+        output.candidate_mae = Some(8.09);
+        let result = parse_prediction(&result_response(output), REQUEST_ID).unwrap();
+        assert!(matches!(
+            result,
+            PredictionDecision::BaselineRecommended { reason }
+                if reason.starts_with("hostCandidateMaeTooHigh")
+        ));
+    }
+
+    #[test]
+    fn parse_prediction_requires_enough_host_training_evidence() {
+        let mut output = prediction_output(PredictionSource::LocalAi, Some(24.4));
+        output.training_samples = MIN_HOST_TRAINING_SAMPLES - 1;
+        let result = parse_prediction(&result_response(output), REQUEST_ID).unwrap();
+        assert!(matches!(
+            result,
+            PredictionDecision::BaselineRecommended { reason }
+                if reason.starts_with("hostInsufficientTrainingData")
+        ));
     }
 
     #[test]

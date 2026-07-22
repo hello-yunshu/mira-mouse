@@ -338,7 +338,7 @@ function mockBatteryHistoryResponse(range: BatteryHistoryRange): BatteryHistoryR
   // 鼠标：24h 从 90% 降到 82%，9-7 小时前有充电段；10d 从 100% 降到 82%，第 5 天有充电段。
   const mousePoints = Array.from({ length: bucketCount }, (_, i) => {
     if (range === '24h') {
-      // 48 个 30 分钟 bucket，halfHourAgo 表示该 bucket 距今的半小时数
+      // 48 个真实采样展示点；横轴按每点 5 分钟的累计使用时长示意。
       const halfHourAgo = bucketCount - 1 - i;
       const hourAgo = halfHourAgo * 0.5;
       // 分三段：24h→9h 线性下降 90→78；9-7h 充电 78→92；7h→now 下降 92→82
@@ -353,9 +353,13 @@ function mockBatteryHistoryResponse(range: BatteryHistoryRange): BatteryHistoryR
       }
       const lowBattery = !charging && pct < 20;
       const dt = new Date(now.getTime() - halfHourAgo * 1800_000);
+      const usageElapsedMinutes = i * 5;
       return {
         bucketStart: dt.toISOString(),
-        bucketLabel: `${String(dt.getHours()).padStart(2, '0')}:${String(dt.getMinutes()).padStart(2, '0')}`,
+        bucketLabel: usageElapsedMinutes < 60
+          ? `${usageElapsedMinutes}m`
+          : `${Math.floor(usageElapsedMinutes / 60)}h${usageElapsedMinutes % 60 ? ` ${usageElapsedMinutes % 60}m` : ''}`,
+        usageElapsedMinutes,
         percentage: Math.round(pct),
         minPercentage: Math.round(pct - 2),
         maxPercentage: Math.round(pct + 2),
@@ -405,11 +409,15 @@ function mockBatteryHistoryResponse(range: BatteryHistoryRange): BatteryHistoryR
     const pct = range === '24h'
       ? 96 + hourAgo * (4 / 24)
       : 96 + Math.floor(ago / 3) * (4 / 9);
+    const usageElapsedMinutes = range === '24h' ? i * 5 : undefined;
     return {
       bucketStart: dt.toISOString(),
       bucketLabel: range === '24h'
-        ? `${String(dt.getHours()).padStart(2, '0')}:${String(dt.getMinutes()).padStart(2, '0')}`
+        ? usageElapsedMinutes! < 60
+          ? `${usageElapsedMinutes}m`
+          : `${Math.floor(usageElapsedMinutes! / 60)}h${usageElapsedMinutes! % 60 ? ` ${usageElapsedMinutes! % 60}m` : ''}`
         : `${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')} ${String(Math.floor(dt.getHours() / 8) * 8).padStart(2, '0')}:00–${String(Math.floor(dt.getHours() / 8) * 8 + 8).padStart(2, '0')}:00`,
+      usageElapsedMinutes,
       percentage: Math.round(pct),
       minPercentage: Math.round(pct - 1),
       maxPercentage: 100,

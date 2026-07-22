@@ -3337,7 +3337,7 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
 .battery-chart-bar.battery-chart-after-now:hover {
   opacity: .46;
 }
-.battery-chart-bar.battery-chart-current:not(.battery-chart-empty) {
+.battery-chart-bar.battery-chart-current {
   filter: drop-shadow(0 2px 5px color-mix(in oklch, var(--accent), transparent 66%));
 }
 .battery-chart-average {
@@ -3425,7 +3425,6 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   opacity: .82;
 }
 .battery-chart-bar:hover { opacity: .9; filter: drop-shadow(0 2px 5px rgb(30 42 56 / 15%)); }
-.battery-chart-empty { fill: var(--surface-group-border); }
 .battery-chart-legend {
   position: absolute;
   left: 28px;
@@ -3742,6 +3741,12 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
 @keyframes mira-section-enter {
   from { opacity: 0; transform: translateY(var(--motion-distance)); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+/* 等级筛选 pill 标签切换动画：旧值上移淡出，新值从下方滑入 */
+@keyframes mira-pill-label-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
 @keyframes mira-scrim-enter {
@@ -4483,6 +4488,7 @@ input[type="color"] {
   color: var(--text);
   white-space: nowrap;
   pointer-events: none;
+  animation: mira-pill-label-in var(--motion-fast) var(--motion-ease-out) backwards;
 }
 .log-filter-pill select {
   position: absolute;
