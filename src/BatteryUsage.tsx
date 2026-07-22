@@ -261,11 +261,12 @@ function BatteryUsageChart({ points, range, generatedAt }: ChartProps) {
   const chartHeight = height - padding.top - padding.bottom;
   const pointCount = Math.max(points.length, 1);
   const slotWidth = chartWidth / pointCount;
-  // 24h 最多显示 48 个聚合点、10d 固定 30 点；采样密度由后端独立保留给分析。
+  // 24h 最多显示 48 个真实样本聚合点、10d 固定 30 点；24h 的休眠/断连空档
+  // 在后端压缩为累计使用时长，10d 仍保持自然日时间槽。
   const visualBarWidth = Math.max(2, Math.min(slotWidth * 0.52, slotWidth - 2));
 
   const recordedPercentages = useMemo(
-    () => points.flatMap((point) => point.percentage === undefined ? [] : [point.percentage]),
+    () => points.flatMap((point) => point.percentage == null ? [] : [point.percentage]),
     [points],
   );
   const averagePercentage = recordedPercentages.length > 0
@@ -278,7 +279,7 @@ function BatteryUsageChart({ points, range, generatedAt }: ChartProps) {
   const averageLabelOffset = averageLabelBelow ? 6 : -6;
   const latestRecordedIndex = useMemo(() => {
     for (let index = points.length - 1; index >= 0; index -= 1) {
-      if (points[index]?.percentage !== undefined) return index;
+      if (points[index]?.percentage != null) return index;
     }
     return -1;
   }, [points]);
@@ -305,43 +306,51 @@ function BatteryUsageChart({ points, range, generatedAt }: ChartProps) {
   const xTicks = useMemo(() => {
     const locale = i18n.resolvedLanguage ?? i18n.language;
     if (range === '24h') {
-      const timestamps = points
-        .map((point) => new Date(point.bucketStart).getTime())
-        .filter((timestamp) => Number.isFinite(timestamp));
-      const startMs = timestamps[0] ?? 0;
-      const sampledEndMs = timestamps[timestamps.length - 1] ?? startMs + 24 * 60 * 60 * 1000;
-      const slotDuration = timestamps.length > 1
-        ? Math.max(1, (sampledEndMs - startMs) / (timestamps.length - 1))
-        : 30 * 60 * 1000;
-      const endMs = sampledEndMs + slotDuration;
-      const spanMs = Math.max(1, endMs - startMs);
-      const firstTick = new Date(startMs);
-      firstTick.setMinutes(0, 0, 0);
-      const hoursToNextTick = (3 - (firstTick.getHours() % 3)) % 3;
-      firstTick.setHours(firstTick.getHours() + hoursToNextTick);
-      if (firstTick.getTime() < startMs) firstTick.setHours(firstTick.getHours() + 3);
+      const usageMinutes = points.map((point) => Math.max(0, point.usageElapsedMinutes ?? 0));
+      const maxUsageMinutes = Math.max(0, ...usageMinutes);
+      const stepCandidates = maxUsageMinutes <= 60
+        ? [5, 10, 15, 30]
+        : [15, 30, 60, 120, 180, 360, 720];
+      const stepMinutes = stepCandidates.find(
+        (candidate) => Math.floor(maxUsageMinutes / candidate) + 1 <= 8,
+      ) ?? stepCandidates[stepCandidates.length - 1];
+      const isChinese = locale.toLowerCase().startsWith('zh');
+      const usesMinutes = maxUsageMinutes <= 60;
+      const majorInterval = usesMinutes
+        ? 30
+        : stepMinutes < 60
+          ? 60
+          : stepMinutes * 3;
+      const tickCount = Math.floor(maxUsageMinutes / stepMinutes) + 1;
+      let previousPointIndex = -1;
 
-      const ticks = [];
-      for (let cursor = firstTick; cursor.getTime() < endMs; cursor = new Date(cursor.getTime() + 3 * 60 * 60 * 1000)) {
-        const hour = cursor.getHours();
-        const hour12 = hour % 12 || 12;
-        const isChinese = locale.toLowerCase().startsWith('zh');
-        const label = hour === 0
-          ? (isChinese ? `上午${hour12}时` : `${hour12} AM`)
-          : hour === 12
-            ? (isChinese ? `下午${hour12}时` : `${hour12} PM`)
-            : String(hour12);
-        const x = padding.left + ((cursor.getTime() - startMs) / spanMs) * chartWidth;
-        ticks.push({
-          key: `time-${cursor.getTime()}`,
-          lineX: x,
-          labelX: x,
-          label,
-          dateLabel: '',
-          major: false,
+      return Array.from({ length: Math.max(1, tickCount) }, (_, tickIndex) => tickIndex * stepMinutes)
+        .flatMap((elapsedMinutes) => {
+          let pointIndex = usageMinutes.findIndex((minutes) => minutes >= elapsedMinutes);
+          if (pointIndex < 0) pointIndex = Math.max(0, points.length - 1);
+          // 会话边界可能有相同的累计时长；同一根柱只保留一个刻度，避免文字重叠。
+          if (pointIndex === previousPointIndex) return [];
+          previousPointIndex = pointIndex;
+
+          const major = elapsedMinutes > 0 && elapsedMinutes % majorInterval === 0;
+          const numericValue = usesMinutes
+            ? String(elapsedMinutes)
+            : Number((elapsedMinutes / 60).toFixed(2)).toString();
+          const label = major
+            ? usesMinutes
+              ? `${numericValue} ${isChinese ? '分钟' : 'min'}`
+              : `${numericValue} ${isChinese ? '小时' : 'hr'}`
+            : numericValue;
+          const x = padding.left + (pointIndex + 0.5) * slotWidth;
+          return [{
+            key: `usage-${elapsedMinutes}`,
+            lineX: x,
+            labelX: x,
+            label,
+            dateLabel: '',
+            major,
+          }];
         });
-      }
-      return ticks;
     }
 
     return Array.from({ length: Math.ceil(pointCount / 3) }, (_, dayIndex) => {
@@ -363,12 +372,15 @@ function BatteryUsageChart({ points, range, generatedAt }: ChartProps) {
         major: Boolean(showDate),
       };
     }).filter((tick) => tick.label);
-  }, [chartWidth, i18n.language, i18n.resolvedLanguage, padding.left, pointCount, points, range, slotWidth]);
+  }, [i18n.language, i18n.resolvedLanguage, padding.left, pointCount, points, range, slotWidth]);
 
   return (
     <div className="battery-chart-card">
       <div className="battery-chart-header">
-        <span><ChartBar weight="regular" /> {t('batteryUsage.change' + (range === '24h' ? '24h' : '10d'))}</span>
+        <span>
+          <ChartBar weight="regular" />{' '}
+          {t(range === '24h' ? 'batteryUsage.chartTitle24h' : 'batteryUsage.change10d')}
+        </span>
       </div>
       <div className="battery-chart-stage">
         <svg
@@ -450,14 +462,13 @@ function BatteryUsageChart({ points, range, generatedAt }: ChartProps) {
             {points.map((point, i) => {
               const slotX = padding.left + i * slotWidth;
               const x = slotX + (slotWidth - visualBarWidth) / 2;
-              const hasData = point.percentage !== undefined;
+              const hasData = point.percentage != null;
               const pct = point.percentage ?? 0;
-              const barH = hasData ? (pct / 100) * chartHeight : 0;
-              const renderedBarH = hasData ? Math.max(barH, 3) : 2;
+              const barH = (pct / 100) * chartHeight;
+              const renderedBarH = Math.max(barH, 3);
               const y = padding.top + chartHeight - renderedBarH;
               const isCharging = point.charging ?? false;
               const isLow = point.lowBattery ?? false;
-              const isEmpty = !hasData;
               const isCurrent = i === latestRecordedIndex;
               const isAfterNow = range === '10d'
                 && i < currentDayStartIndex
@@ -471,8 +482,7 @@ function BatteryUsageChart({ points, range, generatedAt }: ChartProps) {
                     : 'battery-bar-normal';
 
               let barClass = 'battery-chart-bar';
-              if (isEmpty) barClass += ' battery-chart-empty';
-              else if (isCharging) barClass += ' battery-chart-charging';
+              if (isCharging) barClass += ' battery-chart-charging';
               else if (isLow) barClass += ' battery-chart-low';
               if (isCurrent) barClass += ' battery-chart-current';
               if (isAfterNow) barClass += ' battery-chart-after-now';
@@ -502,12 +512,14 @@ function BatteryUsageChart({ points, range, generatedAt }: ChartProps) {
                     height={chartHeight}
                     fill="transparent"
                   />
-                  <path
-                    d={barPath}
-                    className={barClass}
-                    fill={isEmpty ? undefined : `url(#${fillId})`}
-                    style={{ '--bar-delay': `${Math.min(i, 10) * 6}ms` } as CSSProperties}
-                  />
+                  {hasData && (
+                    <path
+                      d={barPath}
+                      className={barClass}
+                      fill={`url(#${fillId})`}
+                      style={{ '--bar-delay': `${Math.min(i, 10) * 6}ms` } as CSSProperties}
+                    />
+                  )}
                 </g>
               );
             })}
@@ -607,11 +619,22 @@ function BatteryUsageChart({ points, range, generatedAt }: ChartProps) {
           </g>
         </svg>
 
-        {activePoint && activePoint.percentage !== undefined && (
+        {activePoint && activePoint.percentage != null && (
           <div className="battery-chart-tooltip" style={tooltipStyle} role="tooltip">
             <div className="tooltip-row"><strong>{t(range === '24h' ? 'batteryUsage.tooltipTime' : 'batteryUsage.tooltipDate')}: </strong><span>{activePoint.bucketLabel}</span></div>
+            {range === '24h' && (
+              <div className="tooltip-row">
+                <strong>{t('batteryUsage.tooltipActualTime')}: </strong>
+                <span>{new Intl.DateTimeFormat(i18n.resolvedLanguage ?? i18n.language, {
+                  month: 'numeric',
+                  day: 'numeric',
+                  hour: '2-digit',
+                  minute: '2-digit',
+                }).format(new Date(activePoint.bucketStart))}</span>
+              </div>
+            )}
             <div className="tooltip-row"><strong>{t('batteryUsage.tooltipPercentage')}: </strong><span>{activePoint.percentage}%</span></div>
-            {activePoint.minPercentage !== undefined && activePoint.maxPercentage !== undefined && (
+            {activePoint.minPercentage != null && activePoint.maxPercentage != null && (
               <div className="tooltip-row"><strong>{t('batteryUsage.tooltipMin')}/{t('batteryUsage.tooltipMax')}: </strong><span>{activePoint.minPercentage}%-{activePoint.maxPercentage}%</span></div>
             )}
             <div className="tooltip-row"><strong>{t('batteryUsage.tooltipCharging')}: </strong><span>{t(activePoint.charging ? 'batteryUsage.tooltipYes' : 'batteryUsage.tooltipNo')}</span></div>
@@ -856,7 +879,13 @@ const BatteryUsageStatusStrip = memo(function BatteryUsageStatusStrip({
 // 抽出为独立函数，让 BatteryUsageModal 对 24h/10d 各跑一次取最小值作为 maxCount，
 // 实现「两个 range 卡片数一致」的视觉稳定性。
 const INSIGHT_SPECIAL_TYPES: BatteryInsight['type'][] = ['abnormalDrain', 'powerSavingTip'];
-const INSIGHT_BASIC_PRIORITY: BatteryInsight['type'][] = ['chargingHabit', 'batteryConsistency', 'averageDailyDrain', 'chargingCount'];
+const INSIGHT_BASIC_PRIORITY: BatteryInsight['type'][] = [
+  'chargingHabit',
+  'batteryConsistency',
+  'averageDailyDrain',
+  'estimatedActiveRemaining',
+  'chargingCount',
+];
 const INSIGHT_DEDUP_TYPES: ReadonlySet<BatteryInsight['type']> = new Set(['estimatedRemaining', 'estimatedRunout', 'deviceComparison', 'lowestLevel']);
 const INSIGHT_HARD_MAX = 6;
 

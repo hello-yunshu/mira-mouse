@@ -314,6 +314,7 @@ export type BatteryHistoryRange = '24h' | '10d';
 
 export type BatteryInsightType =
   | 'estimatedRemaining'
+  | 'estimatedActiveRemaining'
   | 'estimatedRunout'
   | 'chargingHabit'
   | 'abnormalDrain'
@@ -355,11 +356,12 @@ export interface BatteryHistorySeries {
 export interface BatteryHistoryPoint {
   bucketStart: string;
   bucketLabel: string;
-  percentage?: number;
-  minPercentage?: number;
-  maxPercentage?: number;
-  charging?: boolean;
-  lowBattery?: boolean;
+  usageElapsedMinutes?: number;
+  percentage?: number | null;
+  minPercentage?: number | null;
+  maxPercentage?: number | null;
+  charging?: boolean | null;
+  lowBattery?: boolean | null;
   sampleCount: number;
 }
 

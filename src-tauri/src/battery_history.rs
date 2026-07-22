@@ -24,7 +24,20 @@ const SCHEMA_VERSION: u32 = 3;
 const SESSION_GAP_THRESHOLD_MINUTES: i64 = 10;
 const MAX_SAMPLES: usize = 20000;
 const BOUNCE_THRESHOLD_PERCENT: f64 = 1.0;
-const REPLACEMENT_RISE_THRESHOLD_PERCENT: u8 = 5;
+/// A level change this large may be an off-device charge, battery swap, or
+/// reconnect recalibration rather than ordinary discharge.
+const LEVEL_DISCONTINUITY_THRESHOLD_PERCENT: u8 = 5;
+/// Short integer-level jumps are too coarse to extrapolate as an hourly rate.
+const SHORT_LEVEL_DISCONTINUITY_MINUTES: i64 = 15;
+/// A rate observation must span enough time to smooth 1% battery quantization.
+const MIN_RATE_OBSERVATION_MINUTES: i64 = 30;
+/// One short session with a single 1% step is still too weak to support a
+/// remaining-active-use estimate. Longer observations may use a 1% drop.
+const MIN_SHORT_ACTIVE_OBSERVATION_HOURS: f64 = 2.0;
+const MIN_SHORT_ACTIVE_TOTAL_DROP_PERCENT: f64 = 2.0;
+/// Above this bound, prefer treating the transition as a discontinuity instead
+/// of teaching prediction/alert paths an implausibly high mouse drain rate.
+const MAX_PLAUSIBLE_DRAIN_PER_HOUR: f64 = 20.0;
 const POST_CHARGE_SKIP_MINUTES: i64 = 10;
 const VERY_SLOW_DRAIN_HOURS: f64 = 9999.0;
 /// 日均耗电至少覆盖半天自然时间，避免用短时波动外推整天。
@@ -33,6 +46,13 @@ const PERSIST_INTERVAL_SECS: u64 = 300;
 /// EWMA 时间衰减常数：段结束时间距今每 48h，权重衰减到 e^-1 ≈ 37%。
 /// 让剩余时间预估更关注近期使用模式，而非 10 天平均。
 const RATE_DECAY_TAU_HOURS: f64 = 48.0;
+/// Remaining-time predictions should be stable when the chart switches between
+/// 24h and 10d. Use the same natural-time evidence window for both views.
+const REMAINING_PREDICTION_WINDOW_DAYS: i64 = 10;
+/// Even a model that passes its own quality gate must stay broadly consistent
+/// with the robust active-session baseline before Mira displays it.
+const AI_ACTIVE_REMAINING_RATIO_MIN: f64 = 0.5;
+const AI_ACTIVE_REMAINING_RATIO_MAX: f64 = 2.0;
 /// z-score 异常检测的阈值：超过均值 +2σ（95% 置信）视为异常。
 /// 历史段不足 5 段时回退到固定 2.0 倍阈值。
 const ABNORMAL_ZSCORE_THRESHOLD: f64 = 2.0;
@@ -191,10 +211,17 @@ pub struct BatteryHistorySeries {
 pub struct BatteryHistoryPoint {
     pub bucket_start: String,
     pub bucket_label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage_elapsed_minutes: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub percentage: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub min_percentage: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_percentage: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub charging: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub low_battery: Option<bool>,
     pub sample_count: u32,
 }
@@ -859,7 +886,9 @@ pub fn build_response_with_analysis(
 /// 过去 24 小时按累计使用时长聚合图表点。
 ///
 /// 鼠标会断续连接和使用，真实时钟 X 轴会把大量空闲/断连时间画成空洞。
-/// 横坐标只累计相邻采样间隔较短的在线时间，将长间隔压缩掉，让趋势尽量连续。
+/// 横坐标只累计相邻采样间隔较短的在线时间，将长间隔压缩掉；每个返回点仍然
+/// 来自真实样本，不补值、不插值。`usage_elapsed_minutes` 让前端能用匹配的
+/// 累计使用时长刻度，而不是把压缩后的柱子错误标成真实钟点。
 #[derive(Clone, Copy)]
 struct ActiveSample<'a> {
     sample: &'a BatterySample,
@@ -876,7 +905,7 @@ fn aggregate_active_usage(
     let mut sorted: Vec<&BatterySample> = samples
         .iter()
         .copied()
-        .filter(|sample| sample.at >= cutoff)
+        .filter(|sample| sample.at >= cutoff && sample.at <= now)
         .collect();
     sorted.sort_by_key(|sample| sample.at);
     if sorted.is_empty() {
@@ -900,9 +929,8 @@ fn aggregate_active_usage(
         prev = Some(sample);
     }
 
-    // 真实样本继续按 3/5/15 分钟节奏保留给分析；24 小时图最多聚合成
-    // 48 个展示点（约 30 分钟一槽），避免把采样密度直接等同于视觉密度。
-    // 这里只压缩过密数据，不为休眠/断连时段制造样本。
+    // 原始样本继续完整保留给分析；图表只在超过 48 点时按相邻样本压缩。
+    // 不足 48 点时一条真实记录对应一根柱，休眠/断连时段不会生成空柱或假数据。
     let max_points = 48usize;
     let chunk_size = active_samples.len().div_ceil(max_points).max(1);
     active_samples
@@ -973,6 +1001,7 @@ fn aggregate_ten_day_history(
                     "{} {start_hour:02}:00–{end_hour:02}:00",
                     day.format("%m-%d")
                 ),
+                usage_elapsed_minutes: None,
                 percentage: last.map(|sample| sample.percentage),
                 min_percentage: min,
                 max_percentage: max,
@@ -1002,6 +1031,7 @@ fn build_active_usage_point(
     BatteryHistoryPoint {
         bucket_start: first.at.to_rfc3339(),
         bucket_label: format_active_duration(last_active.active_minutes),
+        usage_elapsed_minutes: Some(last_active.active_minutes),
         percentage: Some(last.percentage),
         min_percentage: min,
         max_percentage: max,
@@ -1017,20 +1047,10 @@ fn format_active_duration(minutes: i64) -> String {
     }
     let hours = minutes / 60;
     let mins = minutes % 60;
-    if hours < 24 {
-        if mins == 0 {
-            format!("{hours}h")
-        } else {
-            format!("{hours}h {mins}m")
-        }
+    if mins == 0 {
+        format!("{hours}h")
     } else {
-        let days = hours / 24;
-        let rem_hours = hours % 24;
-        if rem_hours == 0 {
-            format!("{days}d")
-        } else {
-            format!("{days}d {rem_hours}h")
-        }
+        format!("{hours}h {mins}m")
     }
 }
 
@@ -1074,14 +1094,17 @@ fn build_insights(
         let current = device.latest_percentage;
         let charging = device.latest_charging.unwrap_or(false);
 
-        let baseline_remaining = estimate_remaining(&device_samples, range, now);
-        let remaining_estimate = if local_ai_analysis_enabled {
-            ai_estimates.get(key).copied().or(baseline_remaining)
-        } else {
-            baseline_remaining
-        };
+        // Natural remaining time drives the summary and runout date. It includes
+        // sleep/disconnect time and therefore matches the wall-clock wording.
+        let prediction_daily_drain = calendar_daily_drain(
+            &device_samples,
+            now - Duration::days(REMAINING_PREDICTION_WINDOW_DAYS),
+            now,
+        );
+        let calendar_remaining =
+            estimate_calendar_remaining(current, charging, prediction_daily_drain);
 
-        if let Some(remaining_hours) = remaining_estimate {
+        if let Some(remaining_hours) = calendar_remaining {
             if !charging && current.is_some() {
                 if remaining_hours >= VERY_SLOW_DRAIN_HOURS {
                     insights.push(BatteryInsight {
@@ -1100,7 +1123,7 @@ fn build_insights(
                         device_key: Some(key.clone()),
                     });
 
-                    let runout = now + Duration::hours(remaining_hours as i64);
+                    let runout = now + Duration::minutes((remaining_hours * 60.0).round() as i64);
                     insights.push(BatteryInsight {
                         insight_type: "estimatedRunout".into(),
                         severity: "info".into(),
@@ -1121,6 +1144,31 @@ fn build_insights(
                 message: "notEnoughData".into(),
                 device_key: Some(key.clone()),
             });
+        }
+
+        // Active-use time is a separate quantity. AI and the deterministic
+        // fallback both learn from connected usage sessions, so never turn this
+        // value into a wall-clock runout date.
+        let baseline_active_remaining = estimate_remaining(&device_samples, "10d", now);
+        let active_remaining = if local_ai_analysis_enabled {
+            select_active_remaining(ai_estimates.get(key).copied(), baseline_active_remaining)
+        } else {
+            baseline_active_remaining
+        };
+        if !charging {
+            if let Some(remaining_hours) = active_remaining {
+                insights.push(BatteryInsight {
+                    insight_type: "estimatedActiveRemaining".into(),
+                    severity: "info".into(),
+                    title: "estimatedActiveRemaining".into(),
+                    message: if remaining_hours >= VERY_SLOW_DRAIN_HOURS {
+                        "veryLowDrain".into()
+                    } else {
+                        remaining_message(remaining_hours)
+                    },
+                    device_key: Some(key.clone()),
+                });
+            }
         }
 
         if let Some(mut habit) = analyze_charging_habit(&device_samples, now) {
@@ -1194,9 +1242,60 @@ fn remaining_message(remaining_hours: f64) -> String {
     } else if remaining_hours < 24.0 {
         format!("remainingHours|{:.0}", remaining_hours)
     } else {
-        let days = (remaining_hours / 24.0).floor() as i64;
-        let hours = (remaining_hours - (days as f64) * 24.0).round() as i64;
+        let rounded_hours = remaining_hours.round() as i64;
+        let days = rounded_hours / 24;
+        let hours = rounded_hours % 24;
         format!("remainingDaysHours|{}|{}", days, hours)
+    }
+}
+
+fn estimate_calendar_remaining(
+    current_percentage: Option<u8>,
+    charging: bool,
+    daily_drain: Option<f64>,
+) -> Option<f64> {
+    if charging {
+        return None;
+    }
+    let current = current_percentage?;
+    if current == 0 {
+        return Some(0.0);
+    }
+    let daily_drain = daily_drain?;
+    if !daily_drain.is_finite() || daily_drain < 0.0 {
+        return None;
+    }
+    if daily_drain <= f64::EPSILON {
+        return Some(VERY_SLOW_DRAIN_HOURS);
+    }
+    let remaining = current as f64 / daily_drain * 24.0;
+    if !remaining.is_finite() || remaining < 0.0 {
+        None
+    } else {
+        if remaining >= VERY_SLOW_DRAIN_HOURS * 0.99 {
+            Some(VERY_SLOW_DRAIN_HOURS)
+        } else {
+            Some(remaining)
+        }
+    }
+}
+
+fn select_active_remaining(ai: Option<f64>, baseline: Option<f64>) -> Option<f64> {
+    match (ai, baseline) {
+        (Some(ai), Some(baseline)) if baseline > 0.0 => {
+            let ratio = ai / baseline;
+            if ratio.is_finite()
+                && (AI_ACTIVE_REMAINING_RATIO_MIN..=AI_ACTIVE_REMAINING_RATIO_MAX).contains(&ratio)
+            {
+                Some(ai)
+            } else {
+                Some(baseline)
+            }
+        }
+        // Without a robust baseline there is no host-side scale check for AI.
+        (Some(_), None) => None,
+        (None, baseline) => baseline,
+        (Some(_), Some(baseline)) => Some(baseline),
     }
 }
 
@@ -1205,10 +1304,52 @@ fn is_session_gap(prev_at: DateTime<Utc>, curr_at: DateTime<Utc>) -> bool {
 }
 
 /// Detects a swap or off-device charge while the device itself is not charging.
-fn is_battery_replacement(prev: &BatterySample, curr: &BatterySample) -> bool {
+fn is_energy_replenishment(prev: &BatterySample, curr: &BatterySample) -> bool {
     !prev.charging
         && !curr.charging
-        && curr.percentage.saturating_sub(prev.percentage) >= REPLACEMENT_RISE_THRESHOLD_PERCENT
+        && curr.percentage.saturating_sub(prev.percentage) >= LEVEL_DISCONTINUITY_THRESHOLD_PERCENT
+}
+
+/// Detect a boundary where the battery level cannot safely be interpreted as
+/// ordinary drain. Upward jumps cover off-device charging and higher-charge
+/// battery swaps. A large downward jump is only treated as a boundary when it
+/// happens quickly (or implies an implausible rate); long disconnect gaps remain
+/// valid wall-clock drain evidence for the calendar estimate.
+fn is_battery_level_discontinuity(prev: &BatterySample, curr: &BatterySample) -> bool {
+    if prev.charging || curr.charging {
+        return true;
+    }
+    if is_energy_replenishment(prev, curr) {
+        return true;
+    }
+    let drop = prev.percentage.saturating_sub(curr.percentage);
+    if drop < LEVEL_DISCONTINUITY_THRESHOLD_PERCENT {
+        return false;
+    }
+    let elapsed_minutes = (curr.at - prev.at).num_minutes();
+    if elapsed_minutes <= 0 {
+        return true;
+    }
+    if elapsed_minutes <= SHORT_LEVEL_DISCONTINUITY_MINUTES {
+        return true;
+    }
+    let implied_rate = drop as f64 / (elapsed_minutes as f64 / 60.0);
+    implied_rate > MAX_PLAUSIBLE_DRAIN_PER_HOUR
+}
+
+fn segment_drain_rate(first: &BatterySample, last: &BatterySample) -> Option<(f64, f64)> {
+    let elapsed_minutes = (last.at - first.at).num_minutes();
+    if elapsed_minutes < MIN_RATE_OBSERVATION_MINUTES {
+        return None;
+    }
+    let drop = first.percentage as f64 - last.percentage as f64;
+    if drop < BOUNCE_THRESHOLD_PERCENT {
+        return None;
+    }
+    let hours = elapsed_minutes as f64 / 60.0;
+    let rate = drop / hours;
+    (rate.is_finite() && rate > 0.0 && rate <= MAX_PLAUSIBLE_DRAIN_PER_HOUR)
+        .then_some((rate, hours))
 }
 
 fn estimate_remaining(samples: &[&BatterySample], range: &str, now: DateTime<Utc>) -> Option<f64> {
@@ -1231,12 +1372,7 @@ fn estimate_remaining(samples: &[&BatterySample], range: &str, now: DateTime<Utc
     for s in &sorted {
         let split = match prev {
             None => false,
-            Some(p) => {
-                p.charging
-                    || s.charging
-                    || is_session_gap(p.at, s.at)
-                    || is_battery_replacement(p, s)
-            }
+            Some(p) => is_session_gap(p.at, s.at) || is_battery_level_discontinuity(p, s),
         };
         if split && !current_seg.is_empty() {
             segments.push(std::mem::take(&mut current_seg));
@@ -1253,33 +1389,30 @@ fn estimate_remaining(samples: &[&BatterySample], range: &str, now: DateTime<Utc
     let mut weighted_rate: f64 = 0.0;
     let mut total_weight: f64 = 0.0;
     let mut total_hours: f64 = 0.0;
+    let mut total_drop: f64 = 0.0;
     for seg in &segments {
         if seg.len() < 2 {
             continue;
         }
         let first = seg[0];
         let last = seg[seg.len() - 1];
-        let drop = first.percentage as f64 - last.percentage as f64;
-        if drop < BOUNCE_THRESHOLD_PERCENT {
+        let Some((rate, hours)) = segment_drain_rate(first, last) else {
             continue;
-        }
-        let hours = (last.at - first.at).num_minutes() as f64 / 60.0;
-        if hours <= 0.0 {
-            continue;
-        }
-        let rate = drop / hours;
-        if rate > 50.0 {
-            continue;
-        }
+        };
         // 时间衰减加权：段结束时间越近，权重越高
         let hours_ago = (now - last.at).num_minutes() as f64 / 60.0;
         let weight = (-hours_ago / RATE_DECAY_TAU_HOURS).exp();
         weighted_rate += rate * weight;
         total_weight += weight;
         total_hours += hours;
+        total_drop += rate * hours;
     }
 
-    if total_hours < 0.5 || total_weight <= 0.0 {
+    if total_hours < 0.5
+        || total_weight <= 0.0
+        || (total_hours < MIN_SHORT_ACTIVE_OBSERVATION_HOURS
+            && total_drop < MIN_SHORT_ACTIVE_TOTAL_DROP_PERCENT)
+    {
         return None;
     }
 
@@ -1312,42 +1445,24 @@ fn analyze_charging_habit(
     let mut sorted = recent.clone();
     sorted.sort_by_key(|s| s.at);
 
-    let mut charge_starts: Vec<u8> = Vec::new();
-    let mut charge_ends: Vec<u8> = Vec::new();
-    let mut prev_charging = sorted[0].charging;
-    for window in sorted.windows(2) {
-        let prev = window[0];
-        let curr = window[1];
-        if !prev_charging && curr.charging {
-            charge_starts.push(prev.percentage);
-        }
-        if prev_charging && !curr.charging {
-            charge_ends.push(curr.percentage);
-        }
-        if (is_session_gap(prev.at, curr.at)
-            && !prev.charging
-            && !curr.charging
-            && curr.percentage > prev.percentage)
-            || is_battery_replacement(prev, curr)
-        {
-            charge_starts.push(prev.percentage);
-            charge_ends.push(curr.percentage);
-        }
-        prev_charging = curr.charging;
-    }
-    if charge_starts.is_empty() {
+    let events = collect_replenishment_events(&sorted);
+    if events.is_empty() {
         return None;
     }
 
     let avg_start =
-        charge_starts.iter().map(|&p| p as f64).sum::<f64>() / charge_starts.len() as f64;
-    let avg_end = if charge_ends.is_empty() {
+        events.iter().map(|(start, _)| *start as f64).sum::<f64>() / events.len() as f64;
+    let completed_ends = events
+        .iter()
+        .filter_map(|(_, end)| *end)
+        .collect::<Vec<_>>();
+    let avg_end = if completed_ends.is_empty() {
         None
     } else {
-        Some(charge_ends.iter().map(|&p| p as f64).sum::<f64>() / charge_ends.len() as f64)
+        Some(completed_ends.iter().map(|&p| p as f64).sum::<f64>() / completed_ends.len() as f64)
     };
 
-    let count = charge_starts.len();
+    let count = events.len();
     let message = if let Some(end) = avg_end {
         format!(
             "chargingHabitStartEnd|{:.0}|{:.0}|{}",
@@ -1366,9 +1481,48 @@ fn analyze_charging_habit(
     })
 }
 
-/// 统计指定时间窗口内的充电次数。
-/// 包含两类：充电状态 false→true 的转换，以及 session_gap 期间推断的充电
-/// （非充电→非充电但电量上升，或电池更换）。
+/// Returns meaningful replenishment events. Explicit charging toggles at an
+/// unchanged 100% are ignored: they commonly come from receiver/USB status
+/// changes and do not demonstrate that energy was added.
+fn collect_replenishment_events(samples: &[&&BatterySample]) -> Vec<(u8, Option<u8>)> {
+    if samples.is_empty() {
+        return Vec::new();
+    }
+    let mut events = Vec::new();
+    let mut open_charge_start = samples[0].charging.then_some(samples[0].percentage);
+    for window in samples.windows(2) {
+        let prev = window[0];
+        let curr = window[1];
+        if !prev.charging && curr.charging {
+            open_charge_start = Some(prev.percentage);
+        }
+        if prev.charging && !curr.charging {
+            if let Some(start) = open_charge_start.take() {
+                if curr.percentage.saturating_sub(start) >= LEVEL_DISCONTINUITY_THRESHOLD_PERCENT {
+                    events.push((start, Some(curr.percentage)));
+                }
+            }
+        }
+        if is_energy_replenishment(prev, curr) {
+            events.push((prev.percentage, Some(curr.percentage)));
+        }
+    }
+
+    if let Some(start) = open_charge_start {
+        let latest = samples[samples.len() - 1];
+        if latest.percentage.saturating_sub(start) >= LEVEL_DISCONTINUITY_THRESHOLD_PERCENT {
+            events.push((start, Some(latest.percentage)));
+        } else if start <= 95 {
+            // An unfinished low-level charging session is still useful start
+            // evidence, even before a meaningful rise has been sampled.
+            events.push((start, None));
+        }
+    }
+    events
+}
+
+/// 统计指定时间窗口内明确的充电或补能次数。非充电状态下只有达到阈值的
+/// 电量上升才算补能，避免把 1% 读数回弹误报成一次充电。
 fn count_charges_in_window(samples: &[&BatterySample], window_start: DateTime<Utc>) -> Option<u32> {
     let recent: Vec<&&BatterySample> = samples.iter().filter(|s| s.at >= window_start).collect();
     if recent.len() < 2 {
@@ -1377,25 +1531,7 @@ fn count_charges_in_window(samples: &[&BatterySample], window_start: DateTime<Ut
     let mut sorted = recent.clone();
     sorted.sort_by_key(|s| s.at);
 
-    let mut count = 0u32;
-    let mut prev_charging = sorted[0].charging;
-    for window in sorted.windows(2) {
-        let prev = window[0];
-        let curr = window[1];
-        if !prev_charging && curr.charging {
-            count += 1;
-        }
-        if (is_session_gap(prev.at, curr.at)
-            && !prev.charging
-            && !curr.charging
-            && curr.percentage > prev.percentage)
-            || is_battery_replacement(prev, curr)
-        {
-            count += 1;
-        }
-        prev_charging = curr.charging;
-    }
-    Some(count)
+    Some(collect_replenishment_events(&sorted).len() as u32)
 }
 
 fn capitalize_first(value: &str) -> String {
@@ -1440,7 +1576,7 @@ fn detect_abnormal_drain(samples: &[&BatterySample], now: DateTime<Utc>) -> Opti
     for s in &recent_sorted[1..] {
         let last_seg = segments.last().unwrap();
         let last_sample = last_seg.last().unwrap();
-        if is_session_gap(last_sample.at, s.at) || is_battery_replacement(last_sample, s) {
+        if is_session_gap(last_sample.at, s.at) || is_battery_level_discontinuity(last_sample, s) {
             segments.push(vec![*s]);
         } else {
             segments.last_mut().unwrap().push(*s);
@@ -1454,14 +1590,7 @@ fn detect_abnormal_drain(samples: &[&BatterySample], now: DateTime<Utc>) -> Opti
     let seg_first = last_segment.first()?;
     let seg_last = last_segment.last()?;
     let recent_drop = seg_first.percentage as f64 - seg_last.percentage as f64;
-    if recent_drop < BOUNCE_THRESHOLD_PERCENT {
-        return None;
-    }
-    let seg_hours = (seg_last.at - seg_first.at).num_minutes() as f64 / 60.0;
-    if seg_hours <= 0.0 {
-        return None;
-    }
-    let recent_rate = recent_drop / seg_hours;
+    let (recent_rate, _) = segment_drain_rate(seg_first, seg_last)?;
 
     let historical: Vec<&BatterySample> = samples
         .iter()
@@ -1590,12 +1719,7 @@ fn collect_segment_rates(
     for s in &sorted {
         let split = match prev {
             None => false,
-            Some(p) => {
-                p.charging
-                    || s.charging
-                    || is_session_gap(p.at, s.at)
-                    || is_battery_replacement(p, s)
-            }
+            Some(p) => is_session_gap(p.at, s.at) || is_battery_level_discontinuity(p, s),
         };
         if split && !current_seg.is_empty() {
             segments.push(std::mem::take(&mut current_seg));
@@ -1616,19 +1740,9 @@ fn collect_segment_rates(
         }
         let first = seg[0];
         let last = seg[seg.len() - 1];
-        let drop = first.percentage as f64 - last.percentage as f64;
-        if drop < BOUNCE_THRESHOLD_PERCENT {
-            continue;
+        if let Some((rate, _)) = segment_drain_rate(first, last) {
+            rates.push(rate);
         }
-        let hours = (last.at - first.at).num_minutes() as f64 / 60.0;
-        if hours <= 0.0 {
-            continue;
-        }
-        let rate = drop / hours;
-        if rate > 50.0 {
-            continue;
-        }
-        rates.push(rate);
     }
     rates
 }
@@ -1650,12 +1764,7 @@ fn drain_rate(samples: &[&BatterySample], start: DateTime<Utc>, end: DateTime<Ut
     for s in &sorted {
         let split = match prev {
             None => false,
-            Some(p) => {
-                p.charging
-                    || s.charging
-                    || is_session_gap(p.at, s.at)
-                    || is_battery_replacement(p, s)
-            }
+            Some(p) => is_session_gap(p.at, s.at) || is_battery_level_discontinuity(p, s),
         };
         if split && !current_seg.is_empty() {
             segments.push(std::mem::take(&mut current_seg));
@@ -1677,15 +1786,10 @@ fn drain_rate(samples: &[&BatterySample], start: DateTime<Utc>, end: DateTime<Ut
         }
         let first = seg[0];
         let last = seg[seg.len() - 1];
-        let drop = first.percentage as f64 - last.percentage as f64;
-        if drop < BOUNCE_THRESHOLD_PERCENT {
+        let Some((rate, hours)) = segment_drain_rate(first, last) else {
             continue;
-        }
-        let hours = (last.at - first.at).num_minutes() as f64 / 60.0;
-        if hours <= 0.0 {
-            continue;
-        }
-        total_drop += drop;
+        };
+        total_drop += rate * hours;
         total_hours += hours;
     }
     if total_hours < 0.5 {
@@ -1695,7 +1799,8 @@ fn drain_rate(samples: &[&BatterySample], start: DateTime<Utc>, end: DateTime<Ut
 }
 
 /// Estimates average drain per natural day. Session gaps remain part of elapsed
-/// time; only charging and battery replacement boundaries start a new episode.
+/// time. Charging, replenishment, and short level discontinuities start a new
+/// episode so battery swaps/recalibration are not mistaken for drain.
 fn calendar_daily_drain(
     samples: &[&BatterySample],
     start: DateTime<Utc>,
@@ -1714,9 +1819,7 @@ fn calendar_daily_drain(
     let mut current_episode: Vec<&&BatterySample> = Vec::new();
     let mut prev: Option<&&BatterySample> = None;
     for sample in &sorted {
-        let split = prev.is_some_and(|previous| {
-            previous.charging || sample.charging || is_battery_replacement(previous, sample)
-        });
+        let split = prev.is_some_and(|previous| is_battery_level_discontinuity(previous, sample));
         if split && !current_episode.is_empty() {
             episodes.push(std::mem::take(&mut current_episode));
         }
@@ -1737,10 +1840,11 @@ fn calendar_daily_drain(
         }
         let first = episode[0];
         let last = episode[episode.len() - 1];
-        let hours = (last.at - first.at).num_seconds() as f64 / 3600.0;
-        if hours <= 0.0 {
+        let elapsed_minutes = (last.at - first.at).num_minutes();
+        if elapsed_minutes < MIN_RATE_OBSERVATION_MINUTES {
             continue;
         }
+        let hours = elapsed_minutes as f64 / 60.0;
         total_drop += (first.percentage as f64 - last.percentage as f64).max(0.0);
         total_hours += hours;
     }
@@ -2116,7 +2220,7 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_active_usage_generates_continuous_points() {
+    fn aggregate_active_usage_tracks_only_connected_usage_time() {
         let now = Utc::now();
         let samples: Vec<BatterySample> = vec![
             make_sample(now - Duration::minutes(10), 90, false),
@@ -2125,14 +2229,16 @@ mod tests {
         ];
         let refs: Vec<&BatterySample> = samples.iter().collect();
         let points = aggregate_active_usage(&refs, now, 20);
+
         assert_eq!(points.len(), 3);
-        assert_eq!(points[0].bucket_label, "0m");
-        assert_eq!(points[1].bucket_label, "5m");
+        assert_eq!(points[0].usage_elapsed_minutes, Some(0));
+        assert_eq!(points[1].usage_elapsed_minutes, Some(5));
+        assert_eq!(points[2].usage_elapsed_minutes, Some(10));
         assert_eq!(points[2].bucket_label, "10m");
     }
 
     #[test]
-    fn aggregate_active_usage_compresses_long_gaps() {
+    fn aggregate_active_usage_compresses_sleep_and_disconnect_gaps() {
         let now = Utc::now();
         let samples: Vec<BatterySample> = vec![
             make_sample(now - Duration::hours(6), 90, false),
@@ -2141,22 +2247,26 @@ mod tests {
         ];
         let refs: Vec<&BatterySample> = samples.iter().collect();
         let points = aggregate_active_usage(&refs, now, 20);
+
         assert_eq!(points.len(), 3);
-        assert_eq!(points[0].bucket_label, "0m");
+        assert_eq!(points[0].usage_elapsed_minutes, Some(0));
+        assert_eq!(points[1].usage_elapsed_minutes, Some(0));
+        assert_eq!(points[2].usage_elapsed_minutes, Some(5));
         assert_eq!(points[1].bucket_label, "0m");
-        assert_eq!(points[2].bucket_label, "5m");
     }
 
     #[test]
-    fn aggregate_active_usage_caps_24h_at_dense_ios_like_points() {
+    fn aggregate_active_usage_caps_display_at_48_real_sample_groups() {
         let now = Utc::now();
         let samples: Vec<BatterySample> = (0..192)
             .map(|i| make_sample(now - Duration::minutes((191 - i) * 5), 90, false))
             .collect();
         let refs: Vec<&BatterySample> = samples.iter().collect();
         let points = aggregate_active_usage(&refs, now, 20);
+
         assert_eq!(points.len(), 48);
         assert!(points.iter().all(|point| point.sample_count == 4));
+        assert_eq!(points.last().unwrap().usage_elapsed_minutes, Some(955));
     }
 
     #[test]
@@ -2365,13 +2475,16 @@ mod tests {
     fn estimate_remaining_ignores_charging() {
         let now = Utc::now();
         let samples: Vec<BatterySample> = vec![
-            make_sample(now - Duration::minutes(60), 100, false),
-            make_sample(now - Duration::minutes(50), 99, false),
-            make_sample(now - Duration::minutes(40), 98, false),
-            make_sample(now - Duration::minutes(30), 98, true),
-            make_sample(now - Duration::minutes(20), 100, true),
-            make_sample(now - Duration::minutes(10), 100, false),
-            make_sample(now, 99, false),
+            make_sample(now - Duration::minutes(100), 100, false),
+            make_sample(now - Duration::minutes(90), 99, false),
+            make_sample(now - Duration::minutes(80), 98, false),
+            make_sample(now - Duration::minutes(70), 97, false),
+            make_sample(now - Duration::minutes(60), 97, true),
+            make_sample(now - Duration::minutes(50), 100, true),
+            make_sample(now - Duration::minutes(30), 100, false),
+            make_sample(now - Duration::minutes(20), 99, false),
+            make_sample(now - Duration::minutes(10), 98, false),
+            make_sample(now, 97, false),
         ];
         let refs: Vec<&BatterySample> = samples.iter().collect();
         let remaining = estimate_remaining(&refs, "24h", now);
@@ -2408,12 +2521,14 @@ mod tests {
     fn estimate_remaining_splits_on_quick_battery_replacement() {
         let now = Utc::now();
         let samples: Vec<BatterySample> = vec![
-            make_sample(now - Duration::minutes(50), 22, false),
-            make_sample(now - Duration::minutes(40), 20, false),
-            make_sample(now - Duration::minutes(30), 18, false),
-            make_sample(now - Duration::minutes(20), 92, false),
-            make_sample(now - Duration::minutes(10), 90, false),
-            make_sample(now, 88, false),
+            make_sample(now - Duration::minutes(75), 22, false),
+            make_sample(now - Duration::minutes(65), 21, false),
+            make_sample(now - Duration::minutes(55), 20, false),
+            make_sample(now - Duration::minutes(45), 19, false),
+            make_sample(now - Duration::minutes(40), 92, false),
+            make_sample(now - Duration::minutes(30), 91, false),
+            make_sample(now - Duration::minutes(20), 90, false),
+            make_sample(now - Duration::minutes(10), 89, false),
         ];
         let refs: Vec<&BatterySample> = samples.iter().collect();
         let remaining = estimate_remaining(&refs, "24h", now);
@@ -2442,14 +2557,14 @@ mod tests {
         for i in 0..12 {
             samples.push(make_sample(
                 now - Duration::hours(4) + Duration::minutes(i * 5),
-                90 - i as u8,
+                90 - (i / 6) as u8,
                 false,
             ));
         }
         for i in 0..12 {
             samples.push(make_sample(
                 now - Duration::hours(1) + Duration::minutes(i * 5),
-                80 - (i * 3) as u8,
+                80 - ((i * 6) / 11) as u8,
                 false,
             ));
         }
@@ -2555,22 +2670,61 @@ mod tests {
     }
 
     #[test]
+    fn full_level_charging_status_toggle_is_not_a_replenishment_event() {
+        let now = Utc::now();
+        let samples = vec![
+            make_sample(now - Duration::minutes(30), 100, false),
+            make_sample(now - Duration::minutes(20), 100, true),
+            make_sample(now - Duration::minutes(10), 100, false),
+            make_sample(now, 100, false),
+        ];
+        let refs: Vec<&BatterySample> = samples.iter().collect();
+
+        assert!(analyze_charging_habit(&refs, now).is_none());
+        assert_eq!(
+            count_charges_in_window(&refs, now - Duration::hours(1)),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn explicit_charging_with_level_gain_is_a_replenishment_event() {
+        let now = Utc::now();
+        let samples = vec![
+            make_sample(now - Duration::minutes(30), 50, false),
+            make_sample(now - Duration::minutes(20), 50, true),
+            make_sample(now - Duration::minutes(10), 70, true),
+            make_sample(now, 70, false),
+        ];
+        let refs: Vec<&BatterySample> = samples.iter().collect();
+
+        let habit = analyze_charging_habit(&refs, now).expect("meaningful charge should be shown");
+        assert_eq!(habit.message, "chargingHabitStartEnd|50|70|1");
+        assert_eq!(
+            count_charges_in_window(&refs, now - Duration::hours(1)),
+            Some(1)
+        );
+    }
+
+    #[test]
     fn drain_rate_splits_on_quick_battery_replacement() {
         let now = Utc::now();
         let samples: Vec<BatterySample> = vec![
-            make_sample(now - Duration::minutes(50), 24, false),
-            make_sample(now - Duration::minutes(40), 22, false),
-            make_sample(now - Duration::minutes(30), 20, false),
-            make_sample(now - Duration::minutes(20), 95, false),
-            make_sample(now - Duration::minutes(10), 93, false),
-            make_sample(now, 91, false),
+            make_sample(now - Duration::minutes(95), 24, false),
+            make_sample(now - Duration::minutes(85), 23, false),
+            make_sample(now - Duration::minutes(75), 22, false),
+            make_sample(now - Duration::minutes(65), 21, false),
+            make_sample(now - Duration::minutes(60), 95, false),
+            make_sample(now - Duration::minutes(50), 94, false),
+            make_sample(now - Duration::minutes(40), 93, false),
+            make_sample(now - Duration::minutes(30), 92, false),
         ];
         let refs: Vec<&BatterySample> = samples.iter().collect();
         let rate = drain_rate(&refs, now - Duration::hours(1), now);
         assert!(rate.is_some());
         let rate = rate.unwrap();
         assert!(
-            rate > 10.0,
+            (rate - 6.0).abs() < 0.01,
             "replacement should preserve per-segment drain rate, got {rate}"
         );
     }
@@ -2707,7 +2861,7 @@ mod tests {
     }
 
     #[test]
-    fn estimate_remaining_filters_bounce() {
+    fn estimate_remaining_does_not_predict_from_one_percent_bounce() {
         let now = Utc::now();
         let samples: Vec<BatterySample> = vec![
             make_sample(now - Duration::minutes(50), 80, false),
@@ -2719,10 +2873,29 @@ mod tests {
         ];
         let refs: Vec<&BatterySample> = samples.iter().collect();
         let remaining = estimate_remaining(&refs, "24h", now);
-        assert!(remaining.is_some());
-        if let Some(h) = remaining {
-            assert!(h > 40.0, "bounce should be filtered, got {}h", h);
-        }
+        assert!(remaining.is_none());
+    }
+
+    #[test]
+    fn short_one_percent_step_is_not_extrapolated_as_a_rate() {
+        let now = Utc::now();
+        let first = make_sample(now - Duration::minutes(5), 80, false);
+        let last = make_sample(now, 79, false);
+
+        assert!(segment_drain_rate(&first, &last).is_none());
+    }
+
+    #[test]
+    fn active_ai_estimate_must_stay_close_to_robust_baseline() {
+        assert_eq!(select_active_remaining(Some(60.0), Some(50.0)), Some(60.0));
+        assert_eq!(select_active_remaining(Some(24.0), Some(56.0)), Some(56.0));
+        assert_eq!(select_active_remaining(Some(150.0), Some(50.0)), Some(50.0));
+        assert_eq!(select_active_remaining(Some(60.0), None), None);
+    }
+
+    #[test]
+    fn remaining_message_normalizes_rounded_day_boundary() {
+        assert_eq!(remaining_message(47.6), "remainingDaysHours|2|0");
     }
 
     #[test]
@@ -2885,20 +3058,26 @@ mod tests {
     fn drain_rate_splits_by_charging_transition() {
         let now = Utc::now();
         let samples: Vec<BatterySample> = vec![
-            make_sample(now - Duration::minutes(70), 80, false),
-            make_sample(now - Duration::minutes(60), 75, false),
-            make_sample(now - Duration::minutes(50), 70, false),
-            make_sample(now - Duration::minutes(40), 100, true),
-            make_sample(now - Duration::minutes(30), 100, true),
-            make_sample(now - Duration::minutes(20), 95, false),
-            make_sample(now - Duration::minutes(10), 90, false),
+            make_sample(now - Duration::minutes(120), 80, false),
+            make_sample(now - Duration::minutes(110), 78, false),
+            make_sample(now - Duration::minutes(100), 77, false),
+            make_sample(now - Duration::minutes(90), 75, false),
+            make_sample(now - Duration::minutes(70), 100, true),
+            make_sample(now - Duration::minutes(60), 100, true),
+            make_sample(now - Duration::minutes(30), 95, false),
+            make_sample(now - Duration::minutes(20), 92, false),
+            make_sample(now - Duration::minutes(10), 88, false),
             make_sample(now, 85, false),
         ];
         let refs: Vec<&BatterySample> = samples.iter().collect();
         let rate = drain_rate(&refs, now - Duration::hours(2), now + Duration::seconds(1));
         assert!(rate.is_some());
         if let Some(r) = rate {
-            assert!(r > 20.0, "should split by charging, got {} %/h", r);
+            assert!(
+                (r - 15.0).abs() < 0.01,
+                "should split by charging, got {} %/h",
+                r
+            );
         }
     }
 
@@ -2973,6 +3152,44 @@ mod tests {
 
         assert!(
             (daily - 1.0).abs() < 0.01,
+            "unexpected daily drain: {daily}"
+        );
+    }
+
+    #[test]
+    fn calendar_daily_drain_excludes_short_downward_swap_or_recalibration() {
+        let now = Utc::now();
+        let samples = [
+            make_sample(now - Duration::hours(36), 90, false),
+            make_sample(now - Duration::hours(24), 87, false),
+            make_sample(now - Duration::hours(24) + Duration::minutes(5), 50, false),
+            make_sample(now, 45, false),
+        ];
+        let refs: Vec<&BatterySample> = samples.iter().collect();
+        let daily =
+            calendar_daily_drain(&refs, now - Duration::hours(37), now + Duration::seconds(1))
+                .expect("both sides of the discontinuity provide natural-time evidence");
+
+        assert!(
+            (5.0..5.7).contains(&daily),
+            "battery swap/recalibration jump must not be counted as drain: {daily}"
+        );
+    }
+
+    #[test]
+    fn calendar_daily_drain_keeps_plausible_drop_across_long_disconnect() {
+        let now = Utc::now();
+        let samples = [
+            make_sample(now - Duration::hours(48), 80, false),
+            make_sample(now, 60, false),
+        ];
+        let refs: Vec<&BatterySample> = samples.iter().collect();
+        let daily =
+            calendar_daily_drain(&refs, now - Duration::hours(49), now + Duration::seconds(1))
+                .expect("a long disconnect is still natural-time evidence");
+
+        assert!(
+            (daily - 10.0).abs() < 0.01,
             "unexpected daily drain: {daily}"
         );
     }

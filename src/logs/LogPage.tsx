@@ -312,7 +312,9 @@ function LogToolbar({
           <CaretDown className="log-filter-caret" weight="bold" aria-hidden="true" />
         </label>
         <label className="log-filter-pill">
-          <span className="log-filter-pill-label">{levelLabel(minLevel)}</span>
+          <span className="log-filter-pill-label" key={minLevel}>
+            {levelLabel(minLevel)}
+          </span>
           <select
             value={minLevel}
             onChange={(e) => onLevelChange(e.target.value as LogLevel)}

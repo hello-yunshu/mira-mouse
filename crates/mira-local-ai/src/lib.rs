@@ -13,6 +13,12 @@ use rill_ml::{
 use thiserror::Error;
 
 const MAX_SAMPLES: usize = 10_000;
+/// Battery percentages are normally integer-quantized. A 1% change over a few
+/// minutes is not enough evidence to extrapolate an hourly drain rate.
+const MIN_OBSERVATION_MINUTES: f64 = 30.0;
+/// A large downward change inside this window may be a lower-charge battery
+/// swap or reconnect recalibration rather than ordinary discharge.
+const SHORT_LEVEL_DISCONTINUITY_MINUTES: i64 = 15;
 
 /// DPI 归一化上界。当前主流最高 DPI 约 30000（Razer DeathAdder V3 Pro），
 /// 设为 60000（2x）为未来高分辨率传感器预留空间。
@@ -441,8 +447,7 @@ fn discharge_observations(
                 || sample.charging
                 || sample.at_unix_ms - prev.at_unix_ms
                     > config.session_gap_minutes.saturating_mul(60_000)
-                || sample.percentage.saturating_sub(prev.percentage)
-                    >= config.replacement_rise_percent
+                || is_level_discontinuity(prev, sample, config)
         });
         if split {
             finish_segment(&segment, &mut observations, config);
@@ -455,6 +460,30 @@ fn discharge_observations(
     }
     // The current, unfinished segment is input context, never its own label.
     observations
+}
+
+fn is_level_discontinuity(
+    previous: &BatterySampleInput,
+    current: &BatterySampleInput,
+    config: &BatteryModelConfig,
+) -> bool {
+    if current.percentage.saturating_sub(previous.percentage) >= config.replacement_rise_percent {
+        return true;
+    }
+    let drop = previous.percentage.saturating_sub(current.percentage);
+    if drop < config.replacement_rise_percent {
+        return false;
+    }
+    let elapsed_ms = current.at_unix_ms - previous.at_unix_ms;
+    if elapsed_ms <= 0 {
+        return true;
+    }
+    let elapsed_minutes = elapsed_ms / 60_000;
+    if elapsed_minutes <= SHORT_LEVEL_DISCONTINUITY_MINUTES {
+        return true;
+    }
+    let hours = elapsed_ms as f64 / 3_600_000.0;
+    drop as f64 / hours > config.max_drain_per_hour
 }
 
 fn finish_segment(
@@ -472,7 +501,7 @@ fn finish_segment(
     let hours = (end.at_unix_ms - start.at_unix_ms) as f64 / 3_600_000.0;
     let rate = drop / hours;
     if !hours.is_finite()
-        || hours <= 0.0
+        || hours < MIN_OBSERVATION_MINUTES / 60.0
         || !rate.is_finite()
         || rate <= 0.0
         || rate > config.max_drain_per_hour
@@ -718,6 +747,42 @@ mod tests {
         .unwrap();
         assert_eq!(result.source, PredictionSource::BaselineRecommended);
         assert_eq!(result.remaining_hours, None);
+    }
+
+    #[test]
+    fn short_quantized_drop_does_not_become_training_observation() {
+        let now = test_now();
+        let samples = vec![
+            sample(now - Duration::minutes(65), 80, false),
+            sample(now - Duration::minutes(60), 79, false),
+            sample(now, 79, false),
+        ];
+
+        assert!(discharge_observations(&samples, &BatteryModelConfig::default()).is_empty());
+    }
+
+    #[test]
+    fn lower_charge_swap_or_recalibration_splits_training_segments() {
+        let now = test_now();
+        let samples = vec![
+            sample(now - Duration::minutes(150), 90, false),
+            sample(now - Duration::minutes(140), 89, false),
+            sample(now - Duration::minutes(130), 88, false),
+            sample(now - Duration::minutes(120), 87, false),
+            // A quick 37% downward jump can be a lower-charge battery swap or
+            // reconnect recalibration. It must be a boundary, not a 222%/h label.
+            sample(now - Duration::minutes(115), 50, false),
+            sample(now - Duration::minutes(105), 49, false),
+            sample(now - Duration::minutes(95), 48, false),
+            sample(now - Duration::minutes(85), 47, false),
+            sample(now - Duration::minutes(60), 47, false),
+        ];
+
+        let observations = discharge_observations(&samples, &BatteryModelConfig::default());
+        assert_eq!(observations.len(), 2);
+        assert!(observations
+            .iter()
+            .all(|observation| (observation.drain_per_hour - 6.0).abs() < 0.01));
     }
 
     #[test]
