@@ -49,6 +49,7 @@ zip = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
@@ -60,6 +61,8 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     "objc2-core-foundation",
 ] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSData", "NSString", "NSGeometry"] }
+objc2-core-graphics = { version = "0.3", default-features = false, features = ["CGEventSource", "CGEventTypes"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 udev = "0.9"
+x11-dl = "2.21"

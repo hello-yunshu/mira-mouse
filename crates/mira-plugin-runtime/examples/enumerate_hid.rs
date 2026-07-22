@@ -94,6 +94,7 @@ fn load_extracted_plugin(
         evidence: "development-extracted".to_string(),
         signature_verified: false,
         writes_enabled: manifest["writesEnabled"].as_bool().unwrap_or(false),
+        runtime: serde_json::from_value(manifest["runtime"].clone()).unwrap_or_default(),
         capabilities: serde_json::from_value(manifest["capabilities"].clone()).unwrap_or_default(),
         exportable_fields: serde_json::from_value(manifest["exportableFields"].clone())
             .unwrap_or_default(),

@@ -2672,7 +2672,7 @@ mod tests {
     #[test]
     fn full_level_charging_status_toggle_is_not_a_replenishment_event() {
         let now = Utc::now();
-        let samples = vec![
+        let samples = [
             make_sample(now - Duration::minutes(30), 100, false),
             make_sample(now - Duration::minutes(20), 100, true),
             make_sample(now - Duration::minutes(10), 100, false),
@@ -2690,7 +2690,7 @@ mod tests {
     #[test]
     fn explicit_charging_with_level_gain_is_a_replenishment_event() {
         let now = Utc::now();
-        let samples = vec![
+        let samples = [
             make_sample(now - Duration::minutes(30), 50, false),
             make_sample(now - Duration::minutes(20), 50, true),
             make_sample(now - Duration::minutes(10), 70, true),
