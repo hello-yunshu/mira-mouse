@@ -25,6 +25,7 @@ pub struct PackageInspection {
     pub evidence: String,
     pub signature_verified: bool,
     pub writes_enabled: bool,
+    pub runtime: mira_plugin_api::PluginRuntime,
     pub capabilities: Vec<mira_plugin_api::Capability>,
     pub exportable_fields: Vec<mira_plugin_api::ExportableField>,
     pub depends_on: Vec<mira_plugin_api::PluginDependency>,
@@ -157,6 +158,7 @@ pub fn extract_package<R: Read + Seek>(
         evidence: format!("{:?}", manifest.evidence),
         signature_verified,
         writes_enabled: manifest.writes_enabled,
+        runtime: manifest.runtime,
         capabilities: manifest.capabilities,
         exportable_fields: manifest.exportable_fields,
         depends_on: manifest.depends_on,
@@ -247,10 +249,17 @@ mod tests {
             "pluginId": "mira.example",
             "name": "Example",
             "version": "1.0.0",
-            "pluginApi": ">=1.0.0, <2.0.0",
+            "pluginApi": ">=1.1.0, <2.0.0",
             "publisherKeyId": key_id,
             "evidence": "fixture-verified",
             "permissions": [],
+            "runtime": {
+                "wakeRecovery": {
+                    "activitySource": "system-pointer",
+                    "componentId": "mouse",
+                    "connections": ["wireless"]
+                }
+            },
             "capabilities": [{
                 "id": "mode",
                 "control": "Segmented",
@@ -321,6 +330,14 @@ mod tests {
         let result = inspect_package(Cursor::new(bytes), &trust, true).unwrap();
         assert_eq!(result.plugin_id, "mira.example");
         assert!(result.signature_verified);
+        assert_eq!(
+            result
+                .runtime
+                .wake_recovery
+                .as_ref()
+                .map(|contract| contract.component_id.as_str()),
+            Some("mouse")
+        );
         assert_eq!(result.capabilities.len(), 1);
         assert_eq!(result.capabilities[0].control.as_str(), "Segmented");
     }

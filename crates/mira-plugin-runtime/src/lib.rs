@@ -10,8 +10,8 @@ pub mod protocol;
 pub use mira_plugin_api::{
     Capability, CapabilityPlacement, CapabilityProbe, CapabilityRegion, Control, EffectOption,
     EffectOptions, EvidenceLevel, ExportableField, LightingRole, MutationDecl, Permission,
-    PluginDependency, PluginManifest, RangeSpec, ReceiverLightingOption, ReceiverLightingOptions,
-    ReportType,
+    PluginDependency, PluginManifest, PluginRuntime, RangeSpec, ReceiverLightingOption,
+    ReceiverLightingOptions, ReportType, WakeActivitySource, WakeRecoveryContract,
 };
 
 pub use dsl::{execute_workflow, DslError, Limits, Operation, Transport, Workflow};
