@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   ArrowsClockwise,
+  ArrowsInLineVertical,
   ArrowLineDown,
   CaretDown,
   Clipboard,
@@ -19,6 +20,7 @@ import {
 } from '@phosphor-icons/react';
 import { save } from '@tauri-apps/plugin-dialog';
 import { Modal, Popover } from '../overlay';
+import { Tooltip } from '../Tooltip';
 import { getLogClient } from './log-client';
 import {
   LOG_LEVELS,
@@ -47,6 +49,161 @@ const MAX_VIEW_ENTRIES = 800;
 const FOLLOW_THRESHOLD_PX = 24;
 /** 实时批次合并间隔（毫秒），降低高频日志造成的主线程压力。 */
 const BATCH_FLUSH_MS = 120;
+
+const PREVIEW_SESSION_ID = 'web-preview-session';
+
+function previewTimestamp(secondsAgo: number): string {
+  return new Date(Date.now() - secondsAgo * 1000).toISOString();
+}
+
+/**
+ * Web 预览直接复用正式日志页，只替换数据源。条目覆盖不同来源、等级、长文本和
+ * 结构化字段，便于在浏览器里检查筛选、展开、状态徽章和列表动效。
+ */
+const PREVIEW_LOG_ENTRIES: LogEntry[] = [
+  {
+    id: 1012,
+    timestamp: previewTimestamp(8),
+    level: 'info',
+    source: 'app',
+    target: 'device::session',
+    message: 'device session recovered; live readings restored',
+    sessionId: PREVIEW_SESSION_ID,
+    correlationId: 'device-7f2a31c4',
+    fields: {
+      event: 'device-session-recovered',
+      device: 'Mira Example Wireless Mouse',
+      connection: 'wireless',
+      durationMs: 184,
+    },
+  },
+  {
+    id: 1011,
+    timestamp: previewTimestamp(24),
+    level: 'warn',
+    source: 'app',
+    target: 'device::session',
+    message: 'device session interrupted; waiting for recovery',
+    sessionId: PREVIEW_SESSION_ID,
+    correlationId: 'device-7f2a31c4',
+    fields: {
+      event: 'device-session-interrupted',
+      device: 'Mira Example Wireless Mouse',
+      connection: 'wireless',
+      errorKind: 'timeout',
+    },
+  },
+  {
+    id: 1010,
+    timestamp: previewTimestamp(41),
+    level: 'info',
+    source: 'plugin',
+    target: 'plugin::battery',
+    message: '电量读取成功：鼠标 82%，接收器 100%',
+    sessionId: PREVIEW_SESSION_ID,
+    fields: { event: 'plugin-battery-read', pluginId: 'mira.amaster', mouse: 82, receiver: 100 },
+  },
+  {
+    id: 1009,
+    timestamp: previewTimestamp(67),
+    level: 'info',
+    source: 'local-ai',
+    target: 'local_ai::predict',
+    message: 'prediction batch ok: 1/1 devices returned estimates; 0 used deterministic fallback',
+    sessionId: PREVIEW_SESSION_ID,
+    correlationId: 'battery-91c4',
+    fields: {
+      event: 'local-ai-prediction-completed',
+      status: 'ok',
+      batchCount: 1,
+      resultCount: 1,
+      fallbackCount: 0,
+      durationMs: 38,
+      modelVersion: '0.8.3',
+    },
+  },
+  {
+    id: 1008,
+    timestamp: previewTimestamp(92),
+    level: 'error',
+    source: 'local-ai',
+    target: 'local_ai::runtime',
+    message: 'local AI marked failed: response timeout',
+    sessionId: PREVIEW_SESSION_ID,
+    correlationId: 'battery-8ab1',
+    fields: {
+      event: 'local-ai-runtime-failed',
+      reason: 'response timeout',
+      timeoutMs: 2000,
+      fallback: true,
+      runtimeVersion: '0.8.1',
+    },
+  },
+  {
+    id: 1007,
+    timestamp: previewTimestamp(126),
+    level: 'info',
+    source: 'frontend',
+    target: 'ui::settings',
+    message: '主题设置已保存',
+    sessionId: PREVIEW_SESSION_ID,
+    fields: { theme: 'dark', source: 'system' },
+  },
+  {
+    id: 1006,
+    timestamp: previewTimestamp(158),
+    level: 'warn',
+    source: 'app',
+    target: 'logging::storage',
+    message: '日志磁盘用量接近预览阈值，将自动清理最旧记录',
+    sessionId: PREVIEW_SESSION_ID,
+    fields: { usageBytes: 7340032, quotaBytes: 8388608 },
+  },
+  {
+    id: 1005,
+    timestamp: previewTimestamp(201),
+    level: 'info',
+    source: 'plugin',
+    target: 'plugin::verify',
+    message: '插件签名和声明式能力契约校验通过',
+    sessionId: PREVIEW_SESSION_ID,
+    fields: { pluginId: 'mira.amaster', capabilities: 9, signature: 'valid' },
+  },
+  {
+    id: 1004,
+    timestamp: previewTimestamp(248),
+    level: 'debug',
+    source: 'app',
+    target: 'device::polling',
+    message: '设备轮询完成',
+    sessionId: PREVIEW_SESSION_ID,
+    fields: { intervalMs: 1000, changedFields: 3 },
+  },
+  {
+    id: 1003,
+    timestamp: previewTimestamp(305),
+    level: 'trace',
+    source: 'frontend',
+    target: 'ui::motion',
+    message: '控制页共享几何位置已同步',
+    sessionId: PREVIEW_SESSION_ID,
+    fields: { mode: 'polling-rate', durationMs: 320 },
+  },
+];
+
+const PREVIEW_LOG_STATUS: LogStatus = {
+  sessionId: PREVIEW_SESSION_ID,
+  minLevel: 'info',
+  bufferCount: PREVIEW_LOG_ENTRIES.length,
+  bufferCapacity: 4000,
+  storageDirDisplay: 'Web Preview · memory',
+  diskUsageBytes: 7340032,
+  diskQuotaBytes: 8388608,
+  recentErrorCount: 1,
+  recentWarnCount: 2,
+  filePersistenceEnabled: false,
+  diagnosticSession: null,
+};
 
 /** 来源筛选选项。 */
 type SourceFilter = 'all' | LogSource;
@@ -91,6 +248,116 @@ function sourceLabel(source: LogSource): string {
   return i18n.t(`logs.filter.${source === 'local-ai' ? 'localAi' : source}`);
 }
 
+const LOG_EVENT_TRANSLATION_KEYS: Record<string, string> = {
+  'app-starting': 'logs.events.appStarting',
+  'device-session-ready': 'logs.events.deviceSessionReady',
+  'device-session-recovered': 'logs.events.deviceSessionRecovered',
+  'device-session-interrupted': 'logs.events.deviceSessionInterrupted',
+  'device-mutation-attempt': 'logs.events.deviceMutationAttempt',
+  'device-mutation-succeeded': 'logs.events.deviceMutationSucceeded',
+  'device-mutation-failed': 'logs.events.deviceMutationFailed',
+  'device-mutation-timeout': 'logs.events.deviceMutationTimeout',
+  'device-mutation-worker-failed': 'logs.events.deviceMutationWorkerFailed',
+  'plugins-loaded': 'logs.events.pluginsLoaded',
+  'plugin-load-failed': 'logs.events.pluginLoadFailed',
+  'plugin-installed-added': 'logs.events.pluginInstalledAdded',
+  'plugin-installed-override': 'logs.events.pluginInstalledOverride',
+  'plugin-installed-ignored': 'logs.events.pluginInstalledIgnored',
+  'local-ai-disabled': 'logs.events.localAiDisabled',
+  'local-ai-starting': 'logs.events.localAiStarting',
+  'local-ai-unavailable': 'logs.events.localAiUnavailable',
+  'local-ai-handshake-failed': 'logs.events.localAiHandshakeFailed',
+  'local-ai-ready': 'logs.events.localAiReady',
+  'local-ai-stopping': 'logs.events.localAiStopping',
+  'local-ai-prediction-completed': 'logs.events.localAiPredictionCompleted',
+  'local-ai-prediction-partial': 'logs.events.localAiPredictionPartial',
+  'local-ai-baseline-selected': 'logs.events.localAiBaselineSelected',
+  'local-ai-handler-interrupted': 'logs.events.localAiHandlerInterrupted',
+  'local-ai-handler-failed': 'logs.events.localAiHandlerFailed',
+  'local-ai-runtime-failed': 'logs.events.localAiRuntimeFailed',
+  'local-ai-stderr-suppressed': 'logs.events.localAiStderrSuppressed',
+  'plugin-battery-read': 'logs.events.pluginBatteryRead',
+};
+
+const LOG_FIELD_TRANSLATION_KEYS: Record<string, string> = {
+  device: 'logs.fieldLabels.device',
+  connection: 'logs.fieldLabels.connection',
+  durationMs: 'logs.fieldLabels.durationMs',
+  errorKind: 'logs.fieldLabels.errorKind',
+  errorCode: 'logs.fieldLabels.errorCode',
+  reason: 'logs.fieldLabels.reason',
+  version: 'logs.fieldLabels.version',
+  platform: 'logs.fieldLabels.platform',
+  arch: 'logs.fieldLabels.arch',
+  pluginId: 'logs.fieldLabels.pluginId',
+  pluginVersion: 'logs.fieldLabels.pluginVersion',
+  previousVersion: 'logs.fieldLabels.previousVersion',
+  pluginCount: 'logs.fieldLabels.pluginCount',
+  mutation: 'logs.fieldLabels.mutation',
+  paramCount: 'logs.fieldLabels.paramCount',
+  runtimeVersion: 'logs.fieldLabels.runtimeVersion',
+  modelVersion: 'logs.fieldLabels.modelVersion',
+  handlerVersion: 'logs.fieldLabels.handlerVersion',
+  handlerApiVersion: 'logs.fieldLabels.handlerApiVersion',
+  batchCount: 'logs.fieldLabels.batchCount',
+  resultCount: 'logs.fieldLabels.resultCount',
+  fallbackCount: 'logs.fieldLabels.fallbackCount',
+  status: 'logs.fieldLabels.status',
+  enabled: 'logs.fieldLabels.enabled',
+  fallback: 'logs.fieldLabels.fallback',
+  restart: 'logs.fieldLabels.restart',
+  suppressedCount: 'logs.fieldLabels.suppressedCount',
+  timeoutMs: 'logs.fieldLabels.timeoutMs',
+  mouse: 'logs.fieldLabels.mouse',
+  receiver: 'logs.fieldLabels.receiver',
+  remainingHours: 'logs.fieldLabels.remainingHours',
+  confidence: 'logs.fieldLabels.confidence',
+  model: 'logs.fieldLabels.model',
+  usageBytes: 'logs.fieldLabels.usageBytes',
+  quotaBytes: 'logs.fieldLabels.quotaBytes',
+  capabilities: 'logs.fieldLabels.capabilities',
+  signature: 'logs.fieldLabels.signature',
+  intervalMs: 'logs.fieldLabels.intervalMs',
+  changedFields: 'logs.fieldLabels.changedFields',
+  theme: 'logs.fieldLabels.theme',
+  source: 'logs.fieldLabels.source',
+  stage: 'logs.fieldLabels.stage',
+  truncated: 'logs.fieldLabels.truncated',
+  characterCount: 'logs.fieldLabels.characterCount',
+};
+
+/** 后端保留稳定英文消息；界面根据结构化事件键按当前语言展示。 */
+function displayLogMessage(entry: LogEntry): string {
+  const event = entry.fields?.event;
+  if (typeof event === 'string') {
+    const translationKey = LOG_EVENT_TRANSLATION_KEYS[event];
+    if (translationKey) return i18n.t(translationKey);
+  }
+  return entry.message;
+}
+
+function displayLogFieldValue(key: string, value: unknown): string {
+  if (
+    key === 'connection'
+    && typeof value === 'string'
+    && ['usb', 'wireless', 'bluetooth', 'virtual'].includes(value)
+  ) {
+    return i18n.t(`connection.${value}`);
+  }
+  if (key === 'status' && typeof value === 'string' && ['ok', 'fallback', 'partial'].includes(value)) {
+    return i18n.t(`logs.fieldValues.${value}`);
+  }
+  if (typeof value === 'boolean') {
+    return i18n.t(value ? 'logs.fieldValues.yes' : 'logs.fieldValues.no');
+  }
+  return String(value);
+}
+
+function displayLogFieldLabel(key: string): string {
+  const translationKey = LOG_FIELD_TRANSLATION_KEYS[key];
+  return translationKey ? i18n.t(translationKey) : key;
+}
+
 /** 复制单条日志到剪贴板。 */
 async function copyEntryToClipboard(entry: LogEntry): Promise<void> {
   const payload = {
@@ -112,9 +379,20 @@ async function copyEntryToClipboard(entry: LogEntry): Promise<void> {
 }
 
 /** 单条日志条目（行式布局，与设计稿一致）。 */
-function LogEntryRow({ entry, onCopy, index }: { entry: LogEntry; onCopy: (entry: LogEntry) => void; index: number }) {
+function LogEntryRow({
+  entry,
+  expanded,
+  onToggle,
+  onCopy,
+  index,
+}: {
+  entry: LogEntry;
+  expanded: boolean;
+  onToggle: (entryId: number) => void;
+  onCopy: (entry: LogEntry) => void;
+  index: number;
+}) {
   const { t } = useTranslation();
-  const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
 
   const handleCopy = () => {
@@ -125,7 +403,9 @@ function LogEntryRow({ entry, onCopy, index }: { entry: LogEntry; onCopy: (entry
     });
   };
 
-  const fieldEntries = entry.fields ? Object.entries(entry.fields) : [];
+  const fieldEntries = entry.fields
+    ? Object.entries(entry.fields).filter(([key]) => key !== 'event')
+    : [];
 
   const staggerDelay = Math.min(index, 10) * 20;
   return (
@@ -134,13 +414,13 @@ function LogEntryRow({ entry, onCopy, index }: { entry: LogEntry; onCopy: (entry
         type="button"
         className="log-entry-summary"
         aria-expanded={expanded}
-        aria-label={t('logs.list.expand')}
-        onClick={() => setExpanded((v) => !v)}
+        aria-label={t(expanded ? 'logs.list.collapse' : 'logs.list.expand')}
+        onClick={() => onToggle(entry.id)}
       >
         <time className="log-entry-time" dateTime={entry.timestamp}>{formatLocalTime(entry.timestamp)}</time>
         <span className={levelClassName(entry.level)}>{entry.level.toUpperCase()}</span>
         <span className="log-entry-source">{sourceLabel(entry.source)}</span>
-        <span className="log-entry-message">{entry.message}</span>
+        <span className="log-entry-message">{displayLogMessage(entry)}</span>
         <CaretDown className="log-entry-caret" weight="bold" aria-hidden="true" />
       </button>
       {expanded && (
@@ -164,7 +444,10 @@ function LogEntryRow({ entry, onCopy, index }: { entry: LogEntry; onCopy: (entry
                 <div className="log-entry-structured-title">{t('logs.fields.fields')}</div>
                 <dl className="log-entry-structured-grid">
                   {fieldEntries.map(([key, value]) => (
-                    <div key={key}><dt><code>{key}</code></dt><dd><code>{String(value)}</code></dd></div>
+                    <div key={key}>
+                      <dt title={key}>{displayLogFieldLabel(key)}</dt>
+                      <dd><code>{displayLogFieldValue(key, value)}</code></dd>
+                    </div>
                   ))}
                 </dl>
               </div>
@@ -193,14 +476,18 @@ function LoadMoreFooter({ hasMore, onLoadMore, loading }: { hasMore: boolean; on
 /** 日志列表：纯展示组件，滚动逻辑（自动跟随 / atTop 检测 / 信号跳转）由 LogPage 统一管理。 */
 function LogList({
   entries,
+  expandedEntryIds,
   hasMore,
   loading,
   onLoadMore,
+  onToggleEntry,
 }: {
   entries: LogEntry[];
+  expandedEntryIds: ReadonlySet<number>;
   hasMore: boolean;
   loading: boolean;
   onLoadMore: () => void;
+  onToggleEntry: (entryId: number) => void;
 }) {
   const { t } = useTranslation();
   return (
@@ -209,7 +496,16 @@ function LogList({
         {entries.length === 0 ? (
           <p className="log-list-empty">{loading ? t('logs.list.loading') : t('logs.list.empty')}</p>
         ) : (
-          entries.map((entry, i) => <LogEntryRow key={entry.id} entry={entry} onCopy={() => undefined} index={i} />)
+          entries.map((entry, i) => (
+            <LogEntryRow
+              key={entry.id}
+              entry={entry}
+              expanded={expandedEntryIds.has(entry.id)}
+              onToggle={onToggleEntry}
+              onCopy={() => undefined}
+              index={i}
+            />
+          ))
         )}
         {/* 列表按最新到最旧排列，所以加载更旧记录的入口留在底部。 */}
         <LoadMoreFooter hasMore={hasMore} onLoadMore={onLoadMore} loading={loading} />
@@ -226,6 +522,9 @@ function LogToolbar({
   follow,
   paused,
   status,
+  currentCount,
+  newCount,
+  expandedCount,
   diagnosticRemainingMinutes,
   onSourceChange,
   onLevelChange,
@@ -242,6 +541,8 @@ function LogToolbar({
   onOpenDir,
   onDiagnosticStart,
   onDiagnosticStop,
+  onNewCountClick,
+  onCollapseAll,
 }: {
   sourceFilter: SourceFilter;
   minLevel: LogLevel;
@@ -249,6 +550,9 @@ function LogToolbar({
   follow: boolean;
   paused: boolean;
   status: LogStatus | null;
+  currentCount: number;
+  newCount: number;
+  expandedCount: number;
   diagnosticRemainingMinutes: number | null;
   onSourceChange: (source: SourceFilter) => void;
   onLevelChange: (level: LogLevel) => void;
@@ -265,6 +569,8 @@ function LogToolbar({
   onOpenDir: () => void;
   onDiagnosticStart: () => void;
   onDiagnosticStop: () => void;
+  onNewCountClick: () => void;
+  onCollapseAll: () => void;
 }) {
   const { t } = useTranslation();
   const [moreOpen, setMoreOpen] = useState(false);
@@ -340,7 +646,7 @@ function LogToolbar({
         </label>
       </div>
 
-      {/* Row 2 — 控制与状态条：左侧跟随/暂停，右侧状态 pills + 操作按钮 + 更多菜单 */}
+      {/* Row 2 — 控制与精简状态：只显示关键数值，完整信息通过悬停查看。 */}
       <div className="log-toolbar-row log-toolbar-control">
         <div className="log-toolbar-group log-toolbar-follow">
           <button
@@ -364,40 +670,70 @@ function LogToolbar({
         </div>
         {status && (
           <div className="log-toolbar-status" aria-live="polite">
-            <span className="log-status-pill log-status-buffer">
-              <Database weight="regular" aria-hidden="true" />
-              {t('logs.status.bufferCount', { count: status.bufferCount })}
-            </span>
-            <span className="log-status-pill log-status-disk">
-              <HardDrive weight="regular" aria-hidden="true" />
-              <span>{t('logs.status.diskUsageUsageOnly', { usage: formatBytes(status.diskUsageBytes) })}</span>
-              <span className="log-status-disk-quota"> / {formatBytes(status.diskQuotaBytes)}</span>
-            </span>
+            <Tooltip fitContent label={t('logs.status.bufferCount', { count: status.bufferCount })}>
+              <span className="log-status-pill log-status-buffer">
+                <Database weight="regular" aria-hidden="true" />
+                <span>{status.bufferCount}</span>
+              </span>
+            </Tooltip>
+            <Tooltip fitContent label={t('logs.status.diskUsage', {
+              usage: formatBytes(status.diskUsageBytes),
+              quota: formatBytes(status.diskQuotaBytes),
+            })}>
+              <span className="log-status-pill log-status-disk">
+                <HardDrive weight="regular" aria-hidden="true" />
+                <span>{formatBytes(status.diskUsageBytes)}</span>
+              </span>
+            </Tooltip>
             {status.recentErrorCount > 0 && (
-              <button
-                type="button"
-                className={`log-status-count log-status-error${minLevel === 'error' ? ' active' : ''}`}
-                aria-label={t('logs.status.recentErrors', { count: status.recentErrorCount })}
-                title={minLevel === 'error' ? t('logs.status.restoreFilter') : t('logs.status.filterByLevel', { level: t('logs.filter.error') })}
-                onClick={() => toggleLevelFilter('error')}
+              <Tooltip
+                fitContent
+                label={`${t('logs.status.recentErrors', { count: status.recentErrorCount })} · ${minLevel === 'error'
+                  ? t('logs.status.restoreFilter')
+                  : t('logs.status.filterByLevel', { level: t('logs.filter.error') })}`}
               >
-                {status.recentErrorCount}
-              </button>
+                <button
+                  type="button"
+                  className={`log-status-count log-status-error${minLevel === 'error' ? ' active' : ''}`}
+                  aria-label={t('logs.status.recentErrors', { count: status.recentErrorCount })}
+                  onClick={() => toggleLevelFilter('error')}
+                >
+                  {status.recentErrorCount}
+                </button>
+              </Tooltip>
             )}
             {status.recentWarnCount > 0 && (
-              <button
-                type="button"
-                className={`log-status-count log-status-warn${minLevel === 'warn' ? ' active' : ''}`}
-                aria-label={t('logs.status.recentWarns', { count: status.recentWarnCount })}
-                title={minLevel === 'warn' ? t('logs.status.restoreFilter') : t('logs.status.filterByLevel', { level: t('logs.filter.warn') })}
-                onClick={() => toggleLevelFilter('warn')}
+              <Tooltip
+                fitContent
+                label={`${t('logs.status.recentWarns', { count: status.recentWarnCount })} · ${minLevel === 'warn'
+                  ? t('logs.status.restoreFilter')
+                  : t('logs.status.filterByLevel', { level: t('logs.filter.warn') })}`}
               >
-                {status.recentWarnCount}
-              </button>
+                <button
+                  type="button"
+                  className={`log-status-count log-status-warn${minLevel === 'warn' ? ' active' : ''}`}
+                  aria-label={t('logs.status.recentWarns', { count: status.recentWarnCount })}
+                  onClick={() => toggleLevelFilter('warn')}
+                >
+                  {status.recentWarnCount}
+                </button>
+              </Tooltip>
             )}
           </div>
         )}
         <div className="log-toolbar-group log-toolbar-actions">
+          {expandedCount > 0 && (
+            <Tooltip fitContent label={t('logs.toolbar.collapseAll', { count: expandedCount })}>
+              <button
+                type="button"
+                className="log-icon-btn log-collapse-all"
+                aria-label={t('logs.toolbar.collapseAll', { count: expandedCount })}
+                onClick={onCollapseAll}
+              >
+                <ArrowsInLineVertical weight="regular" aria-hidden="true" />
+              </button>
+            </Tooltip>
+          )}
           <div className="log-menu-wrap">
             <button
               type="button"
@@ -470,6 +806,19 @@ function LogToolbar({
             </Popover>
           </div>
         </div>
+      </div>
+      <div
+        className="log-toolbar-divider"
+        aria-label={follow && newCount > 0 ? undefined : t('logs.status.currentCount', { count: currentCount })}
+      >
+        {follow && newCount > 0 ? (
+          <button type="button" className="log-toolbar-new-count" onClick={onNewCountClick}>
+            <span className="log-new-count-dot" aria-hidden="true" />
+            <span>{t('logs.list.newCount', { count: newCount })}</span>
+          </button>
+        ) : (
+          <span className="log-toolbar-current-count">{t('logs.status.currentCount', { count: currentCount })}</span>
+        )}
       </div>
     </div>
   );
@@ -577,7 +926,27 @@ function entryMatchesFilter(entry: LogEntry, sourceFilter: SourceFilter, minLeve
   if (!levelAtLeast(entry.level, minLevel)) return false;
   const trimmed = keyword.trim().toLowerCase();
   if (!trimmed) return true;
-  return entry.message.toLowerCase().includes(trimmed) || entry.target.toLowerCase().includes(trimmed);
+  return displayLogMessage(entry).toLowerCase().includes(trimmed)
+    || entry.message.toLowerCase().includes(trimmed)
+    || entry.target.toLowerCase().includes(trimmed);
+}
+
+function queryPreviewLogs(query: LogQuery): LogPageData {
+  const sourceFilter = query.source ?? 'all';
+  const minLevel = query.minLevel ?? 'trace';
+  const keyword = query.keyword ?? '';
+  const limit = query.limit ?? 200;
+  const filtered = PREVIEW_LOG_ENTRIES.filter((entry) => (
+    entryMatchesFilter(entry, sourceFilter, minLevel, keyword)
+    && (query.beforeId === undefined || entry.id < query.beforeId)
+  ));
+  const pageEntries = filtered.slice(0, limit);
+  return {
+    entries: pageEntries,
+    hasMore: filtered.length > pageEntries.length,
+    oldestId: pageEntries.at(-1)?.id ?? null,
+    totalInSession: filtered.length,
+  };
 }
 
 /** 主日志页。 */
@@ -585,8 +954,12 @@ export function LogPage({ onBack }: { onBack: () => void }) {
   const { t } = useTranslation();
   const pureWeb = isPureWebPreview();
 
-  const [entries, setEntries] = useState<LogEntry[]>([]);
-  const [hasMore, setHasMore] = useState(false);
+  const [entries, setEntries] = useState<LogEntry[]>(() => (
+    pureWeb ? queryPreviewLogs({ minLevel: 'info', limit: 200 }).entries : []
+  ));
+  const [hasMore, setHasMore] = useState(() => (
+    pureWeb ? queryPreviewLogs({ minLevel: 'info', limit: 200 }).hasMore : false
+  ));
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>('');
 
@@ -594,6 +967,8 @@ export function LogPage({ onBack }: { onBack: () => void }) {
   const [minLevel, setMinLevel] = useState<LogLevel>('info');
   const [keyword, setKeyword] = useState('');
   const [listKey, setListKey] = useState(0);
+  const [previewCleared, setPreviewCleared] = useState(false);
+  const [expandedEntryIds, setExpandedEntryIds] = useState<Set<number>>(() => new Set());
 
   const [follow, setFollow] = useState(true);
   const [paused, setPaused] = useState(false);
@@ -649,8 +1024,10 @@ export function LogPage({ onBack }: { onBack: () => void }) {
     setAtTop(true);
   }, [scrollToTop]);
 
-  const [status, setStatus] = useState<LogStatus | null>(null);
-  const [oldestId, setOldestId] = useState<number | null>(null);
+  const [status, setStatus] = useState<LogStatus | null>(() => (pureWeb ? PREVIEW_LOG_STATUS : null));
+  const [oldestId, setOldestId] = useState<number | null>(() => (
+    pureWeb ? queryPreviewLogs({ minLevel: 'info', limit: 200 }).oldestId : null
+  ));
   const [deleteDialog, setDeleteDialog] = useState<DeleteDialogState>({ open: false });
   const [diagnosticDialog, setDiagnosticDialog] = useState<DiagnosticDialogState>({ open: false, minutes: 10, level: 'debug' });
   const [diagnosticRemaining, setDiagnosticRemaining] = useState<number | null>(null);
@@ -662,6 +1039,29 @@ export function LogPage({ onBack }: { onBack: () => void }) {
 
   const client = getLogClient();
   const clientRef = useRef(client);
+
+  const previewPage = pureWeb
+    ? queryPreviewLogs(buildQuery(sourceFilter, minLevel, keyword))
+    : null;
+  const displayedEntries = pureWeb
+    ? (previewCleared ? [] : previewPage?.entries ?? [])
+    : entries;
+  const displayedHasMore = pureWeb ? (previewPage?.hasMore ?? false) : hasMore;
+  const displayedStatus = pureWeb ? PREVIEW_LOG_STATUS : status;
+  const expandedCount = expandedEntryIds.size;
+
+  const toggleExpandedEntry = useCallback((entryId: number) => {
+    setExpandedEntryIds((current) => {
+      const next = new Set(current);
+      if (next.has(entryId)) next.delete(entryId);
+      else next.add(entryId);
+      return next;
+    });
+  }, []);
+
+  const collapseAllEntries = useCallback(() => {
+    setExpandedEntryIds(new Set());
+  }, []);
 
   // 同步最新值到 ref，供事件回调读取。在 effect 中更新 ref 是 React 19 推荐方式。
   const sourceFilterRef = useRef(sourceFilter);
@@ -696,13 +1096,10 @@ export function LogPage({ onBack }: { onBack: () => void }) {
 
   /** 初始加载：查询历史日志 + 状态。 */
   useEffect(() => {
-    if (pureWeb) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setError(t('logs.previewEmpty'));
-      return;
-    }
+    if (pureWeb) return;
     let cancelled = false;
     const initialQuery = buildQuery(sourceFilter, minLevel, keyword);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
     clientRef.current.query(initialQuery)
       .then((page: LogPageData) => {
@@ -901,18 +1298,27 @@ export function LogPage({ onBack }: { onBack: () => void }) {
     setPaused((p) => !p);
     if (resuming) {
       jumpToNewest();
+    } else if (pureWeb) {
+      // Web 预览没有真实日志事件；暂停时模拟一小批新日志，便于直接检查提示样式。
+      setNewCount(3);
     }
-  }, [jumpToNewest]);
+  }, [jumpToNewest, pureWeb]);
 
   /** 清空当前视图：仅清前端显示，不调用删除命令。 */
   const clearView = useCallback(() => {
     setEntries([]);
+    setPreviewCleared(true);
     setNewCount(0);
+    setExpandedEntryIds(new Set());
     pendingBatchRef.current = [];
   }, []);
 
   /** 导出当前筛选结果。 */
   const exportFiltered = useCallback(async () => {
+    if (pureWeb) {
+      notifySuccess(t('logs.previewAction'));
+      return;
+    }
     try {
       const date = currentDateStamp();
       const path = await save({
@@ -934,10 +1340,14 @@ export function LogPage({ onBack }: { onBack: () => void }) {
     } catch (err) {
       notifyError(t('notification.exportFailed'), t('logs.export.failed', { error: String(err) }));
     }
-  }, [sourceFilter, minLevel, keyword, t]);
+  }, [pureWeb, sourceFilter, minLevel, keyword, t]);
 
   /** 导出当前会话。 */
   const exportSession = useCallback(async () => {
+    if (pureWeb) {
+      notifySuccess(t('logs.previewAction'));
+      return;
+    }
     try {
       const date = currentDateStamp();
       const path = await save({
@@ -955,10 +1365,14 @@ export function LogPage({ onBack }: { onBack: () => void }) {
     } catch (err) {
       notifyError(t('notification.exportFailed'), t('logs.export.failed', { error: String(err) }));
     }
-  }, [t]);
+  }, [pureWeb, t]);
 
   /** 导出诊断包。诊断上下文（版本/平台/架构/本地 AI 状态等）由后端收集。 */
   const exportBundle = useCallback(async () => {
+    if (pureWeb) {
+      notifySuccess(t('logs.previewAction'));
+      return;
+    }
     try {
       const date = currentDateStamp();
       const path = await save({
@@ -974,23 +1388,23 @@ export function LogPage({ onBack }: { onBack: () => void }) {
     } catch (err) {
       notifyError(t('notification.exportFailed'), t('logs.export.failed', { error: String(err) }));
     }
-  }, [t]);
+  }, [pureWeb, t]);
 
   /** 复制当前筛选结果到剪贴板（JSONL）。 */
-  const copyFiltered = useCallback(async () => {
-    if (entries.length === 0) return;
-    const jsonl = entries.map((e) => JSON.stringify({
+  const copyFiltered = async () => {
+    if (displayedEntries.length === 0) return;
+    const jsonl = displayedEntries.map((e) => JSON.stringify({
       id: e.id, timestamp: e.timestamp, level: e.level, source: e.source,
       target: e.target, message: e.message, sessionId: e.sessionId,
       correlationId: e.correlationId, fields: e.fields,
     })).join('\n');
     try {
       await navigator.clipboard.writeText(jsonl);
-      notifySuccess(t('logs.copy.success', { count: entries.length }));
+      notifySuccess(t('logs.copy.success', { count: displayedEntries.length }));
     } catch {
       notifyError(t('logs.copy.failed'));
     }
-  }, [entries, t]);
+  };
 
   /** 打开删除确认。 */
   const openDelete = useCallback((scope: DeleteScope, label: string) => {
@@ -999,6 +1413,12 @@ export function LogPage({ onBack }: { onBack: () => void }) {
 
   /** 确认删除。 */
   const confirmDelete = useCallback(async (scope: DeleteScope) => {
+    if (pureWeb) {
+      setPreviewCleared(true);
+      setDeleteDialog({ open: false });
+      notifySuccess(t('logs.previewAction'));
+      return;
+    }
     try {
       const result = await clientRef.current.delete(scope);
       if (result.partial && result.error) {
@@ -1017,16 +1437,20 @@ export function LogPage({ onBack }: { onBack: () => void }) {
     } catch (err) {
       notifyError(t('logs.delete.failed'), String(err));
     }
-  }, [refreshStatus, refreshEntries, t]);
+  }, [pureWeb, refreshStatus, refreshEntries, t]);
 
   /** 打开日志目录。 */
   const openDir = useCallback(async () => {
+    if (pureWeb) {
+      notifySuccess(t('logs.previewAction'));
+      return;
+    }
     try {
       await clientRef.current.openLogDir();
     } catch (err) {
       notifyError(t('logs.openDirFailed'), String(err));
     }
-  }, [t]);
+  }, [pureWeb, t]);
 
   /** 开始临时诊断会话。 */
   const startDiagnostic = useCallback(() => {
@@ -1035,6 +1459,12 @@ export function LogPage({ onBack }: { onBack: () => void }) {
 
   /** 确认开始诊断。 */
   const confirmDiagnostic = useCallback(async (minutes: number, level: LogLevel) => {
+    if (pureWeb) {
+      setDiagnosticRemaining(minutes);
+      setDiagnosticDialog((s) => ({ ...s, open: false }));
+      notifySuccess(t('logs.previewAction'));
+      return;
+    }
     try {
       await clientRef.current.startDiagnosticSession(minutes, level, true);
       notifySuccess(t('logs.diagnostic.started'));
@@ -1043,10 +1473,15 @@ export function LogPage({ onBack }: { onBack: () => void }) {
     } catch (err) {
       notifyError(t('logs.diagnostic.startFailed'), String(err));
     }
-  }, [refreshStatus, t]);
+  }, [pureWeb, refreshStatus, t]);
 
   /** 停止诊断。 */
   const stopDiagnostic = useCallback(async () => {
+    if (pureWeb) {
+      setDiagnosticRemaining(null);
+      notifySuccess(t('logs.previewAction'));
+      return;
+    }
     try {
       await clientRef.current.stopDiagnosticSession();
       notifySuccess(t('logs.diagnostic.stopped'));
@@ -1055,7 +1490,7 @@ export function LogPage({ onBack }: { onBack: () => void }) {
     } catch (err) {
       notifyError(t('logs.diagnostic.stopFailed'), String(err));
     }
-  }, [refreshStatus, t]);
+  }, [pureWeb, refreshStatus, t]);
 
   /** 周期性刷新诊断剩余时间。 */
   useEffect(() => {
@@ -1066,21 +1501,6 @@ export function LogPage({ onBack }: { onBack: () => void }) {
     return () => clearInterval(timer);
   }, [diagnosticRemaining, refreshStatus]);
 
-  if (pureWeb) {
-    return (
-      <main className="log-page">
-        <header>
-          <div>
-            <p className="eyebrow">{t('logs.eyebrow')}</p>
-            <h1>{t('logs.title')}</h1>
-          </div>
-          <button className="secondary" onClick={onBack}>{t('common.back')}</button>
-        </header>
-        <p className="setting-hint">{t('logs.previewEmpty')}</p>
-      </main>
-    );
-  }
-
   return (
     <main className="log-page" ref={scrollRef} onScroll={handleScroll}>
       <header>
@@ -1090,6 +1510,7 @@ export function LogPage({ onBack }: { onBack: () => void }) {
         </div>
         <button className="secondary" onClick={onBack}>{t('common.back')}</button>
       </header>
+      {pureWeb && <p className="setting-hint log-preview-hint">{t('logs.previewEmpty')}</p>}
       {error && <p className="setting-hint">{t('logs.loadFailed', { error })}</p>}
       <LogToolbar
         sourceFilter={sourceFilter}
@@ -1097,11 +1518,14 @@ export function LogPage({ onBack }: { onBack: () => void }) {
         keyword={keyword}
         follow={follow}
         paused={paused}
-        status={status}
+        status={displayedStatus}
+        currentCount={displayedEntries.length}
+        newCount={newCount}
+        expandedCount={expandedCount}
         diagnosticRemainingMinutes={diagnosticRemaining}
-        onSourceChange={setSourceFilter}
-        onLevelChange={setMinLevel}
-        onKeywordChange={setKeyword}
+        onSourceChange={(source) => { collapseAllEntries(); setPreviewCleared(false); setSourceFilter(source); }}
+        onLevelChange={(level) => { collapseAllEntries(); setPreviewCleared(false); setMinLevel(level); }}
+        onKeywordChange={(value) => { collapseAllEntries(); setPreviewCleared(false); setKeyword(value); }}
         onFollowChange={setFollow}
         onPauseToggle={pauseToggle}
         onClearView={clearView}
@@ -1110,23 +1534,21 @@ export function LogPage({ onBack }: { onBack: () => void }) {
         onExportBundle={exportBundle}
         onDelete={openDelete}
         onCopyFiltered={copyFiltered}
-        copyDisabled={entries.length === 0}
+        copyDisabled={displayedEntries.length === 0}
         onOpenDir={openDir}
         onDiagnosticStart={startDiagnostic}
         onDiagnosticStop={stopDiagnostic}
+        onNewCountClick={jumpToNewest}
+        onCollapseAll={collapseAllEntries}
       />
-      {follow && newCount > 0 && (
-        <button type="button" className="log-new-count" onClick={jumpToNewest}>
-          <span className="log-new-count-dot" aria-hidden="true" />
-          <span>{t('logs.list.newCount', { count: newCount })}</span>
-        </button>
-      )}
       <LogList
         key={listKey}
-        entries={entries}
-        hasMore={hasMore}
+        entries={displayedEntries}
+        expandedEntryIds={expandedEntryIds}
+        hasMore={displayedHasMore}
         loading={loading}
         onLoadMore={loadMore}
+        onToggleEntry={toggleExpandedEntry}
       />
       <DeleteConfirmDialog state={deleteDialog} onClose={() => setDeleteDialog({ open: false })} onConfirm={confirmDelete} />
       <DiagnosticStartDialog

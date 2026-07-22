@@ -156,16 +156,6 @@ impl LogService {
         self.inner.frontend.push(redacted);
     }
 
-    /// 便捷方法：写入一条 info 级别的应用日志。
-    pub fn info(&self, target: &'static str, message: impl Into<String>) {
-        self.write(LogInput::new(
-            LogLevel::Info,
-            model::LogSource::App,
-            target,
-            message,
-        ));
-    }
-
     /// 便捷方法：写入一条 warn 级别的应用日志。
     pub fn warn(&self, target: &'static str, message: impl Into<String>) {
         self.write(LogInput::new(

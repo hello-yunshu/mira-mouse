@@ -10,7 +10,10 @@ import { OverlayPortal, subscribeOverlayStack } from './overlay';
  * 被卡片、滚动容器或业务层叠上下文截断取样范围，也避免与 Modal 抢占
  * 层级——通过订阅 overlayStack，Modal 打开时立即隐藏所有 Tooltip。
  */
-export function Tooltip({ label, children }: PropsWithChildren<{ label: string }>) {
+export function Tooltip({ label, children, fitContent = false }: PropsWithChildren<{
+  label: string;
+  fitContent?: boolean;
+}>) {
   const triggerRef = useRef<HTMLSpanElement>(null);
   const tooltipRef = useRef<HTMLSpanElement>(null);
   const [mounted, setMounted] = useState(false);
@@ -123,7 +126,7 @@ export function Tooltip({ label, children }: PropsWithChildren<{ label: string }
             role="tooltip"
             id={id}
             ref={tooltipRef}
-            className="tooltip-content"
+            className={`tooltip-content${fitContent ? ' tooltip-content-fit' : ''}`}
             data-show={visible ? 'true' : 'false'}
             style={pos ? { top: `${pos.top}px`, left: `${pos.left}px` } : undefined}
           >
