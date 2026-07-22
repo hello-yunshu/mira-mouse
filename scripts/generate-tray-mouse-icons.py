@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parent.parent
 ICON_DIR = ROOT / "src-tauri" / "icons"
 LEVELS = range(0, 101, 10)
 CHARGING_BOLT = [(38, 13), (32, 28), (46, 28), (29, 47), (35, 32), (23, 32)]
+CHARGING_BOLT_X_OFFSET = -2  # 保留闪电轮廓，仅补偿其向右偏移的视觉重心
 
 
 def outline_color(dark: bool):
@@ -55,7 +56,7 @@ def charging_bolt_points(size: int):
     scale = size / 64
     return [
         (
-            int(round(x * scale)),
+            int(round((x + CHARGING_BOLT_X_OFFSET) * scale)),
             int(round(y * scale)),
         )
         for x, y in CHARGING_BOLT
