@@ -494,7 +494,7 @@ impl MacNativeTrayController {
                 .connection
                 .map(|c| crate::connection_label(c, lang))
                 .unwrap_or("");
-            crate::tr_tooltip_connected(lang, conn, name)
+            crate::tr_tooltip_connected(lang, conn, name, state.mouse_battery, state.mouse_charging)
         } else {
             crate::tr_tooltip_disconnected(lang)
         }
