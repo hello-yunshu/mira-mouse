@@ -1005,6 +1005,7 @@ export interface BatteryUsageModalProps {
   connectedTargets?: readonly BatteryUsageConnectedTarget[];
   preferredDeviceName?: string;
   preferredComponentId?: string;
+  demoMode?: boolean;
 }
 
 export interface BatteryUsageConnectedTarget {
@@ -1029,6 +1030,7 @@ export function BatteryUsageModal({
   connectedTargets,
   preferredDeviceName,
   preferredComponentId,
+  demoMode,
 }: BatteryUsageModalProps) {
   const { t } = useTranslation();
   const [range, setRange] = useState<BatteryHistoryRange>('24h');
@@ -1043,7 +1045,8 @@ export function BatteryUsageModal({
   const [loadedHistoryEnabled, setLoadedHistoryEnabled] = useState(true);
   const [loadedAiAnalysisEnabled, setLoadedAiAnalysisEnabled] = useState(false);
   const [reloadNonce, setReloadNonce] = useState(0);
-  const pureWeb = isPureWebPreview();
+  // 演示模式下复用纯 Web 的 mock 数据与前端模拟路径，行为与网页预览一致。
+  const pureWeb = isPureWebPreview() || demoMode === true;
   const historyEnabled = providedHistoryEnabled ?? loadedHistoryEnabled;
   const aiAnalysisEnabled = providedAiAnalysisEnabled ?? loadedAiAnalysisEnabled;
 
