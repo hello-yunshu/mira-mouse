@@ -923,6 +923,10 @@ struct SessionState {
     pending_notification_action: Mutex<Option<String>>,
     /// 电量使用情况：内存缓存 + 去重追踪。启动时从 battery_history.json 加载。
     battery_history: BatteryHistoryState,
+    /// 电量预测预计算缓存：后台轮询周期中预构建 24h/10d 响应，
+    /// `battery_history_get` 直接返回缓存，打开弹窗时零计算开销。
+    /// 超过 1 小时或缺失时降级为实时计算并记日志。
+    prediction_cache: battery_history::PredictionCache,
     /// 异常耗电通知节流：同一设备同一部件 24 小时内最多通知一次。
     abnormal_drain_notify: AbnormalDrainNotifyState,
     /// 已通知不可用能力的设备路径集合，避免同一设备重复通知。
@@ -8324,6 +8328,27 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
                     settings.battery_history_retention_days as i64,
                     &fresh_snapshot_entries,
                 );
+                // 预计算电量预测缓存：复用刚写入的最新样本，零额外 HID I/O。
+                // spawn_blocking 避免阻塞轮询主循环；AI 预测可能耗时数秒。
+                // 缓存写入失败仅意味着下次打开弹窗降级实时计算，不影响正确性。
+                if settings.battery_history_enabled {
+                    let app_clone = app.clone();
+                    let low_battery_threshold = settings.low_battery_threshold;
+                    let local_ai_enabled =
+                        local_ai_feature_enabled(&settings, LOCAL_AI_FEATURE_BATTERY_USAGE);
+                    tauri::async_runtime::spawn_blocking(move || {
+                        let state = app_clone.state::<SessionState>();
+                        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            battery_history::precompute_prediction(
+                                &state.battery_history,
+                                &state.prediction_cache,
+                                low_battery_threshold,
+                                local_ai_enabled,
+                                &app_clone,
+                            );
+                        }));
+                    });
+                }
                 // 异常耗电通知：仅在设置开启时检查，节流由 AbnormalDrainNotifyState 保证。
                 if settings.unusual_drain_alerts {
                     let now = chrono::Utc::now();
@@ -9689,6 +9714,14 @@ fn settings_set(app: tauri::AppHandle, settings: AppSettings) -> Result<AppSetti
             state.log_input(local_ai_disabled_log_input());
         }
     }
+    // 预测缓存失效：影响预测结果的设置变更后，旧缓存不再正确。
+    // 下一轮轮询周期会重新预计算；在此之前打开弹窗会降级实时计算。
+    if local_ai_toggle
+        || low_battery_threshold_changed
+        || previous_settings.battery_history_enabled != settings.battery_history_enabled
+    {
+        app.state::<SessionState>().prediction_cache.invalidate();
+    }
     Ok(settings)
 }
 
@@ -9956,20 +9989,39 @@ fn take_pending_notification_action(state: tauri::State<SessionState>) -> Option
 // 电量使用情况 Tauri 命令
 
 /// 获取电量历史（24 小时或 10 天聚合 + 洞察分析）。
+///
+/// 优先返回后台预计算缓存（零计算开销）；缓存缺失或超过 1 小时时降级为
+/// 实时计算并记日志，保证正确性兜底。
 #[tauri::command]
 async fn battery_history_get(
     app: tauri::AppHandle,
     range: String,
 ) -> Result<BatteryHistoryResponse, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        // Keep the UI response ordered behind the battery read it requested.
-        // `read_device_once` serializes on the existing device I/O lock and records
-        // the resulting sample before returning, so predictions cannot race ahead
-        // with stale history when the battery page opens or changes range.
-        read_device_once(&app, ReadPlan::BatteryOnly);
         let state = app.state::<SessionState>();
-        let settings = cached_settings_for_state(&state);
         let range_str = if range == "24h" { "24h" } else { "10d" };
+        // 优先读预计算缓存：打开弹窗时零计算开销。
+        let (cached, is_fresh) = state.prediction_cache.get(range_str);
+        if let Some(response) = cached {
+            if is_fresh {
+                return Ok(response);
+            }
+            // 缓存陈旧：降级实时计算，记日志便于观测命中率。
+            state.log_warn(
+                "battery::history",
+                "prediction cache stale, falling back to real-time computation",
+            );
+        } else {
+            // 缓存缺失：降级实时计算，记日志便于观测命中率。
+            state.log_warn(
+                "battery::history",
+                "prediction cache miss, falling back to real-time computation",
+            );
+        }
+        // 降级路径：同步触发 HID 读取 + 构建响应。
+        // `read_device_once` 序列化在设备 I/O 锁上，确保预测不会跑在陈旧历史之前。
+        read_device_once(&app, ReadPlan::BatteryOnly);
+        let settings = cached_settings_for_state(&state);
         Ok(battery_history::build_response_with_analysis(
             &state.battery_history,
             settings.low_battery_threshold,
@@ -9989,7 +10041,10 @@ fn battery_history_clear(
     app: tauri::AppHandle,
     device_key: Option<String>,
 ) -> Result<(), String> {
-    battery_history::clear_history(&state.battery_history, &app, device_key.as_deref())
+    battery_history::clear_history(&state.battery_history, &app, device_key.as_deref())?;
+    // 历史被清除后，预计算缓存不再正确，立即失效。
+    state.prediction_cache.invalidate();
+    Ok(())
 }
 
 /// 导出电量历史。默认 JSON，可选 CSV。仅包含脱敏后的电量历史数据。
