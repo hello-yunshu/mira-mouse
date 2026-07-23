@@ -122,6 +122,12 @@ jobs:
             --model local-ai/model.json \
             --output artifacts/model.rillpack
 
+      - name: Sync handler Cargo.lock
+        # handler 被 workspace exclude，有独立 Cargo.lock；dependabot 升级
+        # workspace 外部依赖后不会自动同步 handler 锁文件。build 前先跑
+        # `cargo update` 把所有依赖对齐到最新兼容版本，确保 `--locked` 通过。
+        run: cargo update --manifest-path handlers/mira-battery-handler/Cargo.toml
+
       - name: Build WASM handler component
         env:
           MIRA_HANDLER_VERSION: ${{ steps.meta.outputs.handler-version }}
