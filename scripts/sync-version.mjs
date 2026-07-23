@@ -53,21 +53,12 @@ async function syncFile(path, pattern, replacement, label, version) {
   return changed;
 }
 
-/** 从 Cargo.toml 文本中解析带 path 的依赖包名列表（覆盖 [dependencies] 与 [dev-dependencies]）。 */
-function parsePathDependencies(toml) {
-  const deps = [];
-  const re = /^([a-zA-Z0-9_-]+)\s*=\s*\{[^}]*\bpath\s*=\s*"[^"]*"/gm;
-  let m;
-  while ((m = re.exec(toml)) !== null) {
-    deps.push(m[1]);
-  }
-  return deps;
-}
-
 /**
- * 在 handlers/mira-battery-handler/ 跑 `cargo update -p <path deps>`，把 handler
- * 独立 Cargo.lock 中 path 依赖的版本同步到当前 workspace 版本。cargo 不可用时
- * 跳过（不阻塞纯文档同步场景）。
+ * 在 handlers/mira-battery-handler/ 跑 `cargo update`，把 handler 独立 Cargo.lock
+ * 中所有依赖同步到最新兼容版本（含 path 依赖与外部依赖如 thiserror/serde_json）。
+ * handler 被 workspace exclude，dependabot 升级 workspace 外部依赖后不会自动同步
+ * handler 的 Cargo.lock，若漏跑会导致下游 model-pack 的 `cargo build --locked` 失败。
+ * cargo 不可用时跳过（不阻塞纯文档同步场景）。
  */
 async function syncHandlerLock(version) {
   const handlerDir = 'handlers/mira-battery-handler';
@@ -82,15 +73,7 @@ async function syncHandlerLock(version) {
     return false;
   }
 
-  const handlerToml = await readFile(`${handlerDir}/Cargo.toml`, 'utf8');
-  const pathDeps = parsePathDependencies(handlerToml);
-  if (pathDeps.length === 0) {
-    console.log(`  handler lock: no path dependencies in ${handlerDir}, skipped`);
-    return false;
-  }
-
-  const args = ['update', ...pathDeps.flatMap((d) => ['-p', d])];
-  const result = spawnSync('cargo', args, { cwd: handlerDir, encoding: 'utf8' });
+  const result = spawnSync('cargo', ['update'], { cwd: handlerDir, encoding: 'utf8' });
   if (result.status !== 0) {
     throw new Error(
       `handler lock: cargo update failed in ${handlerDir}:\n${(result.stderr || '').trim()}`,
