@@ -2460,20 +2460,20 @@ fn store_snapshots(state: &SessionState, snapshots: &BTreeMap<String, DeviceSnap
     changed
 }
 
-/// 检查快照中是否有不可用能力，如有则发送系统通知（每设备仅通知一次）。
+/// 检查快照中是否有不可用能力，如有则写入日志（每设备仅记录一次）。
 ///
 /// 当插件通过 `CapabilityProbe` 声明了能力探测，但设备实际不支持时，
 /// `plugin_capabilities` 中对应条目的 `available` 为 false。
-/// 此函数收集所有不可用能力的标签，通过 macOS 系统通知告知用户，
-/// 并在 `notified_unavailable_capabilities` 中标记该设备已通知。
-fn notify_unavailable_capabilities(
+/// 此函数收集所有不可用能力的标签，仅写入统一日志，不发送系统通知，
+/// 并在 `notified_unavailable_capabilities` 中标记该设备已记录。
+fn log_unavailable_capabilities(
     app: &AppHandle,
     state: &SessionState,
     snapshots: &BTreeMap<String, DeviceSnapshot>,
 ) {
     let settings = cached_settings(app);
     let lang = effective_language(&settings.language);
-    let mut to_notify: Vec<(String, Vec<String>)> = Vec::new();
+    let mut to_log: Vec<(String, Vec<String>)> = Vec::new();
     {
         let Ok(mut notified) = state.notified_unavailable_capabilities.lock() else {
             return;
@@ -2495,26 +2495,26 @@ fn notify_unavailable_capabilities(
                 })
                 .collect();
             if !unavailable.is_empty() {
-                to_notify.push((device_path.clone(), unavailable));
+                to_log.push((device_path.clone(), unavailable));
             }
         }
-        // 标记已通知，防止重复弹窗
-        for (path, _) in &to_notify {
+        // 标记已记录，防止重复日志
+        for (path, _) in &to_log {
             notified.insert(path.clone());
         }
     }
-    for (device_path, unavailable) in to_notify {
+    for (device_path, unavailable) in to_log {
         let display_name = snapshots
             .get(&device_path)
             .map(|s| s.display_name.clone())
             .unwrap_or_else(|| device_path.clone());
         let body = tr_unavailable_capabilities_body(lang, &display_name, &unavailable);
-        let _ = app
-            .notification()
-            .builder()
-            .title(tr_unavailable_capabilities_title(lang))
-            .body(body)
-            .show();
+        // 仅写入日志，不发送系统通知：参数不可用属于设备能力信息，
+        // 非必要不打扰用户。系统通知保留给更新、电量等必要提醒。
+        state.log_warn(
+            "device::capabilities",
+            format!("{}: {}", tr_unavailable_capabilities_title(lang), body),
+        );
     }
 }
 
@@ -8307,10 +8307,10 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
             if snapshots_changed {
                 let _ = app.emit("device-snapshots-updated", &snapshot_entries);
             }
-            // 参数不可用通知：检查新连接设备是否有 probe 检测为不可用的能力，
-            // 如有则发送系统通知（每设备仅通知一次）。
+            // 参数不可用记录：检查新连接设备是否有 probe 检测为不可用的能力，
+            // 如有则写入日志（每设备仅记录一次），不发送系统通知。
             if plan != ReadPlan::PresenceOnly {
-                notify_unavailable_capabilities(app, &state, &new_map);
+                log_unavailable_capabilities(app, &state, &new_map);
             }
             // 电量使用情况采样：在设备轮询成功后记录电量样本。
             // 记录失败不影响设备功能（record_samples 内部静默处理）。
@@ -10327,8 +10327,31 @@ fn tr_night_mode_restore_failed_receiver(lang: &str, error: &str) -> String {
     }
 }
 
-fn tr_tooltip_connected(_lang: &str, connection: &str, name: &str) -> String {
-    format!("Mira · {} · {}", connection, name)
+fn tr_tooltip_connected(
+    lang: &str,
+    connection: &str,
+    name: &str,
+    mouse_battery: Option<u8>,
+    mouse_charging: bool,
+) -> String {
+    let base = format!("Mira · {} · {}", connection, name);
+    match mouse_battery {
+        Some(percentage) => {
+            let suffix = if mouse_charging {
+                tr_charging_suffix(lang)
+            } else {
+                ""
+            };
+            // 两行格式：首行设备信息，次行电量。Windows 托盘 tooltip
+            // 支持 \n 换行（NIF_TIP 多行模式）。
+            if lang == "en" {
+                format!("{base}\nBattery: {percentage}%{suffix}")
+            } else {
+                format!("{base}\n电量：{percentage}%{suffix}")
+            }
+        }
+        None => base,
+    }
 }
 
 pub(crate) fn tr_tooltip_disconnected(lang: &str) -> String {
@@ -10336,6 +10359,42 @@ pub(crate) fn tr_tooltip_disconnected(lang: &str) -> String {
         "Mira · No supported mouse connected".to_string()
     } else {
         "Mira · 未连接受支持的鼠标".to_string()
+    }
+}
+
+#[cfg(test)]
+mod tooltip_tests {
+    use super::*;
+
+    #[test]
+    fn tooltip_connected_zh_cn_shows_two_lines_with_battery() {
+        let tip = tr_tooltip_connected("zh-CN", "USB", "Test Mouse", Some(50), false);
+        let lines: Vec<&str> = tip.split('\n').collect();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0], "Mira · USB · Test Mouse");
+        assert_eq!(lines[1], "电量：50%");
+    }
+
+    #[test]
+    fn tooltip_connected_en_shows_two_lines_with_battery() {
+        let tip = tr_tooltip_connected("en", "USB", "Test Mouse", Some(80), true);
+        let lines: Vec<&str> = tip.split('\n').collect();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0], "Mira · USB · Test Mouse");
+        assert_eq!(lines[1], "Battery: 80% · Charging");
+    }
+
+    #[test]
+    fn tooltip_connected_zh_cn_charging_has_suffix() {
+        let tip = tr_tooltip_connected("zh-CN", "USB", "X", Some(20), true);
+        assert!(tip.contains("电量：20% · 充电中"));
+    }
+
+    #[test]
+    fn tooltip_connected_unknown_battery_is_single_line() {
+        let tip = tr_tooltip_connected("zh-CN", "USB", "Test", None, false);
+        assert!(!tip.contains('\n'));
+        assert_eq!(tip, "Mira · USB · Test");
     }
 }
 
@@ -10915,6 +10974,8 @@ fn update_tray(
             lang,
             connection_label(snapshot.connection, lang),
             &snapshot.display_name,
+            tray_state.mouse_battery,
+            tray_state.mouse_charging,
         )))?;
     } else {
         tray.set_title(Some(""))?;
