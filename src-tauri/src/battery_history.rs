@@ -174,6 +174,68 @@ impl Default for BatteryHistoryState {
     }
 }
 
+/// 缓存新鲜度阈值：超过此时长后降级为实时计算。
+/// 1 小时与电量轮询节奏（3-5 分钟）匹配，鼠标休眠几小时后用户打开弹窗时触发刷新。
+const PREDICTION_CACHE_TTL_SECS: u64 = 3600;
+
+/// 预计算缓存：后台轮询周期中预构建 24h/10d 响应，打开弹窗时直接返回。
+///
+/// 缓存命中时 `battery_history_get` 零计算开销；超过 `PREDICTION_CACHE_TTL_SECS`
+/// 或缺失时降级为实时计算并记日志，保证正确性兜底。
+pub struct PredictionCache {
+    inner: Mutex<Option<PredictionCacheEntry>>,
+}
+
+#[derive(Clone)]
+struct PredictionCacheEntry {
+    response_24h: BatteryHistoryResponse,
+    response_10d: BatteryHistoryResponse,
+    computed_at: Instant,
+}
+
+impl Default for PredictionCache {
+    fn default() -> Self {
+        Self {
+            inner: Mutex::new(None),
+        }
+    }
+}
+
+impl PredictionCache {
+    /// 读取缓存。返回 `(response_clone, is_fresh)`。
+    /// 缓存缺失或超过 TTL 时返回 `(None, false)`。
+    pub fn get(&self, range: &str) -> (Option<BatteryHistoryResponse>, bool) {
+        let guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(entry) = guard.as_ref() {
+            let is_fresh = entry.computed_at.elapsed().as_secs() < PREDICTION_CACHE_TTL_SECS;
+            let response = if range == "24h" {
+                Some(entry.response_24h.clone())
+            } else {
+                Some(entry.response_10d.clone())
+            };
+            (response, is_fresh)
+        } else {
+            (None, false)
+        }
+    }
+
+    /// 写入预计算结果。
+    pub fn set(&self, response_24h: BatteryHistoryResponse, response_10d: BatteryHistoryResponse) {
+        let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        *guard = Some(PredictionCacheEntry {
+            response_24h,
+            response_10d,
+            computed_at: Instant::now(),
+        });
+    }
+
+    /// 清空缓存。设置变更（如切换 AI 开关）时调用。
+    pub fn invalidate(&self) {
+        let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        *guard = None;
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BatteryHistoryResponse {
@@ -881,6 +943,36 @@ pub fn build_response_with_analysis(
         insights,
         generated_at: now.to_rfc3339(),
     }
+}
+
+/// 后台预计算 24h/10d 两个响应并写入缓存。
+///
+/// 在 `record_samples` 之后调用，复用刚写入的最新样本，零额外 HID I/O。
+/// AI 预测在此处执行；打开弹窗时直接读缓存，请求路径零计算开销。
+/// 任何 panic 或错误静默处理，不影响轮询主循环；缓存写入失败仅意味着
+/// 下次打开弹窗会降级为实时计算。
+pub fn precompute_prediction(
+    state: &BatteryHistoryState,
+    cache: &PredictionCache,
+    low_battery_threshold: u8,
+    local_ai_analysis_enabled: bool,
+    app: &AppHandle,
+) {
+    let response_24h = build_response_with_analysis(
+        state,
+        low_battery_threshold,
+        "24h",
+        local_ai_analysis_enabled,
+        Some(app),
+    );
+    let response_10d = build_response_with_analysis(
+        state,
+        low_battery_threshold,
+        "10d",
+        local_ai_analysis_enabled,
+        Some(app),
+    );
+    cache.set(response_24h, response_10d);
 }
 
 /// 过去 24 小时按累计使用时长聚合图表点。
@@ -3366,5 +3458,90 @@ mod tests {
         assert!(!should_persist(
             Instant::now() - Duration::from_secs(PERSIST_INTERVAL_SECS - 60)
         ));
+    }
+
+    // ── PredictionCache 测试 ─────────────────────────────────────────────
+
+    fn empty_response_for_range(range: &str) -> BatteryHistoryResponse {
+        BatteryHistoryResponse {
+            range: range.into(),
+            devices: Vec::new(),
+            series: Vec::new(),
+            insights: Vec::new(),
+            generated_at: Utc::now().to_rfc3339(),
+        }
+    }
+
+    #[test]
+    fn prediction_cache_miss_when_empty() {
+        let cache = PredictionCache::default();
+        let (response, is_fresh) = cache.get("24h");
+        assert!(response.is_none());
+        assert!(!is_fresh);
+    }
+
+    #[test]
+    fn prediction_cache_hit_returns_correct_range() {
+        let cache = PredictionCache::default();
+        let resp_24h = empty_response_for_range("24h");
+        let resp_10d = empty_response_for_range("10d");
+        cache.set(resp_24h, resp_10d);
+
+        let (response_24h, is_fresh_24h) = cache.get("24h");
+        let (response_10d, is_fresh_10d) = cache.get("10d");
+
+        assert!(is_fresh_24h);
+        assert!(is_fresh_10d);
+        assert_eq!(response_24h.unwrap().range, "24h");
+        assert_eq!(response_10d.unwrap().range, "10d");
+    }
+
+    #[test]
+    fn prediction_cache_invalidate_clears_cache() {
+        let cache = PredictionCache::default();
+        cache.set(
+            empty_response_for_range("24h"),
+            empty_response_for_range("10d"),
+        );
+        assert!(cache.get("24h").0.is_some());
+
+        cache.invalidate();
+        assert!(cache.get("24h").0.is_none());
+        assert!(cache.get("10d").0.is_none());
+    }
+
+    #[test]
+    fn prediction_cache_overwrites_on_set() {
+        let cache = PredictionCache::default();
+        cache.set(
+            empty_response_for_range("24h"),
+            empty_response_for_range("10d"),
+        );
+
+        // 第二次 set 覆盖第一次
+        let new_24h = BatteryHistoryResponse {
+            range: "24h".into(),
+            devices: Vec::new(),
+            series: Vec::new(),
+            insights: Vec::new(),
+            generated_at: "2026-07-23T00:00:00Z".to_string(),
+        };
+        cache.set(new_24h, empty_response_for_range("10d"));
+
+        let (response, _) = cache.get("24h");
+        assert_eq!(response.unwrap().generated_at, "2026-07-23T00:00:00Z");
+    }
+
+    #[test]
+    fn prediction_cache_get_unknown_range_falls_back_to_10d() {
+        let cache = PredictionCache::default();
+        cache.set(
+            empty_response_for_range("24h"),
+            empty_response_for_range("10d"),
+        );
+        // 未知 range 应回退到 10d 分支（else 路径），而非返回 None。
+        let (response, is_fresh) = cache.get("unknown");
+        assert!(is_fresh);
+        assert_eq!(response.unwrap().range, "10d");
     }
 }

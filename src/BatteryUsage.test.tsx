@@ -199,9 +199,11 @@ describe('BatteryUsageModal', () => {
     expect(usageGridLines).toHaveLength(8);
     expect(usageExtensions).toHaveLength(8);
     expect(usageLabels).toHaveLength(8);
-    expect(usageGridLines.every((line, index) => line.getAttribute('x1') === usageLabels[index].getAttribute('x'))).toBe(true);
-    expect(usageGridLines.every((line) => line.getAttribute('clip-path') === 'url(#battery-chart-plot-clip)')).toBe(true);
-    expect(usageExtensions.every((line) => line.getAttribute('y1') === '144' && line.getAttribute('y2') === '159')).toBe(true);
+    expect(usageGridLines.every((line, index) => {
+      const tx = line.style.transform.match(/translateX\(([\d.]+)px\)/);
+      return tx && Number(tx[1]) === Number(usageLabels[index].getAttribute('x'));
+    })).toBe(true);
+    expect(usageExtensions.every((line) => line.style.transform.includes('144px') && line.style.transform.includes('scaleY(4)'))).toBe(true);
     const usageLabelText = usageLabels.map((label) => label.textContent);
     expect(usageLabelText).toEqual(['0', '0.5', '1 小时', '1.5', '2 小时', '2.5', '3 小时', '3.5']);
     expect(document.querySelectorAll('.battery-chart-x-grid.major')).toHaveLength(3);
@@ -273,9 +275,10 @@ describe('BatteryUsageModal', () => {
     const dateLabels = Array.from(document.querySelectorAll<SVGTextElement>('.battery-chart-x-date'));
     expect(dateDividers).toHaveLength(dateLabels.length);
     expect(dateExtensions).toHaveLength(dateLabels.length);
-    expect(dateExtensions.every((line) => line.getAttribute('y1') === '116' && line.getAttribute('y2') === '144')).toBe(true);
-    expect(weekdayExtensions.every((line) => line.getAttribute('y1') === '116' && line.getAttribute('y2') === '129')).toBe(true);
-    expect(Number(dateLabels[0].getAttribute('x'))).toBe(Number(dateDividers[0].getAttribute('x1')) + 4);
+    expect(dateExtensions.every((line) => line.style.transform.includes('116px') && line.style.transform.includes('scaleY(28)'))).toBe(true);
+    expect(weekdayExtensions.every((line) => line.style.transform.includes('116px') && line.style.transform.includes('scaleY(13)'))).toBe(true);
+    const gridTx = dateDividers[0].style.transform.match(/translateX\(([\d.]+)px\)/);
+    expect(Number(dateLabels[0].getAttribute('x'))).toBe(Number(gridTx?.[1]) + 4);
     const datedBar = tenDayBars.find((button) => /\d{2}-\d{2} \d{2}:00–\d{2}:00:/.test(button.getAttribute('aria-label') ?? ''));
     expect(datedBar).toBeDefined();
     if (!datedBar) throw new Error('10-day chart has no dated bar');
@@ -389,7 +392,8 @@ describe('BatteryUsageModal', () => {
     // 切换命中缓存，callCount 仍为 2；等待 10d 标签渲染完成。
     await waitFor(() => expect(document.querySelectorAll('.battery-chart-x-label')).toHaveLength(10));
     expect(callCount).toBe(2);
-    expect(document.querySelector('.battery-chart-header')).toHaveTextContent('Past 10 days');
+    // chart header 标题经 FadeText 过渡，需等待文本更新完成。
+    await waitFor(() => expect(document.querySelector('.battery-chart-header')).toHaveTextContent('Past 10 days'));
     const weekdayLabels = Array.from(document.querySelectorAll<SVGTextElement>('.battery-chart-x-label'))
       .map((label) => label.textContent ?? '');
     const dateLabels = Array.from(document.querySelectorAll<SVGTextElement>('.battery-chart-x-date'))

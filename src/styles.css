@@ -3050,17 +3050,20 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   display: flex;
   flex-direction: column;
 }
-.battery-status-device-info span {
+.battery-status-device-info > span,
+.battery-status-device-info strong {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.battery-status-device-info > span {
   color: var(--muted);
   font-size: 9.5px;
   font-weight: 660;
 }
 .battery-status-device-info strong {
   color: var(--text);
-  font-size: 11.5px;
+  font-size: 13px;
   font-weight: 760;
 }
 .battery-status-switch-icon {
@@ -3072,6 +3075,7 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
 }
 .battery-status-metric {
   align-items: flex-end;
+  justify-content: center;
   text-align: right;
   max-width: 170px;
 }
@@ -3081,7 +3085,7 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   line-height: 1;
   font-weight: 820;
 }
-.battery-status-metric span {
+.battery-status-metric > span {
   margin-top: 2px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -3089,14 +3093,6 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   color: var(--muted);
   font-size: 10px;
   font-weight: 650;
-}
-/* status-strip 内设备名称与电量百分比的淡入淡出当前值字号微调
-   （仅这两个位置，不影响其他 FadeText 实例） */
-.battery-status-device-info > span > .battery-fade-text > .battery-fade-current {
-  font-size: 12px;
-}
-.battery-status-metric > strong > .battery-fade-text > .battery-fade-current {
-  font-size: 11px;
 }
 .battery-status-strip.low {
   border-color: rgb(255 69 58 / 28%);
@@ -3366,7 +3362,7 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   font-weight: 650;
   color: var(--muted);
 }
-.battery-chart-header span {
+.battery-chart-header > span {
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -3391,12 +3387,12 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   filter: drop-shadow(0 1px 2px rgb(30 42 56 / 10%));
 }
 .battery-chart-bar.battery-chart-after-now {
-  opacity: .28;
+  opacity: .42;
   filter: none;
   animation: mira-bar-muted-finish 500ms var(--motion-ease-out) var(--bar-delay, 0ms) backwards;
 }
 .battery-chart-bar.battery-chart-after-now:hover {
-  opacity: .46;
+  opacity: .6;
 }
 .battery-chart-bar.battery-chart-current {
   filter: drop-shadow(0 2px 5px color-mix(in oklch, var(--accent), transparent 66%));
@@ -3474,6 +3470,30 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   stroke-width: 1;
   stroke-opacity: .34;
   stroke-dasharray: none;
+}
+/* 绘图区内 X 轴网格：按序号复用 DOM 节点，切换范围时通过 transform 平滑过渡
+   水平位置。vector-effect: non-scaling-stroke 让描边不受父级 scaleY 缩放影响。
+   stroke-dasharray 不可平滑过渡，major/minor 切换为瞬切。 */
+.battery-chart-x-grid {
+  transform-box: view-box;
+  transform-origin: 0 0;
+  vector-effect: non-scaling-stroke;
+  transition:
+    transform var(--motion-slow) var(--motion-ease-out),
+    stroke-opacity var(--motion-base) ease;
+}
+/* 刻度线（绘图区外）按序号复用 DOM 节点，切换范围时通过 transform 平滑过渡位置
+   （translate）与长度（scaleY）。duration / easing 与绘图区 scaleY 动画一致，
+   保证刻度线底部始终贴合绘图区底边。vector-effect: non-scaling-stroke 让描边
+   宽度与虚线不受 scaleY 缩放影响。stroke-dasharray 不可平滑过渡，major/minor
+   切换为瞬切。 */
+.battery-chart-x-extension {
+  transform-box: view-box;
+  transform-origin: 0 0;
+  vector-effect: non-scaling-stroke;
+  transition:
+    transform var(--motion-slow) var(--motion-ease-out),
+    stroke-opacity var(--motion-base) ease;
 }
 .battery-chart-x-label,
 .battery-chart-x-date {
@@ -3609,6 +3629,28 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
 /* 洞察区说明头：标题 + 原理小字，贴在它解释的卡片旁 */
 .battery-insight-section {
   padding: 8px 0 2px;
+}
+/* 设备切换时的进入/退出动画容器：退出层 absolute 定位避免撑高弹窗，
+   进入层正常流式布局。两层各自动画结束后退出层被 React 移除。 */
+.battery-insight-section-wrap {
+  position: relative;
+}
+.battery-insight-section-exit {
+  position: absolute;
+  inset: 0;
+  animation: mira-insight-exit var(--motion-base) var(--motion-ease-out) forwards;
+  pointer-events: none;
+}
+.battery-insight-section-enter {
+  animation: mira-insight-enter var(--motion-slow) var(--motion-ease-out) backwards;
+}
+@keyframes mira-insight-enter {
+  from { opacity: 0; transform: translateY(var(--motion-distance)); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes mira-insight-exit {
+  from { opacity: 1; }
+  to { opacity: 0; }
 }
 .battery-insight-section-head {
   display: flex;
@@ -4393,8 +4435,15 @@ input[type="color"] {
   .battery-summary-item .summary-label > .battery-level-icon,
   .battery-chart-header svg,
   .battery-insight-card .insight-icon,
-  .battery-history-actions .action-btn svg {
+  .battery-history-actions .action-btn svg,
+  .battery-insight-section-enter,
+  .battery-insight-section-exit {
     animation: none !important;
+  }
+  .battery-insight-section-wrap {
+    height: auto !important;
+    transition: none !important;
+    overflow: visible !important;
   }
   .dashboard > .device-hero,
   .dashboard > .control-tabs,
@@ -4418,6 +4467,12 @@ input[type="color"] {
     transition: none !important;
   }
   .battery-chart-average {
+    transition: none !important;
+  }
+  .battery-chart-x-grid {
+    transition: none !important;
+  }
+  .battery-chart-x-extension {
     transition: none !important;
   }
 }

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { forwardRef, memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { forwardRef, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { save } from '@tauri-apps/plugin-dialog';
@@ -379,7 +379,7 @@ function BatteryUsageChart({ points, range, generatedAt }: ChartProps) {
       <div className="battery-chart-header">
         <span>
           <ChartBar weight="regular" />{' '}
-          {t(range === '24h' ? 'batteryUsage.chartTitle24h' : 'batteryUsage.change10d')}
+          <FadeText text={t(range === '24h' ? 'batteryUsage.chartTitle24h' : 'batteryUsage.change10d')} delay={0} />
         </span>
       </div>
       <div className="battery-chart-stage">
@@ -446,16 +446,18 @@ function BatteryUsageChart({ points, range, generatedAt }: ChartProps) {
               );
             })}
 
-            {/* 绘图区内的 X 轴网格随背景一起伸缩。 */}
-            {xTicks.map((tick) => (
+            {/* 绘图区内的 X 轴网格按序号复用 DOM 节点，切换范围时通过 transform
+                平滑过渡水平位置，与绘图区 scaleY 动画同步。y1/y2 由父级 scaleY
+                动画覆盖，无需单独过渡。 */}
+            {xTicks.map((tick, index) => (
                 <line
-                  key={`${tick.key}-grid`}
+                  key={index}
                   className={`battery-chart-x-grid${tick.major ? ' major' : ''}`}
-                  x1={tick.lineX}
+                  x1={0}
                   y1={padding.top}
-                  x2={tick.lineX}
+                  x2={0}
                   y2={padding.top + chartHeight}
-                  clipPath="url(#battery-chart-plot-clip)"
+                  style={{ transform: `translateX(${tick.lineX}px)` } as CSSProperties}
                 />
             ))}
 
@@ -575,25 +577,32 @@ function BatteryUsageChart({ points, range, generatedAt }: ChartProps) {
             })}
           </g>
 
-          {/* 横轴稍后整体浮现，让视线先读懂绘图区的高度变化。 */}
-          <g className={`battery-chart-x-axis range-${range}`}>
-            {xTicks.map((tick) => {
+          {/* 刻度线独立分组：按序号复用 DOM 节点，切换范围时通过 transform 平滑过渡
+              位置（translate）与长度（scaleY），与绘图区 scaleY 动画同步。
+              用 transform 而非 SVG 几何属性过渡——WebKit 对 x1/y1/y2 的 CSS transition
+              支持不完整，transform 过渡则全平台可靠。 */}
+          <g className="battery-chart-x-extensions">
+            {xTicks.map((tick, index) => {
               const plotBottom = padding.top + chartHeight;
-              const extensionBottom = range === '10d'
-                ? (tick.major ? plotBottom + 28 : plotBottom + 13)
-                : plotBottom + 15;
+              const extensionLength = range === '10d'
+                ? (tick.major ? 28 : 13)
+                : 4;
               return (
                 <line
-                  key={`${tick.key}-extension`}
+                  key={index}
                   className={`battery-chart-x-extension${tick.major ? ' major' : ''}`}
-                  x1={tick.lineX}
-                  y1={plotBottom}
-                  x2={tick.lineX}
-                  y2={extensionBottom}
+                  x1={0}
+                  y1={0}
+                  x2={0}
+                  y2={1}
+                  style={{ transform: `translate(${tick.lineX}px, ${plotBottom}px) scaleY(${extensionLength})` } as CSSProperties}
                 />
               );
             })}
+          </g>
 
+          {/* 横轴标签稍后整体浮现，让视线先读懂绘图区的高度变化。 */}
+          <g className={`battery-chart-x-axis range-${range}`}>
             {xTicks.map((tick, index) => (
               <g key={`${tick.key}-label`} className="battery-chart-x-tick">
                 <text
@@ -827,8 +836,8 @@ const BatteryUsageStatusStrip = memo(function BatteryUsageStatusStrip({
         <div className="battery-status-device">
           <BatteryLevelIcon percentage={device.latestPercentage} charging={charging} />
           <div className="battery-status-device-info">
-            <span><FadeText text={device.deviceName} delay={0} /></span>
-            <strong><FadeText text={t(device.componentLabel, { defaultValue: device.componentLabel })} delay={30} /></strong>
+            <strong><FadeText text={device.deviceName} delay={0} /></strong>
+            <span><FadeText text={t(device.componentLabel, { defaultValue: device.componentLabel })} delay={30} /></span>
           </div>
         </div>
         <div className="battery-status-metric">
@@ -911,51 +920,172 @@ function filterInsightsForCards(insights: BatteryInsight[], maxCount: number = I
 
 // ─── 洞察卡片 ───────────────────────────────────────────────────────────────
 
-function BatteryInsightCards({ insights, aiAnalysisEnabled, maxCount }: { insights: BatteryInsight[]; aiAnalysisEnabled: boolean; maxCount?: number }) {
+const INSIGHT_EXIT_MS = 220;
+// 高度过渡时长对齐 --motion-slow（300ms），让弹窗高度变化与内容淡入同步收束。
+const HEIGHT_TRANSITION_MS = 300;
+
+function BatteryInsightCards({ insights, aiAnalysisEnabled, maxCount, deviceKey }: { insights: BatteryInsight[]; aiAnalysisEnabled: boolean; maxCount?: number; deviceKey: string }) {
   const { t } = useTranslation();
 
   // maxCount 由父组件计算（24h 与 10d 两个 range 的可见卡片数取最小），
   // 让切换 range 时卡片数保持一致，避免块的增加/减少造成布局抖动。
   const visible = filterInsightsForCards(insights, maxCount);
 
-  if (visible.length === 0) return null;
+  // 设备切换时保留旧内容做淡出退出动画。deviceKey 变化时通过 useLayoutEffect
+  // 捕获上一组渲染参数（快照），在 INSIGHT_EXIT_MS 后清除退出层。
+  // 快照在 no-deps layout effect 中更新（声明在所有 [deviceKey] effect 之后），
+  // 确保设备切换 effect 读取的仍是旧快照。
+  type ExitingSnapshot = {
+    deviceKey: string;
+    insights: BatteryInsight[];
+    aiAnalysisEnabled: boolean;
+    maxCount?: number;
+  };
+  const [exiting, setExiting] = useState<ExitingSnapshot | null>(null);
+  const prevSnapshotRef = useRef<ExitingSnapshot>({ insights, aiAnalysisEnabled, maxCount, deviceKey });
 
-  const iconFor = (type: BatteryInsight['type']) => {
-    switch (type) {
-      case 'abnormalDrain': return <Warning weight="regular" />;
-      case 'powerSavingTip': return <Lightbulb weight="regular" />;
-      case 'chargingHabit': return <Plug weight="regular" />;
-      case 'batteryConsistency': return <Gauge weight="regular" />;
-      case 'deviceComparison': return <ArrowsLeftRight weight="regular" />;
-      case 'averageDailyDrain': return <TrendDown weight="regular" />;
-      case 'chargingCount': return <BatteryCharging weight="regular" />;
-      case 'lowestLevel': return <BatteryLow weight="regular" />;
-      default: return <Clock weight="regular" />;
+  // 设备切换时捕获旧快照做退出动画（声明在高度 effect 之前）
+  useLayoutEffect(() => {
+    const prev = prevSnapshotRef.current;
+    if (prev.deviceKey !== deviceKey) {
+      setExiting(prev);
+      const timer = window.setTimeout(() => setExiting(null), INSIGHT_EXIT_MS);
+      return () => window.clearTimeout(timer);
     }
+  }, [deviceKey]);
+
+  // ── 弹窗高度平滑过渡 ──
+  // 设备切换时洞察卡片数量可能变化，退出层用 position:absolute 脱离文档流后，
+  // 进入层立即以新高度撑开容器，导致弹窗高度瞬变。通过三步实现平滑过渡：
+  //   1. 锁定容器到旧高度（无 transition，瞬间应用）
+  //   2. 下一帧启用 transition 并过渡到新高度
+  //   3. 过渡结束后释放为 auto，恢复自然布局
+  // 双 rAF 确保旧高度被绘制后再启动过渡，避免同帧内值被覆盖导致过渡失效。
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const prevHeightRef = useRef(0);
+  const isAnimatingRef = useRef(false);
+  const [animHeight, setAnimHeight] = useState<number | null>(null);
+  const [heightTransition, setHeightTransition] = useState(false);
+  const [heightEasing, setHeightEasing] = useState('var(--motion-ease-out)');
+
+  // 设备切换时：锁定旧高度 → 过渡到新高度 → 释放为 auto
+  // 声明在捕获 effect 之前，确保切换时 prevHeightRef 仍是旧值
+  // 缓动按方向区分：变高用 ease-standard（开头慢、加速收尾），避免撑开瞬间跳太快；
+  // 变矮用 ease-out（开头快、缓慢收束），收缩感更自然。
+  useLayoutEffect(() => {
+    const wrap = wrapRef.current;
+    if (!wrap) return;
+
+    const newHeight = wrap.offsetHeight;
+    const oldHeight = prevHeightRef.current;
+
+    if (oldHeight > 0 && Math.abs(oldHeight - newHeight) > 1) {
+      isAnimatingRef.current = true;
+      setHeightTransition(false);
+      setAnimHeight(oldHeight);
+      setHeightEasing(newHeight > oldHeight ? 'var(--motion-ease-standard)' : 'var(--motion-ease-out)');
+
+      let raf2 = 0;
+      const raf1 = window.requestAnimationFrame(() => {
+        raf2 = window.requestAnimationFrame(() => {
+          setHeightTransition(true);
+          setAnimHeight(newHeight);
+        });
+      });
+
+      const timer = window.setTimeout(() => {
+        isAnimatingRef.current = false;
+        setAnimHeight(null);
+        setHeightTransition(false);
+        if (wrapRef.current) prevHeightRef.current = wrapRef.current.offsetHeight;
+      }, HEIGHT_TRANSITION_MS + 100);
+
+      return () => {
+        window.cancelAnimationFrame(raf1);
+        window.cancelAnimationFrame(raf2);
+        window.clearTimeout(timer);
+        isAnimatingRef.current = false;
+      };
+    }
+    prevHeightRef.current = newHeight;
+  }, [deviceKey]);
+
+  // 每次渲染后捕获当前高度（过渡中跳过），供下次设备切换作为"旧高度"
+  useLayoutEffect(() => {
+    if (!isAnimatingRef.current && animHeight === null && wrapRef.current) {
+      prevHeightRef.current = wrapRef.current.offsetHeight;
+    }
+  });
+
+  // 更新快照供下次设备切换使用（声明在所有 [deviceKey] effect 之后）
+  useLayoutEffect(() => {
+    prevSnapshotRef.current = { insights, aiAnalysisEnabled, maxCount, deviceKey };
+  });
+
+  const renderSection = (insightList: BatteryInsight[], aiEnabled: boolean) => {
+    if (insightList.length === 0) return null;
+
+    const iconFor = (type: BatteryInsight['type']) => {
+      switch (type) {
+        case 'abnormalDrain': return <Warning weight="regular" />;
+        case 'powerSavingTip': return <Lightbulb weight="regular" />;
+        case 'chargingHabit': return <Plug weight="regular" />;
+        case 'batteryConsistency': return <Gauge weight="regular" />;
+        case 'deviceComparison': return <ArrowsLeftRight weight="regular" />;
+        case 'averageDailyDrain': return <TrendDown weight="regular" />;
+        case 'chargingCount': return <BatteryCharging weight="regular" />;
+        case 'lowestLevel': return <BatteryLow weight="regular" />;
+        default: return <Clock weight="regular" />;
+      }
+    };
+
+    return (
+      <section className="battery-insight-section">
+        <div className="battery-insight-section-head">
+          <span className="battery-insight-section-title">
+            {t(aiEnabled ? 'batteryUsage.insightSectionTitle' : 'batteryUsage.insightSectionTitleBasic')}
+          </span>
+          <span className="battery-insight-section-hint">
+            {t(aiEnabled ? 'batteryUsage.insightSectionHint' : 'batteryUsage.insightSectionHintBasic')}
+          </span>
+        </div>
+        <div className="battery-insight-cards">
+          {insightList.map((insight, i) => (
+            <div key={i} className={`battery-insight-card severity-${insight.severity}`}>
+              <span className="insight-icon">{iconFor(insight.type)}</span>
+              <div className="insight-body">
+                <OverflowTip className="insight-title" text={t(`batteryUsage.${insight.title}`)} delay={i * 50} />
+                <OverflowTip className="insight-text" text={formatInsightMessage(insight, t)} multiline delay={i * 50 + 30} />
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+    );
+  };
+
+  const currentNode = renderSection(visible, aiAnalysisEnabled);
+  const exitingNode = exiting
+    ? renderSection(filterInsightsForCards(exiting.insights, exiting.maxCount), exiting.aiAnalysisEnabled)
+    : null;
+
+  const wrapStyle: CSSProperties = {
+    height: animHeight !== null ? `${animHeight}px` : undefined,
+    transition: heightTransition ? `height ${HEIGHT_TRANSITION_MS}ms ${heightEasing}` : undefined,
+    overflow: animHeight !== null ? 'hidden' : undefined,
   };
 
   return (
-    <section className="battery-insight-section">
-      <div className="battery-insight-section-head">
-        <span className="battery-insight-section-title">
-          {t(aiAnalysisEnabled ? 'batteryUsage.insightSectionTitle' : 'batteryUsage.insightSectionTitleBasic')}
-        </span>
-        <span className="battery-insight-section-hint">
-          {t(aiAnalysisEnabled ? 'batteryUsage.insightSectionHint' : 'batteryUsage.insightSectionHintBasic')}
-        </span>
+    <div ref={wrapRef} className="battery-insight-section-wrap" style={wrapStyle}>
+      {exiting && (
+        <div key={exiting.deviceKey} className="battery-insight-section-exit">
+          {exitingNode}
+        </div>
+      )}
+      <div key={deviceKey} className="battery-insight-section-enter">
+        {currentNode}
       </div>
-      <div className="battery-insight-cards">
-        {visible.map((insight, i) => (
-          <div key={i} className={`battery-insight-card severity-${insight.severity}`}>
-            <span className="insight-icon">{iconFor(insight.type)}</span>
-            <div className="insight-body">
-              <OverflowTip className="insight-title" text={t(`batteryUsage.${insight.title}`)} delay={i * 50} />
-              <OverflowTip className="insight-text" text={formatInsightMessage(insight, t)} multiline delay={i * 50 + 30} />
-            </div>
-          </div>
-        ))}
-      </div>
-    </section>
+    </div>
   );
 }
 
@@ -1383,6 +1513,7 @@ export function BatteryUsageModal({
                 insights={stableSelectedInsights}
                 aiAnalysisEnabled={aiAnalysisEnabled}
                 maxCount={minInsightCount}
+                deviceKey={effectiveDeviceKey}
               />
 
               <div className="battery-history-actions">
