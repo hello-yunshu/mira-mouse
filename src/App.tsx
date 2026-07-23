@@ -86,7 +86,9 @@ function controlPageKind(capabilities: PluginCapability[]): ControlPageKind {
 
 function isWindowsPlatform(): boolean {
   const previewPlatform = new URLSearchParams(window.location.search).get('platform');
-  return previewPlatform === 'windows' || navigator.userAgent.includes('Windows');
+  // 显式指定 platform 时以参数为准，不再 fallback 到 userAgent
+  if (previewPlatform !== null) return previewPlatform === 'windows';
+  return navigator.userAgent.includes('Windows');
 }
 
 function isMacPlatform(): boolean {
@@ -2941,8 +2943,9 @@ export default function App() {
       <button className={`nav-link ${view === 'dashboard' ? 'active' : ''}`} onClick={() => setView('dashboard')}>{t('nav.dashboard')}</button>
       <button className={`nav-link ${view === 'settings' ? 'active' : ''}`} onClick={() => setView('settings')}>{t('nav.settings')}</button>
       <button className={`nav-link nav-about ${view === 'about' ? 'active' : ''}`} onClick={() => setView('about')} aria-label={t('nav.about')}><Info weight="regular" /></button>
-      {demoMode && <button className="nav-link nav-exit" onClick={exitDemo} aria-label={t('nav.exitDemo')} title={t('nav.exitDemo')}><SignOut weight="regular" /></button>}
+      {demoMode && !windowsPlatform && <button className="nav-link nav-exit" onClick={exitDemo} aria-label={t('nav.exitDemo')} title={t('nav.exitDemo')}><SignOut weight="regular" /></button>}
     </div>
+    {windowsPlatform && demoMode && view === 'dashboard' && <button className="content-exit" onClick={exitDemo} aria-label={t('nav.exitDemo')} title={t('nav.exitDemo')}><SignOut weight="regular" /></button>}
     {view === 'dashboard' && (device ? <Dashboard device={device} deviceEntries={deviceEntries} onDeviceChange={setDevice} onDeviceSelect={selectDevice} onOpenBatteryUsage={openBatteryUsage} pluginLocaleRevision={pluginLocaleRevision} demoMode={demoMode} /> : <EmptyState onRefresh={() => { setDemoMode(false); setDevice(undefined); setDeviceEntries([]); deviceEntriesRef.current = []; setRefreshNonce((value) => value + 1); invoke('device_refresh').catch(() => {}); }} onDemo={() => { setDemoMode(true); setDevice(MOCK_DEVICE); setDeviceEntries(MOCK_DEVICE_ENTRIES); deviceEntriesRef.current = MOCK_DEVICE_ENTRIES; }} onOpenSettings={() => setView('settings')} />)}
     {view === 'settings' && <SettingsPage initialTab={settingsTab} onTabChange={setSettingsTab} previewMode={pureWeb} focusPluginUpdateToken={settingsPluginFocusToken} focusLocalAiUpdateToken={settingsLocalAiFocusToken} onNavigateAbout={() => setView('about')} onOpenBatteryUsage={openBatteryUsage} onBatteryUsageSettingsChange={syncBatteryUsageSettings} onThemeChange={setTheme} pluginCapabilities={device?.pluginCapabilities ?? []} writableMutations={device?.writableMutations ?? []} />}
     {view === 'about' && <AboutPage previewMode={pureWeb} focusUpdateToken={aboutFocusToken} onBack={() => setView('settings')} />}
@@ -2956,6 +2959,7 @@ export default function App() {
       connectedTargets={batteryUsageConnectedTargets}
       preferredDeviceName={selectedBatteryUsageTarget?.name}
       preferredComponentId={selectedBatteryUsageTarget?.componentId}
+      demoMode={demoMode}
     />
     {appNotification && (
       <OverlayPortal>

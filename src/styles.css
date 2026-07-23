@@ -305,7 +305,13 @@ option {
   min-height: 206px;
 }
 .platform-windows .top-nav {
-  margin: 0 0 10px;
+  margin: 0;
+}
+/* Windows 下设置/关于/日志页取消顶部 margin，贴合标题栏 */
+.platform-windows .settings-page,
+.platform-windows .about-page,
+.platform-windows .log-page {
+  margin: 0 auto;
 }
 /* Windows 下 app-title 定位 */
 .platform-windows .device-column .app-title {
@@ -313,13 +319,61 @@ option {
   left: 40px;
   text-align: left;
 }
-/* Windows 下 nav-links 右边缘对齐 dashboard 右边缘（dashboard max-width 468px 居中）：
- * right = max(16px, 50% - 234px)，其中 50% 为 app-shell padding box 宽度，234 = 468/2
- * nav-links 抬高 10px（从 top:44px → 34px），使下方多出 10px 真实空白区 */
+/* Windows 下 nav-links 放进顶部标题栏，紧贴最小化/关闭按钮左侧。
+ * 窗口控件区宽 72px（最小化 36px + 关闭 36px），故 right: 72px；
+ * top/height 与 windows-window-controls 对齐（33px 标题栏），垂直居中显示；
+ * z-index 高于 windows-drag-strip(9)，保证按钮可点击，其余标题栏区域仍可拖拽。 */
 .platform-windows .nav-links {
-  right: max(16px, calc(50% - 234px));
+  right: 72px;
+  top: 0;
+  height: 33px;
+  z-index: 11;
+}
+
+/* Windows 下「设备/设置」导航用下划线指示：去掉激活态胶囊背景与外框，
+ * 仅保留 ::after 短横线作为指示；「关于」图标按钮保留原激活样式。 */
+.platform-windows .nav-link.active:not(.nav-about) {
+  background: transparent;
+  border: none;
+}
+.platform-windows .nav-link.active:not(.nav-about)::after {
+  opacity: 1;
+}
+/* Windows 下「设备/设置」hover 也不出现背景轮廓，仅保留文字颜色变化 */
+.platform-windows .nav-link:hover:not(.nav-about) {
+  background: transparent;
+}
+/* Windows 下「设备/设置」点击/聚焦/按下时不出现任何焦点轮廓或阴影 */
+.platform-windows .nav-link:not(.nav-about):focus,
+.platform-windows .nav-link:not(.nav-about):focus-visible,
+.platform-windows .nav-link:not(.nav-about):active {
+  outline: none;
+  box-shadow: none;
+}
+.platform-windows .nav-link:not(.nav-about)::-moz-focus-inner { border: 0; }
+
+/* Windows 退出演示图标：内容区右上角，与 设置/关于 页「返回」按钮位置一致 */
+.content-exit {
+  position: absolute;
   top: 38px;
-  height: auto; /* 使用自然高度，让 bottom 与 app-title 底部对齐 */
+  right: 25px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  font-size: 16px;
+  cursor: pointer;
+  transition: background .12s ease, color .12s ease;
+  z-index: 5;
+}
+.content-exit:hover {
+  color: inherit;
+  background: var(--control-hover-bg);
 }
 
 /* Windows 窗口预览控件（仅 web 预览用，模拟原生最小化/关闭） */
@@ -3788,6 +3842,15 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   from { opacity: .2; transform: scale(.82); }
   to { opacity: 1; transform: scale(1); }
 }
+/* 通用按钮入场动画：淡入 + 弹性放大，适用于条件渲染出现的小型按钮 */
+@keyframes mira-btn-enter {
+  from { opacity: 0; transform: scale(.5) translateY(4px); }
+  60%  { opacity: 1; transform: scale(1.08) translateY(0); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
+}
+.btn-enter {
+  animation: mira-btn-enter 320ms var(--motion-ease-out);
+}
 
 @keyframes mira-control-detail-in {
   from { opacity: 0; }
@@ -4974,6 +5037,10 @@ input[type="color"] {
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
   font-size: 10.5px;
 }
+/* 结构化字段的数值继承容器字号（9.5px），与左侧标签一致 */
+.log-entry-structured-grid code {
+  font-size: inherit;
+}
 .log-entry-structured {
   border-top: 1px solid var(--surface-group-border);
   padding-top: 8px;
@@ -4990,6 +5057,7 @@ input[type="color"] {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 3px 14px;
+  font-size: 9.5px;
 }
 .log-entry-structured-grid > div {
   display: flex;
