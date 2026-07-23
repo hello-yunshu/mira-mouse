@@ -694,7 +694,7 @@ function LogToolbar({
               >
                 <button
                   type="button"
-                  className={`log-status-count log-status-error btn-enter${minLevel === 'error' ? ' active' : ''}`}
+                  className={`log-status-count log-status-error${minLevel === 'error' ? ' active' : ''}`}
                   aria-label={t('logs.status.recentErrors', { count: status.recentErrorCount })}
                   onClick={() => toggleLevelFilter('error')}
                 >
@@ -711,7 +711,7 @@ function LogToolbar({
               >
                 <button
                   type="button"
-                  className={`log-status-count log-status-warn btn-enter${minLevel === 'warn' ? ' active' : ''}`}
+                  className={`log-status-count log-status-warn${minLevel === 'warn' ? ' active' : ''}`}
                   aria-label={t('logs.status.recentWarns', { count: status.recentWarnCount })}
                   onClick={() => toggleLevelFilter('warn')}
                 >
