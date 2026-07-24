@@ -229,6 +229,8 @@
         },
         "optionSource": { "type": "string", "minLength": 1, "maxLength": 160 },
         "range": { "$ref": "#/$defs/rangeSpec" },
+        "rangeSource": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "rangeMaxOffset": { "type": "integer" },
         "format": { "enum": ["sleep", "percent", "hertz", "connection", "color", "default"] },
         "visibleWhen": { "$ref": "#/$defs/visibleWhen" },
         "switch": { "$ref": "#/$defs/switchDecl" }
@@ -260,6 +262,8 @@
         "valueSource": { "type": "string", "minLength": 1, "maxLength": 160 },
         "colorSource": { "type": "string", "minLength": 1, "maxLength": 160 },
         "range": { "$ref": "#/$defs/rangeSpec" },
+        "rangeSource": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "rangeMaxOffset": { "type": "integer" },
         "selectParam": { "type": "string", "minLength": 1, "maxLength": 32 },
         "stageParam": { "type": "string", "minLength": 1, "maxLength": 32 },
         "valueParam": { "type": "string", "minLength": 1, "maxLength": 32 }

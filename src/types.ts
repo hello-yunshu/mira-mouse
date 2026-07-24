@@ -52,6 +52,10 @@ export interface PluginField {
   options?: PluginFieldOption[];
   optionSource?: string;
   range?: RangeSpec;
+  /** 动态 range 来源：指向 snapshot 中的数字路径，运行时覆盖 range.max。 */
+  rangeSource?: string;
+  /** rangeSource 解析后的偏移量（默认 0），用于 count → index 转换（如 -1）。 */
+  rangeMaxOffset?: number;
   format?: PluginFieldFormat;
   visibleWhen?: PluginVisibleWhen;
   switch?: PluginSwitch;
@@ -68,6 +72,10 @@ export interface PluginStageLayout {
   valueSource: string;
   colorSource?: string;
   range: RangeSpec;
+  /** 动态 range 来源：指向 snapshot 中的数字路径，运行时覆盖 range.max。 */
+  rangeSource?: string;
+  /** rangeSource 解析后的偏移量（默认 0），用于 count → index 转换（如 -1）。 */
+  rangeMaxOffset?: number;
   /** 切换分档时的 mutation 参数名，默认 value。 */
   selectParam?: string;
   /** 修改分档时的档位参数名，默认 stage。 */
@@ -238,6 +246,8 @@ export interface AppSettings {
   batteryHistoryEnabled: boolean;
   batteryHistoryRetentionDays: number;
   unusualDrainAlerts: boolean;
+  /** 屏幕解锁时主动唤醒鼠标：开启后由解锁事件接管主动读取 */
+  wakeOnUnlock: boolean;
 }
 
 export interface LocalAiStatus {
