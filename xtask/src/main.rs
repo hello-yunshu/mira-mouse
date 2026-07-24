@@ -171,7 +171,7 @@ fn sync(locked: bool, offline: bool) -> Result<()> {
     if !locked {
         bail!("plugin synchronization requires --locked");
     }
-    let lock: Lock = serde_json::from_slice(&fs::read("plugins.lock.json")?)?;
+    let lock: Lock = serde_json::from_slice(&fs::read("bundled-plugins.lock.json")?)?;
     if lock.schema_version != 1 {
         bail!("unsupported lock schema");
     }
@@ -238,7 +238,7 @@ fn update_lock(repository: &str, release_tag: &str) -> Result<()> {
             .find(|entry| entry.plugin_id == plugin.manifest.plugin_id)
         else {
             println!(
-                "Skipping {}: not in plugins.lock.json",
+                "Skipping {}: not in bundled-plugins.lock.json",
                 plugin.manifest.plugin_id
             );
             continue;
@@ -393,7 +393,7 @@ fn download_text(url: &str) -> Result<String> {
 }
 
 fn read_lock() -> Result<Lock> {
-    let lock: Lock = serde_json::from_slice(&fs::read("plugins.lock.json")?)?;
+    let lock: Lock = serde_json::from_slice(&fs::read("bundled-plugins.lock.json")?)?;
     if lock.schema_version != 1 {
         bail!("unsupported lock schema");
     }
@@ -402,7 +402,7 @@ fn read_lock() -> Result<Lock> {
 
 fn write_lock(lock: &Lock) -> Result<()> {
     fs::write(
-        "plugins.lock.json",
+        "bundled-plugins.lock.json",
         serde_json::to_string_pretty(lock)? + "\n",
     )?;
     Ok(())
@@ -457,7 +457,7 @@ fn write_tauri_resources(resources: &[String]) -> Result<()> {
 fn merge_bundle_resources(plugin_resources: &[String], existing: &[String]) -> Vec<String> {
     let mut merged = plugin_resources.to_vec();
     for resource in existing {
-        // Plugin entries are authoritative from plugins.lock.json. Preserve every
+        // Plugin entries are authoritative from bundled-plugins.lock.json. Preserve every
         // other packaged resource, including the signed local-AI model pack.
         if !resource.starts_with("resources/plugins/") && !merged.contains(resource) {
             merged.push(resource.clone());

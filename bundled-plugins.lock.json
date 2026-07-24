@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "releaseReady": true,
+  "plugins": [
+    {
+      "pluginId": "mira.amaster",
+      "repository": "hello-yunshu/mira-mouse-plugins",
+      "releaseTag": "release/v2026-07-24",
+      "version": "1.8.0",
+      "asset": "mira-amaster-1.8.0.mira-plugin",
+      "sha256": "d101a0b98fd95adee07bdf44f28ce9a2a348ac5aa275461f0f522366b7a3fd6e",
+      "publisherKeyId": "mira-plugins-2026-001",
+      "pluginApi": ">=1.1.0, <2.0.0",
+      "cachePath": "src-tauri/resources/plugins/mira-amaster-1.8.0.mira-plugin",
+      "bundleByDefault": true
+    },
+    {
+      "pluginId": "mira.example-mock",
+      "repository": "mira-mouse-plugins",
+      "releaseTag": "v1.0.0-test",
+      "version": "1.0.0",
+      "asset": "mira-example-mock-1.0.0.mira-plugin",
+      "sha256": "534a4d163f61d096f8201b91b2b76de6fec00d015a88a36bc8d4781e45717287",
+      "publisherKeyId": "TEST-ONLY-mira-plugins",
+      "pluginApi": ">=1.0.0 <2.0.0",
+      "cachePath": "src-tauri/resources/plugins/mira-example-mock-1.0.0.mira-plugin",
+      "bundleByDefault": false
+    },
+    {
+      "pluginId": "mira.logitech-hidpp",
+      "repository": "hello-yunshu/mira-mouse-plugins",
+      "releaseTag": "release/v2026-07-24",
+      "version": "0.9.2",
+      "asset": "mira-logitech-hidpp-0.9.2.mira-plugin",
+      "sha256": "ed71ebfe64ab7beb479d38afad937a2fb15bc26778b80b0ecf1894aa13575427",
+      "publisherKeyId": "mira-plugins-2026-001",
+      "pluginApi": ">=1.1.0, <2.0.0",
+      "cachePath": "src-tauri/resources/plugins/mira-logitech-hidpp-0.9.2.mira-plugin",
+      "bundleByDefault": true
+    },
+    {
+      "pluginId": "mira.razer-viper",
+      "repository": "hello-yunshu/mira-mouse-plugins",
+      "releaseTag": "release/v2026-07-24",
+      "version": "0.3.0",
+      "asset": "mira-razer-viper-0.3.0.mira-plugin",
+      "sha256": "9f2435b504f33c7f8b21e9a1ae297d2ff3d84bf68a2c9441318e6ba9533bd800",
+      "publisherKeyId": "mira-plugins-2026-001",
+      "pluginApi": ">=1.1.0, <2.0.0",
+      "cachePath": "src-tauri/resources/plugins/mira-razer-viper-0.3.0.mira-plugin",
+      "bundleByDefault": true
+    }
+  ]
+}
