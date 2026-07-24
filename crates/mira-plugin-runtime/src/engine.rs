@@ -44,10 +44,25 @@ struct FeatureEntry {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct CommandDefinition {
     request: RequestDefinition,
+    /// 3.4 节：响应层独立声明 checksum/match/length 等。
+    /// 未声明时宿主不验证响应 checksum、不记录 warning。
+    /// request.checksum 只用于构造请求，不得复用于响应。
+    #[serde(default)]
+    response: Option<ResponseDefinition>,
     /// 声明式协议诊断 payload 策略（spec 14）。
     /// 未声明时由 Host 的关键词分类器回退处理（保守默认）。
     #[serde(default)]
     diagnostics: Option<DiagnosticsDefinition>,
+}
+
+/// 3.4 节：响应层定义。与 request 层分离，独立声明 checksum。
+/// proxy 外层和内层不能混用 request.checksum 与 response.checksum。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ResponseDefinition {
+    /// 响应 checksum。未声明时不验证响应、不记录 warning。
+    #[serde(default)]
+    checksum: Option<ChecksumDefinition>,
 }
 
 /// 命令级诊断 payload 策略声明。
@@ -226,21 +241,50 @@ enum TransportDefinition {
         #[serde(default)]
         timeout_ms: Option<u64>,
     },
-    /// AM35 RACE-style protocol over hidraw-compatible transports.
-    /// Uses HID Output Report (ID 0x06) for writes and Input Report (ID 0x07)
-    /// for reads, with a 3-byte framing header: [writeReportId, length, type].
-    /// `race_type` is 0x00 for direct USB, 0x80 for receiver forwarding.
-    /// Protocol data collected from AMasterDriver v1.0.6 reverse analysis;
-    /// runtime execution is preparatory and pending hardware validation.
-    HidRace {
+    /// 3.2 节：通用 framed HID transport（品牌无关）。
+    /// 所有帧格式偏移由 JSON 声明，运行时内部不得包含 AM35 名称和固定偏移。
+    /// 旧 `hid-race` 作为 schema alias 保留一个兼容周期，运行时按 `hid-framed` 处理。
+    #[serde(alias = "hid-race")]
+    HidFramed {
         write_report_id: u8,
         read_report_id: u8,
         write_length: usize,
         read_length: usize,
-        race_type: u8,
         strip_report_id_on_read: bool,
+        /// 帧头前缀字节（写在 payload 之前）。原 AM35 固定 3 字节 [writeReportId, length, raceType]
+        /// 改为声明式：prefixBytes + lengthField + typeField。
         #[serde(default)]
-        read_mode: HidRaceReadMode,
+        frame_prefix: Vec<u8>,
+        /// payload 在写报告中的起始偏移（紧跟 frame_prefix + lengthField + typeField）。
+        /// 未声明时由 frame_prefix 长度推断。
+        #[serde(default)]
+        payload_offset: Option<usize>,
+        /// length 字段偏移（相对于报告起始，不含 report ID）。
+        /// 未声明时表示无 length 字段。
+        #[serde(default)]
+        length_field_offset: Option<usize>,
+        /// length 字段字节数（1 或 2）。
+        #[serde(default)]
+        length_field_bytes: u8,
+        /// type/channel 字段偏移。未声明时表示无 type 字段。
+        #[serde(default)]
+        type_field_offset: Option<usize>,
+        /// type 字段值（替代原 raceType）。
+        #[serde(default)]
+        type_field_value: Option<u8>,
+        /// request match slice [start, end)：请求中用于匹配响应的字节范围。
+        /// 未声明时不做 request/response ID 匹配。
+        #[serde(default)]
+        request_match_slice: Option<(usize, usize)>,
+        /// response match slice [start, end)：响应中用于匹配的字节范围。
+        /// 与 request_match_slice 比较以确认响应对应请求。
+        #[serde(default)]
+        response_match_slice: Option<(usize, usize)>,
+        /// 字节序："le" 或 "be"，默认 "le"。
+        #[serde(default = "default_endian_le")]
+        endian: String,
+        #[serde(default)]
+        read_mode: HidFramedReadMode,
         #[serde(default)]
         read_delay_ms: u64,
         #[serde(default = "default_read_timeout_ms")]
@@ -254,10 +298,14 @@ enum TransportDefinition {
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-enum HidRaceReadMode {
+enum HidFramedReadMode {
     #[default]
     Interrupt,
     InputReport,
+}
+
+fn default_endian_le() -> String {
+    "le".into()
 }
 
 fn default_read_timeout_ms() -> i32 {
@@ -2262,7 +2310,7 @@ impl Session<'_> {
             TransportDefinition::HidFeature { timeout_ms, .. }
             | TransportDefinition::HidFeatureProxy { timeout_ms, .. }
             | TransportDefinition::HidOutputInput { timeout_ms, .. }
-            | TransportDefinition::HidRace { timeout_ms, .. } => *timeout_ms,
+            | TransportDefinition::HidFramed { timeout_ms, .. } => *timeout_ms,
         };
         let previous_deadline = self.deadline;
         self.deadline = merge_deadline(
@@ -2362,9 +2410,9 @@ impl Session<'_> {
                 let report = self.package.build_command(command_id, params, base)?;
                 self.output_input_exchange(transport_id, command_id, &report, expect_response)
             }
-            TransportDefinition::HidRace { .. } => {
-                let race_payload = self.package.build_command(command_id, params, base)?;
-                self.race_exchange(transport_id, command_id, &race_payload, expect_response)
+            TransportDefinition::HidFramed { .. } => {
+                let framed_payload = self.package.build_command(command_id, params, base)?;
+                self.framed_exchange(transport_id, command_id, &framed_payload, expect_response)
             }
         };
         self.deadline = previous_deadline;
@@ -2402,14 +2450,16 @@ impl Session<'_> {
         ))
     }
 
-    /// 验证响应校验和。返回 `(expected, actual)` 字节对，`None` 表示无法验证
-    /// （命令未声明 checksum 或响应长度不足）。
+    /// 3.4 节：验证响应校验和。返回 `(expected, actual)` 字节对，`None` 表示无法验证
+    /// （命令未声明 response.checksum 或响应长度不足）。
     ///
-    /// 复用请求的 `ChecksumDefinition`：雷蛇协议中请求和响应的校验和算法与
-    /// 位置通常相同（`start..end_exclusive` 范围计算，`write_offset` 位置存储）。
+    /// 关键变更：响应 checksum 必须由 `command.response.checksum` 独立声明，
+    /// 不再复用 `command.request.checksum`。未声明 response.checksum 时不验证、
+    /// 不记录 warning。Protocol A 没有证据的响应不得复用请求 checksum。
     fn verify_response_checksum(&self, command_id: &str, response: &[u8]) -> Option<(u8, u8)> {
         let command = self.package.commands.commands.get(command_id)?;
-        let checksum = command.request.checksum.as_ref()?;
+        // 3.4 节：仅使用 response.checksum。request.checksum 不得复用于响应。
+        let checksum = command.response.as_ref()?.checksum.as_ref()?;
         if checksum.end_exclusive > response.len() || checksum.write_offset >= response.len() {
             return None;
         }
@@ -2657,23 +2707,40 @@ impl Session<'_> {
         Err("timed out waiting for matching input report".into())
     }
 
-    /// AM35 RACE-style exchange: frames the RACE payload with a 3-byte header
-    /// ([writeReportId, payloadLength, raceType]), writes via HID Output Report,
-    /// and reads the response via HID Input Report.
-    fn race_exchange(
+    /// 3.2 节：通用 framed HID exchange（品牌无关）。
+    ///
+    /// 帧格式完全由 transport JSON 声明，运行时不包含任何 AM35 固定偏移：
+    /// - `frame_prefix`：写在 length/type 字段之前的静态前缀字节。
+    /// - `length_field_offset` + `length_field_bytes`：长度字段位置与字节数（1 或 2）。
+    /// - `type_field_offset` + `type_field_value`：type/channel 字段位置与值。
+    /// - `payload_offset`：payload 起始偏移；未声明时由前面字段推断。
+    /// - `request_match_slice` / `response_match_slice`：request/response 匹配字节范围，
+    ///   基准为“纯 payload”（去掉 reportId 与 frame header 之后的业务字节）。
+    /// - `endian`：length 字段字节序（"le" / "be"），默认 "le"。
+    ///
+    /// 旧 `hid-race` 通过 `#[serde(alias = "hid-race")]` 兼容，运行时统一按 `hid-framed` 处理。
+    fn framed_exchange(
         &mut self,
         transport_id: &str,
         command_id: &str,
-        race_payload: &[u8],
+        payload: &[u8],
         expect_response: bool,
     ) -> Result<Vec<u8>, String> {
-        let Some(TransportDefinition::HidRace {
+        let Some(TransportDefinition::HidFramed {
             write_report_id,
             read_report_id,
             write_length,
             read_length,
-            race_type,
             strip_report_id_on_read,
+            frame_prefix,
+            payload_offset,
+            length_field_offset,
+            length_field_bytes,
+            type_field_offset,
+            type_field_value,
+            request_match_slice,
+            response_match_slice,
+            endian,
             read_mode,
             read_delay_ms,
             read_timeout_ms,
@@ -2681,37 +2748,88 @@ impl Session<'_> {
             ..
         }) = self.package.transports.transports.get(transport_id)
         else {
-            return Err(format!("transport {transport_id} is not hid-race"));
+            return Err(format!("transport {transport_id} is not hid-framed"));
         };
-        if race_payload.len() + 3 > *write_length || *write_length > 1025 || *read_length > 1025 {
-            return Err("race report length mismatch".into());
+        // 计算 payload 在 rest（去掉 reportId 之后的字节）中的起始偏移。
+        // 未声明 payload_offset 时，由 frame_prefix + length_field + type_field 推断。
+        let type_field_size = if type_field_offset.is_some() { 1 } else { 0 };
+        let length_field_size = if length_field_offset.is_some() {
+            *length_field_bytes as usize
+        } else {
+            0
+        };
+        let payload_off = payload_offset.unwrap_or_else(|| {
+            frame_prefix.len() + length_field_size + type_field_size
+        });
+        if *write_length > 1025 || *read_length > 1025 {
+            return Err("framed report length too large".into());
         }
-        // 修复 P-1：race_payload 长度字段为单字节（u8），当 write_length > 258 时
-        // payload 可超过 255 字节，`as u8` 会静默截断导致协议帧损坏。
-        // 当前 amaster 插件 writeLength=62 不触发，但需防御未来插件。
-        if race_payload.len() > 255 {
-            return Err("race payload exceeds single-byte length field".into());
+        // write_length 至少要容纳 reportId + frame_prefix + length_field + type_field + payload
+        let rest_len = write_length
+            .checked_sub(1)
+            .ok_or_else(|| "write_length must exceed report id".to_string())?;
+        if payload_off.checked_add(payload.len()).map_or(true, |end| end > rest_len) {
+            return Err("framed payload exceeds write length".into());
+        }
+        if frame_prefix.len() > rest_len {
+            return Err("frame_prefix exceeds write length".into());
+        }
+        // 长度字段值域检查（防御未来插件）。
+        let len_bytes = *length_field_bytes as usize;
+        if len_bytes > 2 {
+            return Err("length_field_bytes must be 0, 1 or 2".into());
+        }
+        if len_bytes == 1 && payload.len() > u8::MAX as usize {
+            return Err("payload exceeds single-byte length field".into());
+        }
+        if len_bytes == 2 && payload.len() > u16::MAX as usize {
+            return Err("payload exceeds two-byte length field".into());
         }
         self.reports += 1;
         if self.reports > MAX_REPORTS {
             return Err("report limit exceeded".into());
         }
         deadline_remaining_ms(self.deadline)?;
-        // Frame: [writeReportId, racePayloadLength, raceType, ...payload, ...zeros]
-        let mut report = Vec::with_capacity(*write_length);
-        report.push(*write_report_id);
-        report.push(race_payload.len() as u8);
-        report.push(*race_type);
-        report.extend_from_slice(race_payload);
-        report.resize(*write_length, 0);
+        // 构造写报告：[writeReportId, ...frame_prefix, ...length_field?, ...type_field?, ...payload, ...zeros]
+        let mut report = vec![0u8; *write_length];
+        report[0] = *write_report_id;
+        if !frame_prefix.is_empty() {
+            report[1..1 + frame_prefix.len()].copy_from_slice(frame_prefix);
+        }
+        if let Some(off) = *length_field_offset {
+            let end = off + len_bytes;
+            if end > rest_len {
+                return Err("length field out of range".into());
+            }
+            let len_val = payload.len() as u64;
+            match (len_bytes, endian.as_str()) {
+                (1, _) => report[1 + off] = len_val as u8,
+                (2, "be") => {
+                    let v = len_val as u16;
+                    report[1 + off..1 + off + 2].copy_from_slice(&v.to_be_bytes());
+                }
+                (2, _) => {
+                    let v = len_val as u16;
+                    report[1 + off..1 + off + 2].copy_from_slice(&v.to_le_bytes());
+                }
+                _ => return Err("invalid length_field_bytes".into()),
+            }
+        }
+        if let (Some(off), Some(val)) = (*type_field_offset, *type_field_value) {
+            if off >= rest_len {
+                return Err("type field out of range".into());
+            }
+            report[1 + off] = val;
+        }
+        report[1 + payload_off..1 + payload_off + payload.len()].copy_from_slice(payload);
         let exchange_start = Instant::now();
         let written = self
             .device
             .write(&report)
-            .map_err(|error| format!("send race output report: {error}"))?;
+            .map_err(|error| format!("send framed output report: {error}"))?;
         if written != report.len() {
             return Err(format!(
-                "short race output report write: {written}/{}",
+                "short framed output report write: {written}/{}",
                 report.len()
             ));
         }
@@ -2721,7 +2839,7 @@ impl Session<'_> {
                 sink.on_hid_exchange(
                     transport_id,
                     command_id,
-                    &hex::encode(race_payload),
+                    &hex::encode(payload),
                     "",
                     duration_ms,
                     0,
@@ -2733,7 +2851,7 @@ impl Session<'_> {
         for _ in 0..*read_retries {
             let mut response = vec![0u8; *read_length];
             let count = match read_mode {
-                HidRaceReadMode::Interrupt => {
+                HidFramedReadMode::Interrupt => {
                     let timeout = match deadline_remaining_ms(self.deadline)? {
                         Some(remaining) => {
                             (*read_timeout_ms).min(i32::try_from(remaining).unwrap_or(i32::MAX))
@@ -2742,16 +2860,16 @@ impl Session<'_> {
                     };
                     self.device
                         .read_timeout(&mut response, timeout)
-                        .map_err(|error| format!("read race interrupt report: {error}"))?
+                        .map_err(|error| format!("read framed interrupt report: {error}"))?
                 }
-                HidRaceReadMode::InputReport => {
+                HidFramedReadMode::InputReport => {
                     if *read_delay_ms > 0 {
                         self.delay(*read_delay_ms)?;
                     }
                     response[0] = *read_report_id;
                     self.device
                         .get_input_report(&mut response)
-                        .map_err(|error| format!("get race input report: {error}"))?
+                        .map_err(|error| format!("get framed input report: {error}"))?
                 }
             };
             if count == 0 {
@@ -2764,23 +2882,39 @@ impl Session<'_> {
             if *strip_report_id_on_read && !response.is_empty() {
                 response.remove(0);
             }
-            if !race_response_matches_request(&response, race_payload, *strip_report_id_on_read) {
-                // RACE response command ID doesn't match the request. Notify
-                // the sink so the host can record a hid-response-mismatch event.
-                if let Some(sink) = self.event_sink {
-                    let request_id = race_payload.get(4..6).unwrap_or(&[]);
-                    let response_id_offset = if *strip_report_id_on_read { 6 } else { 7 };
-                    let response_id = response
-                        .get(response_id_offset..response_id_offset + 2)
-                        .unwrap_or(&[]);
-                    sink.on_hid_response_mismatch(
-                        transport_id,
-                        command_id,
-                        &hex::encode(request_id),
-                        &hex::encode(response_id),
-                    );
+            // 3.2 节：声明式 request/response 匹配。
+            // request_match_slice 基于“纯 payload”（framed_exchange 接收的 payload 参数）。
+            // response_match_slice 基于“response 纯 payload”：先去掉 reportId（若未 strip），
+            // 再跳过与 request 相同的 frame header 长度（payload_off）。
+            if let (Some((req_start, req_end)), Some((resp_start, resp_end))) =
+                (*request_match_slice, *response_match_slice)
+            {
+                let response_rest: &[u8] = if *strip_report_id_on_read {
+                    &response[..]
+                } else {
+                    response.get(1..).unwrap_or(&[])
+                };
+                let response_payload = response_rest.get(payload_off..).unwrap_or(&[]);
+                let request_slice = payload.get(req_start..req_end);
+                let response_slice = response_payload.get(resp_start..resp_end);
+                let matched = matches!(
+                    (request_slice, response_slice),
+                    (Some(r), Some(s)) if r == s
+                );
+                if !matched {
+                    if let Some(sink) = self.event_sink {
+                        let request_id = payload.get(req_start..req_end).unwrap_or(&[]);
+                        let response_id =
+                            response_payload.get(resp_start..resp_end).unwrap_or(&[]);
+                        sink.on_hid_response_mismatch(
+                            transport_id,
+                            command_id,
+                            &hex::encode(request_id),
+                            &hex::encode(response_id),
+                        );
+                    }
+                    continue;
                 }
-                continue;
             }
             let duration_ms = exchange_start.elapsed().as_millis() as u64;
             let checksum_valid = self.check_checksum_and_emit(transport_id, command_id, &response);
@@ -2788,7 +2922,7 @@ impl Session<'_> {
                 sink.on_hid_exchange(
                     transport_id,
                     command_id,
-                    &hex::encode(race_payload),
+                    &hex::encode(payload),
                     &hex::encode(&response),
                     duration_ms,
                     0,
@@ -2797,7 +2931,7 @@ impl Session<'_> {
             }
             return Ok(response);
         }
-        Err("timed out waiting for race input report".into())
+        Err("timed out waiting for framed input report".into())
     }
 
     fn delay(&mut self, milliseconds: u64) -> Result<(), String> {
@@ -2816,20 +2950,6 @@ impl Session<'_> {
         thread::sleep(Duration::from_millis(milliseconds));
         Ok(())
     }
-}
-
-fn race_response_matches_request(
-    response: &[u8],
-    request: &[u8],
-    report_id_stripped: bool,
-) -> bool {
-    let Some(request_id) = request.get(4..6) else {
-        return true;
-    };
-    let response_id_offset = if report_id_stripped { 6 } else { 7 };
-    response
-        .get(response_id_offset..response_id_offset + 2)
-        .is_some_and(|response_id| response_id == request_id)
 }
 
 fn input_payload_from_report(
@@ -3592,20 +3712,33 @@ mod tests {
     use super::*;
     use std::sync::OnceLock;
 
+    /// 3.2 节：验证声明式 request/response 匹配逻辑等价于旧 race_response_matches_request。
+    /// 旧逻辑：request payload[4..6] == response rest[6..8]（reportId 已 strip）。
+    /// 新逻辑：request_match_slice = [4, 6]，response_match_slice = [4, 6]，
+    /// 基准均为“纯 payload”（response 需先跳过 payload_off=2 的 frame header）。
     #[test]
-    fn race_response_matches_request_command_after_report_id_is_stripped() {
+    fn framed_match_slice_equivalent_to_legacy_race_match() {
+        // request payload（去掉 frame header 之后的业务字节）
         let request = [0x05, 0x5a, 0x02, 0x00, 0xcf, 0x30];
+        // response rest（reportId 已 strip）：[length, type, ...payload]
         let matching = [0x3d, 0x00, 0x05, 0x5b, 0x04, 0x00, 0xcf, 0x30, 0x01];
         let stale = [0x3d, 0x00, 0x05, 0x5b, 0x04, 0x00, 0xc5, 0x30, 0x01];
-        assert!(race_response_matches_request(&matching, &request, true));
-        assert!(!race_response_matches_request(&stale, &request, true));
-    }
-
-    #[test]
-    fn race_response_matches_request_command_with_report_id_present() {
-        let request = [0x05, 0x5a, 0x02, 0x00, 0xcf, 0x30];
-        let response = [0x07, 0x3d, 0x00, 0x05, 0x5b, 0x04, 0x00, 0xcf, 0x30, 0x01];
-        assert!(race_response_matches_request(&response, &request, false));
+        let payload_off = 2usize; // length(1) + type(1)
+        let (req_start, req_end) = (4usize, 6usize);
+        let (resp_start, resp_end) = (4usize, 6usize);
+        // matching：response 纯 payload = rest[payload_off..] = [0x05, 0x5b, 0x04, 0x00, 0xcf, 0x30, 0x01]
+        // response_slice = [0xcf, 0x30] == request[4..6] = [0xcf, 0x30] ✓
+        let matching_payload = &matching[payload_off..];
+        assert_eq!(
+            &request[req_start..req_end],
+            &matching_payload[resp_start..resp_end]
+        );
+        // stale：response_slice = [0xc5, 0x30] != request[4..6] = [0xcf, 0x30] ✗
+        let stale_payload = &stale[payload_off..];
+        assert_ne!(
+            &request[req_start..req_end],
+            &stale_payload[resp_start..resp_end]
+        );
     }
 
     #[test]
