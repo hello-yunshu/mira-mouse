@@ -42,6 +42,11 @@ use thiserror::Error;
 
 pub const PLUGIN_SCHEMA_VERSION: u32 = 1;
 pub const PLUGIN_API_VERSION: &str = "1.1.0";
+/// 3.5 节：Package Format 版本，独立于 `pluginApi`。
+/// 该版本号由主仓库 runtime 和 mira-plugin-cli 共享，定义文件布局、允许路径、
+/// 大小限制、签名内容与 checksum coverage。manifest 层声明此字段以便插件
+/// 显式标注所用的 Package Format 版本；未声明时默认为当前版本（向后兼容）。
+pub const PACKAGE_FORMAT_VERSION: u32 = 1;
 const MAX_DASHBOARD_ITEMS: usize = 6;
 const MAX_CONTROL_OPTIONS: usize = 8;
 const MAX_SUMMARY_ITEMS: usize = 4;
@@ -57,6 +62,11 @@ pub struct PluginManifest {
     pub name: String,
     pub version: String,
     pub plugin_api: VersionReq,
+    /// 3.5 节：Package Format 版本，独立于 `pluginApi`。
+    /// 旧插件 JSON 未声明此字段时默认为 [`PACKAGE_FORMAT_VERSION`]。
+    /// runtime 在 extract 时校验此值与 `checksums.json` 的 schema_version 一致。
+    #[serde(default = "default_package_format_version")]
+    pub package_format_version: u32,
     pub publisher_key_id: Option<String>,
     pub evidence: EvidenceLevel,
     #[serde(default)]
@@ -80,6 +90,10 @@ pub struct PluginManifest {
     /// 未声明时插件独立运行（向后兼容）。
     #[serde(default)]
     pub depends_on: Vec<PluginDependency>,
+}
+
+fn default_package_format_version() -> u32 {
+    PACKAGE_FORMAT_VERSION
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -195,6 +209,12 @@ impl PluginManifest {
     pub fn validate(&self) -> Result<(), ApiError> {
         if self.schema_version != PLUGIN_SCHEMA_VERSION {
             return Err(ApiError::SchemaVersion(self.schema_version));
+        }
+        // 3.5 节：packageFormatVersion 独立于 pluginApi，必须等于当前 PACKAGE_FORMAT_VERSION。
+        // 旧插件 JSON 未声明此字段时由 serde default 填充为当前版本，因此此处校验
+        // 既拒绝过旧（0）也拒绝过新（>1）的版本号。
+        if self.package_format_version != PACKAGE_FORMAT_VERSION {
+            return Err(ApiError::PackageFormatVersion(self.package_format_version));
         }
         if !valid_plugin_id(&self.plugin_id) {
             return Err(ApiError::PluginId(self.plugin_id.clone()));
@@ -1093,6 +1113,9 @@ impl Control {
 pub enum ApiError {
     #[error("unsupported plugin schema version {0}")]
     SchemaVersion(u32),
+    /// 3.5 节：packageFormatVersion 与当前 Package Format 实现不匹配。
+    #[error("unsupported package format version {0}")]
+    PackageFormatVersion(u32),
     #[error("invalid plugin id {0}")]
     PluginId(String),
     #[error("plugin API requirement {0} is incompatible")]
@@ -1130,6 +1153,7 @@ mod tests {
     fn manifest_with_runtime(runtime: PluginRuntime) -> PluginManifest {
         PluginManifest {
             schema_version: 1,
+            package_format_version: PACKAGE_FORMAT_VERSION,
             plugin_id: "mira.example".into(),
             name: "Example".into(),
             version: "1.0.0".into(),
@@ -1194,6 +1218,7 @@ mod tests {
     fn refuses_writes_without_hardware_evidence() {
         let manifest = PluginManifest {
             schema_version: 1,
+            package_format_version: PACKAGE_FORMAT_VERSION,
             plugin_id: "mira.example".into(),
             name: "Example".into(),
             version: "1.0.0".into(),
@@ -1214,6 +1239,7 @@ mod tests {
     fn limits_plugin_display_name_length() {
         let manifest = PluginManifest {
             schema_version: 1,
+            package_format_version: PACKAGE_FORMAT_VERSION,
             plugin_id: "mira.example".into(),
             name: "A plugin name that is intentionally too long for compact host UI".into(),
             version: "1.0.0".into(),
@@ -1248,6 +1274,7 @@ mod tests {
         };
         let manifest = PluginManifest {
             schema_version: 1,
+            package_format_version: PACKAGE_FORMAT_VERSION,
             plugin_id: "mira.example".into(),
             name: "Example".into(),
             version: "1.0.0".into(),
@@ -1293,6 +1320,7 @@ mod tests {
         };
         let manifest = PluginManifest {
             schema_version: 1,
+            package_format_version: PACKAGE_FORMAT_VERSION,
             plugin_id: "mira.example".into(),
             name: "Example".into(),
             version: "1.0.0".into(),
@@ -1343,6 +1371,7 @@ mod tests {
         };
         let manifest = PluginManifest {
             schema_version: 1,
+            package_format_version: PACKAGE_FORMAT_VERSION,
             plugin_id: "mira.example".into(),
             name: "Example".into(),
             version: "1.0.0".into(),
@@ -1385,6 +1414,7 @@ mod tests {
         };
         let manifest = PluginManifest {
             schema_version: 1,
+            package_format_version: PACKAGE_FORMAT_VERSION,
             plugin_id: "mira.example".into(),
             name: "Example".into(),
             version: "1.0.0".into(),
@@ -1429,6 +1459,7 @@ mod tests {
         };
         let manifest = PluginManifest {
             schema_version: 1,
+            package_format_version: PACKAGE_FORMAT_VERSION,
             plugin_id: "mira.example".into(),
             name: "Example".into(),
             version: "1.0.0".into(),
@@ -1463,6 +1494,7 @@ mod tests {
         };
         let manifest = PluginManifest {
             schema_version: 1,
+            package_format_version: PACKAGE_FORMAT_VERSION,
             plugin_id: "mira.example".into(),
             name: "Example".into(),
             version: "1.0.0".into(),
@@ -1516,6 +1548,7 @@ mod tests {
         };
         let manifest = PluginManifest {
             schema_version: 1,
+            package_format_version: PACKAGE_FORMAT_VERSION,
             plugin_id: "mira.example".into(),
             name: "Example".into(),
             version: "1.0.0".into(),
@@ -1567,6 +1600,7 @@ mod tests {
         };
         let manifest = PluginManifest {
             schema_version: 1,
+            package_format_version: PACKAGE_FORMAT_VERSION,
             plugin_id: "mira.example".into(),
             name: "Example".into(),
             version: "1.0.0".into(),
@@ -1609,6 +1643,7 @@ mod tests {
             .collect();
         let manifest = PluginManifest {
             schema_version: 1,
+            package_format_version: PACKAGE_FORMAT_VERSION,
             plugin_id: "mira.example".into(),
             name: "Example".into(),
             version: "1.0.0".into(),

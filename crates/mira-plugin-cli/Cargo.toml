@@ -1,7 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
+# 3.5 节：mira-plugin-cli 独立版本（packageFormatVersion 独立于 pluginApi）。
+# 不再使用 workspace.version，CLI 有自己的发布周期和 tag（mira-plugin-cli-v*）。
+# 版本号遵循项目规则：不得含数字 4 或 11。
 [package]
 name = "mira-plugin-cli"
-version.workspace = true
+version = "1.0.0"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -12,8 +15,9 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+base64 = "0.22"
 clap.workspace = true
-ed25519-dalek.workspace = true
+ed25519-dalek = { workspace = true, features = ["pkcs8", "pem"] }
 hex.workspace = true
 mira-plugin-api = { path = "../mira-plugin-api" }
 mira-plugin-runtime = { path = "../mira-plugin-runtime" }
