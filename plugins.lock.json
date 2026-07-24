@@ -30,12 +30,12 @@
       "pluginId": "mira.logitech-hidpp",
       "repository": "hello-yunshu/mira-mouse-plugins",
       "releaseTag": "release/v2026-07-24",
-      "version": "0.9.1",
-      "asset": "mira-logitech-hidpp-0.9.1.mira-plugin",
-      "sha256": "b4f1976397ecfeb5e68a8213d5d2088ae8be0f15647401400338f1fbf239bbb3",
+      "version": "0.9.2",
+      "asset": "mira-logitech-hidpp-0.9.2.mira-plugin",
+      "sha256": "ed71ebfe64ab7beb479d38afad937a2fb15bc26778b80b0ecf1894aa13575427",
       "publisherKeyId": "mira-plugins-2026-001",
       "pluginApi": ">=1.1.0, <2.0.0",
-      "cachePath": "src-tauri/resources/plugins/mira-logitech-hidpp-0.9.1.mira-plugin",
+      "cachePath": "src-tauri/resources/plugins/mira-logitech-hidpp-0.9.2.mira-plugin",
       "bundleByDefault": true
     },
     {
