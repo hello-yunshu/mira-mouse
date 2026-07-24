@@ -88,7 +88,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          node -e "JSON.parse(require('fs').readFileSync('plugins.lock.json'));JSON.parse(require('fs').readFileSync('src-tauri/tauri.conf.json'))"
+          node -e "JSON.parse(require('fs').readFileSync('bundled-plugins.lock.json'));JSON.parse(require('fs').readFileSync('src-tauri/tauri.conf.json'))"
       - name: Evidence summary
         shell: bash
         run: echo 'Configuration parsed; platform package and hardware status are not implied.' >> "$GITHUB_STEP_SUMMARY"
@@ -320,7 +320,7 @@ jobs:
           OVERWRITE: ${{ inputs.overwrite_latest == true }}
         run: |
           set -euo pipefail
-          node -e "const l=require('./plugins.lock.json');if(!l.releaseReady)throw Error('plugins.lock.json is not release-ready')"
+          node -e "const l=require('./bundled-plugins.lock.json');if(!l.releaseReady)throw Error('bundled-plugins.lock.json is not release-ready')"
           current_version=$(node scripts/app-version.mjs)
           if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
             if [ "$OVERWRITE" = "true" ]; then

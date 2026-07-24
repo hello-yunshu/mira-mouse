@@ -9,7 +9,7 @@ import { promisify } from 'node:util';
 
 const run = promisify(execFile);
 const languages = ['zh-CN', 'en'];
-const lock = JSON.parse(await readFile('plugins.lock.json', 'utf8'));
+const lock = JSON.parse(await readFile('bundled-plugins.lock.json', 'utf8'));
 const hostLocales = new Map(await Promise.all(languages.map(async (language) => [
   language,
   flattenKeys(JSON.parse(await readFile(`src/locales/${language}.json`, 'utf8'))),

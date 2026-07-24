@@ -2,11 +2,11 @@
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import YAML from 'yaml';
-const jsonFiles = ['package.json', 'tsconfig.json', 'tsconfig.app.json', 'tsconfig.node.json', 'plugins.lock.json', 'schemas/plugin-manifest-v1.schema.json', 'schemas/plugins-lock-v1.schema.json', 'src-tauri/tauri.conf.json', 'src-tauri/capabilities/default.json'];
+const jsonFiles = ['package.json', 'tsconfig.json', 'tsconfig.app.json', 'tsconfig.node.json', 'bundled-plugins.lock.json', 'schemas/plugin-manifest-v1.schema.json', 'schemas/plugins-lock-v1.schema.json', 'src-tauri/tauri.conf.json', 'src-tauri/capabilities/default.json'];
 for (const file of jsonFiles) JSON.parse(await readFile(file, 'utf8'));
 const required = ['README.md', 'LICENSE', 'LICENSES/AGPL-3.0-or-later.txt', 'LICENSES/CC-BY-SA-4.0.txt', 'NOTICE', 'CITATION.cff'];
 for (const file of required) if ((await stat(file)).size === 0) throw new Error(`${file} is empty`);
-const lock = JSON.parse(await readFile('plugins.lock.json', 'utf8'));
+const lock = JSON.parse(await readFile('bundled-plugins.lock.json', 'utf8'));
 if (lock.releaseReady && JSON.stringify(lock).includes('BLOCKED_')) throw new Error('release-ready lock contains unresolved metadata');
 const tauriConfig = JSON.parse(await readFile('src-tauri/tauri.conf.json', 'utf8'));
 const updaterEndpoints = tauriConfig.plugins?.updater?.endpoints;
