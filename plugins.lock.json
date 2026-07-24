@@ -5,7 +5,7 @@
     {
       "pluginId": "mira.amaster",
       "repository": "hello-yunshu/mira-mouse-plugins",
-      "releaseTag": "release/v2026-07-22",
+      "releaseTag": "release/v2026-07-24",
       "version": "1.8.0",
       "asset": "mira-amaster-1.8.0.mira-plugin",
       "sha256": "d101a0b98fd95adee07bdf44f28ce9a2a348ac5aa275461f0f522366b7a3fd6e",
@@ -29,7 +29,7 @@
     {
       "pluginId": "mira.logitech-hidpp",
       "repository": "hello-yunshu/mira-mouse-plugins",
-      "releaseTag": "release/v2026-07-22",
+      "releaseTag": "release/v2026-07-24",
       "version": "0.9.1",
       "asset": "mira-logitech-hidpp-0.9.1.mira-plugin",
       "sha256": "b4f1976397ecfeb5e68a8213d5d2088ae8be0f15647401400338f1fbf239bbb3",
