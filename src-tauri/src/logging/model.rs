@@ -362,7 +362,7 @@ pub struct DeleteResult {
 #[serde(rename_all = "camelCase", tag = "scope")]
 pub enum ExportScope {
     /// 导出当前筛选结果。
-    Filtered { query: LogQuery },
+    Filtered { query: Box<LogQuery> },
     /// 导出本次运行会话日志。
     CurrentSession,
     /// 生成完整脱敏诊断包（ZIP）。

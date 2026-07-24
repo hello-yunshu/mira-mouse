@@ -15,7 +15,9 @@
 use crate::logging::model::{FieldValue, Fields, LogInput, LogLevel, LogSource};
 
 /// 协议事件 target 前缀。用于 LogQuery::target_prefix 过滤。
+#[allow(dead_code)]
 pub const TARGET_PREFIX_PLUGIN: &str = "plugin::";
+#[allow(dead_code)]
 pub const TARGET_PREFIX_HID: &str = "hid::";
 
 /// 事件类型常量。用于 LogInput.fields["event"] 字段。
@@ -128,8 +130,8 @@ pub fn plugin_read_started(
         format!("read started: workflow={workflow} plan={read_plan}"),
         ctx,
         vec![
-            ("workflow".into(), FieldValue::from(workflow)),
-            ("readPlan".into(), FieldValue::from(read_plan)),
+            ("workflow", FieldValue::from(workflow)),
+            ("readPlan", FieldValue::from(read_plan)),
         ],
     )
 }
@@ -153,19 +155,19 @@ pub fn plugin_read_completed(
         ),
         ctx,
         vec![
-            ("workflow".into(), FieldValue::from(workflow)),
-            ("readPlan".into(), FieldValue::from(read_plan)),
-            ("durationMs".into(), FieldValue::from(duration_ms)),
+            ("workflow", FieldValue::from(workflow)),
+            ("readPlan", FieldValue::from(read_plan)),
+            ("durationMs", FieldValue::from(duration_ms)),
             (
-                "successfulOutputs".into(),
+                "successfulOutputs",
                 FieldValue::from(successful_outputs as i64),
             ),
             (
-                "failedOutputs".into(),
+                "failedOutputs",
                 FieldValue::from(failed_outputs as i64),
             ),
-            ("projectionValid".into(), FieldValue::from(projection_valid)),
-            ("status".into(), FieldValue::from("ok")),
+            ("projectionValid", FieldValue::from(projection_valid)),
+            ("status", FieldValue::from("ok")),
         ],
     )
 }
@@ -188,17 +190,18 @@ pub fn plugin_read_failed(
         format!("read failed: workflow={workflow} plan={read_plan}: {error_kind}"),
         ctx,
         vec![
-            ("workflow".into(), FieldValue::from(workflow)),
-            ("readPlan".into(), FieldValue::from(read_plan)),
-            ("durationMs".into(), FieldValue::from(duration_ms)),
-            ("errorKind".into(), FieldValue::from(error_kind)),
-            ("reason".into(), FieldValue::from(reason_truncated)),
-            ("status".into(), FieldValue::from("failed")),
+            ("workflow", FieldValue::from(workflow)),
+            ("readPlan", FieldValue::from(read_plan)),
+            ("durationMs", FieldValue::from(duration_ms)),
+            ("errorKind", FieldValue::from(error_kind)),
+            ("reason", FieldValue::from(reason_truncated)),
+            ("status", FieldValue::from("failed")),
         ],
     )
 }
 
 /// plugin-read-step-succeeded：一个 workflow step 成功完成。
+#[allow(clippy::too_many_arguments)]
 pub fn plugin_read_step_succeeded(
     ctx: &ProtocolEventContext,
     workflow: &str,
@@ -216,17 +219,14 @@ pub fn plugin_read_step_succeeded(
         format!("step ok: {command} → {output}"),
         ctx,
         vec![
-            ("workflow".into(), FieldValue::from(workflow)),
-            ("command".into(), FieldValue::from(command)),
-            ("parser".into(), FieldValue::from(parser)),
-            ("output".into(), FieldValue::from(output)),
-            ("durationMs".into(), FieldValue::from(duration_ms)),
-            (
-                "responseLength".into(),
-                FieldValue::from(response_length as i64),
-            ),
-            ("cacheHit".into(), FieldValue::from(cache_hit)),
-            ("status".into(), FieldValue::from("ok")),
+            ("workflow", FieldValue::from(workflow)),
+            ("command", FieldValue::from(command)),
+            ("parser", FieldValue::from(parser)),
+            ("output", FieldValue::from(output)),
+            ("durationMs", FieldValue::from(duration_ms)),
+            ("responseLength", FieldValue::from(response_length as i64)),
+            ("cacheHit", FieldValue::from(cache_hit)),
+            ("status", FieldValue::from("ok")),
         ],
     )
 }
@@ -245,10 +245,10 @@ pub fn plugin_read_step_skipped(
         format!("step skipped: {command} → {output}"),
         ctx,
         vec![
-            ("workflow".into(), FieldValue::from(workflow)),
-            ("command".into(), FieldValue::from(command)),
-            ("output".into(), FieldValue::from(output)),
-            ("status".into(), FieldValue::from("skipped")),
+            ("workflow", FieldValue::from(workflow)),
+            ("command", FieldValue::from(command)),
+            ("output", FieldValue::from(output)),
+            ("status", FieldValue::from("skipped")),
         ],
     )
 }
@@ -267,15 +267,16 @@ pub fn plugin_read_step_not_supported(
         format!("step not-supported: {command} → {output}"),
         ctx,
         vec![
-            ("workflow".into(), FieldValue::from(workflow)),
-            ("command".into(), FieldValue::from(command)),
-            ("output".into(), FieldValue::from(output)),
-            ("status".into(), FieldValue::from("not-supported")),
+            ("workflow", FieldValue::from(workflow)),
+            ("command", FieldValue::from(command)),
+            ("output", FieldValue::from(output)),
+            ("status", FieldValue::from("not-supported")),
         ],
     )
 }
 
 /// plugin-read-step-failed：一个可选 step 失败但 workflow 继续。
+#[allow(clippy::too_many_arguments)]
 pub fn plugin_read_step_failed(
     ctx: &ProtocolEventContext,
     workflow: &str,
@@ -287,19 +288,19 @@ pub fn plugin_read_step_failed(
     duration_ms: Option<u64>,
 ) -> LogInput {
     let mut extras = vec![
-        ("workflow".into(), FieldValue::from(workflow)),
-        ("command".into(), FieldValue::from(command)),
-        ("parser".into(), FieldValue::from(parser)),
-        ("output".into(), FieldValue::from(output)),
-        ("errorKind".into(), FieldValue::from(error_kind)),
-        ("status".into(), FieldValue::from("failed")),
+        ("workflow", FieldValue::from(workflow)),
+        ("command", FieldValue::from(command)),
+        ("parser", FieldValue::from(parser)),
+        ("output", FieldValue::from(output)),
+        ("errorKind", FieldValue::from(error_kind)),
+        ("status", FieldValue::from("failed")),
     ];
     if let Some(ms) = duration_ms {
-        extras.push(("durationMs".into(), FieldValue::from(ms)));
+        extras.push(("durationMs", FieldValue::from(ms)));
     }
     // reason 截断至 256 字符，避免过长的错误消息。
     let reason_truncated: String = reason.chars().take(256).collect();
-    extras.push(("reason".into(), FieldValue::from(reason_truncated)));
+    extras.push(("reason", FieldValue::from(reason_truncated)));
     new_protocol_event(
         LogLevel::Warn,
         "plugin::read::step",
@@ -324,13 +325,13 @@ pub fn plugin_inventory_completed(
         format!("inventory completed: {workflow} ({successful_outputs} outputs)"),
         ctx,
         vec![
-            ("workflow".into(), FieldValue::from(workflow)),
-            ("durationMs".into(), FieldValue::from(duration_ms)),
+            ("workflow", FieldValue::from(workflow)),
+            ("durationMs", FieldValue::from(duration_ms)),
             (
-                "successfulOutputs".into(),
+                "successfulOutputs",
                 FieldValue::from(successful_outputs as i64),
             ),
-            ("partial".into(), FieldValue::from(false)),
+            ("partial", FieldValue::from(false)),
         ],
     )
 }
@@ -350,17 +351,14 @@ pub fn plugin_inventory_partial(
         format!("inventory partial: {workflow} ({successful_outputs} ok, {failed_outputs} failed)"),
         ctx,
         vec![
-            ("workflow".into(), FieldValue::from(workflow)),
-            ("durationMs".into(), FieldValue::from(duration_ms)),
+            ("workflow", FieldValue::from(workflow)),
+            ("durationMs", FieldValue::from(duration_ms)),
             (
-                "successfulOutputs".into(),
+                "successfulOutputs",
                 FieldValue::from(successful_outputs as i64),
             ),
-            (
-                "failedOutputs".into(),
-                FieldValue::from(failed_outputs as i64),
-            ),
-            ("partial".into(), FieldValue::from(true)),
+            ("failedOutputs", FieldValue::from(failed_outputs as i64)),
+            ("partial", FieldValue::from(true)),
         ],
     )
 }
@@ -369,6 +367,7 @@ pub fn plugin_inventory_partial(
 ///
 /// 默认不携带 payload。仅在 `include_payload=true` 且协议诊断模式启用时，
 /// 调用方应传入 `request_hex` / `response_hex`（已脱敏）。
+#[allow(clippy::too_many_arguments)]
 pub fn hid_feature_exchange(
     ctx: &ProtocolEventContext,
     workflow: &str,
@@ -387,51 +386,36 @@ pub fn hid_feature_exchange(
     response_hex: Option<&str>,
 ) -> LogInput {
     let mut extras = vec![
-        ("workflow".into(), FieldValue::from(workflow)),
-        ("command".into(), FieldValue::from(command)),
-        ("attempt".into(), FieldValue::from(attempt as i64)),
-        ("busyReads".into(), FieldValue::from(busy_reads as i64)),
-        ("durationMs".into(), FieldValue::from(duration_ms)),
-        (
-            "requestLength".into(),
-            FieldValue::from(request_length as i64),
-        ),
-        (
-            "responseLength".into(),
-            FieldValue::from(response_length as i64),
-        ),
+        ("workflow", FieldValue::from(workflow)),
+        ("command", FieldValue::from(command)),
+        ("attempt", FieldValue::from(attempt as i64)),
+        ("busyReads", FieldValue::from(busy_reads as i64)),
+        ("durationMs", FieldValue::from(duration_ms)),
+        ("requestLength", FieldValue::from(request_length as i64)),
+        ("responseLength", FieldValue::from(response_length as i64)),
     ];
     if let Some(tid) = transaction_id {
-        extras.push((
-            "transactionId".into(),
-            FieldValue::from(format!("0x{:02x}", tid)),
-        ));
+        extras.push(("transactionId", FieldValue::from(format!("0x{:02x}", tid))));
     }
     if let Some(class) = command_class {
-        extras.push((
-            "commandClass".into(),
-            FieldValue::from(format!("0x{:02x}", class)),
-        ));
+        extras.push(("commandClass", FieldValue::from(format!("0x{:02x}", class))));
     }
     if let Some(id) = command_id {
-        extras.push((
-            "commandId".into(),
-            FieldValue::from(format!("0x{:02x}", id)),
-        ));
+        extras.push(("commandId", FieldValue::from(format!("0x{:02x}", id))));
     }
     if let Some(valid) = checksum_valid {
-        extras.push(("checksumValid".into(), FieldValue::from(valid)));
+        extras.push(("checksumValid", FieldValue::from(valid)));
     }
     if let Some(valid) = correlation_valid {
-        extras.push(("correlationValid".into(), FieldValue::from(valid)));
+        extras.push(("correlationValid", FieldValue::from(valid)));
     }
     // payload 仅在显式传入时携带（调用方应仅在协议诊断模式启用时传入）。
     // Redactor 会再次扫描敏感模式，但调用方有责任先做 command-aware masking。
     if let Some(hex) = request_hex {
-        extras.push(("requestHex".into(), FieldValue::from(hex)));
+        extras.push(("requestHex", FieldValue::from(hex)));
     }
     if let Some(hex) = response_hex {
-        extras.push(("responseHex".into(), FieldValue::from(hex)));
+        extras.push(("responseHex", FieldValue::from(hex)));
     }
     new_protocol_event(
         LogLevel::Trace,
@@ -458,10 +442,10 @@ pub fn hid_busy_retry(
         format!("busy retry: {command} attempt {attempt}/{max_attempts}"),
         ctx,
         vec![
-            ("workflow".into(), FieldValue::from(workflow)),
-            ("command".into(), FieldValue::from(command)),
-            ("attempt".into(), FieldValue::from(attempt as i64)),
-            ("maxAttempts".into(), FieldValue::from(max_attempts as i64)),
+            ("workflow", FieldValue::from(workflow)),
+            ("command", FieldValue::from(command)),
+            ("attempt", FieldValue::from(attempt as i64)),
+            ("maxAttempts", FieldValue::from(max_attempts as i64)),
         ],
     )
 }
@@ -481,10 +465,10 @@ pub fn hid_response_mismatch(
         format!("response mismatch: {command} expected={expected} actual={actual}"),
         ctx,
         vec![
-            ("workflow".into(), FieldValue::from(workflow)),
-            ("command".into(), FieldValue::from(command)),
-            ("expected".into(), FieldValue::from(expected)),
-            ("actual".into(), FieldValue::from(actual)),
+            ("workflow", FieldValue::from(workflow)),
+            ("command", FieldValue::from(command)),
+            ("expected", FieldValue::from(expected)),
+            ("actual", FieldValue::from(actual)),
         ],
     )
 }
@@ -504,10 +488,10 @@ pub fn hid_checksum_failed(
         format!("checksum failed: {command} expected=0x{expected:02x} actual=0x{actual:02x}"),
         ctx,
         vec![
-            ("workflow".into(), FieldValue::from(workflow)),
-            ("command".into(), FieldValue::from(command)),
-            ("expectedChecksum".into(), FieldValue::from(expected as i64)),
-            ("actualChecksum".into(), FieldValue::from(actual as i64)),
+            ("workflow", FieldValue::from(workflow)),
+            ("command", FieldValue::from(command)),
+            ("expectedChecksum", FieldValue::from(expected as i64)),
+            ("actualChecksum", FieldValue::from(actual as i64)),
         ],
     )
 }

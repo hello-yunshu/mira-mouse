@@ -17,6 +17,9 @@ const MAX_REPORTS: usize = 128;
 const MAX_DELAY_MS: u64 = 5_000;
 const MAX_OPERATION_TIMEOUT_MS: u64 = 30_000;
 
+/// Workflow 执行结果：返回 workflow outputs 和 per-output `ReadStatus` map。
+pub type WorkflowResult = Result<(BTreeMap<String, Value>, BTreeMap<String, ReadStatus>), String>;
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct CommandsFile {
@@ -326,17 +329,12 @@ struct WorkflowStep {
 /// Brand-neutral: plugins opt into `continue` for best-effort read steps.
 /// The default (`abort`) keeps backward compatibility with workflows written
 /// before this field existed.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum StepFailurePolicy {
+    #[default]
     Abort,
     Continue,
-}
-
-impl Default for StepFailurePolicy {
-    fn default() -> Self {
-        Self::Abort
-    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -842,7 +840,7 @@ impl ProtocolPackage {
         cache: Option<&Mutex<FeatureIndexCache>>,
         cached_handles: Option<&Mutex<HidHandleCache>>,
         hid_io_stats: Option<&Mutex<HidIoStats>>,
-    ) -> Result<(BTreeMap<String, Value>, BTreeMap<String, ReadStatus>), String> {
+    ) -> WorkflowResult {
         self.execute_with_initial_outputs(
             api,
             path,
@@ -860,6 +858,7 @@ impl ProtocolPackage {
 
     /// 与 `execute_with_cache` 相同，但接收 HID 交换事件回调。
     /// 宿主通过实现 `HidEventSink` trait 接收 HID 交换、忙碌重试、响应不匹配等事件。
+    #[allow(clippy::too_many_arguments)]
     pub fn execute_with_cache_and_sink(
         &self,
         api: &HidApi,
@@ -869,7 +868,7 @@ impl ProtocolPackage {
         cached_handles: Option<&Mutex<HidHandleCache>>,
         hid_io_stats: Option<&Mutex<HidIoStats>>,
         sink: &dyn HidEventSink,
-    ) -> Result<(BTreeMap<String, Value>, BTreeMap<String, ReadStatus>), String> {
+    ) -> WorkflowResult {
         self.execute_with_initial_outputs(
             api,
             path,
@@ -994,7 +993,7 @@ impl ProtocolPackage {
         cache: Option<&Mutex<FeatureIndexCache>>,
         cached_handles: Option<&Mutex<HidHandleCache>>,
         hid_io_stats: Option<&Mutex<HidIoStats>>,
-    ) -> Result<(BTreeMap<String, Value>, BTreeMap<String, ReadStatus>), String> {
+    ) -> WorkflowResult {
         self.execute_with_initial_outputs(
             api,
             path,
@@ -1011,6 +1010,7 @@ impl ProtocolPackage {
     }
 
     /// 与 `execute_projection_with_cache` 相同，但接收 HID 交换事件回调。
+    #[allow(clippy::too_many_arguments)]
     pub fn execute_projection_with_cache_and_sink(
         &self,
         api: &HidApi,
@@ -1021,7 +1021,7 @@ impl ProtocolPackage {
         cached_handles: Option<&Mutex<HidHandleCache>>,
         hid_io_stats: Option<&Mutex<HidIoStats>>,
         sink: &dyn HidEventSink,
-    ) -> Result<(BTreeMap<String, Value>, BTreeMap<String, ReadStatus>), String> {
+    ) -> WorkflowResult {
         self.execute_with_initial_outputs(
             api,
             path,
@@ -1051,7 +1051,7 @@ impl ProtocolPackage {
         hid_io_stats: Option<&Mutex<HidIoStats>>,
         selected_steps: Option<&[usize]>,
         event_sink: Option<&dyn HidEventSink>,
-    ) -> Result<(BTreeMap<String, Value>, BTreeMap<String, ReadStatus>), String> {
+    ) -> WorkflowResult {
         let workflow = self
             .workflows
             .workflows
@@ -1899,10 +1899,9 @@ impl ProtocolPackage {
                     report[checksum.write_offset] = 0xFF - sum;
                 }
                 "xor8" => {
-                    let mut x: u8 = 0;
-                    for i in checksum.start..checksum.end_exclusive {
-                        x ^= report[i];
-                    }
+                    let x: u8 = report[checksum.start..checksum.end_exclusive]
+                        .iter()
+                        .fold(0u8, |acc, &byte| acc ^ byte);
                     report[checksum.write_offset] = x;
                 }
                 _ => {}
@@ -2377,10 +2376,9 @@ impl Session<'_> {
         }
         match checksum.algorithm.as_str() {
             "xor8" => {
-                let mut x: u8 = 0;
-                for i in checksum.start..checksum.end_exclusive {
-                    x ^= response[i];
-                }
+                let x: u8 = response[checksum.start..checksum.end_exclusive]
+                    .iter()
+                    .fold(0u8, |acc, &byte| acc ^ byte);
                 Some((x, response[checksum.write_offset]))
             }
             "ff-minus-sum8" => {
@@ -2408,8 +2406,8 @@ impl Session<'_> {
                 sink.on_hid_checksum_failed(
                     transport_id,
                     command_id,
-                    &hex::encode(&[expected]),
-                    &hex::encode(&[actual]),
+                    &hex::encode([expected]),
+                    &hex::encode([actual]),
                 );
             }
         }

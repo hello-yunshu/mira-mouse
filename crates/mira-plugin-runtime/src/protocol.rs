@@ -125,6 +125,7 @@ pub trait HidEventSink: Send + Sync {
     /// - `duration_ms`: 本次交换耗时
     /// - `busy_reads`: 忙碌重试次数（poll_until 场景）
     /// - `checksum_valid`: 校验是否通过（None 表示无校验）
+    #[allow(clippy::too_many_arguments)]
     fn on_hid_exchange(
         &self,
         transport: &str,
