@@ -540,6 +540,7 @@ mod tests {
             readonly: false,
             plugin_id: None,
             history_identity: None,
+            read_statuses: Default::default(),
         };
         TrayStatusState::from_snapshot(Some(&snapshot), &test_settings())
     }
@@ -791,6 +792,7 @@ mod tests {
             readonly: false,
             plugin_id: None,
             history_identity: None,
+            read_statuses: Default::default(),
         };
 
         settings.show_receiver = false;

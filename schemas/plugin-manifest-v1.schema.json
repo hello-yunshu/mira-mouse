@@ -33,6 +33,16 @@
               "items": { "enum": ["usb", "wireless", "bluetooth", "virtual"] }
             }
           }
+        },
+        "inventory": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["workflows"],
+          "properties": {
+            "workflows": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+            "refresh": { "type": "string", "enum": ["on-open", "manual"] },
+            "cacheTtlSeconds": { "type": "integer", "minimum": 0 }
+          }
         }
       }
     },

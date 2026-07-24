@@ -1077,7 +1077,7 @@ function BatteryInsightCards({ insights, aiAnalysisEnabled, maxCount, deviceKey 
 
   return (
     <div ref={wrapRef} className="battery-insight-section-wrap" style={wrapStyle}>
-      {exiting && (
+      {exiting && exiting.deviceKey !== deviceKey && (
         <div key={exiting.deviceKey} className="battery-insight-section-exit">
           {exitingNode}
         </div>

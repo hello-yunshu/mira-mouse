@@ -33,6 +33,12 @@ export interface LogQuery {
   to?: string;
   beforeId?: number;
   limit?: number;
+  /** 关联 ID 精确筛选。用于"复制当前设备诊断"按 correlationId 过滤。 */
+  correlationId?: string;
+  /** target 前缀筛选（区分大小写）。例如 "plugin::" 匹配所有插件协议事件。 */
+  targetPrefix?: string;
+  /** 结构化字段精确匹配。键为字段名，值为期望的标量值。多键 AND 语义。 */
+  fieldsExact?: Record<string, FieldValue>;
 }
 
 export interface LogPage {
@@ -50,6 +56,15 @@ export interface DiagnosticSessionStatus {
   autoExpire: boolean;
 }
 
+/** 协议诊断会话状态。授权对指定设备临时记录 HID payload。 */
+export interface ProtocolDiagnosticStatus {
+  /** 目标设备 key（VID:PID:interface），只对此设备的 HID 交换记录 payload。 */
+  deviceKey: string;
+  startedAt: string;
+  endsAt: string;
+  autoExpire: boolean;
+}
+
 export interface LogStatus {
   sessionId: string;
   minLevel: LogLevel;
@@ -62,6 +77,7 @@ export interface LogStatus {
   recentWarnCount: number;
   filePersistenceEnabled: boolean;
   diagnosticSession: DiagnosticSessionStatus | null;
+  protocolDiagnostic: ProtocolDiagnosticStatus | null;
 }
 
 export type DeleteScope =
@@ -86,6 +102,37 @@ export interface ExportOutcomeDto {
   entryCount: number;
   bytesWritten: number;
   truncated: boolean;
+}
+
+/** 设备定向诊断导出输入（对齐 spec 13.3）。 */
+export interface DeviceDiagnosticsInput {
+  /** 插件 ID（必填，用于日志筛选）。 */
+  pluginId: string;
+  /** 设备 key（VID:PID:interface 格式，用于日志筛选）。 */
+  deviceKey: string;
+  /** 设备 model（可选，用于日志筛选，缩小到特定型号）。 */
+  model?: string;
+  /** 会话 ID（可选，用于日志筛选，缩小到当前会话）。 */
+  sessionId?: string;
+  /** 关联 ID（可选，缩小到特定读取会话）。 */
+  correlationId?: string;
+  /** 当前"全部读数"的 JSON 表示（前端从快照传入）。 */
+  readingsJson: string;
+  /** 当前 read statuses 的 JSON 表示（前端从快照传入）。 */
+  readStatusesJson: string;
+  /** 是否包含临时协议诊断（HID payload）。仅在协议诊断模式启用时有效。 */
+  includeProtocolPayload?: boolean;
+  /** 输出格式："markdown" 或 "json"。默认 "markdown"。 */
+  format?: 'markdown' | 'json';
+}
+
+/** 设备定向诊断导出结果。 */
+export interface DeviceDiagnosticsOutcome {
+  path: string;
+  bytesWritten: number;
+  logEntryCount: number;
+  /** 报告内容（用于前端复制到剪贴板）。 */
+  content: string;
 }
 
 /** 后端向前端推送的实时日志批次事件 payload。 */
