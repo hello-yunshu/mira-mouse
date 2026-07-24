@@ -1,0 +1,145 @@
+name: mira-plugin-cli release
+
+# 3.5 节：mira-plugin-cli 独立发布（packageFormatVersion 独立于 pluginApi）。
+# 插件仓库下载并固定一个已发布的 mira-plugin-cli 二进制 + SHA-256，
+# CI 不 checkout 主仓库源码。版本号遵循项目规则：不得含数字 4 或 11。
+on:
+  push:
+    tags:
+      - 'mira-plugin-cli-v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. mira-plugin-cli-v1.0.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-13
+            archive: tar.gz
+          - target: x86_64-apple-darwin
+            runner: macos-13
+            archive: tar.gz
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+            archive: tar.gz
+          - target: x86_64-pc-windows-msvc
+            runner: windows-2022
+            archive: zip
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup target add ${{ matrix.target }}
+      - name: Cache cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cli-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cli-${{ matrix.target }}-
+      - name: Build release binary
+        run: cargo build --release --package mira-plugin-cli --target ${{ matrix.target }} --locked
+      - name: Stage binary (unix)
+        if: matrix.archive == 'tar.gz'
+        run: |
+          set -euo pipefail
+          stage="mira-plugin-${{ matrix.target }}"
+          mkdir "$stage"
+          cp "target/${{ matrix.target }}/release/mira-plugin" "$stage/mira-plugin"
+          tar -czf "$stage.tar.gz" "$stage"
+          sha256sum "$stage.tar.gz" | awk '{print $1}' > "$stage.tar.gz.sha256"
+      - name: Stage binary (windows)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          $stage = "mira-plugin-${{ matrix.target }}"
+          New-Item -ItemType Directory -Path $stage | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/mira-plugin.exe" "$stage/mira-plugin.exe"
+          Compress-Archive -Path "$stage" -DestinationPath "$stage.zip"
+          $hash = (Get-FileHash "$stage.zip" -Algorithm SHA256).Hash.ToLower()
+          Set-Content -Path "$stage.zip.sha256" -Value $hash -NoNewline
+      - uses: actions/upload-artifact@v7
+        with:
+          name: mira-plugin-${{ matrix.target }}
+          path: |
+            mira-plugin-${{ matrix.target }}.tar.gz
+            mira-plugin-${{ matrix.target }}.tar.gz.sha256
+            mira-plugin-${{ matrix.target }}.zip
+            mira-plugin-${{ matrix.target }}.zip.sha256
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "name=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/download-artifact@v7
+        with:
+          path: assets
+          pattern: mira-plugin-*
+          merge-multiple: true
+      - name: Verify SHA-256 for every asset
+        run: |
+          set -euo pipefail
+          cd assets
+          for f in *.tar.gz *.zip; do
+            [ -f "$f" ] || continue
+            expected=$(cat "$f.sha256")
+            actual=$(sha256sum "$f" | awk '{print $1}')
+            if [ "$expected" != "$actual" ]; then
+              echo "SHA-256 mismatch for $f: expected=$expected actual=$actual" >&2
+              exit 1
+            fi
+          done
+      - name: Create immutable Release
+        env:
+          GH_TOKEN: '${{ secrets.GITHUB_TOKEN }}'
+          TAG: '${{ steps.tag.outputs.name }}'
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; refusing to overwrite (CLI releases are immutable)" >&2
+            exit 1
+          fi
+          gh release create "$TAG" assets/* --target "$GITHUB_SHA" \
+            --title "mira-plugin-cli ${TAG#mira-plugin-cli-v}" \
+            --notes "Independent release of mira-plugin-cli (${TAG}).
+
+          - Per-platform binaries with SHA-256 checksums.
+          - Plugin repositories pin a specific version + SHA-256 (3.5).
+          - This Release does NOT modify the host application version.
+          - Run \`mira-plugin --version\` to inspect CLI + package-format-version."
+      - name: Generate SHA256SUMS manifest
+        env:
+          GH_TOKEN: '${{ secrets.GITHUB_TOKEN }}'
+          TAG: '${{ steps.tag.outputs.name }}'
+        run: |
+          set -euo pipefail
+          cd assets
+          sha256sum *.tar.gz *.zip > SHA256SUMS.txt
+          gh release upload "$TAG" SHA256SUMS.txt --clobber
