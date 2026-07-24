@@ -47,7 +47,7 @@
     ],
     "resources": [
       "resources/plugins/mira-amaster-1.8.0.mira-plugin",
-      "resources/plugins/mira-logitech-hidpp-0.9.1.mira-plugin",
+      "resources/plugins/mira-logitech-hidpp-0.9.2.mira-plugin",
       "resources/plugins/mira-razer-viper-0.3.0.mira-plugin",
       "resources/local-ai/model.rillpack",
       "resources/local-ai/handler.rillhandler"
