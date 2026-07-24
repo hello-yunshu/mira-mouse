@@ -6,7 +6,7 @@
 //   MIRA_PLUGIN=mira.logitech-hidpp cargo run --example enumerate_hid
 //   MIRA_PLUGIN_PATH=/path/to/extracted/plugin cargo run --example enumerate_hid
 //
-// The tool loads plugins.lock.json, finds the requested plugin entry,
+// The tool loads bundled-plugins.lock.json, finds the requested plugin entry,
 // verifies the package signature against the production + TEST-ONLY trust
 // store, enumerates matched HID devices, and runs the signed plugin
 // workflow. Set MIRA_WRITE_SMOKE=1 to additionally exercise no-op
@@ -125,9 +125,9 @@ fn main() {
     let plugin_id = std::env::var("MIRA_PLUGIN").unwrap_or_else(|_| "mira.amaster".to_string());
     let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let lock: Value = serde_json::from_slice(
-        &fs::read(workspace.join("plugins.lock.json")).expect("read plugins.lock.json"),
+        &fs::read(workspace.join("bundled-plugins.lock.json")).expect("read bundled-plugins.lock.json"),
     )
-    .expect("parse plugins.lock.json");
+    .expect("parse bundled-plugins.lock.json");
     let entry = lock["plugins"]
         .as_array()
         .and_then(|plugins| {

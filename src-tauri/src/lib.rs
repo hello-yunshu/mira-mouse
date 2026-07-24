@@ -6032,7 +6032,7 @@ fn installed_plugins_dir(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 fn read_lock_file() -> Option<LockFile> {
-    serde_json::from_slice(include_bytes!("../../plugins.lock.json")).ok()
+    serde_json::from_slice(include_bytes!("../../bundled-plugins.lock.json")).ok()
 }
 
 fn bundled_plugins_dir(app: &AppHandle) -> Option<PathBuf> {
