@@ -3,7 +3,9 @@ mod dsl;
 mod engine;
 pub mod hid;
 mod onboard_profiles;
-mod package;
+// 3.5 节：package 模块公开，使 mira-plugin-cli 能共享 allowed() 和 PACKAGE_FORMAT_VERSION。
+// 这是主仓库 runtime 和 CLI 共享同一个 Package Format 实现的单一事实源。
+pub mod package;
 pub mod protocol;
 
 // Re-export mira_plugin_api 的关键类型，便于下游 crate（含测试）构造插件声明。
@@ -17,7 +19,8 @@ pub use mira_plugin_api::{
 pub use dsl::{execute_workflow, DslError, Limits, Operation, Transport, Workflow};
 pub use engine::{ProtocolPackage, WorkflowProjection};
 pub use package::{
-    canonical_json, extract_package, inspect_package, PackageError, PackageInspection, TrustStore,
+    allowed, canonical_json, extract_package, inspect_package, PackageError, PackageInspection,
+    PACKAGE_FORMAT_VERSION, TrustStore,
 };
 pub use protocol::{
     execute_plugin_workflow, map_semantic_to_outputs, mutate_device, mutate_device_with_package,

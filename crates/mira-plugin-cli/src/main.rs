@@ -3,7 +3,11 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use ed25519_dalek::{Signer, SigningKey};
 use mira_plugin_api::PluginManifest;
-use mira_plugin_runtime::{canonical_json, inspect_package, TrustStore};
+// 3.5 节：CLI 与 runtime 共享同一个 Package Format 实现（allowed + PACKAGE_FORMAT_VERSION），
+// 不再维护自己的 forbidden_source()。pack/sign/inspect/verify 使用同一实现。
+use mira_plugin_runtime::{
+    allowed, canonical_json, inspect_package, PACKAGE_FORMAT_VERSION, TrustStore,
+};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{
@@ -18,11 +22,30 @@ use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
 #[derive(Parser)]
 #[command(
     name = "mira-plugin",
-    about = "Validate and package declarative Mira plugins"
+    about = "Validate and package declarative Mira plugins",
+    // 3.5 节：CLI 独立版本（packageFormatVersion 独立于 pluginApi）。
+    // 插件仓库通过 `mira-plugin --version` 探测已安装 CLI 的版本。
+    version,
+    long_version = long_version(),
 )]
 struct Cli {
     #[command(subcommand)]
     command: Command,
+}
+
+/// 3.5 节：long_version 同时输出 CLI 版本和 package-format-version。
+/// package-format-version 来自 runtime crate 的 PACKAGE_FORMAT_VERSION 常量，
+/// 确保 CLI 与 runtime 共享同一个 Package Format 版本号。
+fn long_version() -> &'static str {
+    use std::sync::OnceLock;
+    static VERSION: OnceLock<String> = OnceLock::new();
+    VERSION.get_or_init(|| {
+        format!(
+            "{}\npackage-format-version: {}",
+            env!("CARGO_PKG_VERSION"),
+            PACKAGE_FORMAT_VERSION
+        )
+    })
 }
 
 #[derive(Subcommand)]
@@ -45,8 +68,15 @@ enum Command {
     },
     Sign {
         package: PathBuf,
+        /// 32-byte Ed25519 private key in hexadecimal (development only).
+        /// Production signing should use --key-pem or PLUGIN_SIGNING_KEY env.
         #[arg(long)]
         key_hex: Option<String>,
+        /// Path to a PKCS#8 PEM Ed25519 private key file (production).
+        /// Alternatively set PLUGIN_SIGNING_KEY env to the PEM content
+        /// (or base64-encoded PEM for CI secret transport).
+        #[arg(long)]
+        key_pem: Option<PathBuf>,
         #[arg(long)]
         output: Option<PathBuf>,
     },
@@ -88,19 +118,66 @@ fn main() -> Result<()> {
         Command::Sign {
             package,
             key_hex,
+            key_pem,
             output,
         } => {
-            let signed_bytes = sign_package(&package, key_hex.as_deref())?;
+            let signing_key = resolve_signing_key(key_hex.as_deref(), key_pem.as_deref())?;
+            let public_hex = hex::encode(signing_key.verifying_key().to_bytes());
+            let signed_bytes = sign_package(&package, &signing_key)?;
             let out_path = output.unwrap_or_else(|| package.clone());
             fs::write(&out_path, &signed_bytes)?;
             println!("signed: {}", out_path.display());
+            println!("public key: {}", public_hex);
         }
         Command::New { plugin_id, path } => scaffold(&plugin_id, &path)?,
     }
     Ok(())
 }
 
-fn sign_package(package: &Path, key_hex: Option<&str>) -> Result<Vec<u8>> {
+/// 3.5 节：解析签名密钥。优先级：--key-hex > --key-pem > PLUGIN_SIGNING_KEY env。
+/// 生产环境用 PLUGIN_SIGNING_KEY（PEM 内容，或 base64 编码的 PEM 用于 CI secret 传输）。
+/// 开发环境用 --key-hex（32 字节十六进制）；均未提供时生成临时测试密钥。
+fn resolve_signing_key(key_hex: Option<&str>, key_pem: Option<&Path>) -> Result<SigningKey> {
+    if let Some(hex_str) = key_hex {
+        let bytes = hex::decode(hex_str)?;
+        let array: [u8; 32] = bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("key must be 32 bytes"))?;
+        return Ok(SigningKey::from_bytes(&array));
+    }
+    if let Some(pem_path) = key_pem {
+        let pem = fs::read_to_string(pem_path)?;
+        return parse_pem_signing_key(&pem);
+    }
+    if let Ok(env_pem) = std::env::var("PLUGIN_SIGNING_KEY") {
+        // CI secret 可能是 base64 编码的 PEM（避免换行问题）。
+        let pem = if env_pem.contains("BEGIN PRIVATE KEY") {
+            env_pem
+        } else {
+            use base64::Engine;
+            String::from_utf8(base64::engine::general_purpose::STANDARD.decode(&env_pem)?)?
+        };
+        return parse_pem_signing_key(&pem);
+    }
+    // 开发模式：生成临时密钥对并打印私钥（仅用于本地测试）。
+    use rand::TryRng;
+    let mut secret = [0u8; 32];
+    rand::rngs::SysRng
+        .try_fill_bytes(&mut secret)
+        .expect("SysRng fill_bytes failed");
+    eprintln!("warning: generated ephemeral test key (not for production)");
+    eprintln!("private key: {}", hex::encode(secret));
+    Ok(SigningKey::from_bytes(&secret))
+}
+
+fn parse_pem_signing_key(pem: &str) -> Result<SigningKey> {
+    use ed25519_dalek::pkcs8::DecodePrivateKey;
+    SigningKey::from_pkcs8_pem(pem)
+        .map_err(|e| anyhow::anyhow!("failed to parse PKCS#8 PEM private key: {e}"))
+}
+
+fn sign_package(package: &Path, signing_key: &SigningKey) -> Result<Vec<u8>> {
     let file = fs::File::open(package)?;
     let mut archive = ZipArchive::new(file)?;
 
@@ -111,37 +188,14 @@ fn sign_package(package: &Path, key_hex: Option<&str>) -> Result<Vec<u8>> {
         if entry.is_dir() {
             continue;
         }
-        if forbidden_source(&name) {
+        // 3.5 节：使用 runtime 共享的 allowlist，不再维护 CLI 自己的 forbidden_source()。
+        if !allowed(&name) {
             bail!("forbidden plugin file in package: {name}");
         }
         let mut bytes = Vec::new();
         entry.read_to_end(&mut bytes)?;
         files.insert(name, bytes);
     }
-
-    let signing_key = match key_hex {
-        Some(hex_str) => {
-            let bytes = hex::decode(hex_str)?;
-            let array: [u8; 32] = bytes
-                .as_slice()
-                .try_into()
-                .map_err(|_| anyhow::anyhow!("key must be 32 bytes"))?;
-            SigningKey::from_bytes(&array)
-        }
-        None => {
-            use rand::TryRng;
-            let mut secret = [0u8; 32];
-            rand::rngs::SysRng
-                .try_fill_bytes(&mut secret)
-                .expect("SysRng fill_bytes failed");
-            println!("private key: {}", hex::encode(secret));
-            SigningKey::from_bytes(&secret)
-        }
-    };
-
-    let verifying_key = signing_key.verifying_key();
-    let public_hex = hex::encode(verifying_key.to_bytes());
-    println!("public key: {}", public_hex);
 
     files.remove("checksums.json");
     files.remove("META-INF/signature.ed25519");
@@ -152,7 +206,7 @@ fn sign_package(package: &Path, key_hex: Option<&str>) -> Result<Vec<u8>> {
         .clone();
 
     let checksums = Checksums {
-        schema_version: 1,
+        schema_version: PACKAGE_FORMAT_VERSION,
         files: files
             .iter()
             .map(|(name, bytes)| (name.clone(), hex::encode(Sha256::digest(bytes))))
@@ -198,23 +252,14 @@ fn validate_dir(path: &Path) -> Result<PluginManifest> {
                 .strip_prefix(path)?
                 .to_string_lossy()
                 .replace('\\', "/");
-            if forbidden_source(&rel) {
+            // 3.5 节：开发目录校验也使用 runtime 共享的 allowlist，
+            // 确保 CLI pack 与 runtime extract 完全一致。
+            if !allowed(&rel) {
                 bail!("forbidden plugin file: {rel}");
             }
         }
     }
     Ok(manifest)
-}
-
-fn forbidden_source(path: &str) -> bool {
-    let lower = path.to_ascii_lowercase();
-    [
-        ".exe", ".dll", ".dylib", ".so", ".wasm", ".html", ".css", ".js", ".ts", ".py", ".sh",
-        ".bat", ".cmd", ".pyc",
-    ]
-    .iter()
-    .any(|suffix| lower.ends_with(suffix))
-        || lower.contains(".research/")
 }
 
 fn validate_fixtures(path: &Path) -> Result<()> {
@@ -246,7 +291,7 @@ fn pack(path: &Path, output: &Path) -> Result<()> {
     files.remove("checksums.json");
     files.remove("META-INF/signature.ed25519");
     let checksums = Checksums {
-        schema_version: 1,
+        schema_version: PACKAGE_FORMAT_VERSION,
         files: files
             .iter()
             .map(|(name, bytes)| (name.clone(), hex::encode(Sha256::digest(bytes))))
@@ -270,6 +315,8 @@ fn pack(path: &Path, output: &Path) -> Result<()> {
     Ok(())
 }
 
+/// 3.5 节：collect_files 只收集 allowlist 允许的文件。
+/// 不再递归复制整个目录——包内文件必须由明确 allowlist 决定。
 fn collect_files(path: &Path) -> Result<BTreeMap<String, Vec<u8>>> {
     let mut files = BTreeMap::new();
     for entry in WalkDir::new(path).follow_links(false).sort_by_file_name() {
@@ -280,6 +327,11 @@ fn collect_files(path: &Path) -> Result<BTreeMap<String, Vec<u8>>> {
                 .strip_prefix(path)?
                 .to_string_lossy()
                 .replace('\\', "/");
+            // 3.5 节：仅收集 allowlist 允许的文件，文档（README.md/LICENSE/docs/*.md）
+            // 默认不进入生产包。
+            if !allowed(&rel) {
+                continue;
+            }
             files.insert(rel, fs::read(entry.path())?);
         }
     }
@@ -293,10 +345,17 @@ fn scaffold(plugin_id: &str, path: &Path) -> Result<()> {
     fs::create_dir_all(path.join("tests/fixtures"))?;
     fs::create_dir_all(path.join("models"))?;
     let manifest = serde_json::json!({
-        "schemaVersion": 1, "pluginId": plugin_id, "name": plugin_id,
-        "version": "0.1.0", "pluginApi": ">=1.0.0, <2.0.0",
-        "publisherKeyId": null, "evidence": "fixture-verified",
-        "permissions": [], "capabilities": [], "writesEnabled": false
+        "schemaVersion": 1,
+        "packageFormatVersion": PACKAGE_FORMAT_VERSION,
+        "pluginId": plugin_id,
+        "name": plugin_id,
+        "version": "0.1.0",
+        "pluginApi": ">=1.0.0, <2.0.0",
+        "publisherKeyId": null,
+        "evidence": "fixture-verified",
+        "permissions": [],
+        "capabilities": [],
+        "writesEnabled": false
     });
     fs::write(
         path.join("plugin.json"),
