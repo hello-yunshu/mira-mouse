@@ -378,6 +378,10 @@
       "label": "Show connection in menu",
       "hint": "Show connection type and device name in the tray menu"
     },
+    "wakeOnUnlock": {
+      "label": "Wake mouse on unlock",
+      "hint": "Read mouse state immediately after unlocking. When on, sleep resume no longer proactively enumerates devices; unlock events take over."
+    },
     "updateCheck": {
       "label": "Check for Mira updates automatically",
       "hint": "Checks on launch, then every 6 hours while Mira keeps running"

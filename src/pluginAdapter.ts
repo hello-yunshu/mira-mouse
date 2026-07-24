@@ -294,9 +294,17 @@ export function resolveFieldOptions(field: PluginField, device: DeviceState): Pl
   return merged.slice(0, MAX_CONTROL_OPTIONS);
 }
 
-/// 读 field.range。
-export function resolveFieldRange(field: PluginField): RangeSpec | undefined {
-  return field.range;
+/// 读 field.range。当 field.rangeSource 存在时，从设备快照读取动态 max 值
+/// （可选 rangeMaxOffset 偏移），覆盖静态 range.max。min 和 step 仍取自静态 range。
+export function resolveFieldRange(field: PluginField, device?: DeviceState): RangeSpec | undefined {
+  const base = field.range;
+  if (!field.rangeSource || !device) return base;
+  const raw = readPath(device, field.rangeSource);
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return base;
+  const offset = field.rangeMaxOffset ?? 0;
+  const dynamicMax = raw + offset;
+  if (!base) return { min: 0, max: dynamicMax, step: 1 };
+  return { min: base.min, max: dynamicMax, step: base.step };
 }
 
 /// 读 capability.metadata.stageLayout。

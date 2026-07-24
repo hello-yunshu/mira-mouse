@@ -1164,8 +1164,11 @@ fn build_insights(
     let mut insights = Vec::new();
     let groups = build_sample_groups(samples);
     let ai_batches = if local_ai_analysis_enabled {
+        // 充电设备不进入 AI 批次：充电中不显示剩余时间，AI 结果不会被使用。
+        // 全部充电时 ai_batches 为空，predict_batteries 直接返回空 map，不发 IPC 请求。
         devices
             .iter()
+            .filter(|device| !device.latest_charging.unwrap_or(false))
             .map(|device| {
                 (
                     device.key.clone(),

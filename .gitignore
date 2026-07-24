@@ -25,3 +25,4 @@ src-tauri/tauri.test.conf.json
 /artifacts/
 /RillML/
 /mira-log-redesign/
+/working/

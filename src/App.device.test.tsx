@@ -25,6 +25,7 @@ const settings: AppSettings = {
   localAiAnalysisEnabled: false,
   localAiFeatures: { batteryUsage: true },
   batteryHistoryEnabled: true, batteryHistoryRetentionDays: 30, unusualDrainAlerts: false,
+  wakeOnUnlock: false,
   language: 'auto',
 };
 

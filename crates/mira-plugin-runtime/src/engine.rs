@@ -44,6 +44,21 @@ struct FeatureEntry {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct CommandDefinition {
     request: RequestDefinition,
+    /// 声明式协议诊断 payload 策略（spec 14）。
+    /// 未声明时由 Host 的关键词分类器回退处理（保守默认）。
+    #[serde(default)]
+    diagnostics: Option<DiagnosticsDefinition>,
+}
+
+/// 命令级诊断 payload 策略声明。
+/// `payload` 控制 HID 交换日志中 request/response hex 的处理方式：
+/// - "allow"：记录完整 payload（受长度上限限制）
+/// - "mask"：保留协议头，其余字节替换为 [redacted]
+/// - "deny"：完全拒绝记录 payload
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DiagnosticsDefinition {
+    payload: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -646,6 +661,30 @@ impl ProtocolPackage {
         package.compile_lookups();
         package.compile_commands();
         Ok(package)
+    }
+
+    /// 查询命令的声明式诊断 payload 策略。
+    /// 返回 "allow" | "mask" | "deny" | None（未声明，由 Host 回退到关键词分类）。
+    pub fn command_payload_policy(&self, command_id: &str) -> Option<&str> {
+        self.commands
+            .commands
+            .get(command_id)
+            .and_then(|cmd| cmd.diagnostics.as_ref())
+            .and_then(|d| d.payload.as_deref())
+    }
+
+    /// 收集所有命令的声明式诊断 payload 策略，供 Host 预构建查询表。
+    pub fn command_diagnostics_policies(&self) -> HashMap<String, String> {
+        self.commands
+            .commands
+            .iter()
+            .filter_map(|(id, cmd)| {
+                cmd.diagnostics
+                    .as_ref()
+                    .and_then(|d| d.payload.as_ref())
+                    .map(|p| (id.clone(), p.clone()))
+            })
+            .collect()
     }
 
     /// 将 parsers.json 中 derived lookup 的字符串键（"0x01"/"1"）预编译为 u64 键。
@@ -5135,5 +5174,221 @@ mod tests {
             ),
             Ok(_) => panic!("expected error from from_files with empty file set"),
         }
+    }
+
+    // ---- 声明式 diagnostics payload policy 测试（spec 14）----
+
+    #[test]
+    fn command_payload_policy_returns_declared_policy() {
+        let package = build_test_package(
+            r#"{
+                "schemaVersion": 1,
+                "commands": {
+                    "device-info-get": {
+                        "request": {"length": 19, "bytes": [{"offset": 0, "value": "0x00"}]},
+                        "diagnostics": {"payload": "mask"}
+                    },
+                    "onboard-memory-read": {
+                        "request": {"length": 19, "bytes": [{"offset": 0, "value": "0x00"}]},
+                        "diagnostics": {"payload": "deny"}
+                    },
+                    "root-get-feature": {
+                        "request": {"length": 19, "bytes": [{"offset": 0, "value": "0x00"}]},
+                        "diagnostics": {"payload": "allow"}
+                    },
+                    "no-policy-cmd": {
+                        "request": {"length": 19, "bytes": [{"offset": 0, "value": "0x00"}]}
+                    }
+                }
+            }"#,
+            r#"{"schemaVersion": 1, "parsers": {}}"#,
+            r#"{"schemaVersion": 1, "transports": {}}"#,
+            r#"{"schemaVersion": 1, "workflows": {}}"#,
+        );
+        assert_eq!(
+            package.command_payload_policy("device-info-get"),
+            Some("mask")
+        );
+        assert_eq!(
+            package.command_payload_policy("onboard-memory-read"),
+            Some("deny")
+        );
+        assert_eq!(
+            package.command_payload_policy("root-get-feature"),
+            Some("allow")
+        );
+        // 未声明 diagnostics 的命令返回 None
+        assert_eq!(package.command_payload_policy("no-policy-cmd"), None);
+        // 不存在的命令返回 None
+        assert_eq!(package.command_payload_policy("nonexistent"), None);
+    }
+
+    #[test]
+    fn command_diagnostics_policies_collects_all_declared() {
+        let package = build_test_package(
+            r#"{
+                "schemaVersion": 1,
+                "commands": {
+                    "cmd-a": {
+                        "request": {"length": 19, "bytes": [{"offset": 0, "value": "0x00"}]},
+                        "diagnostics": {"payload": "allow"}
+                    },
+                    "cmd-b": {
+                        "request": {"length": 19, "bytes": [{"offset": 0, "value": "0x00"}]},
+                        "diagnostics": {"payload": "deny"}
+                    },
+                    "cmd-c": {
+                        "request": {"length": 19, "bytes": [{"offset": 0, "value": "0x00"}]}
+                    }
+                }
+            }"#,
+            r#"{"schemaVersion": 1, "parsers": {}}"#,
+            r#"{"schemaVersion": 1, "transports": {}}"#,
+            r#"{"schemaVersion": 1, "workflows": {}}"#,
+        );
+        let policies = package.command_diagnostics_policies();
+        assert_eq!(policies.len(), 2);
+        assert_eq!(policies.get("cmd-a"), Some(&"allow".to_string()));
+        assert_eq!(policies.get("cmd-b"), Some(&"deny".to_string()));
+        assert!(!policies.contains_key("cmd-c"));
+    }
+
+    #[test]
+    fn command_without_diagnostics_field_loads_successfully() {
+        // 向后兼容：未声明 diagnostics 的命令仍可正常加载
+        let package = build_test_package(
+            r#"{
+                "schemaVersion": 1,
+                "commands": {
+                    "legacy-cmd": {
+                        "request": {"length": 19, "bytes": [{"offset": 0, "value": "0x00"}]}
+                    }
+                }
+            }"#,
+            r#"{"schemaVersion": 1, "parsers": {}}"#,
+            r#"{"schemaVersion": 1, "transports": {}}"#,
+            r#"{"schemaVersion": 1, "workflows": {}}"#,
+        );
+        assert_eq!(package.command_payload_policy("legacy-cmd"), None);
+    }
+
+    /// `onFailure: continue` 的 optional step 失败时，workflow 应继续执行后续 step，
+    /// 并在 read_statuses 中记录 Failed 状态。
+    ///
+    /// 注：此测试需要 mock HID 设备才能正确验证 `onFailure: continue` 在 step I/O
+    /// 失败时的行为。当前测试基础设施仅提供真实 `HidApi`，无法在不存在的设备路径
+    /// 上打开设备（`take_or_open_device` 在 step 循环前失败）。`onFailure: continue`
+    /// 的行为已通过 Logitech 插件的 `hidpp2-device-read` 工作流（多个 optional step）
+    /// 在集成层面验证。待引入 mock HID 设施后补充单元测试。
+    #[test]
+    #[ignore = "requires mock HID device infrastructure (see comment above)"]
+    fn partial_read_continues_on_optional_step_failure() {
+        let package = build_test_package(
+            r#"{"schemaVersion": 1, "commands": {
+                "test-read-cmd": {
+                    "request": {"length": 7, "bytes": [{"offset": 0, "value": "0x00"}]}
+                }
+            }}"#,
+            r#"{"schemaVersion": 1, "parsers": {
+                "test-parser": {"validWhen": [], "fields": {"value": {"offset": 3, "kind": "u8"}}}
+            }}"#,
+            r#"{"schemaVersion": 1, "transports": {
+                "feature": {"kind": "hid-feature", "reportId": 16, "writeLength": 20, "readLength": 20, "stripReportIdOnRead": true}
+            }}"#,
+            r#"{"schemaVersion": 1, "workflows": {
+                "test-partial-read": {
+                    "transport": "feature",
+                    "steps": [
+                        {"command": "test-read-cmd", "parser": "test-parser", "output": "step-a", "onFailure": "continue"},
+                        {"command": "test-read-cmd", "parser": "test-parser", "output": "step-b", "onFailure": "continue"},
+                        {"command": "test-read-cmd", "parser": "test-parser", "output": "step-c", "onFailure": "continue"}
+                    ]
+                }
+            }, "mutations": {}}"#,
+        );
+        let api = test_hid_api();
+        // 使用不存在的设备路径，所有 step 都会因 I/O 失败
+        let result = package.execute_with_cache(
+            api,
+            "nonexistent-path",
+            "test-partial-read",
+            None,
+            None,
+            None,
+        );
+        // 所有 step 有 onFailure: continue，workflow 应返回 Ok（空 outputs + Failed statuses）
+        assert!(
+            result.is_ok(),
+            "expected Ok with all-failed statuses, got Err: {:?}",
+            result.err()
+        );
+        let (outputs, statuses) = result.unwrap();
+        // 没有成功的 output
+        assert!(
+            outputs.is_empty(),
+            "expected empty outputs, got: {:?}",
+            outputs
+        );
+        // 所有 3 个 output 都应标记为 Failed
+        assert_eq!(statuses.len(), 3, "expected 3 read statuses");
+        assert!(statuses.contains_key("step-a"), "missing status for step-a");
+        assert!(statuses.contains_key("step-b"), "missing status for step-b");
+        assert!(statuses.contains_key("step-c"), "missing status for step-c");
+        // 验证后续 step 确实被执行了（而非在第一步就终止）
+        for (name, status) in &statuses {
+            match status {
+                ReadStatus::Failed(_) => {} // expected
+                other => panic!("expected Failed for {name}, got {other:?}"),
+            }
+        }
+    }
+
+    /// 没有 `onFailure: continue` 的 core step 失败时，整个 workflow 应终止并返回 Err。
+    ///
+    /// 注：同上，需要 mock HID 设备才能真正测试 core step I/O 失败。当前测试仅
+    /// 验证设备打开失败时返回 Err（`take_or_open_device` 错误传播）。
+    #[test]
+    #[ignore = "requires mock HID device infrastructure (see comment above)"]
+    fn partial_read_aborts_on_core_step_failure() {
+        let package = build_test_package(
+            r#"{"schemaVersion": 1, "commands": {
+                "test-read-cmd": {
+                    "request": {"length": 7, "bytes": [{"offset": 0, "value": "0x00"}]}
+                }
+            }}"#,
+            r#"{"schemaVersion": 1, "parsers": {
+                "test-parser": {"validWhen": [], "fields": {"value": {"offset": 3, "kind": "u8"}}}
+            }}"#,
+            r#"{"schemaVersion": 1, "transports": {
+                "feature": {"kind": "hid-feature", "reportId": 16, "writeLength": 20, "readLength": 20, "stripReportIdOnRead": true}
+            }}"#,
+            r#"{"schemaVersion": 1, "workflows": {
+                "test-core-abort": {
+                    "transport": "feature",
+                    "steps": [
+                        {"command": "test-read-cmd", "parser": "test-parser", "output": "core-step"},
+                        {"command": "test-read-cmd", "parser": "test-parser", "output": "optional-step", "onFailure": "continue"}
+                    ]
+                }
+            }, "mutations": {}}"#,
+        );
+        let api = test_hid_api();
+        // 第一个 step 是 core step（无 onFailure: continue），使用不存在的设备路径
+        let result = package.execute_with_cache(
+            api,
+            "nonexistent-path",
+            "test-core-abort",
+            None,
+            None,
+            None,
+        );
+        // core step 失败应导致整个 workflow 返回 Err
+        assert!(
+            result.is_err(),
+            "expected Err from core step failure, got Ok"
+        );
+        let err = result.unwrap_err();
+        // 错误信息应包含 I/O 相关的失败原因
+        assert!(!err.is_empty(), "error message should not be empty");
     }
 }

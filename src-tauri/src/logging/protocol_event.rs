@@ -557,6 +557,30 @@ pub fn classify_command(command: &str) -> PayloadPolicy {
     PayloadPolicy::Allow
 }
 
+/// 根据命令标识符和可选的声明式策略分类 payload 处理策略。
+///
+/// 优先使用插件在 commands.json 中声明的 `diagnostics.payload` 策略（spec 14）。
+/// 未声明时回退到关键词分类器 `classify_command`（保守默认）。
+///
+/// - `declarative_policy`: "allow" | "mask" | "deny" | None
+pub fn classify_command_with_policy(
+    command: &str,
+    declarative_policy: Option<&str>,
+) -> PayloadPolicy {
+    if let Some(policy) = declarative_policy {
+        return match policy {
+            "allow" => PayloadPolicy::Allow,
+            "mask" => PayloadPolicy::MaskSensitive,
+            "deny" => PayloadPolicy::Deny,
+            _ => {
+                // 未知策略值，回退到关键词分类
+                classify_command(command)
+            }
+        };
+    }
+    classify_command(command)
+}
+
 /// 将字节切片格式化为 hex 字符串（空格分隔，大写）。
 pub fn format_hex(bytes: &[u8]) -> String {
     bytes
@@ -768,6 +792,84 @@ mod tests {
         assert_eq!(classify_command("GETMACRO"), PayloadPolicy::Deny);
         assert_eq!(classify_command("GetSerial"), PayloadPolicy::MaskSensitive);
         assert_eq!(classify_command("GETDPI"), PayloadPolicy::Allow);
+    }
+
+    // ---- 声明式 diagnostics policy 测试（spec 14）----
+
+    #[test]
+    fn classify_command_with_policy_overrides_keyword() {
+        // 声明式策略优先于关键词分类
+        assert_eq!(
+            classify_command_with_policy("getMacro", Some("allow")),
+            PayloadPolicy::Allow
+        );
+        assert_eq!(
+            classify_command_with_policy("getSerial", Some("allow")),
+            PayloadPolicy::Allow
+        );
+        assert_eq!(
+            classify_command_with_policy("getDpi", Some("deny")),
+            PayloadPolicy::Deny
+        );
+        assert_eq!(
+            classify_command_with_policy("getBattery", Some("mask")),
+            PayloadPolicy::MaskSensitive
+        );
+    }
+
+    #[test]
+    fn classify_command_with_policy_falls_back_when_none() {
+        // 无声明式策略时回退到关键词分类
+        assert_eq!(
+            classify_command_with_policy("getDpi", None),
+            PayloadPolicy::Allow
+        );
+        assert_eq!(
+            classify_command_with_policy("getMacro", None),
+            PayloadPolicy::Deny
+        );
+        assert_eq!(
+            classify_command_with_policy("getSerial", None),
+            PayloadPolicy::MaskSensitive
+        );
+    }
+
+    #[test]
+    fn classify_command_with_policy_falls_back_on_unknown_policy() {
+        // 未知策略值回退到关键词分类
+        assert_eq!(
+            classify_command_with_policy("getDpi", Some("unknown")),
+            PayloadPolicy::Allow
+        );
+        assert_eq!(
+            classify_command_with_policy("getMacro", Some("unknown")),
+            PayloadPolicy::Deny
+        );
+    }
+
+    #[test]
+    fn classify_command_with_policy_logitech_patterns() {
+        // Logitech 命令的声明式策略场景
+        // device-info-get: 声明 mask（含 unit ID）
+        assert_eq!(
+            classify_command_with_policy("device-info-get", Some("mask")),
+            PayloadPolicy::MaskSensitive
+        );
+        // onboard-memory-read: 声明 deny（含用户配置）
+        assert_eq!(
+            classify_command_with_policy("onboard-memory-read", Some("deny")),
+            PayloadPolicy::Deny
+        );
+        // root-get-feature: 声明 allow（无敏感数据）
+        assert_eq!(
+            classify_command_with_policy("root-get-feature", Some("allow")),
+            PayloadPolicy::Allow
+        );
+        // 未声明的 Logitech 命令回退到关键词分类（none → allow）
+        assert_eq!(
+            classify_command_with_policy("profile-mgmt-get-info", None),
+            PayloadPolicy::Allow
+        );
     }
 
     #[test]

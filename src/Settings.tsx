@@ -55,6 +55,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   batteryHistoryEnabled: true,
   batteryHistoryRetentionDays: 30,
   unusualDrainAlerts: false,
+  wakeOnUnlock: false,
 };
 
 function mergeSettingsSnapshot(
@@ -621,6 +622,9 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
             </SettingRow>
             <SettingRow title={t('settings.trayConnection.label')} hint={t('settings.trayConnection.hint')}>
               <Toggle checked={settings.trayShowConnection} onChange={(v) => update({ trayShowConnection: v })} label={t('settings.trayConnection.label')} />
+            </SettingRow>
+            <SettingRow title={t('settings.wakeOnUnlock.label')} hint={t('settings.wakeOnUnlock.hint')}>
+              <Toggle checked={settings.wakeOnUnlock} onChange={(v) => update({ wakeOnUnlock: v })} label={t('settings.wakeOnUnlock.label')} />
             </SettingRow>
           </section>
 

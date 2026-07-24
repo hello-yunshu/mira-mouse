@@ -2428,7 +2428,7 @@ dependencies = [
 
 [[package]]
 name = "mira-app"
-version = "0.9.16"
+version = "0.9.17"
 dependencies = [
  "auto-launch",
  "chrono",
@@ -2471,7 +2471,7 @@ dependencies = [
 
 [[package]]
 name = "mira-core"
-version = "0.9.16"
+version = "0.9.17"
 dependencies = [
  "serde",
  "serde_json",
@@ -2480,7 +2480,7 @@ dependencies = [
 
 [[package]]
 name = "mira-local-ai"
-version = "0.9.16"
+version = "0.9.17"
 dependencies = [
  "chrono",
  "mira-protocol",
@@ -2490,7 +2490,7 @@ dependencies = [
 
 [[package]]
 name = "mira-plugin-api"
-version = "0.9.16"
+version = "0.9.17"
 dependencies = [
  "semver",
  "serde",
@@ -2500,7 +2500,7 @@ dependencies = [
 
 [[package]]
 name = "mira-plugin-cli"
-version = "0.9.16"
+version = "0.9.17"
 dependencies = [
  "anyhow",
  "clap",
@@ -2518,7 +2518,7 @@ dependencies = [
 
 [[package]]
 name = "mira-plugin-runtime"
-version = "0.9.16"
+version = "0.9.17"
 dependencies = [
  "ed25519-dalek",
  "hex",
@@ -2536,7 +2536,7 @@ dependencies = [
 
 [[package]]
 name = "mira-protocol"
-version = "0.9.16"
+version = "0.9.17"
 dependencies = [
  "serde",
  "serde_json",
@@ -2544,7 +2544,7 @@ dependencies = [
 
 [[package]]
 name = "mira-testkit"
-version = "0.9.16"
+version = "0.9.17"
 dependencies = [
  "mira-plugin-runtime",
 ]
@@ -6113,7 +6113,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.9.16"
+version = "0.9.17"
 dependencies = [
  "anyhow",
  "clap",

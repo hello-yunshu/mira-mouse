@@ -884,7 +884,7 @@ function FieldEditModal({ field, device, writeBusy, onClose, onApply, title, cur
     ? resolveEditKey(field.editLabelKey, { label: fieldLabel, field: fieldLabel })
     : fieldLabel;
   const initialValue = currentValue ?? readPath(device, field.source);
-  const range = resolveFieldRange(field);
+  const range = resolveFieldRange(field, device);
   const options = resolveFieldOptions(field, device);
   const initialDraft = useMemo<unknown>(() => {
     switch (field.editor) {
@@ -1458,7 +1458,16 @@ function StageLayout({ capability, device, writeBusy, runMutation }: {
   const setMutation = resolveMutation(layout.setMutation, device.writableMutations);
   const selectWritable = Boolean(selectMutation);
   const setWritable = Boolean(setMutation);
-  const range: RangeSpec = layout.range;
+  const range: RangeSpec = (() => {
+    if (layout.rangeSource) {
+      const raw = readPath(device, layout.rangeSource);
+      if (typeof raw === 'number' && Number.isFinite(raw)) {
+        const offset = layout.rangeMaxOffset ?? 0;
+        return { min: layout.range.min, max: raw + offset, step: layout.range.step };
+      }
+    }
+    return layout.range;
+  })();
 
   const stageField: PluginField = {
     id: 'stage-value',
