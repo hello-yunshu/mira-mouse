@@ -836,4 +836,18 @@ mod tests {
         let bytes = [0x00, 0x1f, 0xab, 0xff];
         assert_eq!(format_hex(&bytes), "00 1F AB FF");
     }
+
+    #[test]
+    fn mask_payload_continuous_hex_serial_is_redacted() {
+        // 模拟 runtime 传入的连续 hex 格式（hex::encode 输出）
+        // 90 字节 serial payload，前 5 字节协议头后是序列号数据
+        let continuous_hex: String = (0..90u8).map(|b| format!("{b:02x}")).collect();
+        // 先通过 format_hex 转换为空格分隔（host 侧 normalize_hex 逻辑）
+        let bytes = hex::decode(&continuous_hex).unwrap();
+        let spaced_hex = format_hex(&bytes);
+        let result = mask_payload(&spaced_hex, PayloadPolicy::MaskSensitive).unwrap();
+        assert!(result.contains("[redacted:"));
+        // 序列号区域不应完整出现
+        assert!(!result.contains("05 06 07 08 09 0A 0B 0C"));
+    }
 }
