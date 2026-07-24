@@ -30,7 +30,10 @@
     "unknownDevice": "Unknown Device",
     "profilePrefix": "Profile",
     "minute": "{{count}} min",
-    "second": "{{count}} s"
+    "second": "{{count}} s",
+    "collapse": "Collapse",
+    "expand": "Expand",
+    "copy": "Copy"
   },
   "dashboard": {
     "eyebrow": "Mira Mouse",
@@ -91,7 +94,26 @@
     "maximizeWindow": "Maximize window",
     "closeWindow": "Close window",
     "pluginUpdateFound": "Plugin updates found",
-    "pluginUpdateFoundBody": "{{count}} installed plugin(s) have new versions available. Update them in Settings → Plugins."
+    "pluginUpdateFoundBody": "{{count}} installed plugin(s) have new versions available. Update them in Settings → Plugins.",
+    "refreshAll": "Refresh all",
+    "copyAllReadings": "Copy all readings",
+    "copyDeviceDiagnostics": "Copy device diagnostics",
+    "diagnosticsCopyFailed": "Failed to copy diagnostics report",
+    "protocolDiagnostic": "Protocol diagnostic mode",
+    "protocolDiagnosticHint": "Temporarily records HID exchanges for this device (redacted). Auto-stops after 10 minutes. Use for troubleshooting read issues.",
+    "protocolDiagnosticStartFailed": "Failed to start protocol diagnostic",
+    "protocolDiagnosticStopFailed": "Failed to stop protocol diagnostic",
+    "includeProtocolPayload": "Include HID payloads in diagnostics (redacted)",
+    "diagnosticsFormat": "Diagnostics format",
+    "diagnosticsFormatMarkdown": "Markdown",
+    "diagnosticsFormatJson": "JSON",
+    "toggleHexDec": "Toggle hex/decimal",
+    "arrayCount": "{{count}} items",
+    "objectCount": "{{count}} fields",
+    "readOk": "Read successfully",
+    "readSkipped": "Skipped",
+    "readNotSupported": "Not supported",
+    "readFailed": "Read failed"
   },
   "lighting": {
     "hardwareSync": "Hardware sync",

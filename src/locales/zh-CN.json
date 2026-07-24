@@ -30,7 +30,10 @@
     "unknownDevice": "未知设备",
     "profilePrefix": "配置",
     "minute": "{{count}} 分钟",
-    "second": "{{count}} 秒"
+    "second": "{{count}} 秒",
+    "collapse": "收起",
+    "expand": "展开",
+    "copy": "复制"
   },
   "dashboard": {
     "eyebrow": "Mira Mouse",
@@ -91,7 +94,26 @@
     "maximizeWindow": "最大化窗口",
     "closeWindow": "关闭窗口",
     "pluginUpdateFound": "发现插件更新",
-    "pluginUpdateFoundBody": "{{count}} 个已安装插件有新版本可用，请在「设置 → 插件」中更新。"
+    "pluginUpdateFoundBody": "{{count}} 个已安装插件有新版本可用，请在「设置 → 插件」中更新。",
+    "refreshAll": "刷新全部",
+    "copyAllReadings": "复制全部读数",
+    "copyDeviceDiagnostics": "复制设备诊断",
+    "diagnosticsCopyFailed": "复制诊断报告失败",
+    "protocolDiagnostic": "协议诊断模式",
+    "protocolDiagnosticHint": "临时记录该设备的 HID 交换（已脱敏），10 分钟后自动关闭。用于排查读取异常。",
+    "protocolDiagnosticStartFailed": "启动协议诊断失败",
+    "protocolDiagnosticStopFailed": "停止协议诊断失败",
+    "includeProtocolPayload": "在诊断中包含 HID 数据（已脱敏）",
+    "diagnosticsFormat": "诊断格式",
+    "diagnosticsFormatMarkdown": "Markdown",
+    "diagnosticsFormatJson": "JSON",
+    "toggleHexDec": "切换十六进制/十进制",
+    "arrayCount": "{{count}} 项",
+    "objectCount": "{{count}} 字段",
+    "readOk": "读取成功",
+    "readSkipped": "已跳过",
+    "readNotSupported": "不支持",
+    "readFailed": "读取失败"
   },
   "lighting": {
     "hardwareSync": "硬件同步",

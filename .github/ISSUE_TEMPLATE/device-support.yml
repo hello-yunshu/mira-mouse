@@ -3,7 +3,7 @@ description: Submit evidence for one exact model, firmware, and connection
 body:
   - type: markdown
     attributes:
-      value: "Never paste a full serial number or unredacted log. Manufacturer name alone is not a support claim."
+      value: "Never paste a full serial number or unredacted log. Use Mira's 'Copy device diagnostics' button in the device details view to generate an already-redacted report, then paste it below."
   - type: input
     id: model
     attributes: { label: Exact model }
@@ -24,8 +24,33 @@ body:
     id: system
     attributes: { label: Operating system }
     validations: { required: true }
+  - type: input
+    id: mira_version
+    attributes:
+      label: Mira version
+      description: Found in Settings → About. Example: 0.9.12
+    validations: { required: true }
+  - type: input
+    id: plugin_version
+    attributes:
+      label: Plugin version
+      description: Found in Settings → Plugins. Example: mira.razer-viper 0.3.0
+    validations: { required: false }
+  - type: input
+    id: failed_workflow
+    attributes:
+      label: Failed workflow or command
+      description: If known, from the diagnostics report. Example: workflow=razer.read.dpi
+    validations: { required: false }
+  - type: input
+    id: error_kind
+    attributes:
+      label: Error kind
+      description: If known, from the diagnostics report. Example: timeout, busy, checksum-mismatch
+    validations: { required: false }
   - type: textarea
     id: evidence
-    attributes: { label: Evidence and redacted diagnostics }
+    attributes:
+      label: Evidence and redacted diagnostics
+      description: Paste the 'Copy device diagnostics' report here. It is already redacted.
     validations: { required: true }
-
