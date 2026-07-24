@@ -8,7 +8,9 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::protocol::{FeatureIndexCache, HidHandleCache, HidIoStats, OnboardMemoryCache};
+use crate::protocol::{
+    FeatureIndexCache, HidEventSink, HidHandleCache, HidIoStats, OnboardMemoryCache, ReadStatus,
+};
 
 const MAX_COMMANDS: usize = 56;
 const MAX_REPORTS: usize = 128;
@@ -310,6 +312,31 @@ struct WorkflowStep {
     param_candidates: BTreeMap<String, Vec<Value>>,
     #[serde(default)]
     skip_if_zero: Vec<OutputReference>,
+    /// Per-step failure policy. `abort` (default) preserves the historical
+    /// behavior of aborting the whole workflow on the first error. `continue`
+    /// records a `ReadStatus::Failed(reason)` for this step's output and lets
+    /// subsequent steps run — useful for best-effort reads where one missing
+    /// output (e.g. battery on a receiver-less device) must not block others.
+    #[serde(default)]
+    on_failure: StepFailurePolicy,
+}
+
+/// Per-step failure policy declared on `WorkflowStep`.
+///
+/// Brand-neutral: plugins opt into `continue` for best-effort read steps.
+/// The default (`abort`) keeps backward compatibility with workflows written
+/// before this field existed.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StepFailurePolicy {
+    Abort,
+    Continue,
+}
+
+impl Default for StepFailurePolicy {
+    fn default() -> Self {
+        Self::Abort
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -794,13 +821,19 @@ impl ProtocolPackage {
             None,
             None,
             None,
+            None,
         )
+        .map(|(outputs, _)| outputs)
     }
 
     /// Like `execute` but with an optional feature index cache.
     /// When cache is provided, `root-get-feature` steps that hit the cache are
     /// skipped (the cached feature index is inserted directly into outputs).
     /// Misses are populated after execution for future calls.
+    ///
+    /// Returns both the workflow outputs and a per-output `ReadStatus` map.
+    /// The status map records `Ok`/`Skipped`/`Failed` for each executed step,
+    /// letting the host distinguish skipped/failed reads from absent outputs.
     pub fn execute_with_cache(
         &self,
         api: &HidApi,
@@ -809,7 +842,7 @@ impl ProtocolPackage {
         cache: Option<&Mutex<FeatureIndexCache>>,
         cached_handles: Option<&Mutex<HidHandleCache>>,
         hid_io_stats: Option<&Mutex<HidIoStats>>,
-    ) -> Result<BTreeMap<String, Value>, String> {
+    ) -> Result<(BTreeMap<String, Value>, BTreeMap<String, ReadStatus>), String> {
         self.execute_with_initial_outputs(
             api,
             path,
@@ -821,6 +854,34 @@ impl ProtocolPackage {
             cached_handles,
             hid_io_stats,
             None,
+            None,
+        )
+    }
+
+    /// 与 `execute_with_cache` 相同，但接收 HID 交换事件回调。
+    /// 宿主通过实现 `HidEventSink` trait 接收 HID 交换、忙碌重试、响应不匹配等事件。
+    pub fn execute_with_cache_and_sink(
+        &self,
+        api: &HidApi,
+        path: &str,
+        workflow_id: &str,
+        feature_index_cache: Option<&Mutex<FeatureIndexCache>>,
+        cached_handles: Option<&Mutex<HidHandleCache>>,
+        hid_io_stats: Option<&Mutex<HidIoStats>>,
+        sink: &dyn HidEventSink,
+    ) -> Result<(BTreeMap<String, Value>, BTreeMap<String, ReadStatus>), String> {
+        self.execute_with_initial_outputs(
+            api,
+            path,
+            workflow_id,
+            BTreeMap::new(),
+            None,
+            None,
+            feature_index_cache,
+            cached_handles,
+            hid_io_stats,
+            None,
+            Some(sink),
         )
     }
 
@@ -920,6 +981,9 @@ impl ProtocolPackage {
     ///
     /// 与 `execute_with_cache` 类似，但只执行 `projection.selected_steps` 中的 step。
     /// 复用现有的 feature index 缓存、HID 句柄缓存、超时和报告数量限制。
+    ///
+    /// 返回 workflow outputs 和 per-output `ReadStatus` map（与
+    /// `execute_with_cache` 一致），供宿主填充 `DeviceSnapshot.read_statuses`。
     #[allow(clippy::too_many_arguments)]
     pub fn execute_projection_with_cache(
         &self,
@@ -930,7 +994,7 @@ impl ProtocolPackage {
         cache: Option<&Mutex<FeatureIndexCache>>,
         cached_handles: Option<&Mutex<HidHandleCache>>,
         hid_io_stats: Option<&Mutex<HidIoStats>>,
-    ) -> Result<BTreeMap<String, Value>, String> {
+    ) -> Result<(BTreeMap<String, Value>, BTreeMap<String, ReadStatus>), String> {
         self.execute_with_initial_outputs(
             api,
             path,
@@ -942,6 +1006,34 @@ impl ProtocolPackage {
             cached_handles,
             hid_io_stats,
             Some(&projection.selected_steps),
+            None,
+        )
+    }
+
+    /// 与 `execute_projection_with_cache` 相同，但接收 HID 交换事件回调。
+    pub fn execute_projection_with_cache_and_sink(
+        &self,
+        api: &HidApi,
+        path: &str,
+        workflow_id: &str,
+        projection: &WorkflowProjection,
+        cache: Option<&Mutex<FeatureIndexCache>>,
+        cached_handles: Option<&Mutex<HidHandleCache>>,
+        hid_io_stats: Option<&Mutex<HidIoStats>>,
+        sink: &dyn HidEventSink,
+    ) -> Result<(BTreeMap<String, Value>, BTreeMap<String, ReadStatus>), String> {
+        self.execute_with_initial_outputs(
+            api,
+            path,
+            workflow_id,
+            BTreeMap::new(),
+            None,
+            None,
+            cache,
+            cached_handles,
+            hid_io_stats,
+            Some(&projection.selected_steps),
+            Some(sink),
         )
     }
 
@@ -958,7 +1050,8 @@ impl ProtocolPackage {
         cached_handles: Option<&Mutex<HidHandleCache>>,
         hid_io_stats: Option<&Mutex<HidIoStats>>,
         selected_steps: Option<&[usize]>,
-    ) -> Result<BTreeMap<String, Value>, String> {
+        event_sink: Option<&dyn HidEventSink>,
+    ) -> Result<(BTreeMap<String, Value>, BTreeMap<String, ReadStatus>), String> {
         let workflow = self
             .workflows
             .workflows
@@ -976,7 +1069,9 @@ impl ProtocolPackage {
             delay_ms: 0,
             outputs: initial_outputs,
             deadline: merge_deadline(inherited_deadline, timeout_ms)?,
+            event_sink,
         };
+        let mut read_statuses: BTreeMap<String, ReadStatus> = BTreeMap::new();
         for (index, step) in workflow.steps.iter().enumerate() {
             // 工作流投影：只执行选中的 step，跳过未选中的。
             // selected_steps 为 None 时执行所有 step（完整工作流）。
@@ -990,12 +1085,22 @@ impl ProtocolPackage {
                 .iter()
                 .any(|reference| output_reference_is_zero(&session.outputs, reference))
             {
+                read_statuses.insert(step.output.clone(), ReadStatus::Skipped);
                 continue;
             }
-            let params =
-                resolve_workflow_params(&step.params, &session.outputs).map_err(|error| {
-                    format!("workflow {workflow_id} step {} params: {error}", index + 1)
-                })?;
+            let params = match resolve_workflow_params(&step.params, &session.outputs) {
+                Ok(params) => params,
+                Err(error) => {
+                    let reason =
+                        format!("workflow {workflow_id} step {} params: {error}", index + 1);
+                    if step.on_failure == StepFailurePolicy::Continue {
+                        read_statuses.insert(step.output.clone(), ReadStatus::Failed(reason));
+                        continue;
+                    }
+                    // Abort: drop session (closes handle, not returned to cache).
+                    return Err(reason);
+                }
+            };
 
             // Feature index 缓存：root-get-feature 命令命中缓存时跳过 HID 往返
             if step.command == "root-get-feature" {
@@ -1011,6 +1116,7 @@ impl ProtocolPackage {
                             // 恢复完整的 parsed output（含 featureIndex、deviceIndex、connection 等），
                             // 避免后续 step 引用 device.deviceIndex 时报 "missing output reference"。
                             session.outputs.insert(step.output.clone(), cached_output);
+                            read_statuses.insert(step.output.clone(), ReadStatus::Ok);
                             continue;
                         }
                     }
@@ -1018,30 +1124,44 @@ impl ProtocolPackage {
             }
 
             let transport = step.transport.as_deref().unwrap_or(&workflow.transport);
-            let response = execute_with_candidates(
+            let response = match execute_with_candidates(
                 &mut session,
                 transport,
                 &step.command,
                 &params,
                 &step.param_candidates,
-            )
-            .map_err(|error| {
-                format!(
-                    "workflow {workflow_id} step {} command {}: {error}",
-                    index + 1,
-                    step.command
-                )
-            })?;
-            let parsed = self
-                .parse_response(&step.parser, &response)
-                .map_err(|error| {
-                    format!(
+            ) {
+                Ok(response) => response,
+                Err(error) => {
+                    let reason = format!(
+                        "workflow {workflow_id} step {} command {}: {error}",
+                        index + 1,
+                        step.command
+                    );
+                    if step.on_failure == StepFailurePolicy::Continue {
+                        read_statuses.insert(step.output.clone(), ReadStatus::Failed(reason));
+                        continue;
+                    }
+                    return Err(reason);
+                }
+            };
+            let parsed = match self.parse_response(&step.parser, &response) {
+                Ok(parsed) => parsed,
+                Err(error) => {
+                    let reason = format!(
                         "workflow {workflow_id} step {} parser {}: {error}",
                         index + 1,
                         step.parser
-                    )
-                })?;
+                    );
+                    if step.on_failure == StepFailurePolicy::Continue {
+                        read_statuses.insert(step.output.clone(), ReadStatus::Failed(reason));
+                        continue;
+                    }
+                    return Err(reason);
+                }
+            };
             session.outputs.insert(step.output.clone(), parsed);
+            read_statuses.insert(step.output.clone(), ReadStatus::Ok);
 
             // 缓存 root-get-feature 的完整 parsed output 供后续轮询使用。
             // 存储 complete Value（含 deviceIndex、connection 等）而非仅 featureIndex，
@@ -1076,7 +1196,7 @@ impl ProtocolPackage {
             }
         }
         return_device(path, device, cached_handles, hid_io_stats);
-        Ok(outputs)
+        Ok((outputs, read_statuses))
     }
 
     pub fn mutation_ids(
@@ -1107,7 +1227,7 @@ impl ProtocolPackage {
         cached_handles: Option<&Mutex<HidHandleCache>>,
         hid_io_stats: Option<&Mutex<HidIoStats>>,
     ) -> Result<(BTreeMap<String, Value>, Vec<u8>), String> {
-        let outputs = self.execute_with_initial_outputs(
+        let (outputs, _) = self.execute_with_initial_outputs(
             api,
             path,
             &definition.read_workflow,
@@ -1117,6 +1237,7 @@ impl ProtocolPackage {
             None,
             cached_handles,
             hid_io_stats,
+            None,
             None,
         )?;
         let size = output_value(&outputs, &definition.size)
@@ -1316,7 +1437,7 @@ impl ProtocolPackage {
         // 三阶段共享同一 deadline，而非各自独立计时（否则总时间可达 3×timeout）。
         let tx_deadline = timeout_deadline(transaction.timeout_ms)?;
         let snapshot_outputs = if let Some(workflow) = &transaction.snapshot_workflow {
-            self.execute_with_initial_outputs(
+            let (outputs, _) = self.execute_with_initial_outputs(
                 api,
                 path,
                 workflow,
@@ -1327,7 +1448,9 @@ impl ProtocolPackage {
                 cached_handles,
                 hid_io_stats,
                 None,
-            )?
+                None,
+            )?;
+            outputs
         } else {
             ctx_outputs.clone()
         };
@@ -1358,8 +1481,9 @@ impl ProtocolPackage {
                         cached_handles,
                         hid_io_stats,
                         None,
+                        None,
                     ) {
-                        Ok(_) => Err(format!(
+                        Ok((_outputs, _statuses)) => Err(format!(
                             "写入 {mutation_id} 失败：{error}。事务回滚已执行（回滚工作流：{rollback_workflow}），设备已恢复至写入前状态。"
                         )),
                         Err(rollback_error) => Err(format!(
@@ -1491,6 +1615,7 @@ impl ProtocolPackage {
                 outputs
             },
             deadline: merge_deadline(inherited_deadline, mutation.timeout_ms)?,
+            event_sink: None,
         };
         // mutation 自身的 timeout 与事务继承的 deadline 已在 session.deadline 取 min。
         // 这里不再 fallback 到事务 timeout——否则会覆盖 transport 自身更严格的 timeout。
@@ -1758,17 +1883,30 @@ impl ProtocolPackage {
             apply_byte_definition(id, byte, params, &mut report)?;
         }
         if let Some(checksum) = &command.request.checksum {
-            if checksum.algorithm != "ff-minus-sum8"
+            let valid_algorithm = matches!(checksum.algorithm.as_str(), "ff-minus-sum8" | "xor8");
+            if !valid_algorithm
                 || checksum.start > checksum.end_exclusive
                 || checksum.end_exclusive > report.len()
                 || checksum.write_offset >= report.len()
             {
                 return Err(format!("invalid checksum declaration for {id}"));
             }
-            let sum = report[checksum.start..checksum.end_exclusive]
-                .iter()
-                .fold(0u8, |sum, byte| sum.wrapping_add(*byte));
-            report[checksum.write_offset] = 0xFF - sum;
+            match checksum.algorithm.as_str() {
+                "ff-minus-sum8" => {
+                    let sum = report[checksum.start..checksum.end_exclusive]
+                        .iter()
+                        .fold(0u8, |sum, byte| sum.wrapping_add(*byte));
+                    report[checksum.write_offset] = 0xFF - sum;
+                }
+                "xor8" => {
+                    let mut x: u8 = 0;
+                    for i in checksum.start..checksum.end_exclusive {
+                        x ^= report[i];
+                    }
+                    report[checksum.write_offset] = x;
+                }
+                _ => {}
+            }
         }
         Ok(report)
     }
@@ -2062,6 +2200,8 @@ struct Session<'a> {
     delay_ms: u64,
     outputs: BTreeMap<String, Value>,
     deadline: Option<Instant>,
+    /// HID 交换事件回调（可选）。None 时使用 NullHidEventSink。
+    event_sink: Option<&'a dyn HidEventSink>,
 }
 
 impl Session<'_> {
@@ -2094,7 +2234,7 @@ impl Session<'_> {
         let result = match transport {
             TransportDefinition::HidFeature { .. } => {
                 let report = self.package.build_command(command_id, params, base)?;
-                self.feature_exchange(transport_id, &report, expect_response)
+                self.feature_exchange(transport_id, command_id, &report, expect_response)
             }
             TransportDefinition::HidFeatureProxy {
                 base_transport,
@@ -2136,7 +2276,7 @@ impl Session<'_> {
                 let start = self
                     .package
                     .build_command(&start_command, &BTreeMap::new(), None)?;
-                self.feature_exchange(&base_transport, &start, false)?;
+                self.feature_exchange(&base_transport, &start_command, &start, false)?;
                 let status = self.poll_until(
                     &base_transport,
                     &poll_command,
@@ -2156,8 +2296,8 @@ impl Session<'_> {
                 let set_length =
                     self.package
                         .build_command(&set_length_command, &length_params, None)?;
-                self.feature_exchange(&base_transport, &set_length, true)?;
-                self.feature_exchange(&base_transport, &inner, expect_response)?;
+                self.feature_exchange(&base_transport, &set_length_command, &set_length, true)?;
+                self.feature_exchange(&base_transport, command_id, &inner, expect_response)?;
                 if !expect_response {
                     self.poll_until(
                         &base_transport,
@@ -2178,15 +2318,15 @@ impl Session<'_> {
                 let read = self
                     .package
                     .build_command(&read_command, &BTreeMap::new(), None)?;
-                self.feature_exchange(&base_transport, &read, true)
+                self.feature_exchange(&base_transport, &read_command, &read, true)
             }
             TransportDefinition::HidOutputInput { .. } => {
                 let report = self.package.build_command(command_id, params, base)?;
-                self.output_input_exchange(transport_id, &report, expect_response)
+                self.output_input_exchange(transport_id, command_id, &report, expect_response)
             }
             TransportDefinition::HidRace { .. } => {
                 let race_payload = self.package.build_command(command_id, params, base)?;
-                self.race_exchange(transport_id, &race_payload, expect_response)
+                self.race_exchange(transport_id, command_id, &race_payload, expect_response)
             }
         };
         self.deadline = previous_deadline;
@@ -2206,10 +2346,16 @@ impl Session<'_> {
             .build_command(command, &BTreeMap::new(), None)?;
         // Cap attempts at 32 to bound worst-case latency. Plugin authors who
         // declare a higher value will still get at most 32 polls.
-        for _ in 0..attempts.min(32) {
-            let response = self.feature_exchange(transport, &report, true)?;
+        for attempt in 0..attempts.min(32) {
+            let response = self.feature_exchange(transport, command, &report, true)?;
             if response.get(condition.offset) == Some(&condition.eq) {
                 return Ok(response);
+            }
+            // 条件未满足：设备忙碌，通知宿主记录 hid-busy-retry 事件。
+            if attempt > 0 {
+                if let Some(sink) = self.event_sink {
+                    sink.on_hid_busy_retry(transport, command, attempt + 1);
+                }
             }
             self.delay(delay_ms)?;
         }
@@ -2219,9 +2365,62 @@ impl Session<'_> {
         ))
     }
 
+    /// 验证响应校验和。返回 `(expected, actual)` 字节对，`None` 表示无法验证
+    /// （命令未声明 checksum 或响应长度不足）。
+    ///
+    /// 复用请求的 `ChecksumDefinition`：雷蛇协议中请求和响应的校验和算法与
+    /// 位置通常相同（`start..end_exclusive` 范围计算，`write_offset` 位置存储）。
+    fn verify_response_checksum(&self, command_id: &str, response: &[u8]) -> Option<(u8, u8)> {
+        let command = self.package.commands.commands.get(command_id)?;
+        let checksum = command.request.checksum.as_ref()?;
+        if checksum.end_exclusive > response.len() || checksum.write_offset >= response.len() {
+            return None;
+        }
+        match checksum.algorithm.as_str() {
+            "xor8" => {
+                let mut x: u8 = 0;
+                for i in checksum.start..checksum.end_exclusive {
+                    x ^= response[i];
+                }
+                Some((x, response[checksum.write_offset]))
+            }
+            "ff-minus-sum8" => {
+                let sum = response[checksum.start..checksum.end_exclusive]
+                    .iter()
+                    .fold(0u8, |sum, byte| sum.wrapping_add(*byte));
+                Some((0xFF - sum, response[checksum.write_offset]))
+            }
+            _ => None,
+        }
+    }
+
+    /// 计算校验和验证结果并在失败时发射 `on_hid_checksum_failed` 事件。
+    /// 返回 `Some(bool)` 表示已验证（true=通过，false=失败），`None` 表示无法验证。
+    fn check_checksum_and_emit(
+        &self,
+        transport_id: &str,
+        command_id: &str,
+        response: &[u8],
+    ) -> Option<bool> {
+        let (expected, actual) = self.verify_response_checksum(command_id, response)?;
+        let valid = expected == actual;
+        if !valid {
+            if let Some(sink) = self.event_sink {
+                sink.on_hid_checksum_failed(
+                    transport_id,
+                    command_id,
+                    &hex::encode(&[expected]),
+                    &hex::encode(&[actual]),
+                );
+            }
+        }
+        Some(valid)
+    }
+
     fn feature_exchange(
         &mut self,
         transport_id: &str,
+        command_id: &str,
         payload: &[u8],
         expect_response: bool,
     ) -> Result<Vec<u8>, String> {
@@ -2247,10 +2446,23 @@ impl Session<'_> {
         let mut report = Vec::with_capacity(*write_length);
         report.push(*report_id);
         report.extend_from_slice(payload);
+        let exchange_start = Instant::now();
         self.device
             .send_feature_report(&report)
             .map_err(|error| format!("send feature report: {error}"))?;
         if !expect_response {
+            let duration_ms = exchange_start.elapsed().as_millis() as u64;
+            if let Some(sink) = self.event_sink {
+                sink.on_hid_exchange(
+                    transport_id,
+                    command_id,
+                    &hex::encode(payload),
+                    "",
+                    duration_ms,
+                    0,
+                    None,
+                );
+            }
             return Ok(Vec::new());
         }
         self.delay(*feature_delay_ms)?;
@@ -2264,12 +2476,26 @@ impl Session<'_> {
         if *strip_report_id_on_read && !response.is_empty() {
             response.remove(0);
         }
+        let duration_ms = exchange_start.elapsed().as_millis() as u64;
+        let checksum_valid = self.check_checksum_and_emit(transport_id, command_id, &response);
+        if let Some(sink) = self.event_sink {
+            sink.on_hid_exchange(
+                transport_id,
+                command_id,
+                &hex::encode(payload),
+                &hex::encode(&response),
+                duration_ms,
+                0,
+                checksum_valid,
+            );
+        }
         Ok(response)
     }
 
     fn output_input_exchange(
         &mut self,
         transport_id: &str,
+        command_id: &str,
         payload: &[u8],
         expect_response: bool,
     ) -> Result<Vec<u8>, String> {
@@ -2296,6 +2522,7 @@ impl Session<'_> {
         let mut report = Vec::with_capacity(*write_length);
         report.push(*report_id);
         report.extend_from_slice(payload);
+        let exchange_start = Instant::now();
         let written = write_output_report_with_fallback(&self.device, &report)
             .map_err(|error| format!("send output report: {error}"))?;
         if written != report.len() {
@@ -2305,6 +2532,18 @@ impl Session<'_> {
             ));
         }
         if !expect_response {
+            let duration_ms = exchange_start.elapsed().as_millis() as u64;
+            if let Some(sink) = self.event_sink {
+                sink.on_hid_exchange(
+                    transport_id,
+                    command_id,
+                    &hex::encode(payload),
+                    "",
+                    duration_ms,
+                    0,
+                    None,
+                );
+            }
             return Ok(Vec::new());
         }
 
@@ -2351,7 +2590,32 @@ impl Session<'_> {
                 return Err(format!("HID++ 2.0 error 0x{:02X}", response[4]));
             }
             if response.get(..3) == payload.get(..3) {
+                let duration_ms = exchange_start.elapsed().as_millis() as u64;
+                let checksum_valid =
+                    self.check_checksum_and_emit(transport_id, command_id, &response);
+                if let Some(sink) = self.event_sink {
+                    sink.on_hid_exchange(
+                        transport_id,
+                        command_id,
+                        &hex::encode(payload),
+                        &hex::encode(&response),
+                        duration_ms,
+                        0,
+                        checksum_valid,
+                    );
+                }
                 return Ok(response);
+            }
+            // Response mismatch: the response's first 3 bytes (device index,
+            // feature index, function ID) don't match the request. Notify the
+            // sink so the host can record a hid-response-mismatch event.
+            if let Some(sink) = self.event_sink {
+                sink.on_hid_response_mismatch(
+                    transport_id,
+                    command_id,
+                    &hex::encode(payload.get(..3).unwrap_or(&[])),
+                    &hex::encode(response.get(..3).unwrap_or(&[])),
+                );
             }
         }
         Err("timed out waiting for matching input report".into())
@@ -2363,6 +2627,7 @@ impl Session<'_> {
     fn race_exchange(
         &mut self,
         transport_id: &str,
+        command_id: &str,
         race_payload: &[u8],
         expect_response: bool,
     ) -> Result<Vec<u8>, String> {
@@ -2403,6 +2668,7 @@ impl Session<'_> {
         report.push(*race_type);
         report.extend_from_slice(race_payload);
         report.resize(*write_length, 0);
+        let exchange_start = Instant::now();
         let written = self
             .device
             .write(&report)
@@ -2414,6 +2680,18 @@ impl Session<'_> {
             ));
         }
         if !expect_response {
+            let duration_ms = exchange_start.elapsed().as_millis() as u64;
+            if let Some(sink) = self.event_sink {
+                sink.on_hid_exchange(
+                    transport_id,
+                    command_id,
+                    &hex::encode(race_payload),
+                    "",
+                    duration_ms,
+                    0,
+                    None,
+                );
+            }
             return Ok(Vec::new());
         }
         for _ in 0..*read_retries {
@@ -2451,7 +2729,35 @@ impl Session<'_> {
                 response.remove(0);
             }
             if !race_response_matches_request(&response, race_payload, *strip_report_id_on_read) {
+                // RACE response command ID doesn't match the request. Notify
+                // the sink so the host can record a hid-response-mismatch event.
+                if let Some(sink) = self.event_sink {
+                    let request_id = race_payload.get(4..6).unwrap_or(&[]);
+                    let response_id_offset = if *strip_report_id_on_read { 6 } else { 7 };
+                    let response_id = response
+                        .get(response_id_offset..response_id_offset + 2)
+                        .unwrap_or(&[]);
+                    sink.on_hid_response_mismatch(
+                        transport_id,
+                        command_id,
+                        &hex::encode(request_id),
+                        &hex::encode(response_id),
+                    );
+                }
                 continue;
+            }
+            let duration_ms = exchange_start.elapsed().as_millis() as u64;
+            let checksum_valid = self.check_checksum_and_emit(transport_id, command_id, &response);
+            if let Some(sink) = self.event_sink {
+                sink.on_hid_exchange(
+                    transport_id,
+                    command_id,
+                    &hex::encode(race_payload),
+                    &hex::encode(&response),
+                    duration_ms,
+                    0,
+                    checksum_valid,
+                );
             }
             return Ok(response);
         }
@@ -3655,6 +3961,113 @@ mod tests {
         assert!(!is_memory_checksum_mismatch(
             "memory workflow returned an invalid size"
         ));
+    }
+
+    #[test]
+    fn xor8_request_checksum_is_computed_correctly() {
+        let commands = r#"{
+            "schemaVersion": 1,
+            "commands": {
+                "xor8-cmd": {
+                    "request": {
+                        "length": 6,
+                        "base": "zero",
+                        "bytes": [
+                            {"offset": 0, "value": "0x01"},
+                            {"offset": 1, "value": "0x02"},
+                            {"offset": 2, "value": "0x03"},
+                            {"offset": 3, "value": "0x04"}
+                        ],
+                        "checksum": {
+                            "algorithm": "xor8",
+                            "start": 0,
+                            "endExclusive": 4,
+                            "writeOffset": 5
+                        }
+                    }
+                }
+            }
+        }"#;
+        let package = build_test_package(
+            commands,
+            r#"{"schemaVersion": 1, "parsers": {}}"#,
+            r#"{"schemaVersion": 1, "transports": {}}"#,
+            r#"{"schemaVersion": 1, "workflows": {}, "mutations": {}}"#,
+        );
+        let report = package
+            .build_command("xor8-cmd", &BTreeMap::new(), None)
+            .unwrap();
+        // 0x01 ^ 0x02 ^ 0x03 ^ 0x04 = 0x04, written to offset 5.
+        assert_eq!(report, vec![0x01, 0x02, 0x03, 0x04, 0x00, 0x04]);
+    }
+
+    #[test]
+    fn ff_minus_sum8_request_checksum_still_supported() {
+        let commands = r#"{
+            "schemaVersion": 1,
+            "commands": {
+                "sum8-cmd": {
+                    "request": {
+                        "length": 4,
+                        "base": "zero",
+                        "bytes": [
+                            {"offset": 0, "value": "0x01"},
+                            {"offset": 1, "value": "0x02"}
+                        ],
+                        "checksum": {
+                            "algorithm": "ff-minus-sum8",
+                            "start": 0,
+                            "endExclusive": 2,
+                            "writeOffset": 3
+                        }
+                    }
+                }
+            }
+        }"#;
+        let package = build_test_package(
+            commands,
+            r#"{"schemaVersion": 1, "parsers": {}}"#,
+            r#"{"schemaVersion": 1, "transports": {}}"#,
+            r#"{"schemaVersion": 1, "workflows": {}, "mutations": {}}"#,
+        );
+        let report = package
+            .build_command("sum8-cmd", &BTreeMap::new(), None)
+            .unwrap();
+        // 0xFF - (0x01 + 0x02) = 0xFC, written to offset 3.
+        assert_eq!(report, vec![0x01, 0x02, 0x00, 0xFC]);
+    }
+
+    #[test]
+    fn unknown_request_checksum_algorithm_is_rejected() {
+        let commands = r#"{
+            "schemaVersion": 1,
+            "commands": {
+                "bad-cmd": {
+                    "request": {
+                        "length": 4,
+                        "base": "zero",
+                        "bytes": [],
+                        "checksum": {
+                            "algorithm": "crc32",
+                            "start": 0,
+                            "endExclusive": 2,
+                            "writeOffset": 3
+                        }
+                    }
+                }
+            }
+        }"#;
+        let package = build_test_package(
+            commands,
+            r#"{"schemaVersion": 1, "parsers": {}}"#,
+            r#"{"schemaVersion": 1, "transports": {}}"#,
+            r#"{"schemaVersion": 1, "workflows": {}, "mutations": {}}"#,
+        );
+        // compile_commands 在加载时预构建无 param 命令并忽略错误，
+        // 因此缓存为空；运行时 build_command 重新构建并返回错误。
+        assert!(package
+            .build_command("bad-cmd", &BTreeMap::new(), None)
+            .is_err());
     }
 
     #[test]

@@ -86,6 +86,36 @@ pub async fn log_stop_diagnostic_session(state: State<'_, LogService>) -> Result
     Ok(())
 }
 
+/// 开始协议诊断会话：授权对指定设备临时记录 HID payload（request/response hex）。
+///
+/// - `device_key`: 目标设备 key（VID:PID:interface）。只对此设备的 HID 交换记录 payload。
+/// - `minutes`: 持续分钟数，clamp 到 [1, 30]。
+/// - `auto_expire`: true 时启动后台到期线程，到期自动停止。
+///
+/// 协议诊断模式不影响日志采集等级；前端应同时调用 `log_start_diagnostic_session`
+/// 提升到 Trace 才能使 `hid-feature-exchange` 事件被采集。
+/// payload 经过 command-aware masking（serial 脱敏、macro 拒绝等），见
+/// `protocol_event::classify_command` / `mask_payload`。
+#[tauri::command]
+pub async fn log_start_protocol_diagnostic(
+    device_key: String,
+    minutes: Option<i64>,
+    auto_expire: Option<bool>,
+    state: State<'_, LogService>,
+) -> Result<(), String> {
+    let minutes = minutes.unwrap_or(DEFAULT_DIAGNOSTIC_MINUTES);
+    let auto_expire = auto_expire.unwrap_or(true);
+    state.start_protocol_diagnostic(device_key, minutes, auto_expire);
+    Ok(())
+}
+
+/// 手动停止协议诊断会话。
+#[tauri::command]
+pub async fn log_stop_protocol_diagnostic(state: State<'_, LogService>) -> Result<(), String> {
+    state.stop_protocol_diagnostic();
+    Ok(())
+}
+
 /// 前端写入少量经过筛选的日志。
 /// 用于记录前端关键事件与异常，受频率与长度限制。
 /// 失败静默返回 Ok，避免前端日志命令形成递归。
@@ -194,6 +224,223 @@ pub async fn log_open_dir(state: State<'_, LogService>) -> Result<(), String> {
     open_path_in_file_manager(&dir).map_err(|e| format!("open dir failed: {e}"))
 }
 
+/// 设备定向诊断导出输入。
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceDiagnosticsInput {
+    /// 插件 ID（必填，用于日志筛选）。
+    pub plugin_id: String,
+    /// 设备 key（VID:PID:interface 格式，用于日志筛选）。
+    pub device_key: String,
+    /// 设备 model（可选，用于日志筛选，缩小到特定型号）。
+    pub model: Option<String>,
+    /// 会话 ID（可选，用于日志筛选，缩小到当前会话）。
+    pub session_id: Option<String>,
+    /// 关联 ID（可选，缩小到特定读取会话）。
+    pub correlation_id: Option<String>,
+    /// 当前"全部读数"的 JSON 表示（前端从快照传入）。
+    pub readings_json: String,
+    /// 当前 read statuses 的 JSON 表示（前端从快照传入）。
+    pub read_statuses_json: String,
+    /// 是否包含临时协议诊断（HID payload）。仅在协议诊断模式启用时有效。
+    #[serde(default)]
+    pub include_protocol_payload: bool,
+    /// 输出格式："markdown" 或 "json"。
+    #[serde(default = "default_device_diagnostics_format")]
+    pub format: String,
+}
+
+fn default_device_diagnostics_format() -> String {
+    "markdown".into()
+}
+
+/// 设备定向诊断导出结果。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceDiagnosticsOutcome {
+    pub path: String,
+    pub bytes_written: u64,
+    pub log_entry_count: usize,
+    /// 报告内容（用于前端复制到剪贴板）。
+    pub content: String,
+}
+
+/// 导出设备定向诊断报告。
+///
+/// 对齐 spec 13.3：以 pluginId、deviceKey、correlationId 筛选日志，
+/// 包含当前"全部读数"和 read statuses，自动脱敏，输出 Markdown 或 JSON。
+/// 不复制其他设备和本地 AI 的无关日志。
+///
+/// `path` 为空字符串时跳过文件写入，仅返回 `content` 供前端复制到剪贴板。
+#[tauri::command]
+pub async fn log_export_device_diagnostics(
+    input: DeviceDiagnosticsInput,
+    path: String,
+    state: State<'_, LogService>,
+) -> Result<DeviceDiagnosticsOutcome, String> {
+    use crate::logging::model::FieldValue;
+    use std::collections::BTreeMap;
+
+    // 构建日志查询：按 pluginId + deviceKey 精确筛选，可选 model 和 sessionId 收窄范围。
+    let mut fields_exact = BTreeMap::new();
+    fields_exact.insert(
+        "pluginId".into(),
+        FieldValue::from(input.plugin_id.as_str()),
+    );
+    fields_exact.insert(
+        "deviceKey".into(),
+        FieldValue::from(input.device_key.as_str()),
+    );
+    if let Some(ref model) = input.model {
+        if !model.is_empty() {
+            fields_exact.insert("model".into(), FieldValue::from(model.as_str()));
+        }
+    }
+
+    let query = LogQuery {
+        source: None,
+        min_level: Some(LogLevel::Warn),
+        keyword: None,
+        session_id: input.session_id.clone(),
+        from: None,
+        to: None,
+        before_id: None,
+        limit: Some(500),
+        correlation_id: input.correlation_id.clone(),
+        target_prefix: None,
+        fields_exact: Some(fields_exact),
+    };
+
+    let entries = state.query_filtered_entries(&query);
+
+    // 如果不包含协议诊断，过滤掉含 requestHex/responseHex 的条目。
+    let filtered_entries: Vec<_> = if input.include_protocol_payload {
+        entries
+    } else {
+        entries
+            .into_iter()
+            .filter(|e| {
+                !e.fields.contains_key("requestHex") && !e.fields.contains_key("responseHex")
+            })
+            .collect()
+    };
+
+    let log_count = filtered_entries.len();
+
+    // 组装报告内容。
+    let content = match input.format.as_str() {
+        "json" => build_device_diagnostics_json(&input, &filtered_entries),
+        _ => build_device_diagnostics_markdown(&input, &filtered_entries),
+    };
+
+    let bytes_written = content.len() as u64;
+
+    // path 为空时跳过文件写入（前端仅复制到剪贴板）。
+    if !path.is_empty() {
+        std::fs::write(&path, &content)
+            .map_err(|e| format!("write device diagnostics failed: {e}"))?;
+    }
+
+    Ok(DeviceDiagnosticsOutcome {
+        path,
+        bytes_written,
+        log_entry_count: log_count,
+        content,
+    })
+}
+
+fn build_device_diagnostics_markdown(
+    input: &DeviceDiagnosticsInput,
+    entries: &[crate::logging::model::LogEntry],
+) -> String {
+    let mut md = String::new();
+    md.push_str("# Mira 设备诊断报告\n\n");
+    md.push_str(&format!("- **插件**: `{}`\n", input.plugin_id));
+    md.push_str(&format!("- **设备 Key**: `{}`\n", input.device_key));
+    if let Some(ref cid) = input.correlation_id {
+        md.push_str(&format!("- **关联 ID**: `{}`\n", cid));
+    }
+    md.push_str(&format!(
+        "- **生成时间**: {}\n",
+        chrono::Utc::now().to_rfc3339()
+    ));
+    md.push_str(&format!(
+        "- **包含协议诊断**: {}\n",
+        if input.include_protocol_payload {
+            "是"
+        } else {
+            "否"
+        }
+    ));
+    md.push('\n');
+
+    // 全部读数
+    md.push_str("## 全部读数\n\n");
+    md.push_str("```json\n");
+    md.push_str(&input.readings_json);
+    md.push_str("\n```\n\n");
+
+    // Read Statuses
+    md.push_str("## 读取状态\n\n");
+    md.push_str("```json\n");
+    md.push_str(&input.read_statuses_json);
+    md.push_str("\n```\n\n");
+
+    // 相关日志
+    md.push_str("## 相关日志（Warn 及以上）\n\n");
+    if entries.is_empty() {
+        md.push_str("无相关日志。\n\n");
+    } else {
+        for entry in entries {
+            md.push_str(&format!(
+                "### [{}] {} — {}\n\n",
+                entry.level, entry.timestamp, entry.target
+            ));
+            md.push_str(&entry.message);
+            md.push('\n');
+            if !entry.fields.is_empty() {
+                md.push_str("\n| 字段 | 值 |\n| --- | --- |\n");
+                for (k, v) in &entry.fields {
+                    let value_json = serde_json::to_value(v).unwrap_or(serde_json::Value::Null);
+                    md.push_str(&format!("| {} | {} |\n", k, value_json));
+                }
+            }
+            md.push('\n');
+        }
+    }
+
+    md.push_str("---\n*此报告由 Mira 自动生成，已自动脱敏。*\n");
+    md
+}
+
+fn build_device_diagnostics_json(
+    input: &DeviceDiagnosticsInput,
+    entries: &[crate::logging::model::LogEntry],
+) -> String {
+    use serde_json::json;
+    let report = json!({
+        "type": "mira-device-diagnostics",
+        "generatedAt": chrono::Utc::now().to_rfc3339(),
+        "pluginId": input.plugin_id,
+        "deviceKey": input.device_key,
+        "correlationId": input.correlation_id,
+        "includeProtocolPayload": input.include_protocol_payload,
+        "readings": serde_json::from_str::<serde_json::Value>(&input.readings_json).unwrap_or(serde_json::Value::Null),
+        "readStatuses": serde_json::from_str::<serde_json::Value>(&input.read_statuses_json).unwrap_or(serde_json::Value::Null),
+        "logs": entries.iter().map(|e| {
+            serde_json::json!({
+                "timestamp": e.timestamp,
+                "level": e.level,
+                "target": e.target,
+                "message": e.message,
+                "correlationId": e.correlation_id,
+                "fields": e.fields,
+            })
+        }).collect::<Vec<_>>(),
+    });
+    serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".into())
+}
+
 /// 导出结果，简化为可序列化 DTO。
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -239,6 +486,7 @@ fn open_path_in_file_manager(path: &std::path::Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::logging::model::{Fields, LogEntry, LogSource};
 
     #[test]
     fn open_path_returns_unsupported_on_unknown_platform() {
@@ -259,5 +507,168 @@ mod tests {
         assert_eq!(json["entryCount"], 42);
         assert_eq!(json["bytesWritten"], 1024);
         assert_eq!(json["truncated"], false);
+    }
+
+    #[test]
+    fn device_diagnostics_input_deserializes_camel_case() {
+        let json = r#"{
+            "pluginId": "mira.razer-chroma",
+            "deviceKey": "0001:0002:00",
+            "correlationId": "device-abc123",
+            "readingsJson": "{}",
+            "readStatusesJson": "{}",
+            "includeProtocolPayload": true,
+            "format": "json"
+        }"#;
+        let input: DeviceDiagnosticsInput = serde_json::from_str(json).unwrap();
+        assert_eq!(input.plugin_id, "mira.razer-chroma");
+        assert_eq!(input.device_key, "0001:0002:00");
+        assert_eq!(input.correlation_id.as_deref(), Some("device-abc123"));
+        assert!(input.include_protocol_payload);
+        assert_eq!(input.format, "json");
+    }
+
+    #[test]
+    fn device_diagnostics_input_defaults_format_to_markdown() {
+        let json = r#"{
+            "pluginId": "p",
+            "deviceKey": "k",
+            "readingsJson": "{}",
+            "readStatusesJson": "{}"
+        }"#;
+        let input: DeviceDiagnosticsInput = serde_json::from_str(json).unwrap();
+        assert_eq!(input.format, "markdown");
+        assert!(!input.include_protocol_payload);
+    }
+
+    #[test]
+    fn device_diagnostics_outcome_serializes_camel_case() {
+        let outcome = DeviceDiagnosticsOutcome {
+            path: "/tmp/diag.md".into(),
+            bytes_written: 100,
+            log_entry_count: 3,
+            content: "# report".into(),
+        };
+        let json = serde_json::to_value(&outcome).unwrap();
+        assert_eq!(json["path"], "/tmp/diag.md");
+        assert_eq!(json["bytesWritten"], 100);
+        assert_eq!(json["logEntryCount"], 3);
+        assert_eq!(json["content"], "# report");
+    }
+
+    fn make_log_entry(level: LogLevel, target: &str, fields: Fields) -> LogEntry {
+        LogEntry {
+            id: 1,
+            timestamp: "2026-07-24T10:00:00+08:00".into(),
+            level,
+            source: LogSource::Plugin,
+            target: target.into(),
+            message: "test message".into(),
+            session_id: "s1".into(),
+            correlation_id: Some("device-abc".into()),
+            fields,
+        }
+    }
+
+    #[test]
+    fn markdown_report_includes_readings_and_statuses() {
+        let input = DeviceDiagnosticsInput {
+            plugin_id: "mira.razer".into(),
+            device_key: "0001:0002:00".into(),
+            model: None,
+            session_id: None,
+            correlation_id: Some("device-abc".into()),
+            readings_json: r#"{"dpi":{"value":1600}}"#.into(),
+            read_statuses_json: r#"{"dpi":"ok"}"#.into(),
+            include_protocol_payload: false,
+            format: "markdown".into(),
+        };
+        let entries = vec![];
+        let md = build_device_diagnostics_markdown(&input, &entries);
+        assert!(md.contains("mira.razer"));
+        assert!(md.contains("0001:0002:00"));
+        assert!(md.contains("device-abc"));
+        assert!(md.contains(r#""dpi":{"value":1600}"#));
+        assert!(md.contains(r#""dpi":"ok""#));
+        assert!(md.contains("无相关日志"));
+    }
+
+    #[test]
+    fn markdown_report_lists_warn_and_error_entries() {
+        let input = DeviceDiagnosticsInput {
+            plugin_id: "p".into(),
+            device_key: "k".into(),
+            model: None,
+            session_id: None,
+            correlation_id: None,
+            readings_json: "{}".into(),
+            read_statuses_json: "{}".into(),
+            include_protocol_payload: false,
+            format: "markdown".into(),
+        };
+        let mut fields = Fields::new();
+        fields.insert(
+            "workflow".into(),
+            crate::logging::model::FieldValue::from("wf"),
+        );
+        let entries = vec![
+            make_log_entry(LogLevel::Warn, "plugin::read", fields.clone()),
+            make_log_entry(LogLevel::Error, "plugin::read", fields),
+        ];
+        let md = build_device_diagnostics_markdown(&input, &entries);
+        assert!(md.contains("[warn]"));
+        assert!(md.contains("[error]"));
+        assert!(md.contains("test message"));
+        assert!(md.contains("workflow"));
+    }
+
+    #[test]
+    fn json_report_produces_valid_json() {
+        let input = DeviceDiagnosticsInput {
+            plugin_id: "p".into(),
+            device_key: "k".into(),
+            model: None,
+            session_id: None,
+            correlation_id: None,
+            readings_json: r#"{"dpi":1600}"#.into(),
+            read_statuses_json: r#"{"dpi":"ok"}"#.into(),
+            include_protocol_payload: false,
+            format: "json".into(),
+        };
+        let entries = vec![];
+        let json_str = build_device_diagnostics_json(&input, &entries);
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(parsed["type"], "mira-device-diagnostics");
+        assert_eq!(parsed["pluginId"], "p");
+        assert_eq!(parsed["deviceKey"], "k");
+        assert_eq!(parsed["readings"]["dpi"], 1600);
+        assert_eq!(parsed["readStatuses"]["dpi"], "ok");
+        assert!(parsed["logs"].is_array());
+    }
+
+    #[test]
+    fn json_report_includes_log_entries() {
+        let input = DeviceDiagnosticsInput {
+            plugin_id: "p".into(),
+            device_key: "k".into(),
+            model: None,
+            session_id: None,
+            correlation_id: None,
+            readings_json: "{}".into(),
+            read_statuses_json: "{}".into(),
+            include_protocol_payload: false,
+            format: "json".into(),
+        };
+        let entries = vec![make_log_entry(
+            LogLevel::Warn,
+            "plugin::read",
+            Fields::new(),
+        )];
+        let json_str = build_device_diagnostics_json(&input, &entries);
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        let logs = parsed["logs"].as_array().unwrap();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0]["level"], "warn");
+        assert_eq!(logs[0]["target"], "plugin::read");
     }
 }

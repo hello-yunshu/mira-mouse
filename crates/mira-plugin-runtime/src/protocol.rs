@@ -69,6 +69,27 @@ pub enum ConnectionKind {
     Bluetooth,
 }
 
+/// Per-output read status reported by workflow execution.
+///
+/// Brand-neutral: a step that errors with `on_failure: continue` records
+/// `Failed(reason)`; a step skipped via `skip_if_zero` records `Skipped`;
+/// a successful step records `Ok`. `NotSupported` is reserved for future
+/// probe-driven gating. The host forwards these to `DeviceSnapshot.read_statuses`
+/// (as `serde_json::Value`) so the UI can distinguish "missing because
+/// unsupported" from "missing because the read failed".
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ReadStatus {
+    /// Step executed and produced a value.
+    Ok,
+    /// Step skipped via `skip_if_zero` (a referenced output was zero).
+    Skipped,
+    /// Step targets an output the device does not support.
+    NotSupported,
+    /// Step errored; `on_failure: continue` kept the workflow running.
+    Failed(String),
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct DeviceReading {
     pub display_name: Option<String>,
@@ -83,6 +104,72 @@ pub struct DeviceReading {
     pub profile: Option<u8>,
     pub light_color: Option<String>,
     pub capabilities: BTreeMap<String, Value>,
+    /// Per-output read statuses, keyed by workflow output name. Populated from
+    /// workflow execution results; serialized into the host snapshot so the UI
+    /// can distinguish skipped/failed/unsupported outputs from absent ones.
+    pub read_statuses: BTreeMap<String, ReadStatus>,
+}
+
+/// HID 交换事件回调：由宿主实现，用于记录协议诊断事件。
+///
+/// `mira-plugin-runtime` crate 不直接依赖日志系统，通过此 trait 将
+/// HID 交换、忙碌重试、响应不匹配、校验失败等事件通知宿主，
+/// 由宿主决定是否记录及如何脱敏。
+pub trait HidEventSink: Send + Sync {
+    /// 一次 HID feature report / output-input / RACE 交换完成。
+    ///
+    /// - `transport`: 传输名称（如 "razer-hid-feature"）
+    /// - `command`: 命令标识（如 "get-dpi"）
+    /// - `request_hex`: 请求 payload 的十六进制（不含 report ID）
+    /// - `response_hex`: 响应 payload 的十六进制（不含 report ID），空切片表示无响应
+    /// - `duration_ms`: 本次交换耗时
+    /// - `busy_reads`: 忙碌重试次数（poll_until 场景）
+    /// - `checksum_valid`: 校验是否通过（None 表示无校验）
+    fn on_hid_exchange(
+        &self,
+        transport: &str,
+        command: &str,
+        request_hex: &str,
+        response_hex: &str,
+        duration_ms: u64,
+        busy_reads: usize,
+        checksum_valid: Option<bool>,
+    );
+
+    /// HID 交换遇到忙碌状态并重试。
+    fn on_hid_busy_retry(&self, transport: &str, command: &str, attempt: usize);
+
+    /// HID 响应不匹配（transaction ID / command class / command ID 错误）。
+    fn on_hid_response_mismatch(
+        &self,
+        transport: &str,
+        command: &str,
+        expected: &str,
+        actual: &str,
+    );
+
+    /// HID 响应校验和失败。
+    fn on_hid_checksum_failed(&self, transport: &str, command: &str, expected: &str, actual: &str);
+}
+
+/// 空实现：不记录任何事件。供不需要协议诊断的场景使用。
+pub struct NullHidEventSink;
+
+impl HidEventSink for NullHidEventSink {
+    fn on_hid_exchange(
+        &self,
+        _: &str,
+        _: &str,
+        _: &str,
+        _: &str,
+        _: u64,
+        _: usize,
+        _: Option<bool>,
+    ) {
+    }
+    fn on_hid_busy_retry(&self, _: &str, _: &str, _: usize) {}
+    fn on_hid_response_mismatch(&self, _: &str, _: &str, _: &str, _: &str) {}
+    fn on_hid_checksum_failed(&self, _: &str, _: &str, _: &str, _: &str) {}
 }
 
 pub struct ProtocolContext<'a> {
@@ -104,6 +191,10 @@ pub struct ProtocolContext<'a> {
     /// 可选 HID I/O 计数器，用于 debug/诊断：统计句柄缓存命中、open_path 次数、
     /// 归还次数和锁失败。未提供时不产生额外可见行为。
     pub hid_io_stats: Option<&'a Mutex<HidIoStats>>,
+    /// 可选 HID 交换事件回调。宿主通过实现 `HidEventSink` trait 接收
+    /// HID 交换、忙碌重试、响应不匹配、校验失败等事件，用于协议诊断。
+    /// 未提供时使用 `NullHidEventSink`（不记录任何事件）。
+    pub hid_event_sink: Option<&'a dyn HidEventSink>,
 }
 
 /// 宿主语义字段：品牌无关的设备状态语义。
@@ -127,6 +218,9 @@ pub enum SemanticField {
     ActiveProfile,
     /// 灯光状态
     LightingState,
+    /// 清单（inventory）读数：插件声明的 inventory workflow 产出的完整读数。
+    /// 仅在用户打开"全部读数"详情视图或显式请求时通过投影读取，不进入后台轮询。
+    Inventory,
 }
 
 impl SemanticField {
@@ -161,6 +255,9 @@ impl SemanticField {
                 "mouseEffect",
                 "rgbControl",
             ],
+            // inventory output 由插件通过 PluginRuntime.inventory.workflows 声明，
+            // 标准化为 "inventory" 名称。实际 workflow output 通过既有 output 机制映射。
+            SemanticField::Inventory => &["inventory"],
         }
     }
 }
@@ -230,6 +327,7 @@ fn remember_successful_semantic_outputs(
         SemanticField::PollingRate,
         SemanticField::ActiveProfile,
         SemanticField::LightingState,
+        SemanticField::Inventory,
     ] {
         let successful = field
             .standard_output_names()
@@ -287,12 +385,23 @@ fn semantic_output_is_useful(field: SemanticField, name: &str, value: &Value) ->
                 has_any(&["enabled", "effect", "mode", "color", "brightness", "speed"])
             }
         }
+        // inventory output 是插件声明性的完整读数：非空对象即视为有用。
+        SemanticField::Inventory => true,
     }
 }
 
 pub fn read_device(ctx: &ProtocolContext) -> Result<DeviceReading, String> {
     let package = ProtocolPackage::from_files(ctx.files)?;
     read_device_with_package(&package, ctx)
+}
+
+/// 读取设备并接收 HID 交换事件。
+pub fn read_device_with_sink(
+    ctx: &ProtocolContext,
+    sink: &dyn HidEventSink,
+) -> Result<DeviceReading, String> {
+    let package = ProtocolPackage::from_files(ctx.files)?;
+    read_device_with_package_and_sink(&package, ctx, sink)
 }
 
 /// 将已有的工作流 outputs 规范化为 `DeviceReading`，不重新执行工作流。
@@ -302,7 +411,7 @@ pub fn normalize_device_outputs_with_package(
     outputs: BTreeMap<String, Value>,
 ) -> DeviceReading {
     let capabilities = package.capabilities().cloned();
-    standard_reading(outputs, capabilities)
+    standard_reading(outputs, capabilities, BTreeMap::new())
 }
 
 /// Like `read_device` but reuses a pre-parsed `ProtocolPackage` to avoid
@@ -312,14 +421,25 @@ pub fn read_device_with_package(
     ctx: &ProtocolContext,
 ) -> Result<DeviceReading, String> {
     let workflow_id = format!("{}-read", ctx.family);
-    let mut outputs = package.execute_with_cache(
-        ctx.api,
-        ctx.path,
-        &workflow_id,
-        ctx.feature_index_cache,
-        ctx.cached_handles,
-        ctx.hid_io_stats,
-    )?;
+    let (mut outputs, read_statuses) = match ctx.hid_event_sink {
+        Some(sink) => package.execute_with_cache_and_sink(
+            ctx.api,
+            ctx.path,
+            &workflow_id,
+            ctx.feature_index_cache,
+            ctx.cached_handles,
+            ctx.hid_io_stats,
+            sink,
+        )?,
+        None => package.execute_with_cache(
+            ctx.api,
+            ctx.path,
+            &workflow_id,
+            ctx.feature_index_cache,
+            ctx.cached_handles,
+            ctx.hid_io_stats,
+        )?,
+    };
     remember_successful_semantic_outputs(package, &workflow_id, &outputs);
     let capabilities = package.capabilities().cloned();
     maybe_merge_onboard_lighting(package, ctx, capabilities.as_ref(), &mut outputs)?;
@@ -333,7 +453,29 @@ pub fn read_device_with_package(
             .collect::<Vec<_>>()
             .join(", ")
     );
-    Ok(standard_reading(outputs, capabilities))
+    Ok(standard_reading(outputs, capabilities, read_statuses))
+}
+
+/// 与 `read_device_with_package` 相同，但接收 HID 交换事件回调。
+pub fn read_device_with_package_and_sink(
+    package: &ProtocolPackage,
+    ctx: &ProtocolContext,
+    sink: &dyn HidEventSink,
+) -> Result<DeviceReading, String> {
+    let workflow_id = format!("{}-read", ctx.family);
+    let (mut outputs, read_statuses) = package.execute_with_cache_and_sink(
+        ctx.api,
+        ctx.path,
+        &workflow_id,
+        ctx.feature_index_cache,
+        ctx.cached_handles,
+        ctx.hid_io_stats,
+        sink,
+    )?;
+    remember_successful_semantic_outputs(package, &workflow_id, &outputs);
+    let capabilities = package.capabilities().cloned();
+    maybe_merge_onboard_lighting(package, ctx, capabilities.as_ref(), &mut outputs)?;
+    Ok(standard_reading(outputs, capabilities, read_statuses))
 }
 
 /// 投影读取结果：包含读取的 DeviceReading 和投影诊断信息。
@@ -368,15 +510,27 @@ pub fn read_device_with_projection(
 
     // 3. 如果投影有效，执行投影读取
     if projection.is_valid() {
-        let outputs = package.execute_projection_with_cache(
-            ctx.api,
-            ctx.path,
-            &workflow_id,
-            &projection,
-            ctx.feature_index_cache,
-            ctx.cached_handles,
-            ctx.hid_io_stats,
-        )?;
+        let (outputs, read_statuses) = match ctx.hid_event_sink {
+            Some(sink) => package.execute_projection_with_cache_and_sink(
+                ctx.api,
+                ctx.path,
+                &workflow_id,
+                &projection,
+                ctx.feature_index_cache,
+                ctx.cached_handles,
+                ctx.hid_io_stats,
+                sink,
+            )?,
+            None => package.execute_projection_with_cache(
+                ctx.api,
+                ctx.path,
+                &workflow_id,
+                &projection,
+                ctx.feature_index_cache,
+                ctx.cached_handles,
+                ctx.hid_io_stats,
+            )?,
+        };
         let capabilities = package.capabilities().cloned();
         // 投影读取也需要合并 onboard lighting（如果 lighting 是目标 output 的话）
         let mut outputs = outputs;
@@ -400,7 +554,7 @@ pub fn read_device_with_projection(
                 .join(", ")
         );
         Ok(ProjectedReading {
-            reading: standard_reading(outputs, capabilities),
+            reading: standard_reading(outputs, capabilities, read_statuses),
             projection_valid: true,
             fallback_reason: None,
             projected_step_count: projection.selected_step_count(),
@@ -471,7 +625,7 @@ fn maybe_merge_onboard_lighting(
             }
         }
     }
-    let onboard_outputs = package.execute_with_cache(
+    let (onboard_outputs, _) = package.execute_with_cache(
         ctx.api,
         ctx.path,
         &onboard_workflow_id,
@@ -489,14 +643,15 @@ pub fn execute_plugin_workflow(
     ctx: &ProtocolContext,
     workflow_id: &str,
 ) -> Result<BTreeMap<String, Value>, String> {
-    ProtocolPackage::from_files(ctx.files)?.execute_with_cache(
+    let (outputs, _) = ProtocolPackage::from_files(ctx.files)?.execute_with_cache(
         ctx.api,
         ctx.path,
         workflow_id,
         ctx.feature_index_cache,
         ctx.cached_handles,
         ctx.hid_io_stats,
-    )
+    )?;
+    Ok(outputs)
 }
 
 pub fn writable_mutations(ctx: &ProtocolContext) -> Result<Vec<String>, String> {
@@ -544,9 +699,11 @@ pub fn mutate_device_with_package(
 fn standard_reading(
     outputs: BTreeMap<String, Value>,
     capabilities: Option<Value>,
+    read_statuses: BTreeMap<String, ReadStatus>,
 ) -> DeviceReading {
     let mut reading = DeviceReading {
         capabilities: outputs,
+        read_statuses,
         ..DeviceReading::default()
     };
 
@@ -1243,7 +1400,7 @@ mod tests {
             ("mouseLightColor".into(), json!({"color": "#12ABEF"})),
         ]);
 
-        let reading = standard_reading(outputs, None);
+        let reading = standard_reading(outputs, None, BTreeMap::new());
 
         assert_eq!(reading.polling_rate_hz, Some(8000));
         assert_eq!(reading.profile, Some(2));
@@ -1273,7 +1430,7 @@ mod tests {
             ),
             ("mouseEffect".into(), json!({"color": "#AABBCC"})),
         ]);
-        let reading = standard_reading(outputs, None);
+        let reading = standard_reading(outputs, None, BTreeMap::new());
         assert_eq!(reading.battery_percent, Some(83));
         assert_eq!(reading.batteries.len(), 1);
         assert_eq!(reading.dpi, Some(800));
@@ -1295,7 +1452,7 @@ mod tests {
                 json!({"mouseBattery": 75, "receiverBattery": 100}),
             ),
         ]);
-        let reading = standard_reading(outputs, None);
+        let reading = standard_reading(outputs, None, BTreeMap::new());
         assert_eq!(reading.batteries.len(), 2);
         assert_eq!(reading.batteries[0].label, "mock.mouseLabel");
         assert_eq!(reading.batteries[1].label, "mock.receiverLabel");
@@ -1308,7 +1465,7 @@ mod tests {
             "receiver".into(),
             json!({"mouseBattery": 75, "mouseOnline": true, "receiverBattery": 88}),
         )]);
-        let reading = standard_reading(outputs, None);
+        let reading = standard_reading(outputs, None, BTreeMap::new());
         assert_eq!(reading.batteries.len(), 2);
         assert_eq!(reading.batteries[1].id, "receiver");
         assert_eq!(reading.batteries[1].percentage, 88);
@@ -1328,7 +1485,7 @@ mod tests {
                 json!({"mouseBattery": 75, "mouseOnline": true, "receiverBattery": 50}),
             ),
         ]);
-        let reading = standard_reading(outputs, None);
+        let reading = standard_reading(outputs, None, BTreeMap::new());
         assert_eq!(reading.batteries.len(), 2);
         assert_eq!(reading.batteries[1].id, "receiver");
         assert_eq!(reading.batteries[1].percentage, 87);
@@ -1343,7 +1500,7 @@ mod tests {
             "receiver".into(),
             json!({"mouseBattery": 75, "mouseOnline": true, "receiverBattery": 50}),
         )]);
-        let reading = standard_reading(outputs, None);
+        let reading = standard_reading(outputs, None, BTreeMap::new());
         assert_eq!(reading.batteries.len(), 2);
         assert_eq!(reading.batteries[1].id, "receiver");
         assert_eq!(reading.batteries[1].percentage, 50);
@@ -1365,7 +1522,7 @@ mod tests {
                 json!({"mouseBattery": 80, "mouseOnline": false, "receiverBattery": 0}),
             ),
         ]);
-        let reading = standard_reading(outputs, None);
+        let reading = standard_reading(outputs, None, BTreeMap::new());
         assert_eq!(reading.battery_percent, None);
         assert!(reading.batteries.is_empty());
     }
@@ -1386,7 +1543,7 @@ mod tests {
                 json!({"mouseBattery": 74, "receiverBattery": 88}),
             ),
         ]);
-        let reading = standard_reading(outputs, None);
+        let reading = standard_reading(outputs, None, BTreeMap::new());
         assert_eq!(reading.battery_percent, Some(76));
         assert!(reading.charging);
         assert_eq!(reading.batteries.len(), 2);
@@ -1406,7 +1563,7 @@ mod tests {
                 "battery".into(),
                 json!({"percentage": 80, "charging": status, "valid": true}),
             )]);
-            let reading = standard_reading(outputs, None);
+            let reading = standard_reading(outputs, None, BTreeMap::new());
             assert_eq!(
                 reading.charging, expected_charging,
                 "status {status} should report charging={expected_charging}"
@@ -1419,7 +1576,7 @@ mod tests {
                 "receiverBattery".into(),
                 json!({"percentage": 90, "charging": status, "present": 1}),
             )]);
-            let reading = standard_reading(outputs, None);
+            let reading = standard_reading(outputs, None, BTreeMap::new());
             assert_eq!(reading.batteries.len(), 1);
             assert_eq!(
                 reading.batteries[0].charging, expected_charging,
@@ -1437,7 +1594,7 @@ mod tests {
             ),
             ("deviceName".into(), json!({"name": "G705 Mouse"})),
         ]);
-        let reading = standard_reading(outputs, None);
+        let reading = standard_reading(outputs, None, BTreeMap::new());
         assert_eq!(reading.display_name.as_deref(), Some("G705 Mouse"));
         assert_eq!(reading.connection, Some(ConnectionKind::Wireless));
     }
@@ -1448,7 +1605,7 @@ mod tests {
             "device".into(),
             json!({"deviceIndex": 255, "connection": "usb"}),
         )]);
-        let reading = standard_reading(outputs, None);
+        let reading = standard_reading(outputs, None, BTreeMap::new());
         assert_eq!(reading.connection, Some(ConnectionKind::Usb));
     }
 
@@ -1458,7 +1615,7 @@ mod tests {
             "deviceName".into(),
             json!({"name": "  Logitech Prototype Mouse With A Very Long Engineering Name  "}),
         )]);
-        let reading = standard_reading(outputs, None);
+        let reading = standard_reading(outputs, None, BTreeMap::new());
         let display_name = reading.display_name.unwrap();
         assert_eq!(
             display_name.chars().count(),
@@ -1477,7 +1634,7 @@ mod tests {
             ),
             ("receiverLighting".into(), json!({"color": "#4BBFB1"})),
         ]);
-        let reading = standard_reading(outputs, None);
+        let reading = standard_reading(outputs, None, BTreeMap::new());
         assert_eq!(reading.light_color.as_deref(), Some("#FB223C"));
         assert_eq!(
             reading
@@ -1495,7 +1652,7 @@ mod tests {
             ("lighting".into(), json!({"color": "#EEAA00"})),
             ("receiverLighting".into(), json!({"color": "#4BBFB1"})),
         ]);
-        let reading = standard_reading(outputs, None);
+        let reading = standard_reading(outputs, None, BTreeMap::new());
         assert_eq!(reading.light_color, None);
     }
 
@@ -1505,7 +1662,7 @@ mod tests {
             ("mouseLightColor".into(), json!({"color": "#FB223C"})),
             ("receiverLighting".into(), json!({"color": "#4BBFB1"})),
         ]);
-        let reading = standard_reading(outputs, None);
+        let reading = standard_reading(outputs, None, BTreeMap::new());
         assert_eq!(reading.light_color.as_deref(), Some("#FB223C"));
     }
 
@@ -1522,7 +1679,7 @@ mod tests {
                 json!({"enabled": 1, "type": 7, "color1": "#AABBCC", "speed": 2, "brightness": 4}),
             ),
         ]);
-        let reading = standard_reading(outputs, None);
+        let reading = standard_reading(outputs, None, BTreeMap::new());
         let mouse = reading
             .capabilities
             .get("mouseLighting")
@@ -1550,7 +1707,7 @@ mod tests {
         // The runtime should expose it as a single-stage list so the UI can
         // render and edit it without a full stage array.
         let outputs = BTreeMap::from([("dpi".into(), json!({"dpiValue": 1600, "stageIndex": 0}))]);
-        let reading = standard_reading(outputs, None);
+        let reading = standard_reading(outputs, None, BTreeMap::new());
         assert_eq!(reading.dpi, Some(1600));
         let stages = reading.dpi_stages.expect("dpi stages");
         assert_eq!(stages.len(), 1);
@@ -1564,7 +1721,7 @@ mod tests {
         // usable stages — the UI replaces the placeholder color later.
         let outputs =
             BTreeMap::from([("dpi".into(), json!({"stageCount": 2, "dpiX": [400, 800]}))]);
-        let reading = standard_reading(outputs, None);
+        let reading = standard_reading(outputs, None, BTreeMap::new());
         let stages = reading.dpi_stages.expect("dpi stages");
         assert_eq!(stages.len(), 2);
         assert_eq!(stages[0].color, "#9a8bd0");
@@ -1580,7 +1737,7 @@ mod tests {
             ),
             ("settings".into(), json!({"pollingRate": 500})),
         ]);
-        let reading = standard_reading(outputs, None);
+        let reading = standard_reading(outputs, None, BTreeMap::new());
         assert_eq!(reading.polling_rate_hz, Some(500));
         assert_eq!(
             reading.supported_polling_rates_hz,
@@ -1601,7 +1758,7 @@ mod tests {
                 json!({"rateListFlags": 0x0078, "supportedRates": [1000, 2000, 4000, 8000]}),
             ),
         ]);
-        let reading = standard_reading(outputs, None);
+        let reading = standard_reading(outputs, None, BTreeMap::new());
         assert_eq!(reading.dpi, Some(2400));
         assert_eq!(reading.polling_rate_hz, Some(8000));
         assert_eq!(
@@ -1614,7 +1771,7 @@ mod tests {
     fn falls_back_polling_rates_to_capabilities() {
         let outputs = BTreeMap::from([("settings".into(), json!({"pollingRate": 1000}))]);
         let capabilities = Some(json!({"pollingRatesHz": [125, 250, 500, 1000]}));
-        let reading = standard_reading(outputs, capabilities);
+        let reading = standard_reading(outputs, capabilities, BTreeMap::new());
         assert_eq!(
             reading.supported_polling_rates_hz,
             Some(vec![125, 250, 500, 1000])
@@ -1653,7 +1810,7 @@ mod tests {
             );
         }
 
-        assert!(!standard_reading(outputs.clone(), None)
+        assert!(!standard_reading(outputs.clone(), None, BTreeMap::new())
             .capabilities
             .contains_key("mouseLighting"));
 
@@ -1677,7 +1834,7 @@ mod tests {
                 }
             }
         }));
-        let reading = standard_reading(outputs, capabilities);
+        let reading = standard_reading(outputs, capabilities, BTreeMap::new());
         let mouse = reading
             .capabilities
             .get("mouseLighting")
@@ -1715,7 +1872,7 @@ mod tests {
                 }),
             ),
         ]);
-        let reading = standard_reading(outputs, None);
+        let reading = standard_reading(outputs, None, BTreeMap::new());
         let mouse = reading
             .capabilities
             .get("mouseLighting")
@@ -1761,7 +1918,7 @@ mod tests {
             }
         }));
 
-        let reading = standard_reading(outputs, capabilities);
+        let reading = standard_reading(outputs, capabilities, BTreeMap::new());
         assert!(!reading.capabilities.contains_key("mouseLighting"));
         assert_eq!(reading.light_color, None);
     }

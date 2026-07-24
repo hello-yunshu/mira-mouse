@@ -265,6 +265,7 @@ mod tests {
             readonly: false,
             plugin_id: None,
             history_identity: None,
+            read_statuses: Default::default(),
         }
     }
 

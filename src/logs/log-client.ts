@@ -15,6 +15,8 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type {
   DeleteResult,
   DeleteScope,
+  DeviceDiagnosticsInput,
+  DeviceDiagnosticsOutcome,
   ExportOutcomeDto,
   ExportScope,
   LogBatchEvent,
@@ -118,6 +120,29 @@ export class LogClient {
   }
 
   /**
+   * 开始协议诊断会话：授权对指定设备临时记录 HID payload（request/response hex）。
+   * 协议诊断模式不影响日志采集等级；前端应同时调用 `startDiagnosticSession`
+   * 提升到 Trace 才能使 hid-feature-exchange 事件被采集。
+   * payload 经过 command-aware masking（serial 脱敏、macro 拒绝等）。
+   */
+  async startProtocolDiagnostic(
+    deviceKey: string,
+    minutes?: number,
+    autoExpire?: boolean,
+  ): Promise<void> {
+    await invoke('log_start_protocol_diagnostic', {
+      deviceKey,
+      minutes: minutes ?? null,
+      autoExpire: autoExpire ?? null,
+    });
+  }
+
+  /** 手动停止协议诊断会话。 */
+  async stopProtocolDiagnostic(): Promise<void> {
+    await invoke('log_stop_protocol_diagnostic');
+  }
+
+  /**
    * 前端写入少量日志。受节流限制，避免高频递归。
    * 失败静默，绝不抛出或递归。
    */
@@ -172,6 +197,21 @@ export class LogClient {
   /** 导出诊断包 ZIP。`path` 由前端通过保存对话框获取。诊断上下文由后端收集。 */
   async exportDiagnosticsBundle(path: string): Promise<ExportOutcomeDto> {
     return invoke<ExportOutcomeDto>('log_export_diagnostics_bundle', { path });
+  }
+
+  /**
+   * 导出设备定向诊断报告。
+   * `path` 为空字符串时跳过文件写入，仅返回 `content` 供前端复制到剪贴板。
+   * 报告内容同时返回在 `content` 字段，便于前端直接复制到剪贴板。
+   */
+  async exportDeviceDiagnostics(
+    input: DeviceDiagnosticsInput,
+    path: string,
+  ): Promise<DeviceDiagnosticsOutcome> {
+    return invoke<DeviceDiagnosticsOutcome>('log_export_device_diagnostics', {
+      input,
+      path,
+    });
   }
 
   /** 打开日志目录。 */

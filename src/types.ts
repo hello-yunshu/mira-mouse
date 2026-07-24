@@ -5,6 +5,9 @@ export interface DpiStage { value: number; color: string; active: boolean; enabl
 export interface DeviceBattery { id: string; label: string; percentage: number; charging?: boolean }
 export interface DeviceIdentity { group: string; displayName?: string; aliases?: string[] }
 
+/** Per-output read status from the workflow engine. */
+export type ReadStatus = 'ok' | 'skipped' | 'not-supported' | { failed: string };
+
 /** 灯效范围声明（speed/brightness）。 */
 export interface RangeSpec {
   min: number;
@@ -147,6 +150,8 @@ export interface DeviceState {
   /** 匹配该设备的插件 ID，用于 i18n namespace 解析。 */
   pluginId?: string;
   updatedAt: string;
+  /** Per-output read statuses from the workflow engine. */
+  readStatuses?: Record<string, ReadStatus>;
 }
 
 export interface BundledPluginInfo {
@@ -286,6 +291,8 @@ export interface DeviceSnapshot {
   pluginId?: string;
   /** 插件声明的跨连接/跨接口身份，用于历史统计等宿主通用功能做合并。 */
   historyIdentity?: DeviceIdentity;
+  /** Per-output read statuses from the workflow engine. */
+  readStatuses?: Record<string, ReadStatus>;
 }
 
 export interface DeviceSnapshotEntry {

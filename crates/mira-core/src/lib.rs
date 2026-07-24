@@ -124,6 +124,13 @@ pub struct DeviceSnapshot {
     /// 插件声明的跨连接/跨接口身份，用于历史统计等宿主通用功能做合并。
     #[serde(default)]
     pub history_identity: Option<DeviceIdentity>,
+    /// Per-output read statuses, keyed by workflow output name. Stored as
+    /// `serde_json::Value` to avoid a circular dependency between mira-core
+    /// and mira-plugin-runtime (which owns the typed `ReadStatus` enum). The
+    /// runtime serializes `ReadStatus` into these values; the UI interprets
+    /// them as `"ok" | "skipped" | "not-supported" | { "failed": string }`.
+    #[serde(default)]
+    pub read_statuses: BTreeMap<String, Value>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

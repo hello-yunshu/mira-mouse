@@ -3,6 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
 
 /// 日志等级。语义统一：
 /// - `Error`：操作失败、不可恢复异常、关键组件启动失败
@@ -36,6 +37,23 @@ impl LogLevel {
     /// 是否 ≥ 指定最低等级。
     pub fn at_least(self, min: LogLevel) -> bool {
         self.weight() <= min.weight()
+    }
+
+    /// 小写字符串形式，与 serde 序列化结果一致。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LogLevel::Error => "error",
+            LogLevel::Warn => "warn",
+            LogLevel::Info => "info",
+            LogLevel::Debug => "debug",
+            LogLevel::Trace => "trace",
+        }
+    }
+}
+
+impl std::fmt::Display for LogLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -176,6 +194,22 @@ impl From<bool> for FieldValue {
     }
 }
 
+/// 判断两个 FieldValue 是否相等（数值宽松匹配：Integer 与 Number 数值相等时视为相等）。
+/// 用于 LogQuery::fields_exact 过滤。
+fn field_values_equal(a: &FieldValue, b: &FieldValue) -> bool {
+    match (a, b) {
+        (FieldValue::Text(x), FieldValue::Text(y)) => x == y,
+        (FieldValue::Boolean(x), FieldValue::Boolean(y)) => x == y,
+        (FieldValue::Integer(x), FieldValue::Integer(y)) => x == y,
+        (FieldValue::Number(x), FieldValue::Number(y)) => x == y,
+        // 数值宽松匹配：Integer 与 Number 在数值相等时视为相等。
+        (FieldValue::Integer(x), FieldValue::Number(y)) => (*x as f64) == *y,
+        (FieldValue::Number(x), FieldValue::Integer(y)) => *x == (*y as f64),
+        (FieldValue::Null, FieldValue::Null) => true,
+        _ => false,
+    }
+}
+
 /// 历史日志查询条件。所有字段可选，组合使用 AND 语义。
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -204,6 +238,16 @@ pub struct LogQuery {
     /// 单页最大条数，默认 200，上限 1000。
     #[serde(default)]
     pub limit: Option<usize>,
+    /// 关联 ID 精确筛选。用于"复制当前设备诊断"按 correlation_id 过滤。
+    #[serde(default)]
+    pub correlation_id: Option<String>,
+    /// target 前缀筛选（区分大小写）。例如 `"plugin::"` 匹配所有插件协议事件。
+    #[serde(default)]
+    pub target_prefix: Option<String>,
+    /// 结构化字段精确匹配。键为字段名，值为期望的标量值。
+    /// 多个键之间 AND 语义。用于按 pluginId / deviceKey 等过滤。
+    #[serde(default)]
+    pub fields_exact: Option<BTreeMap<String, FieldValue>>,
 }
 
 impl LogQuery {
@@ -246,6 +290,31 @@ impl LogQuery {
         if let Some(to) = self.to.as_deref() {
             if entry.timestamp.as_str() > to {
                 return false;
+            }
+        }
+        // correlation_id 精确匹配。None 与 Some 不匹配。
+        if let Some(cid) = self.correlation_id.as_deref() {
+            if entry.correlation_id.as_deref() != Some(cid) {
+                return false;
+            }
+        }
+        // target 前缀匹配（区分大小写）。空字符串前缀视为不筛选。
+        if let Some(prefix) = self.target_prefix.as_deref() {
+            if !prefix.is_empty() && !entry.target.starts_with(prefix) {
+                return false;
+            }
+        }
+        // 结构化字段精确匹配。所有键必须存在且值相等。
+        if let Some(exact) = self.fields_exact.as_ref() {
+            for (key, expected) in exact {
+                match entry.fields.get(key) {
+                    Some(actual) => {
+                        if !field_values_equal(actual, expected) {
+                            return false;
+                        }
+                    }
+                    None => return false,
+                }
             }
         }
         true
@@ -325,6 +394,8 @@ pub struct LogStatus {
     pub file_persistence_enabled: bool,
     /// 临时诊断会话信息；None 表示未启用。
     pub diagnostic_session: Option<DiagnosticSessionStatus>,
+    /// 协议诊断会话信息；None 表示未启用。
+    pub protocol_diagnostic: Option<ProtocolDiagnosticStatus>,
 }
 
 /// 临时诊断会话状态。
@@ -335,6 +406,21 @@ pub struct DiagnosticSessionStatus {
     pub ends_at: String,
     pub original_level: LogLevel,
     pub current_level: LogLevel,
+    pub auto_expire: bool,
+}
+
+/// 协议诊断会话状态。
+///
+/// 协议诊断模式叠加在通用诊断会话之上：通用会话提升日志采集等级，
+/// 协议诊断模式额外授权对指定设备的 HID payload（request/response hex）进行临时记录。
+/// 两者独立启停，但实践中协议诊断模式通常配合 Debug/Trace 等级使用。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProtocolDiagnosticStatus {
+    /// 目标设备 key（VID:PID:interface 格式），只对此设备的 HID 交换记录 payload。
+    pub device_key: String,
+    pub started_at: String,
+    pub ends_at: String,
     pub auto_expire: bool,
 }
 
@@ -361,6 +447,23 @@ mod tests {
     }
 
     #[test]
+    fn level_as_str_matches_serde_lowercase() {
+        for level in [
+            LogLevel::Error,
+            LogLevel::Warn,
+            LogLevel::Info,
+            LogLevel::Debug,
+            LogLevel::Trace,
+        ] {
+            let serde_str = serde_json::to_string(&level).unwrap();
+            // serde_json 给字符串带引号，as_str 不带。
+            let expected = serde_str.trim_matches('"');
+            assert_eq!(level.as_str(), expected);
+            assert_eq!(level.to_string(), expected);
+        }
+    }
+
+    #[test]
     fn query_matches_combines_filters_with_and() {
         let entry = LogEntry {
             id: 1,
@@ -382,6 +485,9 @@ mod tests {
             to: None,
             before_id: None,
             limit: None,
+            correlation_id: None,
+            target_prefix: None,
+            fields_exact: None,
         };
         assert!(q.matches(&entry));
 
@@ -402,6 +508,136 @@ mod tests {
             ..q.clone()
         };
         assert!(!q4.matches(&entry));
+    }
+
+    #[test]
+    fn query_filters_by_correlation_id() {
+        let mut entry = LogEntry {
+            id: 1,
+            timestamp: "2026-07-17T10:00:00+08:00".into(),
+            level: LogLevel::Info,
+            source: LogSource::Plugin,
+            target: "plugin::read".into(),
+            message: "step ok".into(),
+            session_id: "s1".into(),
+            correlation_id: Some("device-abc123".into()),
+            fields: Fields::new(),
+        };
+        // 匹配的 correlation_id
+        let q = LogQuery {
+            correlation_id: Some("device-abc123".into()),
+            ..LogQuery::default()
+        };
+        assert!(q.matches(&entry));
+        // 不匹配的 correlation_id
+        let q = LogQuery {
+            correlation_id: Some("device-other".into()),
+            ..LogQuery::default()
+        };
+        assert!(!q.matches(&entry));
+        // entry 无 correlation_id 但 query 有：不匹配
+        entry.correlation_id = None;
+        let q = LogQuery {
+            correlation_id: Some("device-abc123".into()),
+            ..LogQuery::default()
+        };
+        assert!(!q.matches(&entry));
+    }
+
+    #[test]
+    fn query_filters_by_target_prefix() {
+        let entry = LogEntry {
+            id: 1,
+            timestamp: "2026-07-17T10:00:00+08:00".into(),
+            level: LogLevel::Info,
+            source: LogSource::Plugin,
+            target: "plugin::read::step".into(),
+            message: "step ok".into(),
+            session_id: "s1".into(),
+            correlation_id: None,
+            fields: Fields::new(),
+        };
+        // 匹配
+        assert!(LogQuery {
+            target_prefix: Some("plugin::".into()),
+            ..LogQuery::default()
+        }
+        .matches(&entry));
+        // 不匹配
+        assert!(!LogQuery {
+            target_prefix: Some("hid::".into()),
+            ..LogQuery::default()
+        }
+        .matches(&entry));
+        // 空前缀视为不筛选
+        assert!(LogQuery {
+            target_prefix: Some(String::new()),
+            ..LogQuery::default()
+        }
+        .matches(&entry));
+    }
+
+    #[test]
+    fn query_filters_by_fields_exact() {
+        let mut fields = Fields::new();
+        fields.insert("pluginId".into(), FieldValue::from("mira.razer-chroma"));
+        fields.insert("durationMs".into(), FieldValue::from(42_i64));
+        let entry = LogEntry {
+            id: 1,
+            timestamp: "2026-07-17T10:00:00+08:00".into(),
+            level: LogLevel::Info,
+            source: LogSource::Plugin,
+            target: "plugin::read".into(),
+            message: "ok".into(),
+            session_id: "s1".into(),
+            correlation_id: None,
+            fields,
+        };
+        // 单字段匹配
+        let q = LogQuery {
+            fields_exact: Some(BTreeMap::from([(
+                "pluginId".into(),
+                FieldValue::from("mira.razer-chroma"),
+            )])),
+            ..LogQuery::default()
+        };
+        assert!(q.matches(&entry));
+        // 数值宽松匹配：Integer 42 == Number 42.0
+        let q = LogQuery {
+            fields_exact: Some(BTreeMap::from([(
+                "durationMs".into(),
+                FieldValue::Number(42.0),
+            )])),
+            ..LogQuery::default()
+        };
+        assert!(q.matches(&entry));
+        // 多字段 AND 匹配
+        let q = LogQuery {
+            fields_exact: Some(BTreeMap::from([
+                ("pluginId".into(), FieldValue::from("mira.razer-chroma")),
+                ("durationMs".into(), FieldValue::from(42_i64)),
+            ])),
+            ..LogQuery::default()
+        };
+        assert!(q.matches(&entry));
+        // 字段值不匹配
+        let q = LogQuery {
+            fields_exact: Some(BTreeMap::from([(
+                "pluginId".into(),
+                FieldValue::from("mira.amaster"),
+            )])),
+            ..LogQuery::default()
+        };
+        assert!(!q.matches(&entry));
+        // 字段不存在
+        let q = LogQuery {
+            fields_exact: Some(BTreeMap::from([(
+                "missingField".into(),
+                FieldValue::from("x"),
+            )])),
+            ..LogQuery::default()
+        };
+        assert!(!q.matches(&entry));
     }
 
     #[test]
