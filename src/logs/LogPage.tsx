@@ -203,6 +203,7 @@ const PREVIEW_LOG_STATUS: LogStatus = {
   recentWarnCount: 2,
   filePersistenceEnabled: false,
   diagnosticSession: null,
+  protocolDiagnostic: null,
 };
 
 /** 来源筛选选项。 */

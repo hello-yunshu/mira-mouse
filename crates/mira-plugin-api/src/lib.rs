@@ -90,6 +90,13 @@ pub struct PluginRuntime {
     /// bounded read; the plugin owns whether that signal is meaningful.
     #[serde(default)]
     pub wake_recovery: Option<WakeRecoveryContract>,
+    /// 声明插件提供的清单（inventory）读取工作流。
+    ///
+    /// 当用户打开"全部读数"详情视图或显式请求时，Host 按此声明选择
+    /// 对应的 inventory workflow steps 执行投影读取。未声明时不参与
+    /// 清单读取（向后兼容）。
+    #[serde(default)]
+    pub inventory: Option<InventoryContract>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -108,6 +115,34 @@ pub struct WakeRecoveryContract {
 #[serde(rename_all = "kebab-case")]
 pub enum WakeActivitySource {
     SystemPointer,
+}
+
+/// 清单（inventory）读取契约：声明插件提供哪些 inventory workflow 以及
+/// Host 何时触发清单读取。
+///
+/// 清单读取是介于 Quick 与 Full 之间的就绪级别，仅在用户打开"全部读数"
+/// 详情视图或显式请求时触发，不进入后台轮询（后台只跑 Quick 与 Full）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InventoryContract {
+    /// 触发清单读取时执行的 workflow id 列表（至少一个）。
+    /// Host 对这些 workflow 执行投影，仅运行产出 inventory output 的 step 子集。
+    pub workflows: Vec<String>,
+    /// 清单刷新时机。默认 `on-open`：用户打开详情视图时刷新；
+    /// `manual`：仅由显式 Tauri 命令触发。
+    #[serde(default)]
+    pub refresh: InventoryRefresh,
+    /// 清单结果缓存 TTL（秒）。未声明时不缓存，每次触发都重新读取。
+    #[serde(default)]
+    pub cache_ttl_seconds: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum InventoryRefresh {
+    #[default]
+    OnOpen,
+    Manual,
 }
 
 /// #11 配置导入/导出：可导出字段声明。
@@ -197,6 +232,14 @@ impl PluginManifest {
                     == recovery.connections.len();
             if !valid_component_id || !valid_connections {
                 return Err(ApiError::WakeRecovery);
+            }
+        }
+        // #清单契约：inventory.workflows 必须非空（至少声明一个 workflow id）。
+        // workflow id 是否真实存在由运行时在加载协议文件后校验，manifest 层只
+        // 校验结构——避免空契约导致 Host 投影时无目标 step 可选。
+        if let Some(inventory) = &self.runtime.inventory {
+            if inventory.workflows.is_empty() {
+                return Err(ApiError::Inventory);
             }
         }
         let mut control_groups = BTreeSet::new();
@@ -1062,6 +1105,8 @@ pub enum ApiError {
     PluginPresentation,
     #[error("plugin has an invalid wake recovery contract")]
     WakeRecovery,
+    #[error("plugin has an invalid inventory contract")]
+    Inventory,
     #[error("capability {0} has an invalid placement")]
     CapabilityPlacement(String),
     #[error("capability {0} has an invalid summary declaration")]
@@ -1110,6 +1155,7 @@ mod tests {
                 component_id: "mouse".into(),
                 connections: vec!["wireless".into()],
             }),
+            inventory: None,
         });
 
         assert_eq!(manifest.validate(), Ok(()));
@@ -1140,6 +1186,7 @@ mod tests {
         ] {
             let manifest = manifest_with_runtime(PluginRuntime {
                 wake_recovery: Some(contract),
+                inventory: None,
             });
             assert_eq!(manifest.validate(), Err(ApiError::WakeRecovery));
         }

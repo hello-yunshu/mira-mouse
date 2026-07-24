@@ -26,7 +26,8 @@ import { SettingsPage, type SettingsTab } from './Settings';
 import { AboutPage } from './About';
 import { BatteryUsageModal, type BatteryUsageConnectedTarget } from './BatteryUsage';
 import { BatteryLevelIcon } from './BatteryLevelIcon';
-import type { AboutInfo, AppSettings, DeviceSnapshot, DeviceSnapshotEntry, DeviceState, DpiStage, PluginCapability, PluginCapabilityPlacement, PluginField, PluginFieldFormat, RangeSpec, ThemeMode } from './types';
+import type { AboutInfo, AppSettings, DeviceSnapshot, DeviceSnapshotEntry, DeviceState, DpiStage, PluginCapability, PluginCapabilityPlacement, PluginField, PluginFieldFormat, RangeSpec, ReadStatus, ThemeMode } from './types';
+import { DetailValue } from './DetailValue';
 import {
   MAX_CONTROL_GROUPS,
   MAX_STATUS_ITEMS,
@@ -566,12 +567,12 @@ function CapabilitySummary({ capability, device }: { capability: PluginCapabilit
   );
 }
 
-function capabilityGroupLabel(group: string): string {
-  return i18n.t(`capability.group.${group}`, { defaultValue: group });
+function capabilityGroupLabel(group: string, pluginId?: string): string {
+  return resolveLabelKey(`capability.group.${group}`, pluginId);
 }
 
-function capabilityFieldLabel(key: string): string {
-  return i18n.t(`capability.field.${key}`, { defaultValue: key });
+function capabilityFieldLabel(key: string, pluginId?: string): string {
+  return resolveLabelKey(`capability.field.${key}`, pluginId);
 }
 
 function readSnapshotPath(snapshot: DeviceSnapshot, path: string): unknown {
@@ -614,6 +615,7 @@ function snapshotToState(snapshot: DeviceSnapshot): DeviceState {
     readonly: snapshot.readonly ?? false,
     pluginId: snapshot.pluginId,
     updatedAt: now,
+    readStatuses: snapshot.readStatuses,
   };
 }
 
@@ -1790,17 +1792,164 @@ function CapabilityRouter({ capability, device, writeBusy, runMutation }: {
   return <GenericCapabilityControl capability={capability} device={device} writeBusy={writeBusy} runMutation={runMutation} />;
 }
 
-function DeviceDetails({ device, onClose }: { device: DeviceState; onClose: () => void }) {
+function isComplexValue(value: unknown): boolean {
+  return value !== null && typeof value === 'object';
+}
+
+/** Extract the actual capability group names referenced by a capability's fields/zones/summary. */
+function capabilitySourceGroups(capability: PluginCapability): string[] {
+  const groups = new Set<string>();
+  const sources: string[] = [];
+  for (const field of capability.metadata.fields ?? []) {
+    if (field.source) sources.push(field.source);
+    if (field.labelSource) sources.push(field.labelSource);
+  }
+  for (const zone of capability.metadata.zones ?? []) {
+    for (const field of zone.fields) {
+      if (field.source) sources.push(field.source);
+      if (field.labelSource) sources.push(field.labelSource);
+    }
+  }
+  for (const item of capability.metadata.summary ?? []) {
+    if (item.source) sources.push(item.source);
+  }
+  for (const source of sources) {
+    const match = source.match(/^capabilities\.([^.]+)$/);
+    if (match) groups.add(match[1]);
+  }
+  return [...groups];
+}
+
+function ReadStatusBadge({ status }: { status?: ReadStatus }) {
+  if (!status) return null;
+  if (status === 'ok') return <span className="read-status-badge ok" title={i18n.t('dashboard.readOk')} aria-label={i18n.t('dashboard.readOk')} />;
+  if (status === 'skipped') return <span className="read-status-badge skipped" title={i18n.t('dashboard.readSkipped')} aria-label={i18n.t('dashboard.readSkipped')} />;
+  if (status === 'not-supported') return <span className="read-status-badge not-supported" title={i18n.t('dashboard.readNotSupported')} aria-label={i18n.t('dashboard.readNotSupported')} />;
+  if (typeof status === 'object' && 'failed' in status) {
+    return <span className="read-status-badge failed" title={status.failed} aria-label={i18n.t('dashboard.readFailed')} />;
+  }
+  return null;
+}
+
+function DeviceDetails({ device, deviceKey, onClose }: { device: DeviceState; deviceKey: string; onClose: () => void }) {
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'copying'>('idle');
+  const [diagCopyState, setDiagCopyState] = useState<'idle' | 'copied' | 'copying'>('idle');
+  const [protoDiagActive, setProtoDiagActive] = useState(false);
+  const [protoDiagError, setProtoDiagError] = useState<string | null>(null);
+  const [includePayload, setIncludePayload] = useState(false);
+  const [diagFormat, setDiagFormat] = useState<'markdown' | 'json'>('markdown');
+  const [logSessionId, setLogSessionId] = useState<string | null>(null);
+  const pluginId = device.pluginId;
+
+  // Sync protocol diagnostic state with backend on mount: the session may
+  // have been started in a previous DeviceDetails open or may have expired.
+  useEffect(() => {
+    let cancelled = false;
+    invoke<{ protocolDiagnostic: { deviceKey: string } | null; sessionId: string }>('log_status')
+      .then((status) => {
+        if (cancelled) return;
+        setLogSessionId(status.sessionId);
+        const proto = status.protocolDiagnostic;
+        setProtoDiagActive(proto !== null && proto.deviceKey === deviceKey);
+      })
+      .catch(() => {
+        // log_status unavailable in web preview; leave defaults.
+      });
+    return () => { cancelled = true; };
+  }, [deviceKey]);
+
+  // Build group → placement order mapping by inspecting actual capability source paths.
   const detailOrder = new Map<string, number>();
   for (const capability of device.pluginCapabilities) {
     const placement = placementsFor(capability, 'details')[0];
-    if (placement) {
+    if (!placement) continue;
+    const sourceGroups = capabilitySourceGroups(capability);
+    for (const group of sourceGroups) {
+      detailOrder.set(group, placement.order);
+    }
+    // Also map the capability id itself as a fallback.
+    if (sourceGroups.length === 0) {
       detailOrder.set(capability.id, placement.order);
     }
   }
+
   const groups = Object.entries(device.capabilities)
     .filter(([, fields]) => fields && Object.keys(fields).length > 0)
-    .sort(([a], [b]) => (detailOrder.get(a) ?? 10_000) - (detailOrder.get(b) ?? 10_000));
+    .sort(([a], [b]) => (detailOrder.get(a) ?? 10_000) - (detailOrder.get(b) ?? 10_000) || a.localeCompare(b));
+
+  const handleCopyAll = useCallback(() => {
+    setCopyState('copying');
+    const payload = {
+      miraVersion: 'dev',
+      pluginId: device.pluginId,
+      evidence: device.evidence,
+      connection: device.connection,
+      updatedAt: device.updatedAt,
+      capabilities: device.capabilities,
+      readStatuses: device.readStatuses ?? {},
+    };
+    const text = JSON.stringify(payload, null, 2);
+    navigator.clipboard?.writeText(text).then(() => {
+      setCopyState('copied');
+      setTimeout(() => setCopyState('idle'), 2000);
+    }).catch(() => setCopyState('idle'));
+  }, [device]);
+
+  const handleRefresh = useCallback(() => {
+    invoke('device_refresh').catch(() => {});
+  }, []);
+
+  const handleCopyDiagnostics = useCallback(() => {
+    setDiagCopyState('copying');
+    setProtoDiagError(null);
+    const input = {
+      pluginId: pluginId ?? '',
+      deviceKey,
+      model: undefined,
+      sessionId: logSessionId ?? undefined,
+      readingsJson: JSON.stringify(device.capabilities ?? {}, null, 2),
+      readStatusesJson: JSON.stringify(device.readStatuses ?? {}, null, 2),
+      includeProtocolPayload: includePayload && protoDiagActive,
+      format: diagFormat,
+    };
+    // path 为空 → 仅返回 content，不写文件。
+    invoke<{ content: string }>('log_export_device_diagnostics', { input, path: '' })
+      .then((outcome) => navigator.clipboard?.writeText(outcome.content))
+      .then(() => {
+        setDiagCopyState('copied');
+        setTimeout(() => setDiagCopyState('idle'), 2000);
+      })
+      .catch(() => {
+        setDiagCopyState('idle');
+        setProtoDiagError(i18n.t('dashboard.diagnosticsCopyFailed'));
+      });
+  }, [device, deviceKey, pluginId, includePayload, protoDiagActive, diagFormat, logSessionId]);
+
+  const handleToggleProtocolDiagnostic = useCallback(() => {
+    setProtoDiagError(null);
+    if (protoDiagActive) {
+      invoke('log_stop_protocol_diagnostic')
+        .then(() => invoke('log_stop_diagnostic_session'))
+        .then(() => setProtoDiagActive(false))
+        .catch(() => setProtoDiagError(i18n.t('dashboard.protocolDiagnosticStopFailed')));
+    } else {
+      // 默认 10 分钟，自动到期。同时提升日志等级到 Trace 以采集 HID 交换事件。
+      // 链式调用：如果 diagnostic_session 启动失败，回滚已启动的 protocol_diagnostic。
+      invoke('log_start_protocol_diagnostic', { deviceKey, minutes: 10, autoExpire: true })
+        .then(() =>
+          invoke('log_start_diagnostic_session', { minutes: 10, level: 'trace', autoExpire: true })
+            .then(() => setProtoDiagActive(true))
+            .catch((sessionErr) => {
+              // 回滚：diagnostic_session 失败时停止已启动的 protocol_diagnostic
+              invoke('log_stop_protocol_diagnostic').catch(() => {});
+              setProtoDiagError(i18n.t('dashboard.protocolDiagnosticStartFailed'));
+              throw sessionErr;
+            })
+        )
+        .catch(() => setProtoDiagError(i18n.t('dashboard.protocolDiagnosticStartFailed')));
+    }
+  }, [deviceKey, protoDiagActive]);
+
   return (
     <Modal
       open
@@ -1815,17 +1964,77 @@ function DeviceDetails({ device, onClose }: { device: DeviceState; onClose: () =
         <button className="icon-button" onClick={onClose} aria-label={i18n.t('dashboard.closeDeviceDetails')}><X weight="regular" /></button>
       </header>
       <p className="details-note">{i18n.t('dashboard.detailsNote')}</p>
+      <div className="details-actions">
+        <button className="details-action-btn" onClick={handleRefresh} title={i18n.t('dashboard.refreshAll')}>
+          <Timer weight="regular" /> {i18n.t('dashboard.refreshAll')}
+        </button>
+        <button className="details-action-btn" onClick={handleCopyAll} title={i18n.t('dashboard.copyAllReadings')}>
+          {copyState === 'copied' ? '✓' : <ReadCvLogo weight="regular" />} {i18n.t('dashboard.copyAllReadings')}
+        </button>
+        <button className="details-action-btn" onClick={handleCopyDiagnostics} title={i18n.t('dashboard.copyDeviceDiagnostics')}>
+          {diagCopyState === 'copied' ? '✓' : <Info weight="regular" />} {i18n.t('dashboard.copyDeviceDiagnostics')}
+        </button>
+      </div>
+      <div className="protocol-diagnostic-toggle">
+        <label className="protocol-diagnostic-label">
+          <input
+            type="checkbox"
+            checked={protoDiagActive}
+            onChange={handleToggleProtocolDiagnostic}
+          />
+          <span>{i18n.t('dashboard.protocolDiagnostic')}</span>
+        </label>
+        <p className="protocol-diagnostic-hint">{i18n.t('dashboard.protocolDiagnosticHint')}</p>
+        {protoDiagError && <p className="protocol-diagnostic-error">{protoDiagError}</p>}
+        {protoDiagActive && (
+          <label className="protocol-diagnostic-payload-label">
+            <input
+              type="checkbox"
+              checked={includePayload}
+              onChange={(e) => setIncludePayload(e.target.checked)}
+            />
+            <span>{i18n.t('dashboard.includeProtocolPayload')}</span>
+          </label>
+        )}
+      </div>
+      <div className="diagnostics-format-selector">
+        <span className="diagnostics-format-label">{i18n.t('dashboard.diagnosticsFormat')}</span>
+        <div className="diagnostics-format-options">
+          <button
+            type="button"
+            className={diagFormat === 'markdown' ? 'active' : ''}
+            onClick={() => setDiagFormat('markdown')}
+          >
+            {i18n.t('dashboard.diagnosticsFormatMarkdown')}
+          </button>
+          <button
+            type="button"
+            className={diagFormat === 'json' ? 'active' : ''}
+            onClick={() => setDiagFormat('json')}
+          >
+            {i18n.t('dashboard.diagnosticsFormatJson')}
+          </button>
+        </div>
+      </div>
       <div className="capability-groups">
         {groups.length ? groups.map(([group, fields]) => (
           <section className="capability-group" key={group}>
-            <h3>{capabilityGroupLabel(group)}</h3>
+            <h3>
+              {capabilityGroupLabel(group, pluginId)}
+              <ReadStatusBadge status={device.readStatuses?.[group]} />
+            </h3>
             <dl>
               {Object.entries(fields).map(([key, value]) => {
                 const valueLabel = resolveDetailValueLabel(group, key, device);
+                const complex = isComplexValue(value);
                 return (
                   <div key={key}>
-                    <dt>{capabilityFieldLabel(key)}</dt>
-                    <dd><FormattedValue value={value} label={valueLabel} /></dd>
+                    <dt>{capabilityFieldLabel(key, pluginId)}</dt>
+                    <dd>
+                      {complex
+                        ? <DetailValue value={value} />
+                        : <FormattedValue value={value} label={valueLabel} />}
+                    </dd>
                   </div>
                 );
               })}
@@ -2663,7 +2872,7 @@ function Dashboard({
         <span>{t('dashboard.lastUpdate', { time: device.updatedAt })}</span>
         <button className="details-button" onClick={() => { invoke('device_refresh').catch(() => {}); setShowDetails(true); }}><ReadCvLogo weight="regular" />{t('dashboard.allReadInfo')}</button>
       </div>
-      {showDetails && <DeviceDetails device={device} onClose={() => setShowDetails(false)} />}
+      {showDetails && <DeviceDetails device={device} deviceKey={selectedEntry?.deviceKey ?? ''} onClose={() => setShowDetails(false)} />}
     </main>
   );
 }

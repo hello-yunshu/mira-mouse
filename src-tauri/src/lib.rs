@@ -18,6 +18,7 @@ mod pointer_activity;
 mod tray;
 use battery_history::{AbnormalDrainNotifyState, BatteryHistoryResponse, BatteryHistoryState};
 use logging::model::{FieldValue, LogInput, LogLevel, LogSource};
+use logging::protocol_event::{self, ProtocolEventContext};
 use mira_plugin_runtime::{
     extract_package, hid, inspect_package, mutate_device_with_package,
     normalize_device_outputs_with_package, read_device_with_package, read_device_with_projection,
@@ -685,6 +686,7 @@ struct PlanStats {
     presence: u64,
     quick: u64,
     battery: u64,
+    inventory: u64,
     full: u64,
 }
 
@@ -694,6 +696,7 @@ impl PlanStats {
             ReadPlan::PresenceOnly => self.presence += 1,
             ReadPlan::Quick => self.quick += 1,
             ReadPlan::BatteryOnly => self.battery += 1,
+            ReadPlan::Inventory => self.inventory += 1,
             ReadPlan::Full => self.full += 1,
         }
     }
@@ -2655,14 +2658,184 @@ fn new_device_session_correlation_id(device_path: &str) -> String {
     )
 }
 
-fn begin_device_session_trace(state: &SessionState, device_path: &str) {
+/// Host 端 `HidEventSink` 实现：将 HID 交换事件转发到日志服务。
+///
+/// 持有 `LogService` clone（Arc 内部，clone 廉价）和构造协议事件上下文所需的
+/// owned 数据。在 `read_device_once` 中按设备构造，传入 `ProtocolContext.hid_event_sink`，
+/// 让 `mira-plugin-runtime` 的 HID 交换路径能够发射 `hid-feature-exchange` /
+/// `hid-busy-retry` / `hid-response-mismatch` / `hid-checksum-failed` 事件。
+///
+/// payload 隐私（对齐 spec 13.2）：默认不记录 request/response hex。只有当
+/// `LogService::protocol_diagnostic_device_key()` 返回 Some 且 device_key 匹配
+/// 当前设备时，才调用 `classify_command` / `mask_payload` 对 payload 做
+/// command-aware masking 后记录。
+struct LoggingHidEventSink {
+    log_service: logging::LogService,
+    correlation_id: String,
+    plugin_id: String,
+    plugin_version: String,
+    family: String,
+    model: Option<String>,
+    device_key: String,
+    vendor_id: u16,
+    product_id: u16,
+    connection: String,
+    usage_page: u16,
+    usage: u16,
+    interface_number: Option<i32>,
+    workflow_id: String,
+}
+
+impl LoggingHidEventSink {
+    fn proto_ctx(&self) -> protocol_event::ProtocolEventContext<'_> {
+        protocol_event::ProtocolEventContext {
+            correlation_id: &self.correlation_id,
+            plugin_id: &self.plugin_id,
+            plugin_version: &self.plugin_version,
+            family: &self.family,
+            model: self.model.as_deref(),
+            device_key: &self.device_key,
+            vendor_id: self.vendor_id,
+            product_id: self.product_id,
+            connection: &self.connection,
+            usage_page: self.usage_page,
+            usage: self.usage,
+            interface_number: self.interface_number,
+        }
+    }
+
+    /// 判断是否应对当前设备记录 HID payload。
+    fn should_record_payload(&self) -> bool {
+        self.log_service
+            .protocol_diagnostic_device_key()
+            .map(|k| k == self.device_key)
+            .unwrap_or(false)
+    }
+
+    /// 对 payload hex 做 command-aware masking。
+    /// 返回 (request_hex_opt, response_hex_opt)，Deny 策略或未启用协议诊断时返回 (None, None)。
+    fn mask_payload_pair(
+        &self,
+        command: &str,
+        request_hex: &str,
+        response_hex: &str,
+    ) -> (Option<String>, Option<String>) {
+        if !self.should_record_payload() {
+            return (None, None);
+        }
+        let policy = protocol_event::classify_command(command);
+        (
+            protocol_event::mask_payload(request_hex, policy),
+            protocol_event::mask_payload(response_hex, policy),
+        )
+    }
+}
+
+impl mira_plugin_runtime::HidEventSink for LoggingHidEventSink {
+    fn on_hid_exchange(
+        &self,
+        _transport: &str,
+        command: &str,
+        request_hex: &str,
+        response_hex: &str,
+        duration_ms: u64,
+        busy_reads: usize,
+        checksum_valid: Option<bool>,
+    ) {
+        let ctx = self.proto_ctx();
+        let (request_hex_opt, response_hex_opt) =
+            self.mask_payload_pair(command, request_hex, response_hex);
+        // hex 字符串 "00 1F 04" 每字节 3 字符（含空格），空串对应 0 字节。
+        let request_length = if request_hex.is_empty() {
+            0
+        } else {
+            (request_hex.matches(' ').count() + 1).max(0)
+        };
+        let response_length = if response_hex.is_empty() {
+            0
+        } else {
+            (response_hex.matches(' ').count() + 1).max(0)
+        };
+        self.log_service.write(protocol_event::hid_feature_exchange(
+            &ctx,
+            &self.workflow_id,
+            command,
+            None,
+            None,
+            None,
+            1,
+            busy_reads as u32,
+            duration_ms,
+            request_length,
+            response_length,
+            checksum_valid,
+            None,
+            request_hex_opt.as_deref(),
+            response_hex_opt.as_deref(),
+        ));
+    }
+
+    fn on_hid_busy_retry(&self, _transport: &str, command: &str, attempt: usize) {
+        let ctx = self.proto_ctx();
+        self.log_service.write(protocol_event::hid_busy_retry(
+            &ctx,
+            &self.workflow_id,
+            command,
+            attempt as u32,
+            5,
+        ));
+    }
+
+    fn on_hid_response_mismatch(
+        &self,
+        _transport: &str,
+        command: &str,
+        expected: &str,
+        actual: &str,
+    ) {
+        let ctx = self.proto_ctx();
+        self.log_service
+            .write(protocol_event::hid_response_mismatch(
+                &ctx,
+                &self.workflow_id,
+                command,
+                expected,
+                actual,
+            ));
+    }
+
+    fn on_hid_checksum_failed(
+        &self,
+        _transport: &str,
+        command: &str,
+        expected: &str,
+        actual: &str,
+    ) {
+        let ctx = self.proto_ctx();
+        let parse_byte =
+            |s: &str| -> u8 { u8::from_str_radix(s.trim_start_matches("0x"), 16).unwrap_or(0) };
+        self.log_service.write(protocol_event::hid_checksum_failed(
+            &ctx,
+            &self.workflow_id,
+            command,
+            parse_byte(expected),
+            parse_byte(actual),
+        ));
+    }
+}
+
+fn begin_device_session_trace(state: &SessionState, device_path: &str) -> Option<String> {
     let Ok(mut sessions) = state.device_session_logging.lock() else {
-        return;
+        return None;
     };
     if sessions.active_paths.contains(device_path) {
-        return;
+        // 已有活跃会话：返回已有的 pending correlation_id（如有）。
+        return sessions
+            .pending
+            .get(device_path)
+            .map(|p| p.correlation_id.clone());
     }
-    sessions
+    let entry = sessions
         .pending
         .entry(device_path.to_string())
         .or_insert_with(|| PendingDeviceSessionLog {
@@ -2671,6 +2844,7 @@ fn begin_device_session_trace(state: &SessionState, device_path: &str) {
             had_failure: false,
             failure_logged: false,
         });
+    Some(entry.correlation_id.clone())
 }
 
 fn fail_device_session_trace(state: &SessionState, device_path: &str) -> Option<String> {
@@ -3598,6 +3772,7 @@ mod settings_tests {
             readonly: false,
             plugin_id: None,
             history_identity: None,
+            read_statuses: BTreeMap::new(),
         };
         let mut settings = AppSettings::default();
         assert_eq!(battery_title(&snapshot, &settings).as_deref(), Some("64%"));
@@ -3665,6 +3840,7 @@ mod settings_tests {
             readonly,
             plugin_id: None,
             history_identity: None,
+            read_statuses: BTreeMap::new(),
         }
     }
 
@@ -3919,6 +4095,7 @@ mod settings_tests {
             readonly: false,
             plugin_id: None,
             history_identity: None,
+            read_statuses: BTreeMap::new(),
         };
         assert_eq!(
             exportable_value(
@@ -4016,6 +4193,7 @@ mod settings_tests {
             readonly: false,
             plugin_id: None,
             history_identity: None,
+            read_statuses: BTreeMap::new(),
         };
         let field = ExportableField {
             id: "receiver-lighting".into(),
@@ -4073,6 +4251,7 @@ mod settings_tests {
             readonly: false,
             plugin_id: None,
             history_identity: None,
+            read_statuses: BTreeMap::new(),
         };
         let field = ExportableField {
             id: "receiver-lighting".into(),
@@ -4382,6 +4561,7 @@ mod night_mode_tests {
             plugin_capabilities: Vec::new(),
             plugin_id: None,
             history_identity: None,
+            read_statuses: BTreeMap::new(),
         };
         // 充电中 → Night
         assert_eq!(
@@ -4448,6 +4628,7 @@ mod night_mode_tests {
             plugin_capabilities: Vec::new(),
             plugin_id: None,
             history_identity: None,
+            read_statuses: BTreeMap::new(),
         };
         // 电量 15% < 阈值 20% → Night
         assert_eq!(
@@ -4517,6 +4698,7 @@ mod night_mode_tests {
             plugin_capabilities: Vec::new(),
             plugin_id: None,
             history_identity: None,
+            read_statuses: BTreeMap::new(),
         };
         // 白天但充电中 → Night（OR）
         assert_eq!(
@@ -4561,6 +4743,7 @@ mod night_mode_tests {
             plugin_capabilities: Vec::new(),
             plugin_id: None,
             history_identity: None,
+            read_statuses: BTreeMap::new(),
         };
         let saved = read_receiver_light_state(&snapshot).unwrap();
         assert_eq!(saved.effect, 3);
@@ -4600,6 +4783,7 @@ mod night_mode_tests {
             plugin_capabilities: Vec::new(),
             plugin_id: None,
             history_identity: None,
+            read_statuses: BTreeMap::new(),
         };
         let saved = read_receiver_light_state(&snapshot).unwrap();
         assert_eq!(saved.option, 2);
@@ -4627,6 +4811,7 @@ mod night_mode_tests {
             plugin_capabilities: Vec::new(),
             plugin_id: None,
             history_identity: None,
+            read_statuses: BTreeMap::new(),
         };
         assert!(read_receiver_light_state(&snapshot).is_none());
     }
@@ -4678,6 +4863,7 @@ mod night_mode_tests {
             readonly: false,
             plugin_id: None,
             history_identity: None,
+            read_statuses: BTreeMap::new(),
         };
         let (is_on, saved) = read_mouse_light_state(&snapshot).unwrap();
         assert!(is_on);
@@ -4708,6 +4894,7 @@ mod night_mode_tests {
             readonly: false,
             plugin_id: None,
             history_identity: None,
+            read_statuses: BTreeMap::new(),
         };
         assert!(read_mouse_light_state(&snapshot).is_none());
     }
@@ -4737,6 +4924,7 @@ mod night_mode_tests {
             readonly: false,
             plugin_id: None,
             history_identity: None,
+            read_statuses: BTreeMap::new(),
         };
         // enabled=true 但颜色缺失：返回 None，跳过该目标，
         // 避免 fallback #000000 在退出夜间恢复时覆盖设备原色。
@@ -4789,6 +4977,7 @@ mod night_mode_tests {
             readonly: false,
             plugin_id: Some("mira.logitech-hidpp".into()),
             history_identity: None,
+            read_statuses: BTreeMap::new(),
         };
 
         let (is_on, saved) = read_mouse_light_state(&snapshot).unwrap();
@@ -4840,6 +5029,7 @@ mod night_mode_tests {
             readonly: false,
             plugin_id: Some("mira.logitech-hidpp".into()),
             history_identity: None,
+            read_statuses: BTreeMap::new(),
         };
 
         let (mouse, receiver) = resolve_lighting_mutations(&snapshot);
@@ -4899,6 +5089,7 @@ mod night_mode_tests {
             readonly: false,
             plugin_id: Some("mira.test".into()),
             history_identity: None,
+            read_statuses: BTreeMap::new(),
         };
 
         let (mouse, receiver) = resolve_lighting_mutations(&snapshot);
@@ -4951,6 +5142,7 @@ mod night_mode_tests {
             readonly: false,
             plugin_id: Some("mira.test".into()),
             history_identity: None,
+            read_statuses: BTreeMap::new(),
         };
 
         let (mouse, receiver) = resolve_lighting_mutations(&snapshot);
@@ -5023,6 +5215,7 @@ mod night_mode_tests {
             readonly: false,
             plugin_id: None,
             history_identity: None,
+            read_statuses: BTreeMap::new(),
         }
     }
 
@@ -6865,7 +7058,14 @@ fn display_name(
     family: &str,
     verified_models: &[String],
     evidence: &str,
+    model: Option<&str>,
 ) -> String {
+    // Explicit model routing: prefer the matched device's model (set from
+    // descriptor.model or the hardware-verified heuristic) over the generic
+    // fallback. This decouples display name from evidence level.
+    if let Some(model) = model {
+        return model.to_string();
+    }
     if evidence == "hardware-verified" {
         if let Some(model) = verified_models.first() {
             return model.clone();
@@ -6930,6 +7130,7 @@ fn build_device_snapshot(
             &device.family,
             &devices.hardware_verified_models,
             &device.evidence,
+            device.model.as_deref(),
         )
     });
     let resolved_connection = reading
@@ -6981,6 +7182,16 @@ fn build_device_snapshot(
             display_name: identity.display_name.clone(),
             aliases: identity.aliases.clone(),
         }),
+        read_statuses: reading
+            .read_statuses
+            .into_iter()
+            .map(|(k, v)| {
+                (
+                    k,
+                    serde_json::to_value(v).unwrap_or(serde_json::Value::Null),
+                )
+            })
+            .collect(),
     }
 }
 
@@ -7118,6 +7329,7 @@ fn reapply_software_profile(
         onboard_memory_cache: Some(&state.onboard_memory_cache),
         cached_handles: Some(&state.cached_handles),
         hid_io_stats: hid_io_stats_ref(state),
+        hid_event_sink: None,
     };
     let mut failed = false;
     if allowed
@@ -7168,6 +7380,7 @@ fn reapply_software_profile(
                 onboard_memory_cache: Some(&state.onboard_memory_cache),
                 cached_handles: Some(&state.cached_handles),
                 hid_io_stats: hid_io_stats_ref(state),
+                hid_event_sink: None,
             },
         )
         .ok()
@@ -7176,7 +7389,7 @@ fn reapply_software_profile(
 
 /// 读取计划：决定对设备执行多重的读取操作。
 ///
-/// 强度顺序：Full > Quick > BatteryOnly > PresenceOnly
+/// 强度顺序：Full > Inventory > Quick > BatteryOnly > PresenceOnly
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum ReadPlan {
     /// 只检测设备存在（HID 枚举 + 插件匹配），不执行协议工作流。
@@ -7188,6 +7401,12 @@ enum ReadPlan {
     /// 读取当前交互界面需要的动态状态（电量、DPI、回报率等）。
     /// 使用工作流投影，只执行生成目标 output 所需的最小 step 子集。
     Quick,
+    /// 读取插件声明的清单（inventory）workflow 产出。
+    /// 介于 Quick 与 Full 之间：仅在用户打开"全部读数"详情视图或显式
+    /// 请求时触发，不进入后台轮询（后台只跑 Quick 与 Full）。
+    /// 使用工作流投影，目标 output 为 inventory 相关。
+    #[allow(dead_code)] // 由 UI Agent 在后续阶段按需构造触发
+    Inventory,
     /// 完整执行工作流，读取所有状态和能力。
     /// 用于首次接入后的后台补全、用户手动完整刷新、插件更新等。
     Full,
@@ -7220,13 +7439,21 @@ impl ReadPlan {
                 fields.insert(SemanticField::ReceiverBatteryPercent);
                 fields
             }
+            ReadPlan::Inventory => {
+                let mut fields = BTreeSet::new();
+                fields.insert(SemanticField::Inventory);
+                fields
+            }
             ReadPlan::Full => BTreeSet::new(), // Full 不使用投影，执行完整工作流
         }
     }
 
     /// 是否使用工作流投影（而非完整工作流）。
     fn uses_projection(&self) -> bool {
-        matches!(self, ReadPlan::Quick | ReadPlan::BatteryOnly)
+        matches!(
+            self,
+            ReadPlan::Quick | ReadPlan::BatteryOnly | ReadPlan::Inventory
+        )
     }
 }
 
@@ -7411,17 +7638,27 @@ fn battery_signature(snapshot: Option<&DeviceSnapshot>) -> Vec<(String, u8, bool
 }
 
 /// 设备快照就绪程度：标识当前快照的完整性。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// 进阶顺序：Detected → Quick → Inventory → Full。派生 `Ord` 后此顺序即为
+/// 强度顺序，用于读取后只升不降地更新就绪级别。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum SnapshotReadiness {
     /// 仅检测到设备存在，尚未读取任何协议状态。
     Detected,
     /// 已读取动态状态（Quick），静态能力可能尚未完整。
     Quick,
+    /// 已读取插件声明的清单（inventory）workflow 产出。
+    /// 介于 Quick 与 Full 之间，仅由用户打开"全部读数"或显式请求触发。
+    #[allow(dead_code)] // 由 UI Agent 在后续阶段按需写入
+    Inventory,
     /// 已读取完整状态和能力。
     Full,
 }
 
 fn next_initial_read_plan(readiness: &HashMap<String, SnapshotReadiness>) -> Option<ReadPlan> {
+    // 后台初始补全只产生 Full（不产生 Inventory）：Inventory 读取不进入后台
+    // 轮询，仅由用户打开"全部读数"或显式 Tauri 命令触发。任何低于 Full 的
+    // 就绪级别（含 Inventory）都通过一次 Full 读取补全到 Full。
     readiness
         .values()
         .any(|value| *value != SnapshotReadiness::Full)
@@ -7433,6 +7670,8 @@ fn skip_already_complete_initial_read(
     device_path: &str,
     plan: ReadPlan,
 ) -> bool {
+    // 仅 Full 级别的设备被视为初始补全已完成；Inventory 级别仍需 Full 读取
+    // 补全（Inventory → Full），因此不跳过。
     plan == ReadPlan::Full
         && readiness
             .values()
@@ -7468,12 +7707,17 @@ enum SnapshotPatch {
         /// 投影诊断信息
         projection_valid: bool,
         fallback_reason: Option<String>,
+        /// Per-output read statuses from the projected read. Merged into the
+        /// existing snapshot's read_statuses (brand-neutral diagnostics).
+        read_statuses: BTreeMap<String, serde_json::Value>,
     },
     /// BatteryOnly 补丁：只更新电量和充电。
     Battery {
         battery_percent: Option<u8>,
         charging: Option<bool>,
         batteries: Option<Vec<mira_core::DeviceBattery>>,
+        /// Per-output read statuses from the battery-only read.
+        read_statuses: BTreeMap<String, serde_json::Value>,
     },
     /// Full 替换：完整替换快照。
     Full(DeviceSnapshot),
@@ -7611,6 +7855,7 @@ fn apply_snapshot_patch(
                         &device.family,
                         &devices.hardware_verified_models,
                         &device.evidence,
+                        device.model.as_deref(),
                     ),
                     connection: connection.unwrap_or(fallback_connection),
                     selection_priority: device.selection_priority_for(snapshot_connection_value(
@@ -7636,6 +7881,7 @@ fn apply_snapshot_patch(
                         display_name: identity.display_name.clone(),
                         aliases: identity.aliases.clone(),
                     }),
+                    read_statuses: BTreeMap::new(),
                 }
             }
         }
@@ -7651,6 +7897,7 @@ fn apply_snapshot_patch(
             capabilities,
             projection_valid: _,
             fallback_reason: _,
+            read_statuses,
         } => {
             if let Some(existing) = existing {
                 let mut updated = existing.clone();
@@ -7682,6 +7929,12 @@ fn apply_snapshot_patch(
                     updated.confirmed_light_color = Some(lc);
                 }
                 merge_capability_patch(&mut updated.capabilities, capabilities);
+                // Merge per-output read statuses: incoming statuses override
+                // existing ones for the same key (latest read wins). Outputs
+                // not touched in this cycle retain their previous status.
+                for (key, value) in read_statuses {
+                    updated.read_statuses.insert(key, value);
+                }
                 updated
             } else {
                 // 没有 existing 快照时，Quick 补丁无法应用
@@ -7703,6 +7956,7 @@ fn apply_snapshot_patch(
             battery_percent,
             charging,
             batteries,
+            read_statuses,
         } => {
             if let Some(existing) = existing {
                 let mut updated = existing.clone();
@@ -7717,6 +7971,9 @@ fn apply_snapshot_patch(
                     // 整体替换会丢掉旧 mouse 条目导致 UI 误显示接收器电量。
                     // 合并保证 mouse 条目粘性保留，直到设备真正断联（Clear 分支）。
                     updated.batteries = merge_batteries(&updated.batteries, &bats);
+                }
+                for (key, value) in read_statuses {
+                    updated.read_statuses.insert(key, value);
                 }
                 updated
             } else {
@@ -7950,6 +8207,66 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
                 }
             }
 
+            // Phase 1: 根据读取计划执行工作流。
+            // projection_valid=true 表示投影成功，用 SnapshotPatch 合并；
+            // projection_valid=false 表示 Full 或投影回退，用 build_device_snapshot 完整构建。
+            let correlation_id = begin_device_session_trace(&state, &device.path);
+            let read_start = Instant::now();
+
+            // 构造协议事件上下文，发射 plugin-read-started。
+            // correlation_id 与 device session trace 共享，便于"复制设备诊断"按 correlationId 过滤。
+            let workflow_id = format!("{}-read", device.family);
+            let plan_str = format!("{plan:?}");
+            let device_key = sanitized_device_key(device);
+            let proto_ctx = correlation_id.as_deref().map(|cid| ProtocolEventContext {
+                correlation_id: cid,
+                plugin_id: &inspection.plugin_id,
+                plugin_version: &inspection.version,
+                family: &device.family,
+                model: device.model.as_deref(),
+                device_key: &device_key,
+                vendor_id: device.vendor_id,
+                product_id: device.product_id,
+                connection: snapshot_connection_value(connection),
+                usage_page: device.usage_page,
+                usage: device.usage,
+                interface_number: None,
+            });
+            if let Some(ref proto_ctx) = proto_ctx {
+                state.log_input(protocol_event::plugin_read_started(
+                    proto_ctx,
+                    &workflow_id,
+                    &plan_str,
+                ));
+            }
+
+            // 构造 HID 事件 sink：将 HID 交换事件转发到日志服务。
+            // 仅在 LogService 已初始化且 proto_ctx 存在时构造。
+            let log_service_clone = state
+                .log_service
+                .lock()
+                .ok()
+                .and_then(|guard| guard.clone());
+            let hid_sink: Option<LoggingHidEventSink> = match (&proto_ctx, log_service_clone) {
+                (Some(ctx), Some(svc)) => Some(LoggingHidEventSink {
+                    log_service: svc,
+                    correlation_id: ctx.correlation_id.to_string(),
+                    plugin_id: ctx.plugin_id.to_string(),
+                    plugin_version: ctx.plugin_version.to_string(),
+                    family: ctx.family.to_string(),
+                    model: ctx.model.map(|s| s.to_string()),
+                    device_key: ctx.device_key.to_string(),
+                    vendor_id: ctx.vendor_id,
+                    product_id: ctx.product_id,
+                    connection: ctx.connection.to_string(),
+                    usage_page: ctx.usage_page,
+                    usage: ctx.usage,
+                    interface_number: ctx.interface_number,
+                    workflow_id: workflow_id.clone(),
+                }),
+                _ => None,
+            };
+
             let ctx = ProtocolContext {
                 api,
                 path: &device.path,
@@ -7961,13 +8278,11 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
                 onboard_memory_cache: Some(&state.onboard_memory_cache),
                 cached_handles: Some(&state.cached_handles),
                 hid_io_stats: hid_io_stats_ref(&state),
+                hid_event_sink: hid_sink
+                    .as_ref()
+                    .map(|s| s as &dyn mira_plugin_runtime::HidEventSink),
             };
 
-            // Phase 1: 根据读取计划执行工作流。
-            // projection_valid=true 表示投影成功，用 SnapshotPatch 合并；
-            // projection_valid=false 表示 Full 或投影回退，用 build_device_snapshot 完整构建。
-            begin_device_session_trace(&state, &device.path);
-            let read_start = Instant::now();
             let read_result: Result<(DeviceReading, bool, Option<String>), String> =
                 if plan.uses_projection() {
                     read_device_with_projection(&package, &ctx, &plan.semantic_fields())
@@ -7978,6 +8293,99 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
 
             match read_result {
                 Ok((mut reading, projection_valid, projection_fallback_reason)) => {
+                    // 发射 plugin-read-completed 协议事件。
+                    let elapsed_ms = read_start.elapsed().as_millis() as u64;
+                    if let Some(ref proto_ctx) = proto_ctx {
+                        let successful = reading
+                            .read_statuses
+                            .values()
+                            .filter(|s| matches!(s, mira_plugin_runtime::ReadStatus::Ok))
+                            .count();
+                        let failed = reading
+                            .read_statuses
+                            .values()
+                            .filter(|s| matches!(s, mira_plugin_runtime::ReadStatus::Failed(_)))
+                            .count();
+                        state.log_input(protocol_event::plugin_read_completed(
+                            proto_ctx,
+                            &workflow_id,
+                            &plan_str,
+                            elapsed_ms,
+                            successful,
+                            failed,
+                            projection_valid,
+                        ));
+                        // 发射 plugin-read-step-* 事件：从 read_statuses 遍历每个 output 的状态。
+                        // read_statuses 只包含 output 名和状态，缺少 command/parser/duration 等细节，
+                        // 用 output 名作为 command 标识，parser 留空，duration 传 0。
+                        // 这些事件让"复制设备诊断"能展示每个 output 的读取结果。
+                        for (output, status) in &reading.read_statuses {
+                            let step_input = match status {
+                                mira_plugin_runtime::ReadStatus::Ok => {
+                                    protocol_event::plugin_read_step_succeeded(
+                                        proto_ctx,
+                                        &workflow_id,
+                                        output,
+                                        "",
+                                        output,
+                                        0,
+                                        0,
+                                        false,
+                                    )
+                                }
+                                mira_plugin_runtime::ReadStatus::Skipped => {
+                                    protocol_event::plugin_read_step_skipped(
+                                        proto_ctx,
+                                        &workflow_id,
+                                        output,
+                                        output,
+                                    )
+                                }
+                                mira_plugin_runtime::ReadStatus::NotSupported => {
+                                    protocol_event::plugin_read_step_not_supported(
+                                        proto_ctx,
+                                        &workflow_id,
+                                        output,
+                                        output,
+                                    )
+                                }
+                                mira_plugin_runtime::ReadStatus::Failed(reason) => {
+                                    protocol_event::plugin_read_step_failed(
+                                        proto_ctx,
+                                        &workflow_id,
+                                        output,
+                                        "",
+                                        output,
+                                        "unknown",
+                                        reason,
+                                        None,
+                                    )
+                                }
+                            };
+                            state.log_input(step_input);
+                        }
+                        // Inventory plan：发射 plugin-inventory-completed/partial 事件。
+                        // 对齐 spec 13.1：inventory 读取完成或部分完成时记录专用事件，
+                        // 便于"复制设备诊断"区分常规读取和 inventory 读取。
+                        if plan == ReadPlan::Inventory {
+                            if failed > 0 {
+                                state.log_input(protocol_event::plugin_inventory_partial(
+                                    proto_ctx,
+                                    &workflow_id,
+                                    elapsed_ms,
+                                    successful,
+                                    failed,
+                                ));
+                            } else {
+                                state.log_input(protocol_event::plugin_inventory_completed(
+                                    proto_ctx,
+                                    &workflow_id,
+                                    elapsed_ms,
+                                    successful,
+                                ));
+                            }
+                        }
+                    }
                     clear_device_read_error(&state, &device.path);
                     // Observe the raw protocol result before sticky snapshot
                     // merging. A missing plugin-declared component arms wake
@@ -8040,6 +8448,17 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
                                 capabilities: reading.capabilities,
                                 projection_valid: true,
                                 fallback_reason: None,
+                                read_statuses: reading
+                                    .read_statuses
+                                    .into_iter()
+                                    .map(|(k, v)| {
+                                        (
+                                            k,
+                                            serde_json::to_value(v)
+                                                .unwrap_or(serde_json::Value::Null),
+                                        )
+                                    })
+                                    .collect(),
                             }
                         } else {
                             // BatteryOnly
@@ -8051,6 +8470,17 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
                                 } else {
                                     Some(reading.batteries)
                                 },
+                                read_statuses: reading
+                                    .read_statuses
+                                    .into_iter()
+                                    .map(|(k, v)| {
+                                        (
+                                            k,
+                                            serde_json::to_value(v)
+                                                .unwrap_or(serde_json::Value::Null),
+                                        )
+                                    })
+                                    .collect(),
                             }
                         };
                         apply_snapshot_patch(
@@ -8080,6 +8510,7 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
                                     onboard_memory_cache: Some(&state.onboard_memory_cache),
                                     cached_handles: Some(&state.cached_handles),
                                     hid_io_stats: hid_io_stats_ref(&state),
+                                    hid_event_sink: None,
                                 },
                             )
                             .unwrap_or_default()
@@ -8163,7 +8594,10 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
                         readiness
                             .entry(device.path.clone())
                             .and_modify(|current| {
-                                if *current != SnapshotReadiness::Full {
+                                // 只升不降：避免后续 Quick 读取把 Inventory/Full 级别
+                                // 降级为 Quick。Quick 不会高于 Inventory 或 Full，故
+                                // 已达 Inventory/Full 的快照保持不变。
+                                if next > *current {
                                     *current = next;
                                 }
                             })
@@ -8194,6 +8628,19 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
                     });
                 }
                 Err(error) => {
+                    // 发射 plugin-read-failed 协议事件。
+                    let elapsed_ms = read_start.elapsed().as_millis() as u64;
+                    if let Some(ref proto_ctx) = proto_ctx {
+                        let error_kind = classify_device_read_error(&error);
+                        state.log_input(protocol_event::plugin_read_failed(
+                            proto_ctx,
+                            &workflow_id,
+                            &plan_str,
+                            elapsed_ms,
+                            &error_kind,
+                            &error,
+                        ));
+                    }
                     mark_wake_recovery_failure(&state, &device.path, inspection, connection);
                     if let Some(correlation_id) = fail_device_session_trace(&state, &device.path) {
                         session_log_events.push(device_session_log_input(
@@ -8952,6 +9399,7 @@ fn device_mutate_blocking_impl(
                 onboard_memory_cache: Some(&state.onboard_memory_cache),
                 cached_handles: Some(&state.cached_handles),
                 hid_io_stats: hid_io_stats_ref(&state),
+                hid_event_sink: None,
             };
             base_outputs = read_device_with_package(&package, &context)?.capabilities;
         }
@@ -8966,6 +9414,7 @@ fn device_mutate_blocking_impl(
             onboard_memory_cache: Some(&state.onboard_memory_cache),
             cached_handles: Some(&state.cached_handles),
             hid_io_stats: hid_io_stats_ref(&state),
+            hid_event_sink: None,
         };
         // 用与 mutate 一致的真实 outputs 计算 allowed 列表，避免空 outputs
         // 导致所有 mutation 都被视为可写，而实际 mutate 时被 skipIf 守门拒绝。
@@ -11467,9 +11916,12 @@ pub fn run() {
             logging::commands::log_set_level,
             logging::commands::log_start_diagnostic_session,
             logging::commands::log_stop_diagnostic_session,
+            logging::commands::log_start_protocol_diagnostic,
+            logging::commands::log_stop_protocol_diagnostic,
             logging::commands::log_write,
             logging::commands::log_export,
             logging::commands::log_export_diagnostics_bundle,
+            logging::commands::log_export_device_diagnostics,
             logging::commands::log_open_dir
         ])
         .build(tauri::generate_context!())
@@ -11756,6 +12208,60 @@ mod read_plan_tests {
     }
 
     #[test]
+    fn inventory_plan_uses_projection_with_inventory_field() {
+        assert!(ReadPlan::Inventory.uses_projection());
+        let fields = ReadPlan::Inventory.semantic_fields();
+        assert_eq!(fields.len(), 1);
+        assert!(fields.contains(&SemanticField::Inventory));
+    }
+
+    #[test]
+    fn inventory_sits_between_quick_and_full_in_plan_ordering() {
+        assert!(ReadPlan::Full > ReadPlan::Inventory);
+        assert!(ReadPlan::Inventory > ReadPlan::Quick);
+    }
+
+    #[test]
+    fn snapshot_readiness_progresses_through_inventory() {
+        assert!(SnapshotReadiness::Full > SnapshotReadiness::Inventory);
+        assert!(SnapshotReadiness::Inventory > SnapshotReadiness::Quick);
+        assert!(SnapshotReadiness::Quick > SnapshotReadiness::Detected);
+    }
+
+    #[test]
+    fn inventory_level_snapshot_is_completed_with_full_read() {
+        // Inventory 是非终止级别：后台初始补全应返回 Full（不返回 Inventory，
+        // 因为 Inventory 读取不进入后台轮询）。
+        let readiness = HashMap::from([("mouse".to_string(), SnapshotReadiness::Inventory)]);
+        assert_eq!(next_initial_read_plan(&readiness), Some(ReadPlan::Full));
+
+        // Inventory 级别的设备不应被跳过（仍需 Full 补全）。
+        assert!(!skip_already_complete_initial_read(
+            &readiness,
+            "mouse",
+            ReadPlan::Full
+        ));
+    }
+
+    #[test]
+    fn automatic_poll_never_selects_inventory_plan() {
+        // select_read_plan 在没有任何 forced/initial Inventory 输入时，
+        // 不应自动产出 Inventory（后台轮询只跑 Quick 与 Full）。
+        assert_ne!(
+            select_read_plan(true, None, None, true, false),
+            ReadPlan::Inventory
+        );
+        assert_ne!(
+            select_read_plan(true, None, None, false, true),
+            ReadPlan::Inventory
+        );
+        assert_ne!(
+            select_read_plan(true, Some(ReadPlan::Full), None, false, false),
+            ReadPlan::Inventory
+        );
+    }
+
+    #[test]
     fn stable_connected_device_uses_presence_only() {
         assert_eq!(
             select_read_plan(true, None, None, false, false),
@@ -11876,6 +12382,7 @@ mod read_plan_tests {
             readonly: false,
             plugin_id: Some("mira.test".into()),
             history_identity: None,
+            read_statuses: BTreeMap::new(),
         }
     }
 
@@ -12005,6 +12512,7 @@ mod snapshot_patch_tests {
             readonly: false,
             plugin_id: None,
             history_identity: None,
+            read_statuses: BTreeMap::new(),
         }
     }
 
@@ -12031,6 +12539,7 @@ mod snapshot_patch_tests {
                 component_id: "mouse".into(),
                 connections: vec!["wireless".into()],
             }),
+            inventory: None,
         };
         inspection
     }
@@ -12147,6 +12656,7 @@ mod snapshot_patch_tests {
             battery_percent: None,
             charging: None,
             batteries: Some(vec![battery("receiver", 98, false)]),
+            read_statuses: BTreeMap::new(),
         };
         let result = apply_snapshot_patch(
             Some(&existing),
@@ -12190,6 +12700,7 @@ mod snapshot_patch_tests {
                 battery("mouse", 60, false),
                 battery("receiver", 98, false),
             ]),
+            read_statuses: BTreeMap::new(),
         };
         let result = apply_snapshot_patch(
             Some(&existing),
@@ -12230,6 +12741,7 @@ mod snapshot_patch_tests {
             capabilities: BTreeMap::new(),
             projection_valid: true,
             fallback_reason: None,
+            read_statuses: BTreeMap::new(),
         };
         let result = apply_snapshot_patch(
             Some(&existing),

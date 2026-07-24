@@ -224,6 +224,7 @@ fn main() {
         onboard_memory_cache: Some(&onboard_memory_cache),
         cached_handles: Some(&cached_handles),
         hid_io_stats: Some(&hid_io_stats),
+        hid_event_sink: None,
     };
     let reading = match read_device(&context) {
         Ok(reading) => reading,
@@ -258,6 +259,7 @@ fn main() {
         onboard_memory_cache: Some(&onboard_memory_cache),
         cached_handles: Some(&cached_handles),
         hid_io_stats: Some(&hid_io_stats),
+        hid_event_sink: None,
     };
     let allowed = match writable_mutations(&read_context) {
         Ok(allowed) => allowed,
@@ -345,6 +347,7 @@ fn main() {
             onboard_memory_cache: Some(&onboard_memory_cache),
             cached_handles: Some(&cached_handles),
             hid_io_stats: Some(&hid_io_stats),
+            hid_event_sink: None,
         };
 
         if let Some(target_mode) = std::env::var("MIRA_WRITE_MODE")

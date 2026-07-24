@@ -17,11 +17,15 @@ pub mod commands;
 pub mod export;
 pub mod frontend;
 pub mod model;
+pub mod protocol_event;
 pub mod redaction;
 pub mod storage;
 
 use chrono::Utc;
-use model::{DiagnosticSessionStatus, LogEntry, LogInput, LogLevel, LogPage, LogQuery, LogStatus};
+use model::{
+    DiagnosticSessionStatus, LogEntry, LogInput, LogLevel, LogPage, LogQuery, LogStatus,
+    ProtocolDiagnosticStatus,
+};
 use redaction::Redactor;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -74,6 +78,41 @@ impl Drop for DiagnosticSession {
     }
 }
 
+/// 协议诊断会话：针对单个设备的临时 HID payload 记录授权。
+///
+/// 与 `DiagnosticSession`（通用日志等级提升）独立：
+/// - 通用诊断会话控制日志采集等级（Debug/Trace）。
+/// - 协议诊断会话控制是否在 `hid-feature-exchange` 事件中携带 request/response hex。
+///
+/// 实践中两者通常同时启用：先启动通用诊断会话提升到 Trace，再启动协议诊断会话
+/// 授权 payload 记录。两者独立到期，任一到期都会停止 payload 记录。
+struct ProtocolDiagnosticSession {
+    device_key: String,
+    started_at: chrono::DateTime<Utc>,
+    ends_at: chrono::DateTime<Utc>,
+    auto_expire: bool,
+    /// 取消标志：手动停止 / 会话 drop 时设为 true。
+    cancel: Arc<AtomicBool>,
+}
+
+impl ProtocolDiagnosticSession {
+    fn status(&self) -> ProtocolDiagnosticStatus {
+        ProtocolDiagnosticStatus {
+            device_key: self.device_key.clone(),
+            started_at: self.started_at.to_rfc3339(),
+            ends_at: self.ends_at.to_rfc3339(),
+            auto_expire: self.auto_expire,
+        }
+    }
+}
+
+impl Drop for ProtocolDiagnosticSession {
+    fn drop(&mut self) {
+        // 与 DiagnosticSession 相同的 cancel 策略：detach 到期线程。
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+}
+
 /// 统一日志服务。共享状态，clone 安全。
 #[derive(Clone)]
 pub struct LogService {
@@ -88,6 +127,7 @@ struct LogServiceInner {
     session_id: String,
     min_level: Mutex<LogLevel>,
     diagnostic_session: Mutex<Option<DiagnosticSession>>,
+    protocol_diagnostic: Mutex<Option<ProtocolDiagnosticSession>>,
 }
 
 impl LogService {
@@ -115,6 +155,7 @@ impl LogService {
             session_id: session_id.clone(),
             min_level,
             diagnostic_session: Mutex::new(None),
+            protocol_diagnostic: Mutex::new(None),
         });
 
         Self { inner }
@@ -239,6 +280,21 @@ impl LogService {
             }
         };
 
+        // 检查协议诊断会话是否需要惰性过期。
+        let protocol_diagnostic_status = {
+            let mut session = self.inner.protocol_diagnostic.lock().unwrap();
+            if let Some(s) = session.as_ref() {
+                if s.auto_expire && Utc::now() >= s.ends_at {
+                    *session = None;
+                    None
+                } else {
+                    Some(s.status())
+                }
+            } else {
+                None
+            }
+        };
+
         LogStatus {
             session_id: self.inner.session_id.clone(),
             min_level,
@@ -251,6 +307,7 @@ impl LogService {
             recent_warn_count,
             file_persistence_enabled: self.inner.storage.enabled(),
             diagnostic_session: diagnostic_session_status,
+            protocol_diagnostic: protocol_diagnostic_status,
         }
     }
 
@@ -394,6 +451,90 @@ impl LogService {
             session.cancel.store(true, Ordering::Relaxed);
             *self.inner.min_level.lock().unwrap() = session.original_level;
             drop(session);
+        }
+    }
+
+    /// 开始协议诊断会话：授权对指定设备临时记录 HID payload。
+    ///
+    /// - `device_key`: 目标设备 key（VID:PID:interface）。只对此设备的 HID 交换记录 payload。
+    /// - `minutes`: 持续分钟数，clamp 到 [MIN, MAX]。
+    /// - `auto_expire`: true 时启动后台到期线程，到期自动停止。
+    ///
+    /// 协议诊断模式不影响日志采集等级；调用方应同时启动通用诊断会话
+    /// 提升到 Trace 才能使 `hid-feature-exchange` 事件（Trace 级别）被采集。
+    pub fn start_protocol_diagnostic(&self, device_key: String, minutes: i64, auto_expire: bool) {
+        let minutes = minutes.clamp(MIN_DIAGNOSTIC_MINUTES, MAX_DIAGNOSTIC_MINUTES);
+        let now = Utc::now();
+        let ends_at = now + chrono::Duration::minutes(minutes);
+
+        // 如果已有会话，先取消旧的。
+        if self.inner.protocol_diagnostic.lock().unwrap().is_some() {
+            self.stop_protocol_diagnostic();
+        }
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_clone = cancel.clone();
+        let inner_clone = self.inner.clone();
+
+        if auto_expire {
+            let sleep_duration = Duration::from_secs((minutes as u64) * 60);
+            std::thread::Builder::new()
+                .name("mira-log-proto-diag-expire".into())
+                .spawn(move || {
+                    let chunk = Duration::from_millis(500);
+                    let mut elapsed = Duration::ZERO;
+                    while elapsed < sleep_duration {
+                        if cancel_clone.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        let step = chunk.min(sleep_duration - elapsed);
+                        std::thread::sleep(step);
+                        elapsed += step;
+                    }
+                    if !cancel_clone.load(Ordering::Relaxed) {
+                        // 自然到期：惰性清理 protocol_diagnostic。不主动 drop 会话
+                        // （与 DiagnosticSession 相同的自join死锁规避策略）。
+                        *inner_clone.protocol_diagnostic.lock().unwrap() = None;
+                    }
+                })
+                .expect("spawn mira-log-proto-diag-expire");
+        }
+
+        let session = ProtocolDiagnosticSession {
+            device_key,
+            started_at: now,
+            ends_at,
+            auto_expire,
+            cancel,
+        };
+
+        *self.inner.protocol_diagnostic.lock().unwrap() = Some(session);
+    }
+
+    /// 手动停止协议诊断会话。
+    pub fn stop_protocol_diagnostic(&self) {
+        let session = { self.inner.protocol_diagnostic.lock().unwrap().take() };
+        if let Some(session) = session {
+            session.cancel.store(true, Ordering::Relaxed);
+            drop(session);
+        }
+    }
+
+    /// 返回当前协议诊断会话的目标设备 key（已检查过期）。
+    ///
+    /// 调用方（Host 在记录 HID payload 时）用此方法判断是否应对指定设备
+    /// 携带 request/response hex。返回 None 表示不应记录 payload。
+    pub fn protocol_diagnostic_device_key(&self) -> Option<String> {
+        let mut session = self.inner.protocol_diagnostic.lock().unwrap();
+        if let Some(s) = session.as_ref() {
+            if s.auto_expire && Utc::now() >= s.ends_at {
+                *session = None;
+                None
+            } else {
+                Some(s.device_key.clone())
+            }
+        } else {
+            None
         }
     }
 

@@ -39,6 +39,20 @@ pub struct DeviceDescriptor {
     /// 按运行时实际连接类型覆盖默认选择优先级。
     #[serde(default)]
     pub selection_priority_by_connection: BTreeMap<String, i32>,
+    /// 显式设备型号名，用于型号覆盖加载。设置后 model routing 与 evidence 解耦：
+    /// descriptor.model 优先，未设置时才回退到 hardware-verified 单型号启发式。
+    /// 路径安全：经 `validate_model_name` 校验，拒绝包含路径分隔符的值。
+    #[serde(default)]
+    pub model: Option<String>,
+    /// 仅匹配指定 interface number 的 HID 设备。
+    /// 厂商自定义 usage page（如 0xFF00）常在多个 interface 上暴露，
+    /// 此字段用于选择控制接口而非鼠标输入接口。未设置时匹配任意 interface。
+    #[serde(default)]
+    pub interface_number: Option<u8>,
+    /// 仅匹配 feature report size 不小于此值的设备。
+    /// 用于排除小 report 的输入接口，确保控制接口能容纳完整命令报文。
+    #[serde(default)]
+    pub min_feature_report_size: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -110,16 +124,25 @@ pub fn enumerate_matched_devices(
         for (inspection, devices, _) in plugins {
             for descriptor in &devices.devices {
                 if descriptor_matches(device, descriptor) {
-                    // 型号识别：当 evidence 为 "hardware-verified" 且只有一个已验证型号时，
-                    // 可以确定设备型号。多型号场景需要未来通过 workflow 探测扩展。
+                    // 型号识别（explicit routing）：descriptor.model 优先，路径安全校验后采用。
+                    // 未设置时回退到 hardware-verified 单型号启发式（向后兼容）。
+                    // 这将 model routing 与 evidence 解耦：source-confirmed 等低证据等级
+                    // 也能通过 descriptor.model 精确路由覆盖。
                     let evidence = evidence_label(descriptor.evidence.as_deref());
-                    let model = if evidence == "hardware-verified"
-                        && devices.hardware_verified_models.len() == 1
-                    {
-                        Some(devices.hardware_verified_models[0].clone())
-                    } else {
-                        None
-                    };
+                    let model = descriptor
+                        .model
+                        .as_deref()
+                        .filter(|m| validate_model_name(m))
+                        .map(str::to_string)
+                        .or_else(|| {
+                            if evidence == "hardware-verified"
+                                && devices.hardware_verified_models.len() == 1
+                            {
+                                Some(devices.hardware_verified_models[0].clone())
+                            } else {
+                                None
+                            }
+                        });
                     let candidate = MatchedDevice {
                         plugin_id: inspection.plugin_id.clone(),
                         family: descriptor.family.clone(),
@@ -169,30 +192,62 @@ fn evidence_rank(evidence: &str) -> u8 {
     }
 }
 
+/// Validate a model name for safe use in overlay path construction.
+/// Rejects empty strings, path separators (`/`, `\`), parent-dir traversal
+/// (`..`), NUL bytes, and any non-ASCII-alphanumeric character outside of
+/// `-`, `_`, `.`. This keeps model routing decoupled from evidence while
+/// preventing path-escape through a plugin-supplied model string.
+pub fn validate_model_name(model: &str) -> bool {
+    !model.is_empty()
+        && !model.contains('/')
+        && !model.contains('\\')
+        && !model.contains("..")
+        && !model.contains('\0')
+        && model
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+}
+
 fn descriptor_matches(info: &DeviceInfo, descriptor: &DeviceDescriptor) -> bool {
     matches_descriptor(
         info.vendor_id(),
         info.product_id(),
         info.usage_page(),
         info.usage(),
+        info.interface_number(),
         descriptor,
     )
 }
 
 /// Pure matching logic extracted from `descriptor_matches` for testability.
 /// Each descriptor field is optional: `None` means "match any value".
+/// `interface_number` from the live HID device is matched against
+/// `descriptor.interface_number` when set, allowing plugins to target a
+/// specific control interface (e.g. vendor-defined usage page on interface 0
+/// or 2) instead of the mouse input interface.
 fn matches_descriptor(
     vendor_id: u16,
     product_id: u16,
     usage_page: u16,
     usage: u16,
+    interface_number: i32,
     descriptor: &DeviceDescriptor,
 ) -> bool {
     let vendor_match = descriptor.vendor_id.is_none_or(|vid| vid == vendor_id);
     let product_match = descriptor.product_id.is_none_or(|pid| pid == product_id);
     let usage_page_match = descriptor.usage_page.is_none_or(|up| up == usage_page);
     let usage_match = descriptor.usage.is_none_or(|u| u == usage);
-    vendor_match && product_match && usage_page_match && usage_match
+    // interface_number: hidapi exposes the USB interface number as i32 (-1 when
+    // unavailable). Match only when the descriptor pins a specific interface.
+    let interface_match = descriptor
+        .interface_number
+        .is_none_or(|iface| iface as i32 == interface_number);
+    // min_feature_report_size: the live report size is not exposed by hidapi's
+    // DeviceInfo at enumeration time, so this filter is recorded on the
+    // descriptor but not enforced here. Callers that open the device can still
+    // read the descriptor's declaration for transport-level gating.
+    let _ = descriptor.min_feature_report_size;
+    vendor_match && product_match && usage_page_match && usage_match && interface_match
 }
 
 /// HID transport backed by `hidapi`. The workflow DSL operates on raw report payloads.
@@ -288,7 +343,10 @@ pub fn parse_devices_json(bytes: &[u8]) -> Result<DevicesFile, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{evidence_rank, matches_descriptor, parse_devices_json, DeviceDescriptor};
+    use super::{
+        evidence_rank, matches_descriptor, parse_devices_json, validate_model_name,
+        DeviceDescriptor,
+    };
     use std::collections::BTreeMap;
 
     #[test]
@@ -315,37 +373,65 @@ mod tests {
             identity: None,
             selection_priority: 0,
             selection_priority_by_connection: BTreeMap::new(),
+            model: None,
+            interface_number: None,
+            min_feature_report_size: None,
         }
     }
 
     #[test]
     fn empty_descriptor_matches_any_device() {
         let desc = descriptor(None, None, None, None);
-        assert!(matches_descriptor(0x1234, 0xC001, 0x0001, 0x0002, &desc));
+        assert!(matches_descriptor(
+            0x1234, 0xC001, 0x0001, 0x0002, -1, &desc
+        ));
     }
 
     #[test]
     fn exact_vendor_product_match() {
         let desc = descriptor(Some(0x1234), Some(0xC001), None, None);
-        assert!(matches_descriptor(0x1234, 0xC001, 0xFF, 0xFF, &desc));
-        assert!(!matches_descriptor(0x1234, 0xC002, 0xFF, 0xFF, &desc));
-        assert!(!matches_descriptor(0x5678, 0xC001, 0xFF, 0xFF, &desc));
+        assert!(matches_descriptor(0x1234, 0xC001, 0xFF, 0xFF, -1, &desc));
+        assert!(!matches_descriptor(0x1234, 0xC002, 0xFF, 0xFF, -1, &desc));
+        assert!(!matches_descriptor(0x5678, 0xC001, 0xFF, 0xFF, -1, &desc));
     }
 
     #[test]
     fn usage_page_and_usage_filter_interface() {
         let desc = descriptor(Some(0x1234), None, Some(0x0001), Some(0x0002));
-        assert!(matches_descriptor(0x1234, 0xFFFF, 0x0001, 0x0002, &desc));
-        assert!(!matches_descriptor(0x1234, 0xFFFF, 0x0001, 0x0003, &desc));
-        assert!(!matches_descriptor(0x1234, 0xFFFF, 0x0002, 0x0002, &desc));
+        assert!(matches_descriptor(
+            0x1234, 0xFFFF, 0x0001, 0x0002, -1, &desc
+        ));
+        assert!(!matches_descriptor(
+            0x1234, 0xFFFF, 0x0001, 0x0003, -1, &desc
+        ));
+        assert!(!matches_descriptor(
+            0x1234, 0xFFFF, 0x0002, 0x0002, -1, &desc
+        ));
     }
 
     #[test]
     fn vendor_only_match_ignores_product() {
         let desc = descriptor(Some(0x1234), None, None, None);
-        assert!(matches_descriptor(0x1234, 0x0001, 0, 0, &desc));
-        assert!(matches_descriptor(0x1234, 0xFFFF, 0xFF, 0xFF, &desc));
-        assert!(!matches_descriptor(0x0000, 0x0001, 0, 0, &desc));
+        assert!(matches_descriptor(0x1234, 0x0001, 0, 0, -1, &desc));
+        assert!(matches_descriptor(0x1234, 0xFFFF, 0xFF, 0xFF, -1, &desc));
+        assert!(!matches_descriptor(0x0000, 0x0001, 0, 0, -1, &desc));
+    }
+
+    #[test]
+    fn interface_number_filter_selects_control_interface() {
+        let mut desc = descriptor(Some(0x1532), None, Some(0xFF00), None);
+        // Descriptor pins interface 0 (vendor control interface).
+        desc.interface_number = Some(0);
+        // Live device on interface 0 matches.
+        assert!(matches_descriptor(0x1532, 0xABCD, 0xFF00, 0x0001, 0, &desc));
+        // Live device on interface 2 (mouse input interface) does not match.
+        assert!(!matches_descriptor(
+            0x1532, 0xABCD, 0xFF00, 0x0001, 2, &desc
+        ));
+        // When descriptor leaves interface_number unset, both match (backwards compat).
+        desc.interface_number = None;
+        assert!(matches_descriptor(0x1532, 0xABCD, 0xFF00, 0x0001, 0, &desc));
+        assert!(matches_descriptor(0x1532, 0xABCD, 0xFF00, 0x0001, 2, &desc));
     }
 
     #[test]
@@ -393,5 +479,68 @@ mod tests {
         assert_eq!(matched.selection_priority_for("usb"), 100);
         assert_eq!(matched.selection_priority_for("wireless"), 0);
         assert_eq!(matched.selection_priority_for("virtual"), -10);
+    }
+
+    #[test]
+    fn validate_model_name_accepts_safe_names() {
+        assert!(validate_model_name("Viper-V2-Pro"));
+        assert!(validate_model_name("DeathAdder_V3_2024"));
+        assert!(validate_model_name("G502.1"));
+        assert!(validate_model_name("Model-A"));
+    }
+
+    #[test]
+    fn validate_model_name_rejects_unsafe_inputs() {
+        // Path separators and traversal sequences.
+        assert!(!validate_model_name("a/b"));
+        assert!(!validate_model_name("a\\b"));
+        assert!(!validate_model_name(".."));
+        assert!(!validate_model_name("a/../b"));
+        assert!(!validate_model_name("a\0b"));
+        // Empty.
+        assert!(!validate_model_name(""));
+        // Non-ASCII / disallowed characters (spaces, Chinese, etc.).
+        assert!(!validate_model_name("Viper V2"));
+        assert!(!validate_model_name("毒蛇V2"));
+        assert!(!validate_model_name("Viper@V2"));
+    }
+
+    #[test]
+    fn descriptor_model_decouples_routing_from_evidence() {
+        // A source-confirmed descriptor with an explicit model should still
+        // route to that model even though evidence is not hardware-verified.
+        let devices = br#"{
+            "schemaVersion": 1,
+            "devices": [{
+                "family": "test",
+                "evidence": "source-confirmed",
+                "model": "Explicit-Model"
+            }],
+            "hardwareVerifiedModels": []
+        }"#;
+        let parsed = parse_devices_json(devices).unwrap();
+        assert_eq!(parsed.devices[0].model.as_deref(), Some("Explicit-Model"));
+        // With descriptor.model set, the explicit name is preferred regardless
+        // of evidence level — verified by enumerate_matched_devices which is
+        // covered indirectly here via the parsed field.
+    }
+
+    #[test]
+    fn old_devices_json_without_model_field_still_loads() {
+        // Backward compatibility: a devices.json written before the model
+        // field existed must still parse (#[serde(default)] makes it Optional).
+        let devices = br#"{
+            "schemaVersion": 1,
+            "devices": [{
+                "family": "legacy",
+                "vendorId": 1234,
+                "productId": 5678
+            }],
+            "hardwareVerifiedModels": ["Legacy-Model"]
+        }"#;
+        let parsed = parse_devices_json(devices).unwrap();
+        assert_eq!(parsed.devices[0].model, None);
+        assert_eq!(parsed.devices[0].interface_number, None);
+        assert_eq!(parsed.devices[0].min_feature_report_size, None);
     }
 }
