@@ -66,6 +66,19 @@ enum Command {
         #[arg(long)]
         require_signature: bool,
     },
+    /// 3.5 节：Verify 子命令 —— 校验插件包的 checksums 和签名。
+    /// 与 pack/sign/inspect 使用同一实现（runtime::inspect_package）。
+    /// 退出码 0 表示通过，非 0 表示失败（适用于 CI 门禁）。
+    Verify {
+        package: PathBuf,
+        /// 可选的 trusted-keys.json 路径（与 registry/trusted-keys.json 同格式）。
+        /// 未提供时使用内置 TrustStore::default()（仅信任测试 key）。
+        #[arg(long)]
+        trusted_keys: Option<PathBuf>,
+        /// 要求包必须包含有效签名（CI 门禁用）。
+        #[arg(long)]
+        require_signature: bool,
+    },
     Sign {
         package: PathBuf,
         /// 32-byte Ed25519 private key in hexadecimal (development only).
@@ -113,6 +126,23 @@ fn main() -> Result<()> {
                     &TrustStore::default(),
                     require_signature
                 )?)?
+            );
+        }
+        Command::Verify {
+            package,
+            trusted_keys,
+            require_signature,
+        } => {
+            // 3.5 节：Verify 使用与 inspect 同一的 inspect_package 实现。
+            let trust = load_trust_store(trusted_keys.as_deref())?;
+            let file = fs::File::open(&package)?;
+            let inspection = inspect_package(file, &trust, require_signature)?;
+            if require_signature && !inspection.signature_verified {
+                bail!("signature verification failed");
+            }
+            println!(
+                "verified: {} v{} (signature_verified={})",
+                inspection.plugin_id, inspection.version, inspection.signature_verified
             );
         }
         Command::Sign {
@@ -175,6 +205,61 @@ fn parse_pem_signing_key(pem: &str) -> Result<SigningKey> {
     use ed25519_dalek::pkcs8::DecodePrivateKey;
     SigningKey::from_pkcs8_pem(pem)
         .map_err(|e| anyhow::anyhow!("failed to parse PKCS#8 PEM private key: {e}"))
+}
+
+/// 3.5 节：从 trusted-keys.json 加载信任仓库。
+/// 格式与 registry/trusted-keys.json 一致：
+/// `{ "schemaVersion": 1, "keys": [{ "keyId": "...", "publicKey": "<hex>", ... }] }`
+/// 仅加载 algorithm == "ed25519" 且当前时间在 [activatedAt, revokedAt) 区间内的 key。
+fn load_trust_store(path: Option<&Path>) -> Result<TrustStore> {
+    let mut store = TrustStore::default();
+    let Some(path) = path else {
+        return Ok(store);
+    };
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct TrustedKeysFile {
+        keys: Vec<TrustedKey>,
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct TrustedKey {
+        key_id: String,
+        algorithm: String,
+        public_key: String,
+        activated_at: String,
+        revoked_at: Option<String>,
+    }
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("read trusted keys: {}", path.display()))?;
+    let file: TrustedKeysFile = serde_json::from_str(&content)
+        .with_context(|| format!("parse trusted keys JSON: {}", path.display()))?;
+    let now = chrono::Utc::now();
+    for key in file.keys {
+        if key.algorithm != "ed25519" {
+            continue;
+        }
+        let activated = chrono::DateTime::parse_from_rfc3339(&key.activated_at).ok();
+        if let Some(activated) = activated {
+            if now < activated.with_timezone(&chrono::Utc) {
+                continue; // not yet active
+            }
+        }
+        if let Some(revoked) = key.revoked_at.as_deref() {
+            if let Ok(revoked) = chrono::DateTime::parse_from_rfc3339(revoked) {
+                if now >= revoked.with_timezone(&chrono::Utc) {
+                    continue; // revoked
+                }
+            }
+        }
+        let bytes = hex::decode(&key.public_key)?;
+        let array: [u8; 32] = bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("public key must be 32 bytes"))?;
+        store.0.insert(key.key_id, ed25519_dalek::VerifyingKey::from_bytes(&array)?);
+    }
+    Ok(store)
 }
 
 fn sign_package(package: &Path, signing_key: &SigningKey) -> Result<Vec<u8>> {
