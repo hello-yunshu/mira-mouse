@@ -2849,9 +2849,8 @@ impl Session<'_> {
         } else {
             0
         };
-        let payload_off = payload_offset.unwrap_or_else(|| {
-            frame_prefix.len() + length_field_size + type_field_size
-        });
+        let payload_off = payload_offset
+            .unwrap_or_else(|| frame_prefix.len() + length_field_size + type_field_size);
         if *write_length > 1025 || *read_length > 1025 {
             return Err("framed report length too large".into());
         }
@@ -2859,7 +2858,10 @@ impl Session<'_> {
         let rest_len = write_length
             .checked_sub(1)
             .ok_or_else(|| "write_length must exceed report id".to_string())?;
-        if payload_off.checked_add(payload.len()).map_or(true, |end| end > rest_len) {
+        if payload_off
+            .checked_add(payload.len())
+            .map_or(true, |end| end > rest_len)
+        {
             return Err("framed payload exceeds write length".into());
         }
         if frame_prefix.len() > rest_len {
@@ -2995,8 +2997,7 @@ impl Session<'_> {
                 if !matched {
                     if let Some(sink) = self.event_sink {
                         let request_id = payload.get(req_start..req_end).unwrap_or(&[]);
-                        let response_id =
-                            response_payload.get(resp_start..resp_end).unwrap_or(&[]);
+                        let response_id = response_payload.get(resp_start..resp_end).unwrap_or(&[]);
                         sink.on_hid_response_mismatch(
                             transport_id,
                             command_id,
@@ -3092,13 +3093,13 @@ fn write_output_report_with_fallback(
                             Ok(written) => {
                                 return Err(format!(
                                     "{output_error}; fallback {}: short write {written}/{}",
-                                    fallback.name, long_report.len()
+                                    fallback.name,
+                                    long_report.len()
                                 ));
                             }
                             Err(long_error) => {
-                                let feature_result = device
-                                    .send_feature_report(report)
-                                    .map(|_| report.len());
+                                let feature_result =
+                                    device.send_feature_report(report).map(|_| report.len());
                                 return feature_result.map_err(|feature_error| {
                                     format!(
                                         "{output_error}; fallback {}: {long_error}; fallback feature report: {feature_error}",
@@ -3136,9 +3137,10 @@ fn match_error_matchers(
 ) -> Option<String> {
     for matcher in matchers {
         // 检查 pattern：response[offset] == eq
-        let pattern_ok = matcher.pattern.iter().all(|m| {
-            response.get(m.offset) == Some(&m.eq_value)
-        });
+        let pattern_ok = matcher
+            .pattern
+            .iter()
+            .all(|m| response.get(m.offset) == Some(&m.eq_value));
         if !pattern_ok {
             continue;
         }
@@ -3922,13 +3924,28 @@ mod tests {
         let matchers = vec![ErrorMatcher {
             name: "hidpp1-error".into(),
             pattern: vec![
-                ByteMatch { offset: 0, eq_value: 0x10 },
-                ByteMatch { offset: 2, eq_value: 0x8F },
+                ByteMatch {
+                    offset: 0,
+                    eq_value: 0x10,
+                },
+                ByteMatch {
+                    offset: 2,
+                    eq_value: 0x8F,
+                },
             ],
             request_match: vec![
-                RequestByteMatch { offset: 1, request_offset: 0 },
-                RequestByteMatch { offset: 3, request_offset: 1 },
-                RequestByteMatch { offset: 4, request_offset: 2 },
+                RequestByteMatch {
+                    offset: 1,
+                    request_offset: 0,
+                },
+                RequestByteMatch {
+                    offset: 3,
+                    request_offset: 1,
+                },
+                RequestByteMatch {
+                    offset: 4,
+                    request_offset: 2,
+                },
             ],
             error_offset: 5,
             label: "HID++ 1.0 transport error 0x{error:02X}".into(),
@@ -3944,10 +3961,19 @@ mod tests {
         // HID++ 2.0 错误响应：response[1]=0xFF
         let matchers = vec![ErrorMatcher {
             name: "hidpp2-error".into(),
-            pattern: vec![ByteMatch { offset: 1, eq_value: 0xFF }],
+            pattern: vec![ByteMatch {
+                offset: 1,
+                eq_value: 0xFF,
+            }],
             request_match: vec![
-                RequestByteMatch { offset: 2, request_offset: 1 },
-                RequestByteMatch { offset: 3, request_offset: 2 },
+                RequestByteMatch {
+                    offset: 2,
+                    request_offset: 1,
+                },
+                RequestByteMatch {
+                    offset: 3,
+                    request_offset: 2,
+                },
             ],
             error_offset: 4,
             label: "HID++ 2.0 error 0x{error:02X}".into(),
@@ -3963,8 +3989,14 @@ mod tests {
         let matchers = vec![ErrorMatcher {
             name: "hidpp1-error".into(),
             pattern: vec![
-                ByteMatch { offset: 0, eq_value: 0x10 },
-                ByteMatch { offset: 2, eq_value: 0x8F },
+                ByteMatch {
+                    offset: 0,
+                    eq_value: 0x10,
+                },
+                ByteMatch {
+                    offset: 2,
+                    eq_value: 0x8F,
+                },
             ],
             request_match: vec![],
             error_offset: 5,
@@ -3980,12 +4012,19 @@ mod tests {
         let matchers = vec![ErrorMatcher {
             name: "hidpp1-error".into(),
             pattern: vec![
-                ByteMatch { offset: 0, eq_value: 0x10 },
-                ByteMatch { offset: 2, eq_value: 0x8F },
+                ByteMatch {
+                    offset: 0,
+                    eq_value: 0x10,
+                },
+                ByteMatch {
+                    offset: 2,
+                    eq_value: 0x8F,
+                },
             ],
-            request_match: vec![
-                RequestByteMatch { offset: 1, request_offset: 0 },
-            ],
+            request_match: vec![RequestByteMatch {
+                offset: 1,
+                request_offset: 0,
+            }],
             error_offset: 5,
             label: "error 0x{error:02X}".into(),
         }];
@@ -3998,7 +4037,10 @@ mod tests {
     fn match_error_matchers_supports_lowercase_hex_placeholder() {
         let matchers = vec![ErrorMatcher {
             name: "test-error".into(),
-            pattern: vec![ByteMatch { offset: 0, eq_value: 0xAB }],
+            pattern: vec![ByteMatch {
+                offset: 0,
+                eq_value: 0xAB,
+            }],
             request_match: vec![],
             error_offset: 1,
             label: "error 0x{error:02x}".into(),
