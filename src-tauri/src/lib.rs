@@ -2743,18 +2743,35 @@ impl mira_plugin_runtime::HidEventSink for LoggingHidEventSink {
         checksum_valid: Option<bool>,
     ) {
         let ctx = self.proto_ctx();
-        let (request_hex_opt, response_hex_opt) =
-            self.mask_payload_pair(command, request_hex, response_hex);
-        // hex 字符串 "00 1F 04" 每字节 3 字符（含空格），空串对应 0 字节。
-        let request_length = if request_hex.is_empty() {
-            0
-        } else {
-            (request_hex.matches(' ').count() + 1).max(0)
+        // runtime 传入的 hex 为连续小写格式（hex::encode），脱敏和长度计算
+        // 需要空格分隔格式。统一转换后再处理，避免 serial 等敏感数据泄漏。
+        let normalize_hex = |h: &str| -> String {
+            if h.is_empty() {
+                return String::new();
+            }
+            // 已是空格分隔格式则直接使用
+            if h.contains(' ') {
+                return h.to_string();
+            }
+            // 连续 hex 解码后重新格式化为空格分隔大写
+            hex::decode(h)
+                .map(|bytes| protocol_event::format_hex(&bytes))
+                .unwrap_or_else(|_| h.to_string())
         };
-        let response_length = if response_hex.is_empty() {
+        let request_hex_norm = normalize_hex(request_hex);
+        let response_hex_norm = normalize_hex(response_hex);
+        let (request_hex_opt, response_hex_opt) =
+            self.mask_payload_pair(command, &request_hex_norm, &response_hex_norm);
+        // hex 字符串 "00 1F 04" 每字节 3 字符（含空格），空串对应 0 字节。
+        let request_length = if request_hex_norm.is_empty() {
             0
         } else {
-            (response_hex.matches(' ').count() + 1).max(0)
+            request_hex_norm.matches(' ').count() + 1
+        };
+        let response_length = if response_hex_norm.is_empty() {
+            0
+        } else {
+            response_hex_norm.matches(' ').count() + 1
         };
         self.log_service.write(protocol_event::hid_feature_exchange(
             &ctx,

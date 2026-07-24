@@ -2352,10 +2352,9 @@ impl Session<'_> {
                 return Ok(response);
             }
             // 条件未满足：设备忙碌，通知宿主记录 hid-busy-retry 事件。
-            if attempt > 0 {
-                if let Some(sink) = self.event_sink {
-                    sink.on_hid_busy_retry(transport, command, attempt + 1);
-                }
+            // attempt 从 0 开始，报告为 1-indexed 的尝试序号。
+            if let Some(sink) = self.event_sink {
+                sink.on_hid_busy_retry(transport, command, attempt + 1);
             }
             self.delay(delay_ms)?;
         }
