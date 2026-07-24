@@ -6,7 +6,7 @@ use mira_plugin_api::PluginManifest;
 // 3.5 节：CLI 与 runtime 共享同一个 Package Format 实现（allowed + PACKAGE_FORMAT_VERSION），
 // 不再维护自己的 forbidden_source()。pack/sign/inspect/verify 使用同一实现。
 use mira_plugin_runtime::{
-    allowed, canonical_json, inspect_package, PACKAGE_FORMAT_VERSION, TrustStore,
+    allowed, canonical_json, inspect_package, TrustStore, PACKAGE_FORMAT_VERSION,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -257,7 +257,9 @@ fn load_trust_store(path: Option<&Path>) -> Result<TrustStore> {
             .as_slice()
             .try_into()
             .map_err(|_| anyhow::anyhow!("public key must be 32 bytes"))?;
-        store.0.insert(key.key_id, ed25519_dalek::VerifyingKey::from_bytes(&array)?);
+        store
+            .0
+            .insert(key.key_id, ed25519_dalek::VerifyingKey::from_bytes(&array)?);
     }
     Ok(store)
 }

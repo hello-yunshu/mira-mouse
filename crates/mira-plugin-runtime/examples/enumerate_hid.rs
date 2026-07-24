@@ -125,7 +125,8 @@ fn main() {
     let plugin_id = std::env::var("MIRA_PLUGIN").unwrap_or_else(|_| "mira.amaster".to_string());
     let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let lock: Value = serde_json::from_slice(
-        &fs::read(workspace.join("bundled-plugins.lock.json")).expect("read bundled-plugins.lock.json"),
+        &fs::read(workspace.join("bundled-plugins.lock.json"))
+            .expect("read bundled-plugins.lock.json"),
     )
     .expect("parse bundled-plugins.lock.json");
     let entry = lock["plugins"]
