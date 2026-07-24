@@ -20,7 +20,7 @@ pub use dsl::{execute_workflow, DslError, Limits, Operation, Transport, Workflow
 pub use engine::{ProtocolPackage, WorkflowProjection};
 pub use package::{
     allowed, canonical_json, extract_package, inspect_package, PackageError, PackageInspection,
-    PACKAGE_FORMAT_VERSION, TrustStore,
+    TrustStore, PACKAGE_FORMAT_VERSION,
 };
 pub use protocol::{
     execute_plugin_workflow, map_semantic_to_outputs, mutate_device, mutate_device_with_package,
