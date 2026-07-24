@@ -2860,7 +2860,7 @@ impl Session<'_> {
             .ok_or_else(|| "write_length must exceed report id".to_string())?;
         if payload_off
             .checked_add(payload.len())
-            .map_or(true, |end| end > rest_len)
+            .is_none_or(|end| end > rest_len)
         {
             return Err("framed payload exceeds write length".into());
         }
