@@ -15,6 +15,11 @@ const MAX_FILES: usize = 512;
 const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_TOTAL_BYTES: u64 = 32 * 1024 * 1024;
 
+/// Package Format 版本（3.5 节：`packageFormatVersion` 独立于 `pluginApi`）。
+/// 主仓库 runtime 和 mira-plugin-cli 共享此常量，确保 pack 与 extract 一致。
+/// 文档默认不进入生产包（README.md / LICENSE 不在 allowlist）。
+pub const PACKAGE_FORMAT_VERSION: u32 = 1;
+
 #[derive(Default)]
 pub struct TrustStore(pub HashMap<String, VerifyingKey>);
 
@@ -108,7 +113,7 @@ pub fn extract_package<R: Read + Seek>(
         .get("checksums.json")
         .ok_or(PackageError::Missing("checksums.json"))?;
     let checksums: Checksums = serde_json::from_slice(checksums_bytes)?;
-    if checksums.schema_version != 1 {
+    if checksums.schema_version != PACKAGE_FORMAT_VERSION {
         return Err(PackageError::Manifest("checksum schema".into()));
     }
     for (name, expected) in &checksums.files {
@@ -187,13 +192,17 @@ fn validate_path(name: &str) -> Result<(), PackageError> {
     Ok(())
 }
 
-fn allowed(name: &str) -> bool {
+/// Package Format allowlist（3.5 节：唯一的版本化 Package Format 实现）。
+/// 主仓库 runtime `extract_package` 和 mira-plugin-cli `pack`/`validate`/`sign`
+/// 共享此函数，确保 CLI pack 与 runtime extract 完全一致。
+///
+/// 文档默认不进入生产包：README.md / LICENSE 不在 allowlist。
+/// Razer docs（`docs/`）等任意 `.md` 文件均被拒绝。
+pub fn allowed(name: &str) -> bool {
     matches!(
         name,
         "plugin.json"
             | "checksums.json"
-            | "README.md"
-            | "LICENSE"
             | "devices.json"
             | "capabilities.json"
             | "META-INF/signature.ed25519"
@@ -246,6 +255,7 @@ mod tests {
     fn manifest(key_id: Option<&str>) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({
             "schemaVersion": 1,
+            "packageFormatVersion": PACKAGE_FORMAT_VERSION,
             "pluginId": "mira.example",
             "name": "Example",
             "version": "1.0.0",
