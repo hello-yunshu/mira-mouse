@@ -101,7 +101,7 @@ const PREVIEW_LOG_ENTRIES: LogEntry[] = [
     target: 'plugin::battery',
     message: '电量读取成功：鼠标 82%，接收器 100%',
     sessionId: PREVIEW_SESSION_ID,
-    fields: { event: 'plugin-battery-read', pluginId: 'mira.amaster', mouse: 82, receiver: 100 },
+    fields: { event: 'plugin-battery-read', pluginId: 'mira.example-plugin', mouse: 82, receiver: 100 },
   },
   {
     id: 1009,
@@ -167,7 +167,7 @@ const PREVIEW_LOG_ENTRIES: LogEntry[] = [
     target: 'plugin::verify',
     message: '插件签名和声明式能力契约校验通过',
     sessionId: PREVIEW_SESSION_ID,
-    fields: { pluginId: 'mira.amaster', capabilities: 9, signature: 'valid' },
+    fields: { pluginId: 'mira.example-plugin', capabilities: 9, signature: 'valid' },
   },
   {
     id: 1004,
