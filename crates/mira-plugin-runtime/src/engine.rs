@@ -240,6 +240,15 @@ enum TransportDefinition {
         /// #8 超时统一治理：per-transport 超时声明（毫秒）。
         #[serde(default)]
         timeout_ms: Option<u64>,
+        /// 3.3 节：协议错误帧匹配由插件声明 `errorMatchers`。
+        /// 宿主只执行声明式匹配，不认识 HID++/Razer 等品牌特有错误帧。
+        /// 匹配时宿主返回 `{label}` 错误（label 可含 `{error:02X}` 占位符）。
+        #[serde(default)]
+        error_matchers: Vec<ErrorMatcher>,
+        /// 3.3 节：备用 report ID/长度转换由插件声明 `writeFallbacks`。
+        /// 当主 write 失败且平台错误归一化为通用 category 时，宿主按声明尝试 fallback。
+        #[serde(default)]
+        write_fallbacks: Vec<WriteFallback>,
     },
     /// 3.2 节：通用 framed HID transport（品牌无关）。
     /// 所有帧格式偏移由 JSON 声明，运行时内部不得包含 AM35 名称和固定偏移。
@@ -310,6 +319,97 @@ fn default_endian_le() -> String {
 
 fn default_read_timeout_ms() -> i32 {
     500
+}
+
+/// 3.3 节：声明式协议错误帧匹配。
+///
+/// 插件通过 transport 的 `errorMatchers` 声明如何识别协议错误响应。
+/// 宿主只执行声明式匹配，不认识 HID++/Razer 等品牌特有错误帧。
+///
+/// schema：
+/// ```json
+/// {
+///   "name": "hidpp1-error",
+///   "pattern": [{ "offset": 0, "eq": 16 }, { "offset": 2, "eq": 143 }],
+///   "requestMatch": [
+///     { "offset": 1, "requestOffset": 0 },
+///     { "offset": 3, "requestOffset": 1 },
+///     { "offset": 4, "requestOffset": 2 }
+///   ],
+///   "errorOffset": 5,
+///   "label": "HID++ 1.0 transport error 0x{error:02X}"
+/// }
+/// ```
+///
+/// 规则：
+/// - `pattern`：response 字节匹配（offset + eq）。
+/// - `requestMatch`：response 字节与 request 字节匹配（offset + requestOffset）。
+/// - `errorOffset`：错误码字节偏移。
+/// - `label`：错误消息模板，支持 `{error:02X}` 占位符。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ErrorMatcher {
+    // `name` 用于插件声明的可读标识，运行时不消费但保留在 schema 中便于调试。
+    #[allow(dead_code)]
+    name: String,
+    #[serde(default)]
+    pattern: Vec<ByteMatch>,
+    #[serde(default)]
+    request_match: Vec<RequestByteMatch>,
+    error_offset: usize,
+    label: String,
+}
+
+/// 3.3 节：声明式写入 fallback。
+///
+/// 插件通过 transport 的 `writeFallbacks` 声明备用写入方式。
+/// 当主 write 失败且平台错误归一化为通用 category 时，宿主按声明尝试 fallback。
+///
+/// schema：
+/// ```json
+/// {
+///   "name": "short-to-long-report",
+///   "fromReportId": 16,
+///   "fromLength": 7,
+///   "toReportId": 17,
+///   "toLength": 20,
+///   "payloadCopy": { "fromOffset": 1, "toOffset": 1, "length": 6 }
+/// }
+/// ```
+///
+/// `payloadCopy` 偏移相对于报告（含 report ID）。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WriteFallback {
+    name: String,
+    from_report_id: u8,
+    from_length: usize,
+    to_report_id: u8,
+    to_length: usize,
+    payload_copy: PayloadCopy,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PayloadCopy {
+    from_offset: usize,
+    to_offset: usize,
+    length: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ByteMatch {
+    offset: usize,
+    #[serde(rename = "eq")]
+    eq_value: u8,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RequestByteMatch {
+    offset: usize,
+    request_offset: usize,
 }
 
 /// Default delay between sending a feature report and reading the response.
@@ -2592,6 +2692,8 @@ impl Session<'_> {
             strip_report_id_on_read,
             read_timeout_ms,
             read_retries,
+            error_matchers,
+            write_fallbacks,
             ..
         }) = self.package.transports.transports.get(transport_id)
         else {
@@ -2609,7 +2711,7 @@ impl Session<'_> {
         report.push(*report_id);
         report.extend_from_slice(payload);
         let exchange_start = Instant::now();
-        let written = write_output_report_with_fallback(&self.device, &report)
+        let written = write_output_report_with_fallback(&self.device, &report, write_fallbacks)
             .map_err(|error| format!("send output report: {error}"))?;
         if written != report.len() {
             return Err(format!(
@@ -2649,31 +2751,20 @@ impl Session<'_> {
                 continue;
             }
             response.truncate(count);
-            // HID++ error responses reference payload[0..3]. Only evaluate
-            // these branches when the payload is long enough; otherwise a
-            // short payload (e.g. write_length < 4) would panic on indexing.
-            if payload.len() >= 3
-                && response.len() >= 6
-                && response[0] == 0x10
-                && response[1] == payload[0]
-                && response[2] == 0x8F
-                && response[3] == payload[1]
-                && response[4] == payload[2]
-            {
-                return Err(format!("HID++ 1.0 transport error 0x{:02X}", response[5]));
+            // 3.3 节：协议错误帧匹配由插件声明的 `errorMatchers` 处理。
+            // 宿主只执行声明式匹配，不认识 HID++/Razer 等品牌特有错误帧。
+            // 错误响应可能在 strip report ID 之前或之后匹配，先在原始 response 上匹配。
+            if let Some(error_msg) = match_error_matchers(error_matchers, &response, payload) {
+                return Err(error_msg);
             }
             let Some(response) =
                 input_payload_from_report(response, *report_id, *strip_report_id_on_read)
             else {
                 continue;
             };
-            if payload.len() >= 3
-                && response.len() >= 5
-                && response[1] == 0xFF
-                && response[2] == payload[1]
-                && response[3] == payload[2]
-            {
-                return Err(format!("HID++ 2.0 error 0x{:02X}", response[4]));
+            // strip report ID 后再次匹配（HID++ 2.0 错误帧在 strip 后的字节上）。
+            if let Some(error_msg) = match_error_matchers(error_matchers, &response, payload) {
+                return Err(error_msg);
             }
             if response.get(..3) == payload.get(..3) {
                 let duration_ms = exchange_start.elapsed().as_millis() as u64;
@@ -2971,31 +3062,50 @@ fn input_payload_from_report(
     None
 }
 
-fn write_output_report_with_fallback(device: &HidDevice, report: &[u8]) -> Result<usize, String> {
+fn write_output_report_with_fallback(
+    device: &HidDevice,
+    report: &[u8],
+    fallbacks: &[WriteFallback],
+) -> Result<usize, String> {
     match device.write(report) {
         Ok(written) => Ok(written),
         Err(error) => {
             let output_error = error.to_string();
             if output_report_write_needs_feature_fallback(&output_error) {
-                if let Some(long_report) = hidpp_short_output_as_long_report(report) {
-                    match device.write(&long_report) {
-                        Ok(written) if written == long_report.len() => {
-                            return Ok(report.len());
-                        }
-                        Ok(written) => {
-                            return Err(format!(
-                                "{output_error}; fallback long output report: short write {written}/{}",
-                                long_report.len()
-                            ));
-                        }
-                        Err(long_error) => {
-                            let feature_result =
-                                device.send_feature_report(report).map(|_| report.len());
-                            return feature_result.map_err(|feature_error| {
-                                format!(
-                                    "{output_error}; fallback long output report: {long_error}; fallback feature report: {feature_error}"
-                                )
-                            });
+                // 3.3 节：备用 report ID/长度转换由插件声明的 `writeFallbacks` 处理。
+                // 宿主只执行声明式 fallback，不认识 HID++ short-to-long 等品牌特有转换。
+                for fallback in fallbacks {
+                    if report.len() == fallback.from_length + 1
+                        && report.first() == Some(&fallback.from_report_id)
+                    {
+                        let mut long_report = vec![0u8; fallback.to_length + 1];
+                        long_report[0] = fallback.to_report_id;
+                        let copy = &report[fallback.payload_copy.from_offset
+                            ..fallback.payload_copy.from_offset + fallback.payload_copy.length];
+                        long_report[fallback.payload_copy.to_offset
+                            ..fallback.payload_copy.to_offset + fallback.payload_copy.length]
+                            .copy_from_slice(copy);
+                        match device.write(&long_report) {
+                            Ok(written) if written == long_report.len() => {
+                                return Ok(report.len());
+                            }
+                            Ok(written) => {
+                                return Err(format!(
+                                    "{output_error}; fallback {}: short write {written}/{}",
+                                    fallback.name, long_report.len()
+                                ));
+                            }
+                            Err(long_error) => {
+                                let feature_result = device
+                                    .send_feature_report(report)
+                                    .map(|_| report.len());
+                                return feature_result.map_err(|feature_error| {
+                                    format!(
+                                        "{output_error}; fallback {}: {long_error}; fallback feature report: {feature_error}",
+                                        fallback.name
+                                    )
+                                });
+                            }
                         }
                     }
                 }
@@ -3012,15 +3122,47 @@ fn write_output_report_with_fallback(device: &HidDevice, report: &[u8]) -> Resul
     }
 }
 
-fn hidpp_short_output_as_long_report(report: &[u8]) -> Option<Vec<u8>> {
-    if report.len() != 7 || report.first() != Some(&0x10) {
-        return None;
+/// 3.3 节：声明式协议错误帧匹配。
+///
+/// 检查 response 是否匹配任一 errorMatcher。匹配规则：
+/// - `pattern`：response[offset] == eq
+/// - `requestMatch`：response[offset] == request[requestOffset]
+/// - 所有 pattern 和 requestMatch 条件必须同时满足
+/// - 满足后从 response[errorOffset] 读取错误码，填充到 label 模板
+fn match_error_matchers(
+    matchers: &[ErrorMatcher],
+    response: &[u8],
+    request: &[u8],
+) -> Option<String> {
+    for matcher in matchers {
+        // 检查 pattern：response[offset] == eq
+        let pattern_ok = matcher.pattern.iter().all(|m| {
+            response.get(m.offset) == Some(&m.eq_value)
+        });
+        if !pattern_ok {
+            continue;
+        }
+        // 检查 requestMatch：response[offset] == request[requestOffset]
+        let request_ok = matcher.request_match.iter().all(|m| {
+            response
+                .get(m.offset)
+                .zip(request.get(m.request_offset))
+                .is_some_and(|(resp, req)| resp == req)
+        });
+        if !request_ok {
+            continue;
+        }
+        // 读取错误码并填充 label 模板
+        if let Some(&error_code) = response.get(matcher.error_offset) {
+            let label = matcher
+                .label
+                .replace("{error:02X}", &format!("{error_code:02X}"))
+                .replace("{error:02x}", &format!("{error_code:02x}"))
+                .replace("{error}", &format!("{error_code}"));
+            return Some(label);
+        }
     }
-    let mut long_report = Vec::with_capacity(20);
-    long_report.push(0x11);
-    long_report.extend_from_slice(&report[1..]);
-    long_report.resize(20, 0);
-    Some(long_report)
+    None
 }
 
 fn output_report_write_needs_feature_fallback(error: &str) -> bool {
@@ -3770,16 +3912,102 @@ mod tests {
         ));
     }
 
+    /// 3.3 节：声明式错误帧匹配单元测试。
+    /// 验证插件声明的 errorMatchers 能正确匹配 HID++ 1.0/2.0 错误响应，
+    /// 替代旧的硬编码 hidpp_short_output_as_long_report 函数。
     #[test]
-    fn hidpp_short_output_can_be_padded_as_long_output() {
+    fn match_error_matchers_detects_hidpp1_error() {
+        // HID++ 1.0 错误响应：response[0]=0x10, response[2]=0x8F
+        // request[0..3] 与 response[1,3,4] 对应匹配
+        let matchers = vec![ErrorMatcher {
+            name: "hidpp1-error".into(),
+            pattern: vec![
+                ByteMatch { offset: 0, eq_value: 0x10 },
+                ByteMatch { offset: 2, eq_value: 0x8F },
+            ],
+            request_match: vec![
+                RequestByteMatch { offset: 1, request_offset: 0 },
+                RequestByteMatch { offset: 3, request_offset: 1 },
+                RequestByteMatch { offset: 4, request_offset: 2 },
+            ],
+            error_offset: 5,
+            label: "HID++ 1.0 transport error 0x{error:02X}".into(),
+        }];
+        let request = [0x01, 0x0b, 0x81];
+        let response = [0x10, 0x01, 0x8F, 0x0b, 0x81, 0x07];
+        let result = match_error_matchers(&matchers, &response, &request);
+        assert_eq!(result, Some("HID++ 1.0 transport error 0x07".to_string()));
+    }
+
+    #[test]
+    fn match_error_matchers_detects_hidpp2_error() {
+        // HID++ 2.0 错误响应：response[1]=0xFF
+        let matchers = vec![ErrorMatcher {
+            name: "hidpp2-error".into(),
+            pattern: vec![ByteMatch { offset: 1, eq_value: 0xFF }],
+            request_match: vec![
+                RequestByteMatch { offset: 2, request_offset: 1 },
+                RequestByteMatch { offset: 3, request_offset: 2 },
+            ],
+            error_offset: 4,
+            label: "HID++ 2.0 error 0x{error:02X}".into(),
+        }];
+        let request = [0x01, 0x0b, 0x81];
+        let response = [0x11, 0xFF, 0x0b, 0x81, 0x02];
+        let result = match_error_matchers(&matchers, &response, &request);
+        assert_eq!(result, Some("HID++ 2.0 error 0x02".to_string()));
+    }
+
+    #[test]
+    fn match_error_matchers_returns_none_when_pattern_mismatches() {
+        let matchers = vec![ErrorMatcher {
+            name: "hidpp1-error".into(),
+            pattern: vec![
+                ByteMatch { offset: 0, eq_value: 0x10 },
+                ByteMatch { offset: 2, eq_value: 0x8F },
+            ],
+            request_match: vec![],
+            error_offset: 5,
+            label: "error 0x{error:02X}".into(),
+        }];
+        // response[0] != 0x10
+        let response = [0x11, 0x01, 0x8F, 0x0b, 0x81, 0x07];
+        assert_eq!(match_error_matchers(&matchers, &response, &[]), None);
+    }
+
+    #[test]
+    fn match_error_matchers_returns_none_when_request_match_fails() {
+        let matchers = vec![ErrorMatcher {
+            name: "hidpp1-error".into(),
+            pattern: vec![
+                ByteMatch { offset: 0, eq_value: 0x10 },
+                ByteMatch { offset: 2, eq_value: 0x8F },
+            ],
+            request_match: vec![
+                RequestByteMatch { offset: 1, request_offset: 0 },
+            ],
+            error_offset: 5,
+            label: "error 0x{error:02X}".into(),
+        }];
+        let request = [0x02]; // 不匹配 response[1]=0x01
+        let response = [0x10, 0x01, 0x8F, 0x0b, 0x81, 0x07];
+        assert_eq!(match_error_matchers(&matchers, &response, &request), None);
+    }
+
+    #[test]
+    fn match_error_matchers_supports_lowercase_hex_placeholder() {
+        let matchers = vec![ErrorMatcher {
+            name: "test-error".into(),
+            pattern: vec![ByteMatch { offset: 0, eq_value: 0xAB }],
+            request_match: vec![],
+            error_offset: 1,
+            label: "error 0x{error:02x}".into(),
+        }];
+        let response = [0xAB, 0x0E];
         assert_eq!(
-            hidpp_short_output_as_long_report(&[0x10, 0x01, 0x0b, 0x81, 0, 0, 0]),
-            Some(vec![
-                0x11, 0x01, 0x0b, 0x81, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-            ])
+            match_error_matchers(&matchers, &response, &[]),
+            Some("error 0x0e".to_string())
         );
-        assert_eq!(hidpp_short_output_as_long_report(&[0x11, 1, 2, 3]), None);
-        assert_eq!(hidpp_short_output_as_long_report(&[0x10, 1, 2]), None);
     }
 
     #[test]
