@@ -1069,7 +1069,6 @@ pub enum Control {
     LightingZone,
     ReadOnlyValue,
     Action,
-    Info,
 }
 
 impl Control {
@@ -1086,7 +1085,6 @@ impl Control {
             Self::LightingZone => "LightingZone",
             Self::ReadOnlyValue => "ReadOnlyValue",
             Self::Action => "Action",
-            Self::Info => "Info",
         }
     }
 }

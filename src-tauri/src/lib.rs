@@ -16,6 +16,7 @@ mod local_ai_update;
 mod logging;
 mod pointer_activity;
 mod tray;
+mod unlock_watcher;
 use battery_history::{AbnormalDrainNotifyState, BatteryHistoryResponse, BatteryHistoryState};
 use logging::model::{FieldValue, LogInput, LogLevel, LogSource};
 use logging::protocol_event::{self, ProtocolEventContext};
@@ -740,6 +741,8 @@ struct GlobalMetrics {
     schedule_requests: u64,
     /// 睡眠恢复次数
     sleep_resume_count: u64,
+    /// 屏幕解锁触发的主动唤醒次数（仅 wake_on_unlock 开启时累计）
+    unlock_wake_count: u64,
 }
 
 #[derive(Default, Clone, Debug, Serialize)]
@@ -932,6 +935,9 @@ struct SessionState {
     prediction_cache: battery_history::PredictionCache,
     /// 异常耗电通知节流：同一设备同一部件 24 小时内最多通知一次。
     abnormal_drain_notify: AbnormalDrainNotifyState,
+    /// AI 预测独立节流时间戳：与电量采样解耦，距上次预测不足
+    /// `AI_PREDICTION_MIN_INTERVAL` 时跳过 `precompute_prediction`。
+    last_ai_prediction_at: Mutex<Option<Instant>>,
     /// 已通知不可用能力的设备路径集合，避免同一设备重复通知。
     /// 设备断开时由 clear_snapshots 清空。
     notified_unavailable_capabilities: Mutex<BTreeSet<String>>,
@@ -1425,14 +1431,11 @@ fn spawn_power_watcher(app: AppHandle) {
     spawn_linux_power_watcher(app);
 }
 
-/// 系统唤醒后的统一处理。
-/// 由原生电源事件监听器和启发式时间跳跃检测共同调用。
+/// 清空可能因系统休眠而失效的 HID/session 缓存。
 ///
-/// 注意：只调用 `request_presence_refresh`（PresenceOnly），不直接发起协议读取。
-/// 已有快照保持 Full readiness；插件声明的路径等待恢复后的新指针活动再验证。
-fn handle_system_wake_state(state: &SessionState) {
-    // 清空可能失效的 HID 缓存：系统休眠期间设备句柄可能失效，
-    // 缓存的 HidApi 实例可能持有过时的设备列表（休眠期间插入的设备不在列表中）。
+/// 系统休眠期间设备句柄可能失效，缓存的 HidApi 实例可能持有过时的设备列表
+/// （休眠期间插入的设备不在列表中）。唤醒后必须清空，强制下次读取重新枚举。
+fn clear_wake_caches(state: &SessionState) {
     if let Ok(mut api) = state.cached_hidapi.lock() {
         *api = None;
     }
@@ -1451,17 +1454,61 @@ fn handle_system_wake_state(state: &SessionState) {
     if let Ok(mut errors) = state.last_read_errors.lock() {
         errors.clear();
     }
+}
+
+/// 系统唤醒后的统一处理。
+/// 由原生电源事件监听器和启发式时间跳跃检测共同调用。
+///
+/// 默认只调用 `request_presence_refresh`（PresenceOnly），不直接发起协议读取。
+/// 已有快照保持 Full readiness；插件声明的路径等待恢复后的新指针活动再验证。
+///
+/// 若开启 `wake_on_unlock`：跳过 PresenceOnly，由解锁事件接管主动读取。
+/// 仍保留缓存清空与 arm wake recovery，确保未锁屏场景下指针活动能恢复。
+fn handle_system_wake_state(state: &SessionState) {
+    clear_wake_caches(state);
     // 重置退避：唤醒是明确的设备活动证据，旧退避不再适用。
     reset_all_backoff(state);
     reset_wake_recovery_episode(state);
     arm_wake_recovery_after_system_wake(state);
-    // 只发 PresenceOnly：重新枚举设备但不发送协议报告。已有 Full 快照保持
-    // 完整状态；只有恢复后的新指针活动才会触发插件声明的有界 Quick。
-    request_presence_refresh(state);
+
+    let wake_on_unlock = cached_settings_for_state(state).wake_on_unlock;
+    if !wake_on_unlock {
+        // 只发 PresenceOnly：重新枚举设备但不发送协议报告。已有 Full 快照保持
+        // 完整状态；只有恢复后的新指针活动才会触发插件声明的有界 Quick。
+        request_presence_refresh(state);
+    }
     // 全局诊断：记录睡眠恢复次数。
     if let Ok(mut g) = state.global_metrics.lock() {
         g.sleep_resume_count += 1;
     }
+}
+
+/// 屏幕解锁后的统一处理：主动读取鼠标状态。
+///
+/// 与睡眠恢复不同，解锁是用户明确回到桌面的信号，设备通常已 ready，
+/// 因此直接发起 Quick 读取（投影读取 UI 可见字段：电量、DPI、回报率等），
+/// 而非 PresenceOnly 枚举。
+///
+/// 由 `unlock_watcher` 模块在收到平台解锁事件时调用。watcher 常驻进程，
+/// 但仅在 `wake_on_unlock` 开启时触发实际读取，便于用户实时切换设置
+/// 而无需重启应用。
+pub(crate) fn handle_system_unlock_state(app: &AppHandle) {
+    let state = app.state::<SessionState>();
+    // 设置关闭时直接返回：watcher 仍常驻，但避免默认场景下打扰设备。
+    if !cached_settings_for_state(&state).wake_on_unlock {
+        return;
+    }
+    clear_wake_caches(&state);
+    reset_all_backoff(&state);
+    reset_wake_recovery_episode(&state);
+    arm_wake_recovery_after_system_wake(&state);
+    // 主动读取数值：发 Quick（投影读取 UI 可见字段）。
+    // 解锁瞬间设备若未就绪，Quick 失败后会按退避重试，由 reader 主循环处理。
+    request_refresh_with_plan(&state, ReadPlan::Quick);
+    // 全局诊断：记录解锁唤醒次数。
+    if let Ok(mut g) = state.global_metrics.lock() {
+        g.unlock_wake_count += 1;
+    };
 }
 
 // ─── macOS: IOKit IORegisterForSystemPower ─────────────────────────────────
@@ -2665,10 +2712,13 @@ fn new_device_session_correlation_id(device_path: &str) -> String {
 /// 让 `mira-plugin-runtime` 的 HID 交换路径能够发射 `hid-feature-exchange` /
 /// `hid-busy-retry` / `hid-response-mismatch` / `hid-checksum-failed` 事件。
 ///
-/// payload 隐私（对齐 spec 13.2）：默认不记录 request/response hex。只有当
+/// payload 隐私（对齐 spec 13.2/14）：默认不记录 request/response hex。只有当
 /// `LogService::protocol_diagnostic_device_key()` 返回 Some 且 device_key 匹配
-/// 当前设备时，才调用 `classify_command` / `mask_payload` 对 payload 做
+/// 当前设备时，才调用 `classify_command_with_policy` / `mask_payload` 对 payload 做
 /// command-aware masking 后记录。
+///
+/// 声明式策略（spec 14）：优先使用插件在 commands.json 中声明的
+/// `diagnostics.payload` 策略，未声明时回退到关键词分类器。
 struct LoggingHidEventSink {
     log_service: logging::LogService,
     correlation_id: String,
@@ -2684,6 +2734,9 @@ struct LoggingHidEventSink {
     usage: u16,
     interface_number: Option<i32>,
     workflow_id: String,
+    /// 命令 ID → 声明式诊断 payload 策略（"allow" | "mask" | "deny"）。
+    /// 从 ProtocolPackage.command_diagnostics_policies() 预构建。
+    command_policies: HashMap<String, String>,
 }
 
 impl LoggingHidEventSink {
@@ -2714,6 +2767,7 @@ impl LoggingHidEventSink {
 
     /// 对 payload hex 做 command-aware masking。
     /// 返回 (request_hex_opt, response_hex_opt)，Deny 策略或未启用协议诊断时返回 (None, None)。
+    /// 优先使用声明式 diagnostics.payload 策略，未声明时回退到关键词分类。
     fn mask_payload_pair(
         &self,
         command: &str,
@@ -2723,7 +2777,8 @@ impl LoggingHidEventSink {
         if !self.should_record_payload() {
             return (None, None);
         }
-        let policy = protocol_event::classify_command(command);
+        let declarative = self.command_policies.get(command).map(|s| s.as_str());
+        let policy = protocol_event::classify_command_with_policy(command, declarative);
         (
             protocol_event::mask_payload(request_hex, policy),
             protocol_event::mask_payload(response_hex, policy),
@@ -3111,6 +3166,9 @@ struct AppSettings {
     battery_history_retention_days: u16,
     /// 异常耗电提醒：当设备掉电速度明显高于平时时通过现有通知方式提醒。
     unusual_drain_alerts: bool,
+    /// 屏幕解锁时主动唤醒鼠标：开启后由解锁事件接管主动读取，睡眠恢复时
+    /// 仅清空缓存与 arm wake recovery，不再发 PresenceOnly。
+    wake_on_unlock: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -3159,6 +3217,7 @@ impl Default for AppSettings {
             battery_history_enabled: true,
             battery_history_retention_days: 30,
             unusual_drain_alerts: false,
+            wake_on_unlock: false,
         }
     }
 }
@@ -7503,6 +7562,9 @@ const BATTERY_VISIBLE_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const BATTERY_HIDDEN_INTERVAL: Duration = Duration::from_secs(15 * 60);
 const BATTERY_STABLE_INTERVAL: Duration = Duration::from_secs(15 * 60);
 const BATTERY_LONG_STABLE_AFTER: Duration = Duration::from_secs(60 * 60);
+/// AI 预测独立最小间隔：与电量采样解耦，避免高频轮询导致重复 IPC 计算。
+/// 缓存 TTL 1h，10 分钟内跳过预测不影响弹窗正确性（缓存仍 fresh）。
+const AI_PREDICTION_MIN_INTERVAL: Duration = Duration::from_secs(10 * 60);
 const SLEEP_READ_GRACE_MIN: Duration = Duration::from_secs(30);
 const SLEEP_READ_GRACE_MAX: Duration = Duration::from_secs(5 * 60);
 const MAX_DECLARED_SLEEP_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
@@ -8280,6 +8342,7 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
                     usage: ctx.usage,
                     interface_number: ctx.interface_number,
                     workflow_id: workflow_id.clone(),
+                    command_policies: package.command_diagnostics_policies(),
                 }),
                 _ => None,
             };
@@ -8796,22 +8859,41 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
                 // spawn_blocking 避免阻塞轮询主循环；AI 预测可能耗时数秒。
                 // 缓存写入失败仅意味着下次打开弹窗降级实时计算，不影响正确性。
                 if settings.battery_history_enabled {
-                    let app_clone = app.clone();
-                    let low_battery_threshold = settings.low_battery_threshold;
-                    let local_ai_enabled =
-                        local_ai_feature_enabled(&settings, LOCAL_AI_FEATURE_BATTERY_USAGE);
-                    tauri::async_runtime::spawn_blocking(move || {
-                        let state = app_clone.state::<SessionState>();
-                        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            battery_history::precompute_prediction(
-                                &state.battery_history,
-                                &state.prediction_cache,
-                                low_battery_threshold,
-                                local_ai_enabled,
-                                &app_clone,
-                            );
-                        }));
-                    });
+                    // AI 预测独立节流：与电量采样解耦。采样照常记录（5 分钟去重），
+                    // 但预测最多每 10 分钟执行一次，避免高频轮询和上下文切换导致的
+                    // 重复 IPC 计算。缓存 TTL 1h，节流期间弹窗仍读 fresh 缓存。
+                    let ai_prediction_due = {
+                        let mut guard = state
+                            .last_ai_prediction_at
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner());
+                        let now = Instant::now();
+                        let due = guard.is_none_or(|last| {
+                            now.duration_since(last) >= AI_PREDICTION_MIN_INTERVAL
+                        });
+                        if due {
+                            *guard = Some(now);
+                        }
+                        due
+                    };
+                    if ai_prediction_due {
+                        let app_clone = app.clone();
+                        let low_battery_threshold = settings.low_battery_threshold;
+                        let local_ai_enabled =
+                            local_ai_feature_enabled(&settings, LOCAL_AI_FEATURE_BATTERY_USAGE);
+                        tauri::async_runtime::spawn_blocking(move || {
+                            let state = app_clone.state::<SessionState>();
+                            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                battery_history::precompute_prediction(
+                                    &state.battery_history,
+                                    &state.prediction_cache,
+                                    low_battery_threshold,
+                                    local_ai_enabled,
+                                    &app_clone,
+                                );
+                            }));
+                        });
+                    }
                 }
                 // 异常耗电通知：仅在设置开启时检查，节流由 AbnormalDrainNotifyState 保证。
                 if settings.unusual_drain_alerts {
@@ -11857,6 +11939,11 @@ pub fn run() {
             // 路径待活动验证，并执行 PresenceOnly。启发式时间跳跃检测仍兜底。
             spawn_power_watcher(app.handle().clone());
 
+            // 屏幕解锁事件监听：macOS distributed notification / Windows WTS /
+            // Linux logind UnlockSession。开启 wake_on_unlock 后由解锁事件
+            // 接管主动读取（Quick），睡眠恢复时跳过 PresenceOnly。
+            unlock_watcher::spawn(app.handle().clone());
+
             // 启动系统主题变化监听器（事件驱动，跨平台）。
             // 窗口隐藏到托盘后仍可接收主题变化事件，无需轮询。
             spawn_theme_watcher(app.handle().clone());
@@ -12104,6 +12191,39 @@ mod power_watcher_tests {
         handle_system_wake_state(&state);
         let plan = *state.forced_read_plan.lock().unwrap();
         assert_eq!(plan, Some(ReadPlan::PresenceOnly));
+    }
+
+    /// 开启 wake_on_unlock 后，睡眠恢复应跳过 PresenceOnly（由解锁事件接管）：
+    /// forced_read_plan 保持 None，表示不主动发起读取。
+    #[test]
+    fn handle_system_wake_skips_presence_when_wake_on_unlock_enabled() {
+        let state = SessionState::default();
+        *state.cached_settings.lock().unwrap() = Some(AppSettings {
+            wake_on_unlock: true,
+            ..AppSettings::default()
+        });
+        handle_system_wake_state(&state);
+        let plan = *state.forced_read_plan.lock().unwrap();
+        assert_eq!(plan, None);
+    }
+
+    /// 开启 wake_on_unlock 后，睡眠恢复仍应清空缓存并递增 sleep_resume_count，
+    /// 只是不发 PresenceOnly（由解锁事件接管主动读取）。
+    #[test]
+    fn handle_system_wake_with_wake_on_unlock_still_clears_caches() {
+        let state = SessionState::default();
+        *state.cached_settings.lock().unwrap() = Some(AppSettings {
+            wake_on_unlock: true,
+            ..AppSettings::default()
+        });
+        state
+            .last_read_at
+            .lock()
+            .unwrap()
+            .insert("stale-path".into(), std::time::Instant::now());
+        handle_system_wake_state(&state);
+        assert!(state.last_read_at.lock().unwrap().is_empty());
+        assert_eq!(state.global_metrics.lock().unwrap().sleep_resume_count, 1);
     }
 
     /// 唤醒处理不应覆盖更强的 forced plan（如用户同时触发的 Quick）：

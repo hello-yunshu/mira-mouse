@@ -157,7 +157,7 @@ Mira 遵循一个原则：**协议归插件，界面归主应用。**
 
 - **主应用**负责界面渲染、权限边界、HID 调用与自动更新。
 - **插件**以签名的声明式 `.mira-plugin` 包分发，只描述设备事实与协议工作流，不包含可执行代码。
-- **协议 DSL** 有界且可测试：默认上限 64 步、16 次读、总延迟 2 秒，不存在表达式求值、文件系统、网络或任意循环。
+- **协议 DSL** 有界且可测试：默认上限 64 步、16 次读、总延迟 2 秒，不存在表达式求值、文件系统、网络或任意循环。运行时在 DSL 之上还施加会话级预算（`MAX_COMMANDS=56`、`MAX_REPORTS=128`、`MAX_DELAY_MS=5000`、`MAX_OPERATION_TIMEOUT_MS=30000`），任何插件 workflow 都不会无界占用 HID 通道。详见 [协议 DSL](docs/protocol-dsl.md)。
 
 更多架构与安全细节：[插件 SDK](docs/plugin-sdk.md) · [协议 DSL](docs/protocol-dsl.md) · [插件安全模型](docs/plugin-security.md) · [威胁模型](docs/threat-model.md)
 

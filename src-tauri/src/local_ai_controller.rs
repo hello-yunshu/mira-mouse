@@ -573,9 +573,11 @@ impl LocalAiController {
                 ]),
             );
         } else if has_results {
+            // 正常成功路径降为 Debug：默认 Info 级别下不产生预测日志，
+            // 减少日志噪声；排查时可在日志页切换到 Debug 级别查看。
             Self::log_with_guard(
                 &guard,
-                LogLevel::Info,
+                LogLevel::Debug,
                 "local_ai::predict",
                 "local-ai-prediction-completed",
                 format!(
@@ -590,9 +592,10 @@ impl LocalAiController {
                 ]),
             );
         } else if batch_count > 0 {
+            // 全部 fallback（训练数据不足等正常情况）同样降为 Debug。
             Self::log_with_guard(
                 &guard,
-                LogLevel::Info,
+                LogLevel::Debug,
                 "local_ai::predict",
                 "local-ai-prediction-completed",
                 format!(
