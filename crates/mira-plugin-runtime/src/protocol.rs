@@ -952,10 +952,7 @@ fn standard_reading(
 /// - 源 output 不存在或字段缺失时跳过，不报错。
 /// - onboard profile lighting（通过 `normalizers.mouseLighting.onboardProfile` 声明）
 ///   仍是通用机制，不由 semanticMappings 处理。
-fn apply_semantic_mappings(
-    outputs: &mut BTreeMap<String, Value>,
-    capabilities: Option<&Value>,
-) {
+fn apply_semantic_mappings(outputs: &mut BTreeMap<String, Value>, capabilities: Option<&Value>) {
     let Some(mappings) = capabilities
         .and_then(|caps| caps.get("semanticMappings"))
         .and_then(Value::as_object)
@@ -1349,10 +1346,7 @@ mod tests {
     #[test]
     fn semantic_mapping_keeps_composite_lighting_outputs() {
         // 3.1 节：宿主只消费标准语义 output 名（mouseLighting）。
-        let available = BTreeSet::from([
-            "settings".to_string(),
-            "mouseLighting".to_string(),
-        ]);
+        let available = BTreeSet::from(["settings".to_string(), "mouseLighting".to_string()]);
         let fields = BTreeSet::from([SemanticField::LightingState]);
         let preferred = BTreeMap::from([(
             "LightingState".to_string(),
@@ -1362,10 +1356,7 @@ mod tests {
         let (targets, missing) = map_semantic_fields_to_outputs(&available, &fields, &preferred);
 
         assert!(missing.is_empty());
-        assert_eq!(
-            targets,
-            BTreeSet::from(["mouseLighting".to_string()])
-        );
+        assert_eq!(targets, BTreeSet::from(["mouseLighting".to_string()]));
     }
 
     #[test]
@@ -1893,12 +1884,10 @@ mod tests {
     fn normalizes_supported_lighting_effects_from_feature_info() {
         // 3.1 节：宿主不再从 colorLedInfo/rgbEffectsInfo 推断 supportedEffects。
         // 插件应在 workflow 中直接计算 supportedEffects 并通过 semanticMappings 映射。
-        let outputs = BTreeMap::from([
-            (
-                "mouseEffect".into(),
-                json!({"effect": 10, "color": "#123456", "enabled": true, "supportedEffects": [0, 1, 4, 10]}),
-            ),
-        ]);
+        let outputs = BTreeMap::from([(
+            "mouseEffect".into(),
+            json!({"effect": 10, "color": "#123456", "enabled": true, "supportedEffects": [0, 1, 4, 10]}),
+        )]);
         let capabilities = Some(json!({
             "semanticMappings": {
                 "mouseLighting": [{ "output": "mouseEffect" }]
