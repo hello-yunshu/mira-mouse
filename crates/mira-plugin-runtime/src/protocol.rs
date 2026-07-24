@@ -249,11 +249,9 @@ impl SemanticField {
             ],
             SemanticField::LightingState => &[
                 "mouseLighting",
+                "receiverLighting",
                 "lighting",
                 "settings",
-                "mouseLightMode",
-                "mouseLightColor",
-                "mouseEffect",
                 "rgbControl",
             ],
             // inventory output 由插件通过 PluginRuntime.inventory.workflows 声明，
@@ -595,7 +593,9 @@ fn maybe_merge_onboard_lighting(
     capabilities: Option<&Value>,
     outputs: &mut BTreeMap<String, Value>,
 ) -> Result<(), String> {
-    if normalized_mouse_lighting(outputs, capabilities).is_some() {
+    // 3.1 节：检查标准 `mouseLighting` output 是否已存在（由插件直接产出或
+    // 通过 semanticMappings 映射）。如果已存在则跳过 onboard 合并。
+    if outputs.contains_key("mouseLighting") {
         return Ok(());
     }
     let Some(feature_index) = object(outputs, "featureIndexOnboardProfiles")
@@ -897,19 +897,20 @@ fn standard_reading(
             number(settings, "pollingRate").and_then(|value| u16::try_from(value).ok());
     }
 
-    // Compute lighting capabilities from outputs before mutating capabilities.
-    // Inlined to avoid simultaneous &reading.capabilities and &mut reading.capabilities.
-    let mouse_lighting = normalized_mouse_lighting(&reading.capabilities, capabilities.as_ref());
-    let receiver_lighting = normalized_receiver_lighting(&reading.capabilities);
-    if let Some(mouse_lighting) = mouse_lighting {
-        reading
-            .capabilities
-            .insert("mouseLighting".into(), Value::Object(mouse_lighting));
-    }
-    if let Some(receiver_lighting) = receiver_lighting {
-        reading
-            .capabilities
-            .insert("receiverLighting".into(), Value::Object(receiver_lighting));
+    // 3.1 节：宿主不再猜测插件原始字段（mouseLightMode/receiverLight/color1 等）。
+    // 插件通过 capabilities.json 的 `semanticMappings` 声明如何把品牌原始 output
+    // 映射为标准语义 output（mouseLighting/receiverLighting）。宿主只执行通用映射。
+    apply_semantic_mappings(&mut reading.capabilities, capabilities.as_ref());
+
+    // onboard profile lighting 仍是通用机制：插件通过 `normalizers.mouseLighting.onboardProfile`
+    // 声明 onboard 布局，宿主按声明解析 chunk bytes。不由 semanticMappings 处理。
+    if !reading.capabilities.contains_key("mouseLighting") {
+        if let Some(onboard) = onboard_mouse_lighting(&reading.capabilities, capabilities.as_ref())
+        {
+            reading
+                .capabilities
+                .insert("mouseLighting".into(), Value::Object(onboard));
+        }
     }
 
     reading.light_color = object(&reading.capabilities, "mouseLighting")
@@ -920,86 +921,109 @@ fn standard_reading(
     reading
 }
 
-fn normalized_mouse_lighting(
-    outputs: &BTreeMap<String, Value>,
-    plugin_capabilities: Option<&Value>,
-) -> Option<serde_json::Map<String, Value>> {
-    if let Some(onboard) = onboard_mouse_lighting(outputs, plugin_capabilities) {
-        return Some(onboard);
-    }
-    let settings = object(outputs, "settings");
-    let mode = object(outputs, "mouseLightMode").or_else(|| object(outputs, "mouseEffect"));
-    let color = settings
-        .and_then(|settings| settings.get("mouseLightStartColor"))
-        .or_else(|| object(outputs, "mouseLightColor").and_then(|lighting| lighting.get("color")))
-        .or_else(|| mode.and_then(|lighting| lighting.get("color")))
-        .and_then(Value::as_str);
-    let enabled = settings
-        .and_then(|settings| boolean_like(settings, "mouseLightEnabled"))
-        .or_else(|| {
-            object(outputs, "mouseLightSwitch").and_then(|switch| boolean_like(switch, "enabled"))
-        })
-        .or_else(|| mode.and_then(|lighting| boolean_like(lighting, "enabled")));
-
-    if color.is_none() && enabled.is_none() && mode.is_none() {
-        return None;
-    }
-
-    let mut lighting = serde_json::Map::new();
-    if let Some(enabled) = enabled {
-        lighting.insert("enabled".into(), json!(enabled));
-    }
-    if let Some(color) = color {
-        lighting.insert("color".into(), json!(color));
-    }
-    if let Some(settings) = settings {
-        if let Some(color) = settings.get("mouseLightEndColor").and_then(Value::as_str) {
-            lighting.insert("endColor".into(), json!(color));
-        }
-    }
-    if let Some(mode) = mode {
-        copy_field(mode, &mut lighting, "effect");
-        copy_field(mode, &mut lighting, "effectName");
-        copy_field(mode, &mut lighting, "mode");
-        copy_field(mode, &mut lighting, "modeName");
-        copy_field(mode, &mut lighting, "speed");
-        copy_field(mode, &mut lighting, "speedLabel");
-        copy_field(mode, &mut lighting, "brightness");
-        copy_field(mode, &mut lighting, "brightnessLabel");
-    }
-    append_supported_lighting_effects(outputs, &mut lighting);
-    Some(lighting)
-}
-
-fn append_supported_lighting_effects(
-    outputs: &BTreeMap<String, Value>,
-    lighting: &mut serde_json::Map<String, Value>,
+/// 3.1 节：通用语义映射引擎。
+///
+/// 插件通过 `capabilities.json` 的 `semanticMappings` 声明如何把品牌原始 output
+/// 映射为标准语义 output。宿主只执行通用路径映射，不认识任何品牌字段名。
+///
+/// schema：
+/// ```json
+/// {
+///   "semanticMappings": {
+///     "mouseLighting": [
+///       { "output": "mouseEffect" },
+///       { "output": "mouseLightMode" },
+///       { "output": "settings", "fieldMap": { "mouseLightStartColor": "color", "mouseLightEnabled": "enabled" } }
+///     ],
+///     "receiverLighting": [
+///       { "output": "receiverLight", "fieldMap": { "type": ["effect", "option"], "color1": "color" } }
+///     ]
+///   }
+/// }
+/// ```
+///
+/// 规则：
+/// - 目标 output 已存在时不覆盖（插件直接产出的标准 output 优先）。
+/// - `{ "output": "X" }`：把 output X 的所有字段原样复制到目标。
+/// - `{ "output": "X", "fieldMap": { "src": "dst" } }`：把 output X 的 src 字段复制为目标的 dst 字段。
+/// - `{ "output": "X", "fieldMap": { "src": ["dst1", "dst2"] } }`：把 src 字段复制为 dst1 和 dst2。
+/// - 字段级"先到先得"：sources 数组中先声明的源优先，后续源不覆盖已存在的字段。
+///   插件通过数组顺序声明优先级（主源在前，fallback 在后）。
+/// - 源 output 不存在或字段缺失时跳过，不报错。
+/// - onboard profile lighting（通过 `normalizers.mouseLighting.onboardProfile` 声明）
+///   仍是通用机制，不由 semanticMappings 处理。
+fn apply_semantic_mappings(
+    outputs: &mut BTreeMap<String, Value>,
+    capabilities: Option<&Value>,
 ) {
-    let mut effects = BTreeSet::from([0_u64]);
-    let mut saw_supports = false;
-    for info in ["colorLedInfo", "rgbEffectsInfo"]
-        .iter()
-        .filter_map(|key| object(outputs, key))
-    {
-        for (field, value) in [
-            ("supportsFixed", 1_u64),
-            ("supportsCycle", 3),
-            ("supportsWave", 4),
-            ("supportsStarlight", 5),
-            ("supportsBreathing", 10),
-            ("supportsRipple", 11),
-            ("supportsCustom", 12),
-        ] {
-            if let Some(supported) = boolean_like(info, field) {
-                saw_supports = true;
-                if supported {
-                    effects.insert(value);
+    let Some(mappings) = capabilities
+        .and_then(|caps| caps.get("semanticMappings"))
+        .and_then(Value::as_object)
+    else {
+        return;
+    };
+
+    for (target_name, sources) in mappings {
+        // 目标 output 已存在（由插件直接产出）时跳过映射。
+        if outputs.contains_key(target_name) {
+            continue;
+        }
+
+        let mut target: serde_json::Map<String, Value> = serde_json::Map::new();
+        let Some(sources_arr) = sources.as_array() else {
+            continue;
+        };
+        for source in sources_arr {
+            let Some(source_obj) = source.as_object() else {
+                continue;
+            };
+            let Some(source_output) = source_obj
+                .get("output")
+                .and_then(Value::as_str)
+                .and_then(|name| outputs.get(name))
+                .and_then(Value::as_object)
+            else {
+                continue;
+            };
+
+            if let Some(field_map) = source_obj.get("fieldMap").and_then(Value::as_object) {
+                // 字段重命名映射：{ "srcField": "dstField" } 或 { "srcField": ["dst1", "dst2"] }
+                // 与无 fieldMap 分支一致，使用 `or_insert` 不覆盖已有字段，
+                // 让插件通过 sources 数组顺序声明优先级（先到先得）。
+                for (src_field, dst_fields) in field_map {
+                    let Some(value) = source_output.get(src_field) else {
+                        continue;
+                    };
+                    match dst_fields {
+                        Value::String(dst) => {
+                            target.entry(dst.clone()).or_insert_with(|| value.clone());
+                        }
+                        Value::Array(dsts) => {
+                            for dst in dsts {
+                                if let Some(dst) = dst.as_str() {
+                                    target
+                                        .entry(dst.to_string())
+                                        .or_insert_with(|| value.clone());
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            } else {
+                // 原样复制所有字段
+                for (key, value) in source_obj.iter().filter(|(key, _)| *key != "output") {
+                    target.insert(key.clone(), value.clone());
+                }
+                for (key, value) in source_output.iter() {
+                    target.entry(key.clone()).or_insert_with(|| value.clone());
                 }
             }
         }
-    }
-    if saw_supports {
-        lighting.insert("supportedEffects".into(), json!(effects));
+
+        if !target.is_empty() {
+            outputs.insert(target_name.clone(), Value::Object(target));
+        }
     }
 }
 
@@ -1170,42 +1194,6 @@ fn onboard_profile_bytes(
     (bytes.len() >= sector_size).then_some(bytes)
 }
 
-fn normalized_receiver_lighting(
-    outputs: &BTreeMap<String, Value>,
-) -> Option<serde_json::Map<String, Value>> {
-    if let Some(receiver) = object(outputs, "receiverLighting") {
-        return Some(receiver.clone());
-    }
-    let receiver = object(outputs, "receiverLight")?;
-    let mut lighting = serde_json::Map::new();
-    if let Some(enabled) = boolean_like(receiver, "enabled") {
-        lighting.insert("enabled".into(), json!(enabled));
-        if !enabled {
-            lighting.insert("effect".into(), json!(0));
-        }
-    }
-    if let Some(effect) = receiver.get("type").and_then(Value::as_u64) {
-        lighting.entry("effect").or_insert_with(|| json!(effect));
-        lighting.insert("option".into(), json!(effect));
-    }
-    if let Some(color) = receiver.get("color1").and_then(Value::as_str) {
-        lighting.insert("color".into(), json!(color));
-    }
-    copy_field(receiver, &mut lighting, "speed");
-    copy_field(receiver, &mut lighting, "brightness");
-    (!lighting.is_empty()).then_some(lighting)
-}
-
-fn copy_field(
-    source: &serde_json::Map<String, Value>,
-    target: &mut serde_json::Map<String, Value>,
-    key: &str,
-) {
-    if let Some(value) = source.get(key) {
-        target.insert(key.into(), value.clone());
-    }
-}
-
 fn object<'a>(
     outputs: &'a BTreeMap<String, Value>,
     key: &str,
@@ -1305,14 +1293,16 @@ mod tests {
 
     #[test]
     fn semantic_mapping_collects_all_available_runtime_sources() {
+        // 3.1 节：宿主只消费标准语义 output 名（mouseLighting），
+        // 不再收集品牌原始 output 名（mouseLightMode/mouseEffect 等）。
         let available = BTreeSet::from([
             "settings".to_string(),
             "settingsExtended".to_string(),
             "pollingRate".to_string(),
             "profileMgmtCurrent".to_string(),
             "profile".to_string(),
-            "mouseLightMode".to_string(),
-            "mouseLightColor".to_string(),
+            "mouseLighting".to_string(),
+            "receiverLighting".to_string(),
         ]);
         let fields = BTreeSet::from([
             SemanticField::PollingRate,
@@ -1330,8 +1320,8 @@ mod tests {
             "pollingRate",
             "profileMgmtCurrent",
             "profile",
-            "mouseLightMode",
-            "mouseLightColor",
+            "mouseLighting",
+            "receiverLighting",
         ] {
             assert!(targets.contains(expected), "missing target {expected}");
         }
@@ -1358,15 +1348,15 @@ mod tests {
 
     #[test]
     fn semantic_mapping_keeps_composite_lighting_outputs() {
+        // 3.1 节：宿主只消费标准语义 output 名（mouseLighting）。
         let available = BTreeSet::from([
             "settings".to_string(),
-            "mouseLightMode".to_string(),
-            "mouseLightColor".to_string(),
+            "mouseLighting".to_string(),
         ]);
         let fields = BTreeSet::from([SemanticField::LightingState]);
         let preferred = BTreeMap::from([(
             "LightingState".to_string(),
-            BTreeSet::from(["mouseLightMode".to_string(), "mouseLightColor".to_string()]),
+            BTreeSet::from(["mouseLighting".to_string()]),
         )]);
 
         let (targets, missing) = map_semantic_fields_to_outputs(&available, &fields, &preferred);
@@ -1374,17 +1364,21 @@ mod tests {
         assert!(missing.is_empty());
         assert_eq!(
             targets,
-            BTreeSet::from(["mouseLightMode".to_string(), "mouseLightColor".to_string(),])
+            BTreeSet::from(["mouseLighting".to_string()])
         );
     }
 
     #[test]
     fn semantic_output_cache_rejects_unrelated_nonempty_settings() {
+        // 3.1 节：settings output 是否对 LightingState 有用，只看标准字段（mouseLightEnabled
+        // 由插件通过 semanticMappings 映射到 mouseLighting，不再由宿主直接检查 settings）。
+        // settings 仍可包含 pollingRate 等非灯光字段，不应被误判为灯光来源。
         assert!(!semantic_output_is_useful(
             SemanticField::LightingState,
             "settings",
             &json!({"pollingRate": 1000})
         ));
+        // settings 包含 mouseLightEnabled 时仍视为有用（兼容 Protocol A 的 settings 灯光字段）。
         assert!(semantic_output_is_useful(
             SemanticField::LightingState,
             "settings",
@@ -1394,14 +1388,24 @@ mod tests {
 
     #[test]
     fn normalizes_am35_quick_polling_profile_and_lighting_outputs() {
+        // 3.1 节：AM35 插件通过 semanticMappings 声明 mouseLightMode + mouseLightColor
+        // → mouseLighting 的映射。宿主执行通用映射，不认识品牌字段名。
         let outputs = BTreeMap::from([
             ("pollingRate".into(), json!({"pollingRate": 8000})),
             ("profile".into(), json!({"profile": 2})),
             ("mouseLightMode".into(), json!({"mode": 1, "enabled": true})),
             ("mouseLightColor".into(), json!({"color": "#12ABEF"})),
         ]);
+        let capabilities = Some(json!({
+            "semanticMappings": {
+                "mouseLighting": [
+                    { "output": "mouseLightMode" },
+                    { "output": "mouseLightColor" }
+                ]
+            }
+        }));
 
-        let reading = standard_reading(outputs, None, BTreeMap::new());
+        let reading = standard_reading(outputs, capabilities, BTreeMap::new());
 
         assert_eq!(reading.polling_rate_hz, Some(8000));
         assert_eq!(reading.profile, Some(2));
@@ -1431,13 +1435,18 @@ mod tests {
             ),
             ("mouseEffect".into(), json!({"color": "#AABBCC"})),
         ]);
-        let reading = standard_reading(outputs, None, BTreeMap::new());
+        // 3.1 节：插件通过 semanticMappings 声明 mouseEffect → mouseLighting 映射。
+        let capabilities = Some(json!({
+            "semanticMappings": {
+                "mouseLighting": [{ "output": "mouseEffect" }]
+            }
+        }));
+        let reading = standard_reading(outputs, capabilities, BTreeMap::new());
         assert_eq!(reading.battery_percent, Some(83));
         assert_eq!(reading.batteries.len(), 1);
         assert_eq!(reading.dpi, Some(800));
         assert_eq!(reading.polling_rate_hz, Some(1000));
         assert_eq!(reading.light_color.as_deref(), Some("#AABBCC"));
-        assert_eq!(reading.capabilities.len(), 5);
         assert!(reading.capabilities.contains_key("mouseLighting"));
     }
 
@@ -1635,7 +1644,15 @@ mod tests {
             ),
             ("receiverLighting".into(), json!({"color": "#4BBFB1"})),
         ]);
-        let reading = standard_reading(outputs, None, BTreeMap::new());
+        // 3.1 节：插件声明 settings.mouseLightStartColor → mouseLighting.color 映射。
+        let capabilities = Some(json!({
+            "semanticMappings": {
+                "mouseLighting": [
+                    { "output": "settings", "fieldMap": { "mouseLightStartColor": "color" } }
+                ]
+            }
+        }));
+        let reading = standard_reading(outputs, capabilities, BTreeMap::new());
         assert_eq!(reading.light_color.as_deref(), Some("#FB223C"));
         assert_eq!(
             reading
@@ -1653,6 +1670,7 @@ mod tests {
             ("lighting".into(), json!({"color": "#EEAA00"})),
             ("receiverLighting".into(), json!({"color": "#4BBFB1"})),
         ]);
+        // 未声明 mouseLighting semanticMapping 时，宿主不应推断任何灯光颜色。
         let reading = standard_reading(outputs, None, BTreeMap::new());
         assert_eq!(reading.light_color, None);
     }
@@ -1663,7 +1681,13 @@ mod tests {
             ("mouseLightColor".into(), json!({"color": "#FB223C"})),
             ("receiverLighting".into(), json!({"color": "#4BBFB1"})),
         ]);
-        let reading = standard_reading(outputs, None, BTreeMap::new());
+        // 3.1 节：插件声明 mouseLightColor → mouseLighting 映射。
+        let capabilities = Some(json!({
+            "semanticMappings": {
+                "mouseLighting": [{ "output": "mouseLightColor" }]
+            }
+        }));
+        let reading = standard_reading(outputs, capabilities, BTreeMap::new());
         assert_eq!(reading.light_color.as_deref(), Some("#FB223C"));
     }
 
@@ -1680,7 +1704,19 @@ mod tests {
                 json!({"enabled": 1, "type": 7, "color1": "#AABBCC", "speed": 2, "brightness": 4}),
             ),
         ]);
-        let reading = standard_reading(outputs, None, BTreeMap::new());
+        // 3.1 节：AMaster 插件通过 semanticMappings 声明品牌原始 output 到标准语义 output 的映射。
+        let capabilities = Some(json!({
+            "semanticMappings": {
+                "mouseLighting": [
+                    { "output": "mouseLightMode" },
+                    { "output": "mouseLightColor" }
+                ],
+                "receiverLighting": [
+                    { "output": "receiverLight", "fieldMap": { "type": ["effect", "option"], "color1": "color" } }
+                ]
+            }
+        }));
+        let reading = standard_reading(outputs, capabilities, BTreeMap::new());
         let mouse = reading
             .capabilities
             .get("mouseLighting")
@@ -1855,25 +1891,20 @@ mod tests {
 
     #[test]
     fn normalizes_supported_lighting_effects_from_feature_info() {
+        // 3.1 节：宿主不再从 colorLedInfo/rgbEffectsInfo 推断 supportedEffects。
+        // 插件应在 workflow 中直接计算 supportedEffects 并通过 semanticMappings 映射。
         let outputs = BTreeMap::from([
             (
                 "mouseEffect".into(),
-                json!({"effect": 10, "color": "#123456", "enabled": true}),
-            ),
-            (
-                "colorLedInfo".into(),
-                json!({
-                    "supportsFixed": true,
-                    "supportsCycle": false,
-                    "supportsWave": true,
-                    "supportsStarlight": false,
-                    "supportsBreathing": true,
-                    "supportsRipple": false,
-                    "supportsCustom": false
-                }),
+                json!({"effect": 10, "color": "#123456", "enabled": true, "supportedEffects": [0, 1, 4, 10]}),
             ),
         ]);
-        let reading = standard_reading(outputs, None, BTreeMap::new());
+        let capabilities = Some(json!({
+            "semanticMappings": {
+                "mouseLighting": [{ "output": "mouseEffect" }]
+            }
+        }));
+        let reading = standard_reading(outputs, capabilities, BTreeMap::new());
         let mouse = reading
             .capabilities
             .get("mouseLighting")
