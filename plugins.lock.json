@@ -37,6 +37,18 @@
       "pluginApi": ">=1.1.0, <2.0.0",
       "cachePath": "src-tauri/resources/plugins/mira-logitech-hidpp-0.9.1.mira-plugin",
       "bundleByDefault": true
+    },
+    {
+      "pluginId": "mira.razer-viper",
+      "repository": "hello-yunshu/mira-mouse-plugins",
+      "releaseTag": "release/v2026-07-24",
+      "version": "0.3.0",
+      "asset": "mira-razer-viper-0.3.0.mira-plugin",
+      "sha256": "9f2435b504f33c7f8b21e9a1ae297d2ff3d84bf68a2c9441318e6ba9533bd800",
+      "publisherKeyId": "mira-plugins-2026-001",
+      "pluginApi": ">=1.1.0, <2.0.0",
+      "cachePath": "src-tauri/resources/plugins/mira-razer-viper-0.3.0.mira-plugin",
+      "bundleByDefault": true
     }
   ]
 }
