@@ -302,6 +302,52 @@ enum TransportDefinition {
         read_retries: u8,
         #[serde(default)]
         timeout_ms: Option<u64>,
+        // --- Master Spec 3.2 / Section 7: 生命周期扩展（全部声明式，品牌无关） ---
+        // 出站分片：payload 超过单包容量时拆分为多个报告。
+        #[serde(default)]
+        fragment_payload: bool,
+        // 每包最大 payload 字节数（AM35 = writeLength - 1 - frameHeader = 59）。
+        #[serde(default)]
+        max_payload_per_packet: usize,
+        // 分片长度字段在 payload 中的偏移（可选；与 frame 级 length 字段独立）。
+        #[serde(default)]
+        fragment_length_offset: Option<usize>,
+        // 分片序号在 payload 中的偏移（可选）。
+        #[serde(default)]
+        fragment_seq_offset: Option<usize>,
+        // 分片序号字节数（1 或 2）。
+        #[serde(default)]
+        fragment_seq_field_bytes: u8,
+        // 多包响应组装：首个响应包声明多包后，循环收取后续包并拼接。
+        // multi_packet_*_offset 均相对于 response rest（去掉 reportId 之后的字节），
+        // 与 length_field_offset/type_field_offset/payload_offset 保持一致。
+        #[serde(default)]
+        multi_packet_marker_offset: Option<usize>,
+        #[serde(default)]
+        multi_packet_marker_value: u8,
+        #[serde(default)]
+        multi_packet_total_length_offset: Option<usize>,
+        #[serde(default)]
+        multi_packet_total_length_bytes: u8,
+        // 后续包 payload 起始偏移（相对于 rest）。未声明时回退到 payload_off。
+        #[serde(default)]
+        multi_packet_continuation_offset: Option<usize>,
+        #[serde(default = "default_multi_packet_max_packets")]
+        multi_packet_max_packets: u8,
+        #[serde(default = "default_multi_packet_max_total_length")]
+        multi_packet_max_total_length: usize,
+        // Stale-response drain：写请求前主动排空旧响应，防止污染本次匹配。
+        #[serde(default)]
+        stale_drain_reads: u8,
+        #[serde(default = "default_stale_drain_timeout_ms")]
+        stale_drain_timeout_ms: i32,
+        // 时序分离：read_delay_ms 仍作为兼容回退。
+        #[serde(default)]
+        initial_read_delay_ms: u64,
+        #[serde(default)]
+        packet_interval_ms: u64,
+        #[serde(default)]
+        retry_interval_ms: u64,
     },
 }
 
@@ -319,6 +365,21 @@ fn default_endian_le() -> String {
 
 fn default_read_timeout_ms() -> i32 {
     500
+}
+
+/// Master Spec 3.2 / Section 7：多包响应最大包数默认值。
+fn default_multi_packet_max_packets() -> u8 {
+    16
+}
+
+/// Master Spec 3.2 / Section 7：多包响应最大总长度默认值（字节）。
+fn default_multi_packet_max_total_length() -> usize {
+    4096
+}
+
+/// Master Spec 3.2 / Section 7：stale drain 单次读取超时（毫秒），快速排空。
+fn default_stale_drain_timeout_ms() -> i32 {
+    10
 }
 
 /// 3.3 节：声明式协议错误帧匹配。
@@ -2809,6 +2870,13 @@ impl Session<'_> {
     ///   基准为“纯 payload”（去掉 reportId 与 frame header 之后的业务字节）。
     /// - `endian`：length 字段字节序（"le" / "be"），默认 "le"。
     ///
+    /// Master Spec 3.2 / Section 7 扩展（全部声明式，品牌无关）：
+    /// - 出站分片：`fragment_payload` + `max_payload_per_packet`（+ 可选 seq/length 偏移）。
+    /// - 多包响应组装：`multi_packet_marker_offset/value` + `multi_packet_total_length_*`
+    ///   + `multi_packet_continuation_offset` + `multi_packet_max_*`。
+    /// - Stale-response drain：`stale_drain_reads` + `stale_drain_timeout_ms`。
+    /// - 时序分离：`initial_read_delay_ms` / `packet_interval_ms` / `retry_interval_ms`。
+    ///
     /// 旧 `hid-race` 通过 `#[serde(alias = "hid-race")]` 兼容，运行时统一按 `hid-framed` 处理。
     fn framed_exchange(
         &mut self,
@@ -2836,7 +2904,24 @@ impl Session<'_> {
             read_delay_ms,
             read_timeout_ms,
             read_retries,
-            ..
+            timeout_ms: _,
+            fragment_payload,
+            max_payload_per_packet,
+            fragment_length_offset,
+            fragment_seq_offset,
+            fragment_seq_field_bytes,
+            multi_packet_marker_offset,
+            multi_packet_marker_value,
+            multi_packet_total_length_offset,
+            multi_packet_total_length_bytes,
+            multi_packet_continuation_offset,
+            multi_packet_max_packets,
+            multi_packet_max_total_length,
+            stale_drain_reads,
+            stale_drain_timeout_ms,
+            initial_read_delay_ms,
+            packet_interval_ms,
+            retry_interval_ms,
         }) = self.package.transports.transports.get(transport_id)
         else {
             return Err(format!("transport {transport_id} is not hid-framed"));
@@ -2854,77 +2939,105 @@ impl Session<'_> {
         if *write_length > 1025 || *read_length > 1025 {
             return Err("framed report length too large".into());
         }
-        // write_length 至少要容纳 reportId + frame_prefix + length_field + type_field + payload
         let rest_len = write_length
             .checked_sub(1)
             .ok_or_else(|| "write_length must exceed report id".to_string())?;
-        if payload_off
-            .checked_add(payload.len())
-            .is_none_or(|end| end > rest_len)
-        {
-            return Err("framed payload exceeds write length".into());
-        }
         if frame_prefix.len() > rest_len {
             return Err("frame_prefix exceeds write length".into());
         }
-        // 长度字段值域检查（防御未来插件）。
         let len_bytes = *length_field_bytes as usize;
         if len_bytes > 2 {
             return Err("length_field_bytes must be 0, 1 or 2".into());
         }
-        if len_bytes == 1 && payload.len() > u8::MAX as usize {
-            return Err("payload exceeds single-byte length field".into());
-        }
-        if len_bytes == 2 && payload.len() > u16::MAX as usize {
-            return Err("payload exceeds two-byte length field".into());
-        }
-        self.reports += 1;
-        if self.reports > MAX_REPORTS {
-            return Err("report limit exceeded".into());
-        }
-        deadline_remaining_ms(self.deadline)?;
-        // 构造写报告：[writeReportId, ...frame_prefix, ...length_field?, ...type_field?, ...payload, ...zeros]
-        let mut report = vec![0u8; *write_length];
-        report[0] = *write_report_id;
-        if !frame_prefix.is_empty() {
-            report[1..1 + frame_prefix.len()].copy_from_slice(frame_prefix);
-        }
-        if let Some(off) = *length_field_offset {
-            let end = off + len_bytes;
-            if end > rest_len {
-                return Err("length field out of range".into());
-            }
-            let len_val = payload.len() as u64;
-            match (len_bytes, endian.as_str()) {
-                (1, _) => report[1 + off] = len_val as u8,
-                (2, "be") => {
-                    let v = len_val as u16;
-                    report[1 + off..1 + off + 2].copy_from_slice(&v.to_be_bytes());
-                }
-                (2, _) => {
-                    let v = len_val as u16;
-                    report[1 + off..1 + off + 2].copy_from_slice(&v.to_le_bytes());
-                }
-                _ => return Err("invalid length_field_bytes".into()),
+        // Section 7：stale-response drain。写请求前主动排空管道中的旧响应，
+        // 防止上次请求的残留响应污染本次 RaceID 匹配。best-effort，超时即停。
+        if *stale_drain_reads > 0 {
+            let drain_buf_len = (*read_length).max(1);
+            for _ in 0..*stale_drain_reads {
+                deadline_remaining_ms(self.deadline)?;
+                let mut drain = vec![0u8; drain_buf_len];
+                // 排空只读取 interrupt endpoint，丢弃数据；不区分 read_mode。
+                let _ = self.device.read_timeout(&mut drain, *stale_drain_timeout_ms);
             }
         }
-        if let (Some(off), Some(val)) = (*type_field_offset, *type_field_value) {
-            if off >= rest_len {
-                return Err("type field out of range".into());
+        // Section 7：出站分片规划。max_payload_per_packet 为 0 时按 rest 容量推断。
+        let max_per_pkt = if *max_payload_per_packet == 0 {
+            rest_len.saturating_sub(payload_off)
+        } else {
+            *max_payload_per_packet
+        };
+        let fragments = plan_request_fragments(
+            payload,
+            *fragment_payload,
+            max_per_pkt,
+            *fragment_seq_offset,
+            *fragment_seq_field_bytes,
+            *fragment_length_offset,
+        );
+        // 校验每个分片不超过写报告容量。
+        for frag in &fragments {
+            if payload_off
+                .checked_add(frag.len())
+                .is_none_or(|end| end > rest_len)
+            {
+                return Err("framed fragment exceeds write length".into());
             }
-            report[1 + off] = val;
         }
-        report[1 + payload_off..1 + payload_off + payload.len()].copy_from_slice(payload);
+        // 长度字段值域检查（基于单包 payload；分片时每片长度各自受限）。
+        if len_bytes == 1 && fragments.iter().any(|f| f.len() > u8::MAX as usize) {
+            return Err("fragment exceeds single-byte length field".into());
+        }
+        if len_bytes == 2 && fragments.iter().any(|f| f.len() > u16::MAX as usize) {
+            return Err("fragment exceeds two-byte length field".into());
+        }
         let exchange_start = Instant::now();
-        let written = self
-            .device
-            .write(&report)
-            .map_err(|error| format!("send framed output report: {error}"))?;
-        if written != report.len() {
-            return Err(format!(
-                "short framed output report write: {written}/{}",
-                report.len()
-            ));
+        let num_frags = fragments.len();
+        // Section 7：依次发送每个分片报告，间隔 packet_interval_ms。
+        for (idx, frag) in fragments.iter().enumerate() {
+            self.reports += 1;
+            if self.reports > MAX_REPORTS {
+                return Err("report limit exceeded".into());
+            }
+            deadline_remaining_ms(self.deadline)?;
+            // 构造写报告：[writeReportId, ...frame_prefix, ...length_field?, ...type_field?, ...fragment, ...zeros]
+            let mut report = vec![0u8; *write_length];
+            report[0] = *write_report_id;
+            if !frame_prefix.is_empty() {
+                report[1..1 + frame_prefix.len()].copy_from_slice(frame_prefix);
+            }
+            if let Some(off) = *length_field_offset {
+                let end = off + len_bytes;
+                if end > rest_len {
+                    return Err("length field out of range".into());
+                }
+                write_length_field(
+                    &mut report[1 + off..1 + off + len_bytes],
+                    *length_field_bytes,
+                    frag.len(),
+                    endian,
+                );
+            }
+            if let (Some(off), Some(val)) = (*type_field_offset, *type_field_value) {
+                if off >= rest_len {
+                    return Err("type field out of range".into());
+                }
+                report[1 + off] = val;
+            }
+            report[1 + payload_off..1 + payload_off + frag.len()].copy_from_slice(frag);
+            let written = self
+                .device
+                .write(&report)
+                .map_err(|error| format!("send framed output report: {error}"))?;
+            if written != report.len() {
+                return Err(format!(
+                    "short framed output report write: {written}/{}",
+                    report.len()
+                ));
+            }
+            // 分片间隔（最后一片后不延迟）。
+            if idx + 1 < num_frags && *packet_interval_ms > 0 {
+                self.delay(*packet_interval_ms)?;
+            }
         }
         if !expect_response {
             let duration_ms = exchange_start.elapsed().as_millis() as u64;
@@ -2941,7 +3054,29 @@ impl Session<'_> {
             }
             return Ok(Vec::new());
         }
-        for _ in 0..*read_retries {
+        // Section 7：时序分离。首次读取用 initial_read_delay_ms（回退 read_delay_ms）；
+        // RaceID 不匹配重试用 retry_interval_ms；多包响应间隔用 packet_interval_ms。
+        let initial_delay = if *initial_read_delay_ms > 0 {
+            *initial_read_delay_ms
+        } else {
+            *read_delay_ms
+        };
+        let continuation_off = multi_packet_continuation_offset.unwrap_or(payload_off);
+        let is_input_report = matches!(read_mode, HidFramedReadMode::InputReport);
+        for attempt in 0..*read_retries {
+            // 读取前延迟：首次 InputReport 用 initial_delay；重试用 retry_interval_ms。
+            if is_input_report {
+                let delay = if attempt == 0 {
+                    initial_delay
+                } else {
+                    *retry_interval_ms
+                };
+                if delay > 0 {
+                    self.delay(delay)?;
+                }
+            } else if attempt > 0 && *retry_interval_ms > 0 {
+                self.delay(*retry_interval_ms)?;
+            }
             let mut response = vec![0u8; *read_length];
             let count = match read_mode {
                 HidFramedReadMode::Interrupt => {
@@ -2956,9 +3091,6 @@ impl Session<'_> {
                         .map_err(|error| format!("read framed interrupt report: {error}"))?
                 }
                 HidFramedReadMode::InputReport => {
-                    if *read_delay_ms > 0 {
-                        self.delay(*read_delay_ms)?;
-                    }
                     response[0] = *read_report_id;
                     self.device
                         .get_input_report(&mut response)
@@ -2975,27 +3107,20 @@ impl Session<'_> {
             if *strip_report_id_on_read && !response.is_empty() {
                 response.remove(0);
             }
-            // 3.2 节：声明式 request/response 匹配。
-            // request_match_slice 基于“纯 payload”（framed_exchange 接收的 payload 参数）。
-            // response_match_slice 基于“response 纯 payload”：先去掉 reportId（若未 strip），
-            // 再跳过与 request 相同的 frame header 长度（payload_off）。
-            if let (Some((req_start, req_end)), Some((resp_start, resp_end))) =
-                (*request_match_slice, *response_match_slice)
-            {
-                let response_rest: &[u8] = if *strip_report_id_on_read {
-                    &response[..]
-                } else {
-                    response.get(1..).unwrap_or(&[])
-                };
-                let response_payload = response_rest.get(payload_off..).unwrap_or(&[]);
-                let request_slice = payload.get(req_start..req_end);
-                let response_slice = response_payload.get(resp_start..resp_end);
-                let matched = matches!(
-                    (request_slice, response_slice),
-                    (Some(r), Some(s)) if r == s
-                );
-                if !matched {
+            // 3.2 节：声明式 request/response 匹配（抽取为纯函数）。
+            let matched = framed_response_matches_request(
+                payload,
+                &response,
+                payload_off,
+                *request_match_slice,
+                *response_match_slice,
+            );
+            if !matched {
+                if let (Some((req_start, req_end)), Some((resp_start, resp_end))) =
+                    (*request_match_slice, *response_match_slice)
+                {
                     if let Some(sink) = self.event_sink {
+                        let response_payload = response.get(payload_off..).unwrap_or(&[]);
                         let request_id = payload.get(req_start..req_end).unwrap_or(&[]);
                         let response_id = response_payload.get(resp_start..resp_end).unwrap_or(&[]);
                         sink.on_hid_response_mismatch(
@@ -3005,23 +3130,106 @@ impl Session<'_> {
                             &hex::encode(response_id),
                         );
                     }
-                    continue;
                 }
+                continue;
             }
+            // Section 7：多包响应组装。需同时声明 marker_offset 与 total_length_offset。
+            let final_response = if let (Some(marker_off), Some(total_off)) =
+                (*multi_packet_marker_offset, *multi_packet_total_length_offset)
+            {
+                match MultiPacketAssembler::try_start(
+                    &response,
+                    payload_off,
+                    marker_off,
+                    *multi_packet_marker_value,
+                    total_off,
+                    *multi_packet_total_length_bytes,
+                    continuation_off,
+                    *multi_packet_max_packets,
+                    *multi_packet_max_total_length,
+                    endian,
+                )? {
+                    Some(mut assembler) => {
+                        // 循环收取后续包直到完成或超限。
+                        loop {
+                            if *packet_interval_ms > 0 {
+                                self.delay(*packet_interval_ms)?;
+                            }
+                            deadline_remaining_ms(self.deadline)?;
+                            let mut cont = vec![0u8; *read_length];
+                            let cont_count = match read_mode {
+                                HidFramedReadMode::Interrupt => {
+                                    let timeout = match deadline_remaining_ms(self.deadline)? {
+                                        Some(remaining) => (*read_timeout_ms)
+                                            .min(i32::try_from(remaining).unwrap_or(i32::MAX)),
+                                        None => *read_timeout_ms,
+                                    };
+                                    self.device.read_timeout(&mut cont, timeout).map_err(
+                                        |error| format!("read framed multi-packet continuation: {error}"),
+                                    )?
+                                }
+                                HidFramedReadMode::InputReport => {
+                                    cont[0] = *read_report_id;
+                                    self.device.get_input_report(&mut cont).map_err(
+                                        |error| format!("get framed multi-packet continuation: {error}"),
+                                    )?
+                                }
+                            };
+                            if cont_count == 0 {
+                                return Err(
+                                    "timed out waiting for multi-packet continuation".into()
+                                );
+                            }
+                            cont.truncate(cont_count);
+                            if cont.first() != Some(read_report_id) {
+                                continue;
+                            }
+                            if *strip_report_id_on_read && !cont.is_empty() {
+                                cont.remove(0);
+                            }
+                            if assembler.add_continuation(&cont)? {
+                                break;
+                            }
+                        }
+                        // 重构为单包 rest 格式：[frame_header, ...assembled_payload]，
+                        // 并更新 length 字段为总 payload 长度，保持与单包响应一致。
+                        let assembled_payload = assembler.finish();
+                        let mut reconstructed =
+                            response.get(..payload_off).unwrap_or(&[]).to_vec();
+                        if let Some(off) = *length_field_offset {
+                            let end = off + len_bytes;
+                            if end <= reconstructed.len() {
+                                write_length_field(
+                                    &mut reconstructed[off..end],
+                                    *length_field_bytes,
+                                    assembled_payload.len(),
+                                    endian,
+                                );
+                            }
+                        }
+                        reconstructed.extend_from_slice(&assembled_payload);
+                        reconstructed
+                    }
+                    None => response,
+                }
+            } else {
+                response
+            };
             let duration_ms = exchange_start.elapsed().as_millis() as u64;
-            let checksum_valid = self.check_checksum_and_emit(transport_id, command_id, &response);
+            let checksum_valid =
+                self.check_checksum_and_emit(transport_id, command_id, &final_response);
             if let Some(sink) = self.event_sink {
                 sink.on_hid_exchange(
                     transport_id,
                     command_id,
                     &hex::encode(payload),
-                    &hex::encode(&response),
+                    &hex::encode(&final_response),
                     duration_ms,
                     0,
                     checksum_valid,
                 );
             }
-            return Ok(response);
+            return Ok(final_response);
         }
         Err("timed out waiting for framed input report".into())
     }
@@ -3171,6 +3379,251 @@ fn output_report_write_needs_feature_fallback(error: &str) -> bool {
     let lower = error.to_ascii_lowercase();
     lower.contains("writefile")
         && (lower.contains("0x00000001") || lower.contains("incorrect function"))
+}
+
+/// Master Spec 3.2 / Section 7：读取 length/total 字段（1 或 2 字节，声明式字节序）。
+/// `bytes` 为 0 时返回 0。返回 `None` 表示字段越界或字节数非法。
+fn read_length_field(buf: &[u8], bytes: u8, endian: &str) -> Option<usize> {
+    match bytes {
+        0 => Some(0),
+        1 => buf.first().map(|&b| b as usize),
+        2 => {
+            if buf.len() < 2 {
+                return None;
+            }
+            let v = u16::from_le_bytes([buf[0], buf[1]]);
+            Some(match endian {
+                "be" => u16::from_be_bytes([buf[0], buf[1]]) as usize,
+                _ => v as usize,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Master Spec 3.2 / Section 7：写入 length/total 字段（1 或 2 字节，声明式字节序）。
+fn write_length_field(buf: &mut [u8], bytes: u8, value: usize, endian: &str) {
+    match bytes {
+        1 => {
+            if let Some(slot) = buf.first_mut() {
+                *slot = value as u8;
+            }
+        }
+        2 => {
+            if buf.len() >= 2 {
+                let v = value as u16;
+                let pair = match endian {
+                    "be" => v.to_be_bytes(),
+                    _ => v.to_le_bytes(),
+                };
+                buf[..2].copy_from_slice(&pair);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Master Spec 3.2 / Section 7：声明式 request/response 匹配判定。
+///
+/// 从 `framed_exchange` 抽取的纯函数：判断响应是否与请求对应。
+/// `response_rest` 为去掉 reportId 之后的字节（若 strip 则 response 已 strip，
+/// 否则需调用方先去掉首字节）。`payload_off` 为 payload 在 rest 中的起始偏移。
+/// `request` 为 framed_exchange 接收的原始 payload。
+fn framed_response_matches_request(
+    request: &[u8],
+    response_rest: &[u8],
+    payload_off: usize,
+    request_match_slice: Option<(usize, usize)>,
+    response_match_slice: Option<(usize, usize)>,
+) -> bool {
+    let (Some((req_start, req_end)), Some((resp_start, resp_end))) =
+        (request_match_slice, response_match_slice)
+    else {
+        return true;
+    };
+    let response_payload = response_rest.get(payload_off..).unwrap_or(&[]);
+    matches!(
+        (request.get(req_start..req_end), response_payload.get(resp_start..resp_end)),
+        (Some(r), Some(s)) if r == s
+    )
+}
+
+/// Master Spec 3.2 / Section 7：出站分片规划（纯函数）。
+///
+/// 将 `payload` 拆分为多个 frame-payload 缓冲区，每个不超过 `max_payload_per_packet`
+/// 字节。若 `fragment_payload` 为 false 或 payload 不超限，返回单个分片。
+///
+/// 若声明了 `fragment_seq_offset` / `fragment_length_offset`，序号与长度写入
+/// 每个 frame-payload 的对应偏移（相对于 frame-payload 起始），数据紧随其后。
+/// 这两个字段为 `None` 时（如 AM35），frame-payload 即纯数据，frame 级 length 字段
+/// 已由 framed_exchange 写入，足以表达每片长度。
+///
+/// 返回分片列表；每个分片是要放入 report[payload_off..] 的字节。
+fn plan_request_fragments(
+    payload: &[u8],
+    fragment_payload: bool,
+    max_payload_per_packet: usize,
+    seq_offset: Option<usize>,
+    seq_field_bytes: u8,
+    length_offset: Option<usize>,
+) -> Vec<Vec<u8>> {
+    if !fragment_payload || max_payload_per_packet == 0 {
+        return vec![payload.to_vec()];
+    }
+    // 计算 frame-payload 内的 header 区（seq + length）占用。
+    let seq_size = if seq_offset.is_some() {
+        seq_field_bytes as usize
+    } else {
+        0
+    };
+    let length_size = if length_offset.is_some() { 1 } else { 0 };
+    let header_end = match (seq_offset, length_offset) {
+        (Some(so), Some(lo)) => (so + seq_size).max(lo + length_size),
+        (Some(so), None) => so + seq_size,
+        (None, Some(lo)) => lo + length_size,
+        (None, None) => 0,
+    };
+    // data 容量 = max_payload_per_packet - header_end（至少 1）。
+    let data_capacity = max_payload_per_packet
+        .saturating_sub(header_end)
+        .max(1)
+        .min(max_payload_per_packet.max(1));
+    if data_capacity == 0 {
+        return vec![payload.to_vec()];
+    }
+    if payload.len() <= data_capacity {
+        return vec![payload.to_vec()];
+    }
+    let chunks: Vec<&[u8]> = payload.chunks(data_capacity).collect();
+    let mut fragments = Vec::with_capacity(chunks.len());
+    for (idx, chunk) in chunks.iter().enumerate() {
+        let mut frag = vec![0u8; max_payload_per_packet];
+        // 写入序号（little-endian，seq_field_bytes 字节）。
+        if let Some(so) = seq_offset {
+            let end = so + seq_size;
+            if end <= frag.len() {
+                let val = idx as u64;
+                match seq_size {
+                    1 => frag[so] = val as u8,
+                    2 => {
+                        let v = val as u16;
+                        frag[so..so + 2].copy_from_slice(&v.to_le_bytes());
+                    }
+                    _ => {}
+                }
+            }
+        }
+        // 写入本片数据长度（1 字节）。
+        if let Some(lo) = length_offset {
+            if lo < frag.len() {
+                frag[lo] = chunk.len() as u8;
+            }
+        }
+        // 写入数据到 header_end 之后。
+        let data_start = header_end.min(frag.len());
+        let data_end = data_start + chunk.len();
+        if data_end <= frag.len() {
+            frag[data_start..data_end].copy_from_slice(chunk);
+        }
+        // 截断到实际使用长度（header + 数据），避免多余零字节。
+        frag.truncate(data_end);
+        fragments.push(frag);
+    }
+    fragments
+}
+
+/// Master Spec 3.2 / Section 7：多包响应组装状态机（纯函数驱动，便于单测）。
+///
+/// 调用方先用 [`MultiPacketAssembler::try_start`] 判断首包是否为多包响应；
+/// 若是，返回 `Some(assembler)`，随后逐包调用 [`MultiPacketAssembler::add_continuation`]
+/// 直到 `complete()` 返回 true 或达到 max_packets/max_total_length。
+///
+/// 所有 `*_offset` 均相对于 response rest（去掉 reportId 之后的字节）。
+#[derive(Debug)]
+struct MultiPacketAssembler {
+    total_length: usize,
+    continuation_offset: usize,
+    max_total_length: usize,
+    max_packets: u8,
+    accumulated: Vec<u8>,
+    packets_seen: u8,
+}
+
+impl MultiPacketAssembler {
+    /// 检查首包是否为多包响应。返回 `Ok(None)` 表示非多包（单包行为）；
+    /// `Ok(Some(assembler))` 表示多包响应已开始组装；`Err` 表示配置错误。
+    fn try_start(
+        first_packet_rest: &[u8],
+        payload_off: usize,
+        marker_offset: usize,
+        marker_value: u8,
+        total_length_offset: usize,
+        total_length_bytes: u8,
+        continuation_offset: usize,
+        max_packets: u8,
+        max_total_length: usize,
+        endian: &str,
+    ) -> Result<Option<MultiPacketAssembler>, String> {
+        // 检查 marker。
+        if first_packet_rest.get(marker_offset) != Some(&marker_value) {
+            return Ok(None);
+        }
+        // 读取 total length。
+        let total_len = first_packet_rest
+            .get(total_length_offset..)
+            .and_then(|slice| read_length_field(slice, total_length_bytes, endian))
+            .ok_or_else(|| "multi-packet total length field out of range".to_string())?;
+        if total_len == 0 {
+            return Ok(None);
+        }
+        if total_len > max_total_length {
+            return Err(format!(
+                "multi-packet total length {total_len} exceeds max {max_total_length}"
+            ));
+        }
+        if max_packets == 0 {
+            return Err("multi-packet max_packets must be > 0".into());
+        }
+        // 首包贡献的 payload：从 payload_off 到 rest 末尾。
+        let first_payload = first_packet_rest.get(payload_off..).unwrap_or(&[]);
+        let mut accumulated = Vec::with_capacity(total_len);
+        accumulated.extend_from_slice(first_payload);
+        Ok(Some(MultiPacketAssembler {
+            total_length: total_len,
+            continuation_offset,
+            max_total_length,
+            max_packets,
+            accumulated,
+            packets_seen: 1,
+        }))
+    }
+
+    /// 添加后续包。返回 `Ok(true)` 表示已组装完成，`Ok(false)` 表示仍需更多包，
+    /// `Err` 表示超限。
+    fn add_continuation(&mut self, packet_rest: &[u8]) -> Result<bool, String> {
+        self.packets_seen += 1;
+        if self.packets_seen > self.max_packets {
+            return Err(format!(
+                "multi-packet response exceeded max_packets {}",
+                self.max_packets
+            ));
+        }
+        let cont = packet_rest.get(self.continuation_offset..).unwrap_or(&[]);
+        self.accumulated.extend_from_slice(cont);
+        if self.accumulated.len() > self.max_total_length {
+            return Err(format!(
+                "multi-packet response exceeded max total length {}",
+                self.max_total_length
+            ));
+        }
+        Ok(self.accumulated.len() >= self.total_length)
+    }
+
+    /// 完成组装，截断到 total_length 并返回。
+    fn finish(mut self) -> Vec<u8> {
+        self.accumulated.truncate(self.total_length);
+        self.accumulated
+    }
 }
 
 fn output_value<'a>(
@@ -5793,5 +6246,225 @@ mod tests {
         let err = result.unwrap_err();
         // 错误信息应包含 I/O 相关的失败原因
         assert!(!err.is_empty(), "error message should not be empty");
+    }
+
+    // ===== Master Spec 3.2 / Section 7：hid-framed 生命周期扩展测试 =====
+
+    /// 构造 AM35 风格的 hid-framed transport JSON（含 Section 7 新字段）。
+    fn am35_framed_transport_json() -> &'static str {
+        r#"{
+            "schemaVersion": 1,
+            "transports": {
+                "am35-direct": {
+                    "kind": "hid-framed",
+                    "writeReportId": 6, "readReportId": 7,
+                    "writeLength": 62, "readLength": 62,
+                    "stripReportIdOnRead": true,
+                    "framePrefix": [],
+                    "lengthFieldOffset": 0, "lengthFieldBytes": 1,
+                    "typeFieldOffset": 1, "typeFieldValue": 0,
+                    "payloadOffset": 2,
+                    "requestMatchSlice": [4, 6], "responseMatchSlice": [4, 6],
+                    "endian": "le", "readMode": "input-report",
+                    "readDelayMs": 50, "readTimeoutMs": 1000, "readRetries": 20,
+                    "fragmentPayload": true, "maxPayloadPerPacket": 59,
+                    "multiPacketMarkerOffset": 3, "multiPacketMarkerValue": 91,
+                    "multiPacketTotalLengthOffset": 4, "multiPacketTotalLengthBytes": 2,
+                    "multiPacketContinuationOffset": 2,
+                    "multiPacketMaxPackets": 16, "multiPacketMaxTotalLength": 4096,
+                    "staleDrainReads": 3, "staleDrainTimeoutMs": 10,
+                    "initialReadDelayMs": 50, "packetIntervalMs": 10, "retryIntervalMs": 20
+                }
+            }
+        }"#
+    }
+
+    /// stale_response_drain：验证 stale drain 配置正确解析，drain 次数与超时符合声明。
+    /// 注：实际 I/O 排空需真实设备/mock，此处验证配置层（hardware-unverified: I/O loop）。
+    #[test]
+    fn stale_response_drain() {
+        let transports: TransportsFile =
+            serde_json::from_str(am35_framed_transport_json()).expect("parse transport");
+        let TransportDefinition::HidFramed {
+            stale_drain_reads,
+            stale_drain_timeout_ms,
+            ..
+        } = &transports.transports["am35-direct"]
+        else {
+            panic!("expected HidFramed");
+        };
+        assert_eq!(*stale_drain_reads, 3, "staleDrainReads should be 3");
+        assert_eq!(
+            *stale_drain_timeout_ms, 10,
+            "staleDrainTimeoutMs should be 10"
+        );
+    }
+
+    /// fragmented_request：100 字节 payload 按 59 字节分片 → 2 片（59 + 41）。
+    /// AM35 无 payload 内 seq/length（frame 级 length 字段已表达每片长度）。
+    #[test]
+    fn fragmented_request() {
+        let payload: Vec<u8> = (0..100u8).collect();
+        let fragments = plan_request_fragments(
+            &payload,
+            true, // fragment_payload
+            59,   // max_payload_per_packet
+            None, // seq_offset
+            0,    // seq_field_bytes
+            None, // length_offset
+        );
+        assert_eq!(fragments.len(), 2, "100 bytes / 59 per packet = 2 fragments");
+        assert_eq!(fragments[0].len(), 59, "first fragment = 59 bytes");
+        assert_eq!(fragments[1].len(), 41, "second fragment = 41 bytes");
+        // 验证数据连续性：拼接后等于原 payload。
+        let mut reassembled = Vec::new();
+        for frag in &fragments {
+            reassembled.extend_from_slice(frag);
+        }
+        assert_eq!(reassembled, payload, "fragment data should reassemble to original");
+        // 未启用分片时返回单包。
+        let single = plan_request_fragments(&payload, false, 59, None, 0, None);
+        assert_eq!(single.len(), 1);
+        assert_eq!(single[0].len(), 100);
+        // payload 不超限时返回单包。
+        let small = vec![1u8, 2, 3];
+        let small_frags = plan_request_fragments(&small, true, 59, None, 0, None);
+        assert_eq!(small_frags.len(), 1);
+    }
+
+    /// multi_packet_response：0x5B 标记 + total_length=80 + 1 个后续包 → 组装 80 字节。
+    #[test]
+    fn multi_packet_response() {
+        // 首包 rest（reportId 已 strip）：[length=61, type=0, 0x05, 0x5B, 80, 0, 0xCF, 0x30, ...53 字节]
+        let mut first_rest = vec![61u8, 0, 5, 91, 80, 0, 207, 48];
+        first_rest.extend(1u8..=53u8); // 53 字节数据
+        assert_eq!(first_rest.len(), 61, "first packet rest = 61 bytes");
+        // 后续包 rest：[length=21, type=0, ...21 字节]
+        let mut cont_rest = vec![21u8, 0];
+        cont_rest.extend(54u8..=74u8); // 21 字节数据
+        assert_eq!(cont_rest.len(), 23, "continuation rest = 23 bytes");
+        let assembler = MultiPacketAssembler::try_start(
+            &first_rest,
+            2,    // payload_off
+            3,    // marker_offset
+            91,   // marker_value (0x5B)
+            4,    // total_length_offset
+            2,    // total_length_bytes
+            2,    // continuation_offset
+            16,   // max_packets
+            4096, // max_total_length
+            "le",
+        )
+        .expect("try_start should succeed")
+        .expect("first packet should be multi-packet (0x5B marker)");
+        let mut assembler = assembler;
+        // 首包贡献 payload = rest[2..] = 59 字节。需 80-59=21 字节。
+        assert_eq!(assembler.packets_seen, 1);
+        // 添加后续包 → 完成。
+        let complete = assembler
+            .add_continuation(&cont_rest)
+            .expect("add_continuation should succeed");
+        assert!(complete, "should be complete after 1 continuation (59+21=80)");
+        let assembled = assembler.finish();
+        assert_eq!(assembled.len(), 80, "assembled payload = 80 bytes (total_length)");
+        // 验证前缀：[0x05, 0x5B, 80, 0, 0xCF, 0x30, 1, 2, ...]
+        assert_eq!(
+            &assembled[..8],
+            &[5, 91, 80, 0, 207, 48, 1, 2],
+            "assembled payload prefix should match"
+        );
+    }
+
+    /// multi_packet_max_packets_exceeded：max_packets=1 时，第 2 个包触发错误。
+    #[test]
+    fn multi_packet_max_packets_exceeded() {
+        // 首包：marker=0x5B, total_length=200（需要多个后续包）。
+        let first_rest = vec![61u8, 0, 5, 91, 200, 0, 207, 48];
+        let mut assembler = MultiPacketAssembler::try_start(
+            &first_rest, 2, 3, 91, 4, 2, 2, 1, 4096, "le",
+        )
+        .expect("try_start ok")
+        .expect("multi-packet");
+        // max_packets=1，首包已计为 1。添加第 2 包应报错。
+        let cont_rest = vec![0u8; 61];
+        let result = assembler.add_continuation(&cont_rest);
+        assert!(result.is_err(), "should error when exceeding max_packets=1");
+        assert!(
+            result.unwrap_err().contains("max_packets"),
+            "error should mention max_packets"
+        );
+    }
+
+    /// multi_packet_max_total_length_exceeded：total_length > max_total_length 时报错。
+    #[test]
+    fn multi_packet_max_total_length_exceeded() {
+        // total_length=5000，max_total_length=4096 → try_start 报错。
+        let first_rest = vec![61u8, 0, 5, 91, 0x88, 0x13, 207, 48]; // 5000 = 0x1388
+        let result = MultiPacketAssembler::try_start(
+            &first_rest, 2, 3, 91, 4, 2, 2, 16, 4096, "le",
+        );
+        assert!(result.is_err(), "should error when total_length > max_total_length");
+        assert!(
+            result.unwrap_err().contains("exceeds max"),
+            "error should mention exceeds max"
+        );
+    }
+
+    /// race_id_mismatch_retry：响应 RaceID 与请求不匹配 → 匹配函数返回 false（触发重试）。
+    #[test]
+    fn race_id_mismatch_retry() {
+        // 请求 payload：05 5A 02 00 CF 30（RaceID = payload[4..6] = [0xCF, 0x30]）
+        let request = [0x05, 0x5a, 0x02, 0x00, 0xcf, 0x30];
+        // 响应 rest：[length, type, 0x05, 0x5A, 0x02, 0x00, 0xC9, 0x30, ...]
+        // response_payload = rest[2..] = [0x05, 0x5A, 0x02, 0x00, 0xC9, 0x30, ...]
+        // response_match_slice [4,6] = [0xC9, 0x30] ≠ request[4..6] = [0xCF, 0x30]
+        let response_rest = [0x09, 0x00, 0x05, 0x5a, 0x02, 0x00, 0xc9, 0x30, 0x50];
+        assert!(
+            !framed_response_matches_request(
+                &request,
+                &response_rest,
+                2,                // payload_off
+                Some((4, 6)),     // request_match_slice
+                Some((4, 6)),     // response_match_slice
+            ),
+            "mismatched RaceID should return false (trigger retry)"
+        );
+    }
+
+    /// race_id_mismatch_stale：旧请求的残留响应 RaceID 不匹配 → 应被排空/跳过。
+    /// 验证匹配函数对 stale 包返回 false，配合 stale_drain 排空。
+    #[test]
+    fn race_id_mismatch_stale() {
+        // 本次请求 RaceID = [0xCF, 0x30]
+        let request = [0x05, 0x5a, 0x02, 0x00, 0xcf, 0x30];
+        // stale 残留响应：RaceID = [0xC5, 0x30]（更早的查询）
+        let stale_rest = [0x09, 0x00, 0x05, 0x5a, 0x02, 0x00, 0xc5, 0x30, 0x32];
+        assert!(
+            !framed_response_matches_request(
+                &request,
+                &stale_rest,
+                2,
+                Some((4, 6)),
+                Some((4, 6)),
+            ),
+            "stale response RaceID should not match"
+        );
+        // 匹配的响应应返回 true。
+        let matching_rest = [0x09, 0x00, 0x05, 0x5a, 0x02, 0x00, 0xcf, 0x30, 0x64];
+        assert!(
+            framed_response_matches_request(
+                &request,
+                &matching_rest,
+                2,
+                Some((4, 6)),
+                Some((4, 6)),
+            ),
+            "matching RaceID should return true"
+        );
+        // 未声明 match_slice 时总是匹配（向后兼容）。
+        assert!(
+            framed_response_matches_request(&request, &stale_rest, 2, None, None),
+            "no match_slice → always match (backward compatible)"
+        );
     }
 }
