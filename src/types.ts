@@ -23,8 +23,16 @@ export type PluginEditor = 'inline-toggle' | 'inline-segmented' | 'inline-value'
 /** 字段值格式化方式。 */
 export type PluginFieldFormat = 'sleep' | 'percent' | 'hertz' | 'connection' | 'color' | 'default';
 
-/** 字段可见性条件：当 snapshot 中 path 的值满足 eq/ne 时显示。 */
-export interface PluginVisibleWhen { path: string; eq?: unknown; ne?: unknown }
+/** 字段可见性条件：当 snapshot 中 path 的值满足 eq/ne/in 时显示。
+ *  `in` 用于多值匹配，典型场景是 `path: "family"` 区分 Protocol A 与 AM35，
+ *  避免在宿主代码中按 pluginId/vendorId 硬编码协议分支。 */
+export interface PluginVisibleWhen {
+  path: string;
+  eq?: unknown;
+  ne?: unknown;
+  /** 当 path 的值存在于该数组时显示。与 eq 互斥（同时声明时 eq 优先）。 */
+  in?: unknown[];
+}
 
 /** 一个 mutation 或按声明优先级排列的候选 mutation。 */
 export type PluginMutation = string | string[];
@@ -162,6 +170,9 @@ export interface DeviceState {
   readStatuses?: Record<string, ReadStatus>;
   /** 接收器场景下鼠标是否就位，详见 DeviceSnapshot.mouseReady。 */
   mouseReady?: boolean;
+  /** 设备所属的协议 family，详见 DeviceSnapshot.family。
+   *  `resolveVisibleWhen` 通过 `path: "family"` 读取此字段。 */
+  family?: string;
 }
 
 export interface BundledPluginInfo {
@@ -313,6 +324,11 @@ export interface DeviceSnapshot {
    * 由后端协议层填充，前端只读。
    */
   mouseReady?: boolean;
+  /** 设备所属的协议 family（如 "protocol-a-direct"、"am35-direct"）。
+   *  用于 `visibleWhen.path = "family"` 实现协议感知的能力可见性，
+   *  避免在宿主代码中按 pluginId/vendorId 硬编码协议分支。
+   *  由后端从 `MatchedDevice.family` 填充。 */
+  family?: string;
 }
 
 export interface DeviceSnapshotEntry {

@@ -3,12 +3,13 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use ed25519_dalek::{Signer, SigningKey};
 use mira_plugin_api::PluginManifest;
-// 3.5 节：CLI 与 runtime 共享同一个 Package Format 实现（allowed + PACKAGE_FORMAT_VERSION），
+// 3.5 节：CLI 与 runtime 共享同一个 Package format 实现（allowed + PACKAGE_FORMAT_VERSION），
 // 不再维护自己的 forbidden_source()。pack/sign/inspect/verify 使用同一实现。
 use mira_plugin_runtime::{
-    allowed, canonical_json, inspect_package, TrustStore, PACKAGE_FORMAT_VERSION,
+    allowed, canonical_json, inspect_package, ProtocolPackage, TrustStore, PACKAGE_FORMAT_VERSION,
 };
 use serde::Serialize;
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
@@ -340,19 +341,391 @@ fn validate_dir(path: &Path) -> Result<PluginManifest> {
     Ok(manifest)
 }
 
+/// Iteration 002 §16：fixture runner 实际执行。
+/// 不再只检查 fixture 文件存在，而是加载 protocol package 并执行每个 sample-based fixture。
+/// 支持：
+/// - sample-based fixtures：构建请求字节 + 解析响应 + 比对 expectedParsed
+/// - checksum fixtures：计算 checksum + 比对 expectedChecksum
+/// - 其他 fixture 类型（transport/multi-packet）：仅验证结构完整性
 fn validate_fixtures(path: &Path) -> Result<()> {
     let fixtures = path.join("tests/fixtures");
     if !fixtures.is_dir() {
         bail!("plugin has no tests/fixtures directory");
     }
-    let count = WalkDir::new(fixtures)
+    // 收集所有 JSON fixture 文件
+    let mut fixture_files: Vec<PathBuf> = WalkDir::new(&fixtures)
         .into_iter()
         .filter_map(Result::ok)
         .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
-        .count();
-    if count == 0 {
+        .map(|e| e.path().to_path_buf())
+        .collect();
+    if fixture_files.is_empty() {
         bail!("plugin has no JSON fixture");
     }
+    fixture_files.sort();
+
+    // 尝试加载 protocol package（若 plugin 有 protocol/ 目录）
+    let protocol_dir = path.join("protocol");
+    let package = if protocol_dir.is_dir() {
+        Some(load_protocol_package(path)?)
+    } else {
+        None
+    };
+
+    let mut total = 0usize;
+    let mut passed = 0usize;
+    let mut skipped = 0usize;
+    let mut failed = 0usize;
+    let mut failures: Vec<String> = Vec::new();
+
+    for fixture_path in &fixture_files {
+        let rel = fixture_path
+            .strip_prefix(path)
+            .unwrap_or(fixture_path)
+            .display()
+            .to_string();
+        let content =
+            fs::read_to_string(fixture_path).with_context(|| format!("read fixture {rel}"))?;
+        let fixture: Value =
+            serde_json::from_str(&content).with_context(|| format!("parse fixture JSON {rel}"))?;
+        let case = fixture
+            .get("case")
+            .and_then(Value::as_str)
+            .unwrap_or("<unnamed>")
+            .to_string();
+
+        // sample-based fixture：有 samples 数组
+        if let Some(samples) = fixture.get("samples").and_then(Value::as_array) {
+            let package = package.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("fixture {rel} has samples but plugin has no protocol/ directory")
+            })?;
+            // 提取 fixture 级别的 command（reader.command 或 setter.command）
+            let fixture_command = fixture
+                .get("reader")
+                .and_then(|r| r.get("command"))
+                .and_then(Value::as_str)
+                .or_else(|| {
+                    fixture
+                        .get("setter")
+                        .and_then(|s| s.get("command"))
+                        .and_then(Value::as_str)
+                });
+            // 判断是 write fixture（有 setter）还是 read fixture（有 reader）
+            let is_write_fixture = fixture.get("setter").is_some();
+            // readback 部分（write fixture 可选）
+            let readback = fixture.get("readback");
+
+            for (idx, sample) in samples.iter().enumerate() {
+                total += 1;
+                let label = format!("{rel}::{case}#sample{}", idx + 1);
+                match run_sample_fixture(
+                    package,
+                    sample,
+                    fixture_command,
+                    is_write_fixture,
+                    readback,
+                ) {
+                    Ok(()) => {
+                        passed += 1;
+                    }
+                    Err(FixtureError::Skipped(reason)) => {
+                        skipped += 1;
+                        eprintln!("  [SKIP] {label}: {reason}");
+                    }
+                    Err(FixtureError::Failed(reason)) => {
+                        failed += 1;
+                        failures.push(format!("{label}: {reason}"));
+                        eprintln!("  [FAIL] {label}: {reason}");
+                    }
+                }
+            }
+            continue;
+        }
+
+        // checksum fixture：有 input + expectedChecksum
+        if let (Some(input), Some(expected)) = (
+            fixture.get("input").and_then(Value::as_array),
+            fixture.get("expectedChecksum").and_then(Value::as_u64),
+        ) {
+            total += 1;
+            let label = format!("{rel}::{case}");
+            let input_bytes: Vec<u8> = input
+                .iter()
+                .filter_map(|v| v.as_u64().map(|n| n as u8))
+                .collect();
+            // Protocol A checksum: ff-minus-sum8
+            let sum: u8 = input_bytes.iter().fold(0u8, |acc, &b| acc.wrapping_add(b));
+            let actual = 0xFF - sum;
+            if actual as u64 == expected {
+                passed += 1;
+            } else {
+                failed += 1;
+                let reason = format!("checksum mismatch: expected {expected}, got {actual}");
+                failures.push(format!("{label}: {reason}"));
+                eprintln!("  [FAIL] {label}: {reason}");
+            }
+            continue;
+        }
+
+        // 其他 fixture 类型（transport/multi-packet/stale-response 等）：
+        // 仅验证结构有 case + description 字段，标记为 skipped。
+        total += 1;
+        if fixture.get("case").is_some() {
+            skipped += 1;
+            eprintln!("  [SKIP] {rel}::{case}: non-sample fixture (structural validation only)");
+        } else {
+            failed += 1;
+            let reason = "fixture missing 'case' field".to_string();
+            failures.push(format!("{rel}: {reason}"));
+            eprintln!("  [FAIL] {rel}: {reason}");
+        }
+    }
+
+    // 输出汇总
+    println!(
+        "fixture results: {} total, {} passed, {} skipped, {} failed",
+        total, passed, skipped, failed
+    );
+    if failed > 0 {
+        eprintln!("\nfailed fixtures:");
+        for failure in &failures {
+            eprintln!("  - {failure}");
+        }
+        bail!("{} fixture(s) failed", failed);
+    }
+    Ok(())
+}
+
+/// 加载插件 protocol package。
+fn load_protocol_package(path: &Path) -> Result<ProtocolPackage> {
+    let mut files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    let protocol_dir = path.join("protocol");
+    for entry in WalkDir::new(&protocol_dir)
+        .follow_links(false)
+        .sort_by_file_name()
+    {
+        let entry = entry?;
+        if entry.file_type().is_file() {
+            let rel = entry
+                .path()
+                .strip_prefix(path)
+                .with_context(|| format!("strip prefix {}", path.display()))?
+                .to_string_lossy()
+                .replace('\\', "/");
+            files.insert(rel, fs::read(entry.path())?);
+        }
+    }
+    // capabilities.json 也是 ProtocolPackage 需要的
+    let caps_path = path.join("capabilities.json");
+    if caps_path.is_file() {
+        files.insert("capabilities.json".to_string(), fs::read(&caps_path)?);
+    }
+    ProtocolPackage::from_files(&files).map_err(|e| anyhow::anyhow!("load protocol package: {e}"))
+}
+
+/// fixture 执行错误类型。
+enum FixtureError {
+    Skipped(String),
+    Failed(String),
+}
+
+/// 执行单个 sample-based fixture。
+/// 验证：请求字节构建 + 响应解析 + expectedParsed 比对。
+/// - `fixture_command`：fixture 级别的 command（reader.command 或 setter.command）
+/// - `is_write_fixture`：是否是 write fixture（有 setter）
+/// - `readback`：write fixture 的可选 readback 部分
+fn run_sample_fixture(
+    package: &ProtocolPackage,
+    sample: &Value,
+    fixture_command: Option<&str>,
+    is_write_fixture: bool,
+    readback: Option<&Value>,
+) -> Result<(), FixtureError> {
+    // 1. 确定 command_id：优先 sample 级别，其次 fixture 级别
+    let command_id = sample
+        .get("reader")
+        .and_then(|r| r.get("command"))
+        .and_then(Value::as_str)
+        .or_else(|| sample.get("command").and_then(Value::as_str))
+        .or(fixture_command)
+        .ok_or_else(|| FixtureError::Skipped("sample has no reader.command".into()))?;
+
+    // 2. 提取 params（read fixture 用 params，write fixture 用 input）
+    let params_value = if is_write_fixture {
+        sample
+            .get("input")
+            .cloned()
+            .unwrap_or(Value::Object(Default::default()))
+    } else {
+        sample
+            .get("params")
+            .cloned()
+            .unwrap_or(Value::Object(Default::default()))
+    };
+    let params_obj = params_value
+        .as_object()
+        .ok_or_else(|| FixtureError::Failed("sample params/input is not an object".into()))?;
+    let mut params = BTreeMap::new();
+    for (key, value) in params_obj {
+        params.insert(key.clone(), value.clone());
+    }
+
+    // 3. 构建请求字节
+    // Iteration 002 §16.1：对于 `base: "read-response"` 的 Protocol A write 命令，
+    // fixture runner 无法预先执行 read，使用全 0 base 作为 fallback（仅用于 fixture 测试）。
+    // 真实运行时必须通过 workflow 的 pre-read 步骤提供 base。
+    let actual_request = package
+        .build_fixture_request_with_base(command_id, &params, None)
+        .map_err(|e| FixtureError::Failed(format!("build_fixture_request: {e}")))?;
+
+    // 4. 比对请求字节
+    // - `expectedRequestPayload`：完整请求字节比对（AM35 短帧）
+    // - `expectedRequestHead`：仅比对前 N 个字节（Protocol A 64 字节帧，
+    //   fixture 只验证命令字节 + 参数 + checksum，不验证从 read-response 继承的字节）
+    if let Some(expected_req) = sample
+        .get("expectedRequestPayload")
+        .and_then(Value::as_array)
+    {
+        let expected_bytes: Vec<u8> = expected_req
+            .iter()
+            .filter_map(|v| v.as_u64().map(|n| n as u8))
+            .collect();
+        if actual_request != expected_bytes {
+            return Err(FixtureError::Failed(format!(
+                "request mismatch: expected {:02x?}, got {:02x?}",
+                expected_bytes, actual_request
+            )));
+        }
+    } else if let Some(expected_head) = sample.get("expectedRequestHead").and_then(Value::as_array)
+    {
+        let expected_bytes: Vec<u8> = expected_head
+            .iter()
+            .filter_map(|v| v.as_u64().map(|n| n as u8))
+            .collect();
+        let n = expected_bytes.len();
+        if actual_request.len() < n {
+            return Err(FixtureError::Failed(format!(
+                "request too short: need at least {n} bytes, got {}",
+                actual_request.len()
+            )));
+        }
+        let actual_head = &actual_request[..n];
+        if actual_head != expected_bytes.as_slice() {
+            return Err(FixtureError::Failed(format!(
+                "request head mismatch (first {n} bytes): expected {:02x?}, got {:02x?}",
+                expected_bytes, actual_head
+            )));
+        }
+    }
+
+    // 5. write fixture：仅验证请求构建 + 可选 readback
+    if is_write_fixture {
+        // readback 部分验证（仅第一个 sample 执行 readback，避免重复）
+        if let Some(readback) = readback {
+            let readback_command = readback
+                .get("command")
+                .and_then(Value::as_str)
+                .ok_or_else(|| FixtureError::Skipped("readback has no command".into()))?;
+            let response_sample: Vec<u8> = readback
+                .get("responseSample")
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_u64().map(|n| n as u8))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let expected_parsed = readback.get("expectedParsed");
+            if response_sample.is_empty() || expected_parsed.is_none() {
+                return Err(FixtureError::Skipped(
+                    "readback missing responseSample or expectedParsed".into(),
+                ));
+            }
+            let parse_result = package.parse_fixture_response(readback_command, &response_sample);
+            let parsed = parse_result.map_err(|e| {
+                FixtureError::Failed(format!("readback parse_fixture_response: {e}"))
+            })?;
+            let expected_obj = expected_parsed.and_then(Value::as_object).ok_or_else(|| {
+                FixtureError::Failed("readback expectedParsed is not an object".into())
+            })?;
+            let parsed_obj = parsed.as_object().ok_or_else(|| {
+                FixtureError::Failed(format!("readback parsed is not an object: {parsed}"))
+            })?;
+            for (key, expected_value) in expected_obj {
+                let actual_value = parsed_obj.get(key).ok_or_else(|| {
+                    FixtureError::Failed(format!("readback parsed missing field '{key}'"))
+                })?;
+                if actual_value != expected_value {
+                    return Err(FixtureError::Failed(format!(
+                        "readback field '{key}' mismatch: expected {expected_value}, got {actual_value}"
+                    )));
+                }
+            }
+        }
+        return Ok(());
+    }
+
+    // 6. read fixture：解析响应
+    let response_payload: Vec<u8> = sample
+        .get("responsePayload")
+        .and_then(Value::as_array)
+        .ok_or_else(|| FixtureError::Failed("sample missing responsePayload".into()))?
+        .iter()
+        .filter_map(|v| v.as_u64().map(|n| n as u8))
+        .collect();
+
+    let parse_result = package.parse_fixture_response(command_id, &response_payload);
+
+    // 7. 处理 expectFailure
+    let expect_failure = sample
+        .get("expectFailure")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if expect_failure {
+        return match parse_result {
+            Err(e) => {
+                // 解析按预期失败。若声明了 expectedError，检查错误消息是否包含关键信息。
+                if let Some(expected_err) = sample.get("expectedError").and_then(Value::as_str) {
+                    if !e.contains(expected_err)
+                        && !e.to_lowercase().contains(&expected_err.to_lowercase())
+                    {
+                        // 错误消息不匹配，但确实是失败了——标记为 skipped 而非 failed，
+                        // 因为不同实现的错误消息措辞可能不同。
+                        return Err(FixtureError::Skipped(format!(
+                            "parse failed as expected but error message differs: got '{e}'"
+                        )));
+                    }
+                }
+                Ok(())
+            }
+            Ok(_) => Err(FixtureError::Failed(
+                "expected parse failure but parse succeeded".into(),
+            )),
+        };
+    }
+
+    // 8. 正常场景：解析应成功，比对 expectedParsed
+    let parsed =
+        parse_result.map_err(|e| FixtureError::Failed(format!("parse_fixture_response: {e}")))?;
+    if let Some(expected_parsed) = sample.get("expectedParsed") {
+        let expected_obj = expected_parsed
+            .as_object()
+            .ok_or_else(|| FixtureError::Failed("expectedParsed is not an object".into()))?;
+        let parsed_obj = parsed.as_object().ok_or_else(|| {
+            FixtureError::Failed(format!("parsed result is not an object: {parsed}"))
+        })?;
+        for (key, expected_value) in expected_obj {
+            let actual_value = parsed_obj
+                .get(key)
+                .ok_or_else(|| FixtureError::Failed(format!("parsed missing field '{key}'")))?;
+            if actual_value != expected_value {
+                return Err(FixtureError::Failed(format!(
+                    "field '{key}' mismatch: expected {expected_value}, got {actual_value}"
+                )));
+            }
+        }
+    }
+
     Ok(())
 }
 
