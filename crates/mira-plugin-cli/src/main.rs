@@ -6,7 +6,9 @@ use mira_plugin_api::PluginManifest;
 // 3.5 节：CLI 与 runtime 共享同一个 Package format 实现（allowed + PACKAGE_FORMAT_VERSION），
 // 不再维护自己的 forbidden_source()。pack/sign/inspect/verify 使用同一实现。
 use mira_plugin_runtime::{
-    allowed, canonical_json, inspect_package, ProtocolPackage, TrustStore, PACKAGE_FORMAT_VERSION,
+    allowed, canonical_json, framed_response_matches_request, inspect_package,
+    plan_request_fragments, MultiPacketAssembler, ProtocolPackage, TrustStore,
+    PACKAGE_FORMAT_VERSION,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -467,17 +469,22 @@ fn validate_fixtures(path: &Path) -> Result<()> {
             continue;
         }
 
-        // 其他 fixture 类型（transport/multi-packet/stale-response 等）：
-        // 仅验证结构有 case + description 字段，标记为 skipped。
+        // ITERATION-003 Gate B：真实执行 transport/multi-packet/stale-response/parser 等 fixture。
+        // 不再无条件 SKIP，而是按 fixture 类型分发到专门的执行器。
         total += 1;
-        if fixture.get("case").is_some() {
-            skipped += 1;
-            eprintln!("  [SKIP] {rel}::{case}: non-sample fixture (structural validation only)");
-        } else {
-            failed += 1;
-            let reason = "fixture missing 'case' field".to_string();
-            failures.push(format!("{rel}: {reason}"));
-            eprintln!("  [FAIL] {rel}: {reason}");
+        let label = format!("{rel}::{case}");
+        let outcome = run_typed_fixture(&fixture, package.as_ref());
+        match outcome {
+            Ok(()) => passed += 1,
+            Err(FixtureError::Skipped(reason)) => {
+                skipped += 1;
+                eprintln!("  [SKIP] {label}: {reason}");
+            }
+            Err(FixtureError::Failed(reason)) => {
+                failed += 1;
+                failures.push(format!("{label}: {reason}"));
+                eprintln!("  [FAIL] {label}: {reason}");
+            }
         }
     }
 
@@ -492,6 +499,467 @@ fn validate_fixtures(path: &Path) -> Result<()> {
             eprintln!("  - {failure}");
         }
         bail!("{} fixture(s) failed", failed);
+    }
+    Ok(())
+}
+
+/// ITERATION-003 Gate B：typed fixture dispatcher.
+/// 按 fixture 的特征字段分发到专门的执行器，真实运行 transport/multi-packet/stale 等 fixture。
+/// 未识别的 fixture 类型返回 Skipped（结构验证通过）。
+fn run_typed_fixture(
+    fixture: &Value,
+    package: Option<&ProtocolPackage>,
+) -> Result<(), FixtureError> {
+    // 1. multi-packet response fixture：有 responsePackets 数组
+    if fixture.get("responsePackets").is_some_and(Value::is_array) {
+        return run_multi_packet_fixture(fixture);
+    }
+    // 2. stale-response fixture：有 stalePackets 数组
+    if fixture.get("stalePackets").is_some_and(Value::is_array) {
+        return run_stale_response_fixture(fixture);
+    }
+    // 3. fragmented-request fixture：有 expectedFragments 数组
+    if fixture
+        .get("expectedFragments")
+        .is_some_and(Value::is_array)
+    {
+        return run_fragmented_request_fixture(fixture);
+    }
+    // 4. parser fixture：有 parser + payload + expectedParsed
+    if fixture.get("parser").is_some()
+        && fixture.get("payload").is_some()
+        && fixture.get("expectedParsed").is_some()
+    {
+        return run_parser_fixture(fixture, package);
+    }
+    // 5. command-id-validation fixture：有 expectedCommandIdLittleEndian
+    if let Some(expected) = fixture
+        .get("expectedCommandIdLittleEndian")
+        .and_then(Value::as_u64)
+    {
+        return run_command_id_fixture(fixture, expected);
+    }
+    // 6. checksum false-alarm fixture：有 falseAlarms 数组
+    if fixture.get("falseAlarms").is_some_and(Value::is_array) {
+        // 仅做结构验证：falseAlarms 是历史回归记录，运行时已通过 3.4 节修复消除。
+        // 验证每个 falseAlarm 都有 command + expectedFromRequestChecksum + actualResponseByte。
+        return run_checksum_false_alarm_fixture(fixture);
+    }
+    // 未识别的 fixture 类型：结构验证通过，标记为 skipped。
+    Ok(()).map_err(|_: ()| {
+        FixtureError::Skipped("unrecognized fixture type (structural validation only)".into())
+    })?;
+    // 上一行 map_err 永不触发，仅为了类型推断。实际逻辑如下：
+    if fixture.get("case").is_some() {
+        Err(FixtureError::Skipped(
+            "unrecognized fixture type (structural validation only)".into(),
+        ))
+    } else {
+        Err(FixtureError::Failed("fixture missing 'case' field".into()))
+    }
+}
+
+/// Gate B §1：multi-packet response fixture 真实执行。
+/// 使用 MultiPacketAssembler 模拟多包响应组装，验证：
+/// - 首包能被 try_start 识别为多包响应（marker 匹配）
+/// - 后续包能正确拼接
+/// - assembled payload 长度匹配 expectedAssembledPayloadLength
+/// - assembled payload 前缀匹配 expectedAssembledPayloadPrefix
+fn run_multi_packet_fixture(fixture: &Value) -> Result<(), FixtureError> {
+    let layout = fixture
+        .get("frameLayout")
+        .ok_or_else(|| FixtureError::Failed("multi-packet fixture missing frameLayout".into()))?;
+    let marker_offset = layout
+        .get("multiPacketMarkerOffset")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| FixtureError::Failed("frameLayout missing multiPacketMarkerOffset".into()))?
+        as usize;
+    let marker_value = layout
+        .get("multiPacketMarkerValue")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| FixtureError::Failed("frameLayout missing multiPacketMarkerValue".into()))?
+        as u8;
+    let total_length_offset = layout
+        .get("multiPacketTotalLengthOffset")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| {
+            FixtureError::Failed("frameLayout missing multiPacketTotalLengthOffset".into())
+        })? as usize;
+    let total_length_bytes = layout
+        .get("multiPacketTotalLengthBytes")
+        .and_then(Value::as_u64)
+        .unwrap_or(2) as u8;
+    let continuation_offset = layout
+        .get("multiPacketContinuationOffset")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| {
+            FixtureError::Failed("frameLayout missing multiPacketContinuationOffset".into())
+        })? as usize;
+    let endian = layout.get("endian").and_then(Value::as_str).unwrap_or("le");
+    // ITERATION-003 Gate B §6.1：first_data_offset 与 engine.rs 行为一致。
+    // 优先使用 frameLayout.multiPacketFirstDataOffset；
+    // 未声明时回退到 payloadOffset（与 engine.rs `unwrap_or(payload_off)` 一致）。
+    let payload_offset = layout
+        .get("payloadOffset")
+        .and_then(Value::as_u64)
+        .unwrap_or(2) as usize;
+    let first_data_offset = layout
+        .get("multiPacketFirstDataOffset")
+        .and_then(Value::as_u64)
+        .map(|v| v as usize)
+        .unwrap_or(payload_offset);
+    let response_packets = fixture
+        .get("responsePackets")
+        .and_then(Value::as_array)
+        .ok_or_else(|| FixtureError::Failed("missing responsePackets".into()))?;
+    if response_packets.is_empty() {
+        return Err(FixtureError::Failed("responsePackets is empty".into()));
+    }
+    // 首包
+    let first = response_packets
+        .first()
+        .ok_or_else(|| FixtureError::Failed("responsePackets[0] missing".into()))?;
+    let first_rest: Vec<u8> = first
+        .get("rest")
+        .and_then(Value::as_array)
+        .ok_or_else(|| FixtureError::Failed("responsePackets[0] missing rest".into()))?
+        .iter()
+        .filter_map(|v| v.as_u64().map(|n| n as u8))
+        .collect();
+    let mut assembler = MultiPacketAssembler::try_start(
+        &first_rest,
+        first_data_offset,
+        marker_offset,
+        marker_value,
+        total_length_offset,
+        total_length_bytes,
+        continuation_offset,
+        16,
+        4096,
+        endian,
+    )
+    .map_err(|e| FixtureError::Failed(format!("try_start: {e}")))?
+    .ok_or_else(|| {
+        FixtureError::Failed(
+            "first packet was not recognized as multi-packet (marker mismatch)".into(),
+        )
+    })?;
+    // 后续包
+    for (idx, pkt) in response_packets.iter().enumerate().skip(1) {
+        let rest: Vec<u8> = pkt
+            .get("rest")
+            .and_then(Value::as_array)
+            .ok_or_else(|| FixtureError::Failed(format!("responsePackets[{idx}] missing rest")))?
+            .iter()
+            .filter_map(|v| v.as_u64().map(|n| n as u8))
+            .collect();
+        let complete = assembler
+            .add_continuation(&rest)
+            .map_err(|e| FixtureError::Failed(format!("add_continuation[{idx}]: {e}")))?;
+        if complete {
+            break;
+        }
+    }
+    let assembled = assembler.finish();
+    // 验证 expectedAssembledPayloadLength
+    if let Some(expected_len) = fixture
+        .get("expectedAssembledPayloadLength")
+        .and_then(Value::as_u64)
+    {
+        if assembled.len() != expected_len as usize {
+            return Err(FixtureError::Failed(format!(
+                "assembled length mismatch: expected {expected_len}, got {}",
+                assembled.len()
+            )));
+        }
+    }
+    // 验证 expectedAssembledPayloadPrefix
+    if let Some(expected_prefix) = fixture
+        .get("expectedAssembledPayloadPrefix")
+        .and_then(Value::as_array)
+    {
+        let expected_bytes: Vec<u8> = expected_prefix
+            .iter()
+            .filter_map(|v| v.as_u64().map(|n| n as u8))
+            .collect();
+        let n = expected_bytes.len();
+        if assembled.len() < n {
+            return Err(FixtureError::Failed(format!(
+                "assembled too short for prefix check: need {n}, got {}",
+                assembled.len()
+            )));
+        }
+        if assembled[..n] != expected_bytes[..] {
+            return Err(FixtureError::Failed(format!(
+                "assembled prefix mismatch: expected {:02x?}, got {:02x?}",
+                expected_bytes,
+                &assembled[..n]
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Gate B §2：stale-response fixture 真实执行。
+/// 验证 framed_response_matches_request 对 stalePackets 返回 false，对 freshResponse 返回 true。
+fn run_stale_response_fixture(fixture: &Value) -> Result<(), FixtureError> {
+    let request_payload: Vec<u8> = fixture
+        .get("request")
+        .and_then(|r| r.get("payload"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| FixtureError::Failed("missing request.payload".into()))?
+        .iter()
+        .filter_map(|v| v.as_u64().map(|n| n as u8))
+        .collect();
+    let race_id: Vec<u8> = fixture
+        .get("request")
+        .and_then(|r| r.get("raceId"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| FixtureError::Failed("missing request.raceId".into()))?
+        .iter()
+        .filter_map(|v| v.as_u64().map(|n| n as u8))
+        .collect();
+    if race_id.len() != 2 {
+        return Err(FixtureError::Failed(format!(
+            "raceId must be 2 bytes, got {}",
+            race_id.len()
+        )));
+    }
+    // AM35 requestMatchSlice=[4,6], responseMatchSlice=[4,6], payload_off=2
+    let payload_off = 2usize;
+    let request_match_slice = Some((4usize, 6usize));
+    let response_match_slice = Some((4usize, 6usize));
+    // 验证 stalePackets 都不匹配
+    let stale_packets = fixture
+        .get("stalePackets")
+        .and_then(Value::as_array)
+        .ok_or_else(|| FixtureError::Failed("missing stalePackets".into()))?;
+    for (idx, pkt) in stale_packets.iter().enumerate() {
+        let rest: Vec<u8> = pkt
+            .get("rest")
+            .and_then(Value::as_array)
+            .ok_or_else(|| FixtureError::Failed(format!("stalePackets[{idx}] missing rest")))?
+            .iter()
+            .filter_map(|v| v.as_u64().map(|n| n as u8))
+            .collect();
+        if framed_response_matches_request(
+            &request_payload,
+            &rest,
+            payload_off,
+            request_match_slice,
+            response_match_slice,
+        ) {
+            return Err(FixtureError::Failed(format!(
+                "stalePackets[{idx}] should NOT match (RaceID mismatch expected)"
+            )));
+        }
+    }
+    // 验证 freshResponse 匹配
+    let fresh = fixture
+        .get("freshResponse")
+        .ok_or_else(|| FixtureError::Failed("missing freshResponse".into()))?;
+    let fresh_rest: Vec<u8> = fresh
+        .get("rest")
+        .and_then(Value::as_array)
+        .ok_or_else(|| FixtureError::Failed("freshResponse missing rest".into()))?
+        .iter()
+        .filter_map(|v| v.as_u64().map(|n| n as u8))
+        .collect();
+    if !framed_response_matches_request(
+        &request_payload,
+        &fresh_rest,
+        payload_off,
+        request_match_slice,
+        response_match_slice,
+    ) {
+        return Err(FixtureError::Failed(
+            "freshResponse should match (RaceID match expected)".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Gate B §3：fragmented-request fixture 真实执行。
+/// 使用 plan_request_fragments 模拟请求分片，验证 expectedFragments。
+fn run_fragmented_request_fixture(fixture: &Value) -> Result<(), FixtureError> {
+    let frag_config = fixture
+        .get("fragmentConfig")
+        .ok_or_else(|| FixtureError::Failed("missing fragmentConfig".into()))?;
+    let fragment_payload = frag_config
+        .get("fragmentPayload")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let max_payload_per_packet = frag_config
+        .get("maxPayloadPerPacket")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| FixtureError::Failed("fragmentConfig missing maxPayloadPerPacket".into()))?
+        as usize;
+    let request = fixture
+        .get("request")
+        .ok_or_else(|| FixtureError::Failed("missing request".into()))?;
+    let payload_len = request
+        .get("payloadLength")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| FixtureError::Failed("missing request.payloadLength".into()))?
+        as usize;
+    let payload_prefix: Vec<u8> = request
+        .get("payloadPrefix")
+        .and_then(Value::as_array)
+        .ok_or_else(|| FixtureError::Failed("missing request.payloadPrefix".into()))?
+        .iter()
+        .filter_map(|v| v.as_u64().map(|n| n as u8))
+        .collect();
+    // 构造完整 payload：prefix + 填充零字节到 payload_len
+    let mut payload = payload_prefix.clone();
+    payload.resize(payload_len, 0);
+    // AM35 无 seq/length 字段（frame 级 length 已表达）
+    let fragments = plan_request_fragments(
+        &payload,
+        fragment_payload,
+        max_payload_per_packet,
+        None,
+        0,
+        None,
+    );
+    let expected_fragments = fixture
+        .get("expectedFragments")
+        .and_then(Value::as_array)
+        .ok_or_else(|| FixtureError::Failed("missing expectedFragments".into()))?;
+    if fragments.len() != expected_fragments.len() {
+        return Err(FixtureError::Failed(format!(
+            "fragment count mismatch: expected {}, got {}",
+            expected_fragments.len(),
+            fragments.len()
+        )));
+    }
+    for (idx, (actual, expected)) in fragments.iter().zip(expected_fragments.iter()).enumerate() {
+        let expected_len = expected
+            .get("payloadLength")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| {
+                FixtureError::Failed(format!("expectedFragments[{idx}] missing payloadLength"))
+            })? as usize;
+        if actual.len() != expected_len {
+            return Err(FixtureError::Failed(format!(
+                "fragment[{idx}] length mismatch: expected {expected_len}, got {}",
+                actual.len()
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Gate B §4：parser fixture 真实执行。
+/// 使用 ProtocolPackage::parse_fixture_response 解析 payload，验证 expectedParsed。
+fn run_parser_fixture(
+    fixture: &Value,
+    package: Option<&ProtocolPackage>,
+) -> Result<(), FixtureError> {
+    let package = package
+        .ok_or_else(|| FixtureError::Skipped("parser fixture requires protocol package".into()))?;
+    let parser_id = fixture
+        .get("parser")
+        .and_then(Value::as_str)
+        .ok_or_else(|| FixtureError::Failed("missing parser".into()))?;
+    let payload: Vec<u8> = fixture
+        .get("payload")
+        .and_then(Value::as_array)
+        .ok_or_else(|| FixtureError::Failed("missing payload".into()))?
+        .iter()
+        .filter_map(|v| v.as_u64().map(|n| n as u8))
+        .collect();
+    let expected_parsed = fixture
+        .get("expectedParsed")
+        .ok_or_else(|| FixtureError::Failed("missing expectedParsed".into()))?;
+    let parsed = package
+        .parse_fixture_response(parser_id, &payload)
+        .map_err(|e| FixtureError::Failed(format!("parse_fixture_response: {e}")))?;
+    let parsed_obj = parsed
+        .as_object()
+        .ok_or_else(|| FixtureError::Failed(format!("parsed is not an object: {parsed}")))?;
+    let expected_obj = expected_parsed
+        .as_object()
+        .ok_or_else(|| FixtureError::Failed("expectedParsed is not an object".into()))?;
+    for (key, expected_value) in expected_obj {
+        let actual_value = parsed_obj
+            .get(key)
+            .ok_or_else(|| FixtureError::Failed(format!("parsed missing field '{key}'")))?;
+        if actual_value != expected_value {
+            return Err(FixtureError::Failed(format!(
+                "field '{key}' mismatch: expected {expected_value}, got {actual_value}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Gate B §5：command-id-validation fixture 真实执行。
+/// 验证 payload[commandIdOffset..commandIdOffset+2] 解析为 little-endian u16 等于 expectedCommandIdLittleEndian。
+/// 默认 commandIdOffset = 0；AM35 frame 的 commandIdOffset = 4（RaceID 位置）。
+fn run_command_id_fixture(fixture: &Value, expected: u64) -> Result<(), FixtureError> {
+    let payload: Vec<u8> = fixture
+        .get("payload")
+        .and_then(Value::as_array)
+        .ok_or_else(|| FixtureError::Failed("missing payload".into()))?
+        .iter()
+        .filter_map(|v| v.as_u64().map(|n| n as u8))
+        .collect();
+    let command_id_offset = fixture
+        .get("commandIdOffset")
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as usize;
+    if payload.len() < command_id_offset + 2 {
+        return Err(FixtureError::Failed(format!(
+            "payload too short for command id at offset {command_id_offset}: need {} bytes, got {}",
+            command_id_offset + 2,
+            payload.len()
+        )));
+    }
+    let actual =
+        u16::from_le_bytes([payload[command_id_offset], payload[command_id_offset + 1]]) as u64;
+    if actual != expected {
+        return Err(FixtureError::Failed(format!(
+            "command id mismatch at offset {command_id_offset}: expected {expected}, got {actual}"
+        )));
+    }
+    Ok(())
+}
+
+/// Gate B §6：checksum false-alarm fixture 结构验证。
+/// falseAlarms 是历史回归记录，运行时已通过 3.4 节修复消除（Protocol A 不再声明 response.checksum）。
+/// 此 fixture 仅验证每个 falseAlarm 都有 command + expectedFromRequestChecksum + actualResponseByte 字段。
+fn run_checksum_false_alarm_fixture(fixture: &Value) -> Result<(), FixtureError> {
+    let false_alarms = fixture
+        .get("falseAlarms")
+        .and_then(Value::as_array)
+        .ok_or_else(|| FixtureError::Failed("missing falseAlarms".into()))?;
+    if false_alarms.is_empty() {
+        return Err(FixtureError::Failed("falseAlarms is empty".into()));
+    }
+    for (idx, alarm) in false_alarms.iter().enumerate() {
+        if alarm.get("command").and_then(Value::as_str).is_none() {
+            return Err(FixtureError::Failed(format!(
+                "falseAlarms[{idx}] missing command"
+            )));
+        }
+        if alarm
+            .get("expectedFromRequestChecksum")
+            .and_then(Value::as_str)
+            .is_none()
+        {
+            return Err(FixtureError::Failed(format!(
+                "falseAlarms[{idx}] missing expectedFromRequestChecksum"
+            )));
+        }
+        if alarm
+            .get("actualResponseByte")
+            .and_then(Value::as_str)
+            .is_none()
+        {
+            return Err(FixtureError::Failed(format!(
+                "falseAlarms[{idx}] missing actualResponseByte"
+            )));
+        }
     }
     Ok(())
 }
@@ -571,18 +1039,68 @@ fn run_sample_fixture(
     }
 
     // 3. 构建请求字节
-    // Iteration 002 §16.1：对于 `base: "read-response"` 的 Protocol A write 命令，
-    // fixture runner 无法预先执行 read，使用全 0 base 作为 fallback（仅用于 fixture 测试）。
-    // 真实运行时必须通过 workflow 的 pre-read 步骤提供 base。
+    // ITERATION-003 Gate B §6.2：read-response base 改为 pre-read/preserve/patch。
+    // - 若 sample 声明 `preReadResponse`，将其作为 base 传入 build_fixture_request_with_base，
+    //   替代旧的全 0 base fallback。
+    // - 这允许 fixture 验证完整 64 字节请求（expectedWrite）而不仅仅是前 8 字节（expectedRequestHead）。
+    // - 真实运行时通过 workflow 的 pre-read 步骤提供 base；fixture 用 preReadResponse 模拟。
+    let pre_read_response: Option<Vec<u8>> = sample
+        .get("preReadResponse")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_u64().map(|n| n as u8))
+                .collect()
+        });
     let actual_request = package
-        .build_fixture_request_with_base(command_id, &params, None)
+        .build_fixture_request_with_base(command_id, &params, pre_read_response.as_deref())
         .map_err(|e| FixtureError::Failed(format!("build_fixture_request: {e}")))?;
 
     // 4. 比对请求字节
+    // - `expectedWrite`：完整请求字节比对（pre-read/preserve/patch 流程，64 字节）
     // - `expectedRequestPayload`：完整请求字节比对（AM35 短帧）
-    // - `expectedRequestHead`：仅比对前 N 个字节（Protocol A 64 字节帧，
-    //   fixture 只验证命令字节 + 参数 + checksum，不验证从 read-response 继承的字节）
-    if let Some(expected_req) = sample
+    // - `expectedRequestHead`：仅比对前 N 个字节（Protocol A 旧 fixture，无 preReadResponse）
+    if let Some(expected_write) = sample.get("expectedWrite").and_then(Value::as_array) {
+        let expected_bytes: Vec<u8> = expected_write
+            .iter()
+            .filter_map(|v| v.as_u64().map(|n| n as u8))
+            .collect();
+        if actual_request != expected_bytes {
+            return Err(FixtureError::Failed(format!(
+                "write mismatch: expected {:02x?}, got {:02x?}",
+                expected_bytes, actual_request
+            )));
+        }
+        // 验证 expectedPreservedBytes：preReadResponse 中声明的字节必须在 actual_request 中保留
+        if let Some(preserved) = sample
+            .get("expectedPreservedBytes")
+            .and_then(Value::as_array)
+        {
+            let pre_read = pre_read_response.as_ref().ok_or_else(|| {
+                FixtureError::Failed("expectedPreservedBytes requires preReadResponse".into())
+            })?;
+            for entry in preserved {
+                let offset = entry.get("offset").and_then(Value::as_u64).ok_or_else(|| {
+                    FixtureError::Failed("expectedPreservedBytes entry missing offset".into())
+                })? as usize;
+                let pre_val = pre_read.get(offset).copied().ok_or_else(|| {
+                    FixtureError::Failed(format!(
+                        "preReadResponse too short for preserved offset {offset}"
+                    ))
+                })?;
+                let actual_val = actual_request.get(offset).copied().ok_or_else(|| {
+                    FixtureError::Failed(format!(
+                        "actual_request too short for preserved offset {offset}"
+                    ))
+                })?;
+                if pre_val != actual_val {
+                    return Err(FixtureError::Failed(format!(
+                        "preserved byte at offset {offset} mismatch: preRead={pre_val:02x}, actual={actual_val:02x}"
+                    )));
+                }
+            }
+        }
+    } else if let Some(expected_req) = sample
         .get("expectedRequestPayload")
         .and_then(Value::as_array)
     {
@@ -620,8 +1138,60 @@ fn run_sample_fixture(
 
     // 5. write fixture：仅验证请求构建 + 可选 readback
     if is_write_fixture {
-        // readback 部分验证（仅第一个 sample 执行 readback，避免重复）
-        if let Some(readback) = readback {
+        // ITERATION-003 Gate B §6.2：readback 优先使用 sample 级别的 readbackResponse + expectedAssertions，
+        // 回退到 fixture 级别的 readback.responseSample + readback.expectedParsed。
+        let sample_readback_response: Option<Vec<u8>> = sample
+            .get("readbackResponse")
+            .and_then(Value::as_array)
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_u64().map(|n| n as u8))
+                    .collect()
+            });
+        let sample_expected_assertions = sample.get("expectedAssertions");
+
+        if let (Some(response_bytes), Some(assertions)) = (
+            sample_readback_response.as_ref(),
+            sample_expected_assertions,
+        ) {
+            // sample 级别 readback：pre-read/preserve/patch 流程
+            // readbackResponse 必须用 readback.command（fixture 级别）解析
+            let readback_command = readback
+                .and_then(|r| r.get("command"))
+                .and_then(Value::as_str)
+                .or_else(|| {
+                    // 也允许 sample 级别声明 readbackCommand
+                    sample.get("readbackCommand").and_then(Value::as_str)
+                })
+                .ok_or_else(|| {
+                    FixtureError::Failed(
+                        "sample has readbackResponse but no readback.command or readbackCommand"
+                            .into(),
+                    )
+                })?;
+            let parsed = package
+                .parse_fixture_response(readback_command, response_bytes)
+                .map_err(|e| {
+                    FixtureError::Failed(format!("readback parse_fixture_response: {e}"))
+                })?;
+            let parsed_obj = parsed.as_object().ok_or_else(|| {
+                FixtureError::Failed(format!("readback parsed is not an object: {parsed}"))
+            })?;
+            let assertions_obj = assertions.as_object().ok_or_else(|| {
+                FixtureError::Failed("expectedAssertions is not an object".into())
+            })?;
+            for (key, expected_value) in assertions_obj {
+                let actual_value = parsed_obj.get(key).ok_or_else(|| {
+                    FixtureError::Failed(format!("readback parsed missing field '{key}'"))
+                })?;
+                if actual_value != expected_value {
+                    return Err(FixtureError::Failed(format!(
+                        "readback assertion '{key}' mismatch: expected {expected_value}, got {actual_value}"
+                    )));
+                }
+            }
+        } else if let Some(readback) = readback {
+            // fixture 级别 readback（旧流程）：仅第一个 sample 执行 readback，避免重复
             let readback_command = readback
                 .get("command")
                 .and_then(Value::as_str)
