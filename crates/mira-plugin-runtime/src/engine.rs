@@ -101,9 +101,15 @@ struct ByteDefinition {
     stride: usize,
     #[serde(default)]
     lookup: BTreeMap<String, u8>,
+    #[serde(default = "default_repeat")]
+    repeat: usize,
 }
 
 fn default_stride() -> usize {
+    1
+}
+
+fn default_repeat() -> usize {
     1
 }
 
@@ -360,6 +366,30 @@ enum TransportDefinition {
         stale_drain_reads: u8,
         #[serde(default = "default_stale_drain_timeout_ms")]
         stale_drain_timeout_ms: i32,
+        // --- ITERATION-003 Gate A §5.1：marker 搜索范围（替代固定 offset） ---
+        // 当 marker_search_start 与 marker_search_end 同时声明时，启用 marker 搜索：
+        // 在 [search_start, search_end) 范围内查找 marker_value，使用实际索引作为 marker offset。
+        // 未声明时回退到固定 multi_packet_marker_offset 行为（向后兼容）。
+        #[serde(default)]
+        multi_packet_marker_search_start: Option<usize>,
+        #[serde(default)]
+        multi_packet_marker_search_end: Option<usize>,
+        // marker 找到后，total_length 与 first_data 相对 marker 的偏移。
+        // 启用搜索模式时必填；用于计算 actual_total_length_offset = marker_idx + length_offset_from_marker
+        // 和 actual_first_data_offset = marker_idx + first_data_offset_from_marker。
+        // AM35: lengthOffsetFromMarker=1, firstDataOffsetFromMarker=3。
+        #[serde(default)]
+        multi_packet_length_offset_from_marker: Option<usize>,
+        #[serde(default)]
+        multi_packet_first_data_offset_from_marker: Option<usize>,
+        // --- ITERATION-003 Gate A §5.2：continuation 事务安全（声明式匹配） ---
+        // continuation 必须满足的外层 type 校验：若声明，continuation 包在 type_field_offset
+        // 处必须等于 type_field_value（同首包），否则视为无关报告或新首包，拒绝拼入。
+        // 默认与首包 type_field_offset/type_field_value 一致；无需额外字段，由运行时复用。
+        // continuation 拒绝新首包：若 continuation 包在 marker_search 范围内出现 marker_value，
+        // 视为新首包，立即终止当前组装并返回错误。
+        #[serde(default)]
+        multi_packet_reject_new_first_packet: bool,
         // 时序分离：read_delay_ms 仍作为兼容回退。
         #[serde(default)]
         initial_read_delay_ms: u64,
@@ -676,11 +706,11 @@ impl OutputCondition {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct MutationInput {
     kind: String,
-    min: Option<u64>,
-    max: Option<u64>,
-    step: Option<u64>,
+    min: Option<i64>,
+    max: Option<i64>,
+    step: Option<i64>,
     #[serde(default)]
-    allowed: Vec<u64>,
+    allowed: Vec<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2348,6 +2378,23 @@ impl ProtocolPackage {
                         });
                     fields.insert(name.clone(), value);
                 }
+                // `signed-u8` derived kind: 将 `source`（u8）按二进制补码转换为
+                // 有符号整数（i8）。用于 AM35 rotation angle 的反向规范化。
+                // 依据 AM35_EVIDENCE.md §5 Rotation：负数使用 `256 + angle` 编码，
+                // 即 wire 值 128..255 表示 -128..-1，0..127 表示 0..127。
+                "signed-u8" => {
+                    let source = fields
+                        .get(&derived.source)
+                        .and_then(Value::as_u64)
+                        .and_then(|v| u8::try_from(v).ok())
+                        .ok_or_else(|| format!("invalid signed-u8 source {}", derived.source))?;
+                    let signed = if source >= 128 {
+                        source as i64 - 256
+                    } else {
+                        source as i64
+                    };
+                    fields.insert(name.clone(), Value::from(signed));
+                }
                 // `ascii-extract` derived kind: 从 `source`（bytes 数组）取前
                 // `lengthSource` 字节，按 ASCII 解码（忽略非 ASCII 字节），
                 // 并去除尾部 `\x00`（等价 Python `bytes(arr).rstrip(b'\x00')`）。
@@ -3107,6 +3154,11 @@ impl Session<'_> {
             multi_packet_max_total_length,
             stale_drain_reads,
             stale_drain_timeout_ms,
+            multi_packet_marker_search_start,
+            multi_packet_marker_search_end,
+            multi_packet_length_offset_from_marker,
+            multi_packet_first_data_offset_from_marker,
+            multi_packet_reject_new_first_packet,
             initial_read_delay_ms,
             packet_interval_ms,
             retry_interval_ms,
@@ -3140,24 +3192,67 @@ impl Session<'_> {
         // Section 7：stale-response drain。写请求前主动排空管道中的旧响应，
         // 防止上次请求的残留响应污染本次 RaceID 匹配。best-effort，超时即停。
         // ITERATION-002 §7：drain 必须复用 transport 的 read mode。
-        // - Interrupt    → read_timeout
+        // - Interrupt    → read_timeout（自带 stale_drain_timeout_ms 短超时）
         // - Input Report → get_input_report（AM35 readMode=input-report）
-        // drain 失败不判设备失败；report ID 不匹配的包直接丢弃。
+        // ITERATION-003 Gate A §5.3：InputReport drain 必须可证明有界。
+        //   - 限制 drain 次数（stale_drain_reads）；
+        //   - 每次调用检查总 deadline（deadline_remaining_ms）；
+        //   - 检查返回 count，count==0 视为已排空；
+        //   - 检查 report ID，不匹配的包直接丢弃；
+        //   - 记录 drain 数量到事件 sink；
+        //   - 错误 best-effort，不判设备失败。
+        //   平台限制：hidapi get_input_report 无独立 per-call timeout，
+        //   有界性由 stale_drain_reads × 总 deadline 联合保证。
         if *stale_drain_reads > 0 {
             let drain_buf_len = (*read_length).max(1);
             let drain_is_input_report = matches!(read_mode, HidFramedReadMode::InputReport);
+            let mut drained_count: u32 = 0;
             for _ in 0..*stale_drain_reads {
                 deadline_remaining_ms(self.deadline)?;
                 let mut drain = vec![0u8; drain_buf_len];
                 if drain_is_input_report {
-                    // Input Report 模式：通过 get_input_report 排空，校验 report ID。
+                    // Input Report 模式：通过 get_input_report 排空。
                     drain[0] = *read_report_id;
-                    let _ = self.device.get_input_report(&mut drain);
+                    match self.device.get_input_report(&mut drain) {
+                        Ok(0) => break, // 无数据，视为已排空
+                        Ok(n) => {
+                            // 检查 report ID 是否匹配；不匹配的直接丢弃。
+                            if drain.first() == Some(read_report_id) && n > 0 {
+                                drained_count += 1;
+                            }
+                        }
+                        Err(_) => {
+                            // best-effort：drain 错误不判设备失败，继续下次或退出。
+                            break;
+                        }
+                    }
                 } else {
                     // Interrupt 模式：短超时读取并丢弃。
-                    let _ = self
+                    match self
                         .device
-                        .read_timeout(&mut drain, *stale_drain_timeout_ms);
+                        .read_timeout(&mut drain, *stale_drain_timeout_ms)
+                    {
+                        Ok(0) => break, // 短超时无数据，视为已排空
+                        Ok(n) => {
+                            if n > 0 {
+                                drained_count += 1;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+            }
+            if drained_count > 0 {
+                if let Some(sink) = self.event_sink {
+                    sink.on_hid_exchange(
+                        transport_id,
+                        command_id,
+                        "",
+                        "",
+                        0,
+                        drained_count as usize,
+                        None,
+                    );
                 }
             }
         }
@@ -3338,95 +3433,138 @@ impl Session<'_> {
                 }
                 continue;
             }
-            // Section 7：多包响应组装。需同时声明 marker_offset 与 total_length_offset。
-            let final_response = if let (Some(marker_off), Some(total_off)) = (
+            // Section 7：多包响应组装。
+            // ITERATION-003 Gate A §5.1：marker 搜索模式优先于固定 offset。
+            // 详见 `resolve_marker_offsets`：搜索/固定/未声明三态返回实际偏移三元组。
+            let marker_search_result = resolve_marker_offsets(
+                &response,
+                *multi_packet_marker_search_start,
+                *multi_packet_marker_search_end,
+                *multi_packet_marker_value,
+                *multi_packet_length_offset_from_marker,
+                *multi_packet_first_data_offset_from_marker,
                 *multi_packet_marker_offset,
                 *multi_packet_total_length_offset,
-            ) {
-                match MultiPacketAssembler::try_start(
-                    &response,
-                    first_data_off,
-                    marker_off,
-                    *multi_packet_marker_value,
-                    total_off,
-                    *multi_packet_total_length_bytes,
-                    continuation_off,
-                    *multi_packet_max_packets,
-                    *multi_packet_max_total_length,
-                    endian,
-                )? {
-                    Some(mut assembler) => {
-                        // 循环收取后续包直到完成或超限。
-                        loop {
-                            if *packet_interval_ms > 0 {
-                                self.delay(*packet_interval_ms)?;
-                            }
-                            deadline_remaining_ms(self.deadline)?;
-                            let mut cont = vec![0u8; *read_length];
-                            let cont_count = match read_mode {
-                                HidFramedReadMode::Interrupt => {
-                                    let timeout = match deadline_remaining_ms(self.deadline)? {
-                                        Some(remaining) => (*read_timeout_ms)
-                                            .min(i32::try_from(remaining).unwrap_or(i32::MAX)),
-                                        None => *read_timeout_ms,
-                                    };
-                                    self.device.read_timeout(&mut cont, timeout).map_err(
-                                        |error| {
-                                            format!(
+                first_data_off,
+            )?;
+            let final_response =
+                if let Some((actual_marker_off, actual_total_off, actual_first_data_off)) =
+                    marker_search_result
+                {
+                    match MultiPacketAssembler::try_start(
+                        &response,
+                        actual_first_data_off,
+                        actual_marker_off,
+                        *multi_packet_marker_value,
+                        actual_total_off,
+                        *multi_packet_total_length_bytes,
+                        continuation_off,
+                        *multi_packet_max_packets,
+                        *multi_packet_max_total_length,
+                        endian,
+                    )? {
+                        Some(mut assembler) => {
+                            // ITERATION-003 Gate A §5.2：为 continuation 配置事务安全。
+                            // - reject_new_first_packet：continuation 中出现 marker_value 视为新首包
+                            // - outer type check：continuation 必须在 type_field_offset 处等于 type_field_value
+                            assembler.configure_continuation_safety(
+                                actual_marker_off,
+                                *multi_packet_marker_value,
+                                *multi_packet_reject_new_first_packet,
+                                *type_field_offset,
+                                *type_field_value,
+                            );
+                            // 循环收取后续包直到完成或超限。
+                            loop {
+                                if *packet_interval_ms > 0 {
+                                    self.delay(*packet_interval_ms)?;
+                                }
+                                deadline_remaining_ms(self.deadline)?;
+                                let mut cont = vec![0u8; *read_length];
+                                let cont_count = match read_mode {
+                                    HidFramedReadMode::Interrupt => {
+                                        let timeout = match deadline_remaining_ms(self.deadline)? {
+                                            Some(remaining) => (*read_timeout_ms)
+                                                .min(i32::try_from(remaining).unwrap_or(i32::MAX)),
+                                            None => *read_timeout_ms,
+                                        };
+                                        self.device.read_timeout(&mut cont, timeout).map_err(
+                                            |error| {
+                                                format!(
                                                 "read framed multi-packet continuation: {error}"
                                             )
-                                        },
-                                    )?
+                                            },
+                                        )?
+                                    }
+                                    HidFramedReadMode::InputReport => {
+                                        cont[0] = *read_report_id;
+                                        self.device.get_input_report(&mut cont).map_err(
+                                            |error| {
+                                                format!(
+                                                    "get framed multi-packet continuation: {error}"
+                                                )
+                                            },
+                                        )?
+                                    }
+                                };
+                                if cont_count == 0 {
+                                    return Err(
+                                        "timed out waiting for multi-packet continuation".into()
+                                    );
                                 }
-                                HidFramedReadMode::InputReport => {
-                                    cont[0] = *read_report_id;
-                                    self.device.get_input_report(&mut cont).map_err(|error| {
-                                        format!("get framed multi-packet continuation: {error}")
-                                    })?
+                                cont.truncate(cont_count);
+                                if cont.first() != Some(read_report_id) {
+                                    // 无关 report ID，直接丢弃，不拼入当前组装。
+                                    continue;
                                 }
-                            };
-                            if cont_count == 0 {
-                                return Err(
-                                    "timed out waiting for multi-packet continuation".into()
-                                );
+                                if *strip_report_id_on_read && !cont.is_empty() {
+                                    cont.remove(0);
+                                }
+                                // Gate A §5.2：continuation 事务安全检查。
+                                // - 拒绝新首包（marker 在 actual_marker_off 出现）
+                                // - outer type 校验（type_field_offset 处必须等于 type_field_value）
+                                if assembler.is_new_first_packet(&cont) {
+                                    return Err(
+                                        "continuation rejected: new first-packet marker detected"
+                                            .into(),
+                                    );
+                                }
+                                if !assembler.outer_type_matches(&cont) {
+                                    // outer type 不匹配，视为无关报告，丢弃不拼入。
+                                    continue;
+                                }
+                                if assembler.add_continuation(&cont)? {
+                                    break;
+                                }
                             }
-                            cont.truncate(cont_count);
-                            if cont.first() != Some(read_report_id) {
-                                continue;
+                            // 重构为单包 rest 格式。
+                            // ITERATION-002 §6.1/§6.3：保留首包通过 marker 元数据的前缀
+                            // （[length, type, 0x05, 0x5B, lenLow, lenHigh]），再拼接业务数据。
+                            // 这样 parser 看到的字段偏移与单包响应一致（offset 8 = enabled 等）。
+                            let assembled_payload = assembler.finish();
+                            let mut reconstructed = response
+                                .get(..actual_first_data_off)
+                                .unwrap_or(&[])
+                                .to_vec();
+                            if let Some(off) = *length_field_offset {
+                                let end = off + len_bytes;
+                                if end <= reconstructed.len() {
+                                    write_length_field(
+                                        &mut reconstructed[off..end],
+                                        *length_field_bytes,
+                                        assembled_payload.len(),
+                                        endian,
+                                    );
+                                }
                             }
-                            if *strip_report_id_on_read && !cont.is_empty() {
-                                cont.remove(0);
-                            }
-                            if assembler.add_continuation(&cont)? {
-                                break;
-                            }
+                            reconstructed.extend_from_slice(&assembled_payload);
+                            reconstructed
                         }
-                        // 重构为单包 rest 格式。
-                        // ITERATION-002 §6.1/§6.3：保留首包通过 marker 元数据的前缀
-                        // （[length, type, 0x05, 0x5B, lenLow, lenHigh]），再拼接业务数据。
-                        // 这样 parser 看到的字段偏移与单包响应一致（offset 8 = enabled 等）。
-                        let assembled_payload = assembler.finish();
-                        let mut reconstructed =
-                            response.get(..first_data_off).unwrap_or(&[]).to_vec();
-                        if let Some(off) = *length_field_offset {
-                            let end = off + len_bytes;
-                            if end <= reconstructed.len() {
-                                write_length_field(
-                                    &mut reconstructed[off..end],
-                                    *length_field_bytes,
-                                    assembled_payload.len(),
-                                    endian,
-                                );
-                            }
-                        }
-                        reconstructed.extend_from_slice(&assembled_payload);
-                        reconstructed
+                        None => response,
                     }
-                    None => response,
-                }
-            } else {
-                response
-            };
+                } else {
+                    response
+                };
             let duration_ms = exchange_start.elapsed().as_millis() as u64;
             let checksum_valid =
                 self.check_checksum_and_emit(transport_id, command_id, &final_response);
@@ -3639,7 +3777,7 @@ fn write_length_field(buf: &mut [u8], bytes: u8, value: usize, endian: &str) {
 /// `response_rest` 为去掉 reportId 之后的字节（若 strip 则 response 已 strip，
 /// 否则需调用方先去掉首字节）。`payload_off` 为 payload 在 rest 中的起始偏移。
 /// `request` 为 framed_exchange 接收的原始 payload。
-fn framed_response_matches_request(
+pub fn framed_response_matches_request(
     request: &[u8],
     response_rest: &[u8],
     payload_off: usize,
@@ -3669,7 +3807,7 @@ fn framed_response_matches_request(
 /// 已由 framed_exchange 写入，足以表达每片长度。
 ///
 /// 返回分片列表；每个分片是要放入 report[payload_off..] 的字节。
-fn plan_request_fragments(
+pub fn plan_request_fragments(
     payload: &[u8],
     fragment_payload: bool,
     max_payload_per_packet: usize,
@@ -3753,14 +3891,96 @@ fn plan_request_fragments(
 /// `first_data_offset` 与 `payload_off` 解耦（ITERATION-002 §6.1/§6.3）：
 /// - `payload_off`：frame payload 起点（用于单包响应和 reconstruction 前缀）。
 /// - `first_data_offset`：多包首包业务数据起点（AM35 = markerOffset + 3）。
+///
+/// ITERATION-003 Gate A §5.1：marker 偏移解析（搜索模式优先于固定 offset）。
+///
+/// 返回 `Some((marker_idx, actual_total_off, actual_first_data_off))` 表示进入多包组装；
+/// 返回 `None` 表示按单包处理（未声明偏移或搜索模式未找到 marker）；
+/// 返回 `Err` 表示配置不完整（搜索模式缺 `length_offset_from_marker` 或 `first_data_offset_from_marker`）。
+///
+/// 三态解析：
+/// 1. **搜索模式**（`search_start` 与 `search_end` 同时声明）：
+///    在 `[search_start, min(search_end, response.len()))` 范围内查找 `marker_value`。
+///    找到时基于实际索引 `idx` 计算 `actual_total_off = idx + length_offset_from_marker`
+///    和 `actual_first_data_off = idx + first_data_offset_from_marker`。
+///    未找到时返回 `None`（按单包处理）。
+/// 2. **固定 offset 模式**（向后兼容，未声明搜索范围但声明了 `marker_offset` 与 `total_length_offset`）：
+///    直接使用 `(marker_offset, total_length_offset, first_data_offset)`。
+/// 3. **未声明**：返回 `None`（单包响应）。
+#[allow(clippy::too_many_arguments)]
+pub fn resolve_marker_offsets(
+    response: &[u8],
+    search_start: Option<usize>,
+    search_end: Option<usize>,
+    marker_value: u8,
+    length_offset_from_marker: Option<usize>,
+    first_data_offset_from_marker: Option<usize>,
+    marker_offset: Option<usize>,
+    total_length_offset: Option<usize>,
+    first_data_offset: usize,
+) -> Result<Option<(usize, usize, usize)>, String> {
+    if let (Some(search_start), Some(search_end)) = (search_start, search_end) {
+        // 搜索模式：scan for marker_value in [search_start, search_end)。
+        let bound_end = search_end.min(response.len());
+        let bound_start = search_start.min(bound_end);
+        let marker_idx = response[bound_start..bound_end]
+            .iter()
+            .position(|&b| b == marker_value)
+            .map(|p| bound_start + p);
+        return Ok(match marker_idx {
+            Some(idx) => {
+                let length_off = length_offset_from_marker.ok_or_else(|| {
+                    "marker search mode requires multi_packet_length_offset_from_marker".to_string()
+                })?;
+                let first_off = first_data_offset_from_marker.ok_or_else(|| {
+                    "marker search mode requires multi_packet_first_data_offset_from_marker"
+                        .to_string()
+                })?;
+                // total_length_offset 与 first_data_offset 相对实际 marker 索引。
+                Some((idx, idx + length_off, idx + first_off))
+            }
+            None => None, // marker 不存在，按单包处理
+        });
+    }
+    // 固定 offset 模式（向后兼容）。
+    if let (Some(marker_off), Some(total_off)) = (marker_offset, total_length_offset) {
+        return Ok(Some((marker_off, total_off, first_data_offset)));
+    }
+    // 未声明：单包响应。
+    Ok(None)
+}
+
+/// Master Spec 3.2 / Section 7：多包响应组装状态机（纯函数驱动，便于单测）。
+///
+/// 调用方先用 [`MultiPacketAssembler::try_start`] 判断首包是否为多包响应；
+/// 若是，返回 `Some(assembler)`，随后逐包调用 [`MultiPacketAssembler::add_continuation`]
+/// 直到 `complete()` 返回 true 或达到 max_packets/max_total_length。
+///
+/// 所有 `*_offset` 均相对于 response rest（去掉 reportId 之后的字节）。
+///
+/// `first_data_offset` 与 `payload_off` 解耦（ITERATION-002 §6.1/§6.3）：
+/// - `payload_off`：frame payload 起点（用于单包响应和 reconstruction 前缀）。
+/// - `first_data_offset`：多包首包业务数据起点（AM35 = markerOffset + 3）。
+///
+/// ITERATION-003 Gate A §5.2：continuation 事务安全。
+/// - `marker_offset_for_safety`：实际 marker 索引（搜索模式计算后传入）。
+/// - `reject_new_first_packet`：若 true，continuation 包在 marker 位置出现 marker_value
+///   时被 [`Self::is_new_first_packet`] 判定为新首包，调用方应终止组装。
+/// - `outer_type_offset` / `outer_type_value`：外层 type 校验，continuation 包必须匹配。
 #[derive(Debug)]
-struct MultiPacketAssembler {
+pub struct MultiPacketAssembler {
     total_length: usize,
     continuation_offset: usize,
     max_total_length: usize,
     max_packets: u8,
     accumulated: Vec<u8>,
     packets_seen: u8,
+    // Gate A §5.2：continuation 事务安全配置（由 configure_continuation_safety 设置）。
+    marker_offset_for_safety: Option<usize>,
+    marker_value_for_safety: u8,
+    reject_new_first_packet: bool,
+    outer_type_offset: Option<usize>,
+    outer_type_value: Option<u8>,
 }
 
 impl MultiPacketAssembler {
@@ -3770,7 +3990,7 @@ impl MultiPacketAssembler {
     /// `first_data_offset` 为首包业务数据起点（相对于 rest）。AM35 官方
     /// `parse_multi_packet_response` 中该值 = `marker_offset + 3`。
     #[allow(clippy::too_many_arguments)]
-    fn try_start(
+    pub fn try_start(
         first_packet_rest: &[u8],
         first_data_offset: usize,
         marker_offset: usize,
@@ -3815,12 +4035,57 @@ impl MultiPacketAssembler {
             max_packets,
             accumulated,
             packets_seen: 1,
+            marker_offset_for_safety: None,
+            marker_value_for_safety: marker_value,
+            reject_new_first_packet: false,
+            outer_type_offset: None,
+            outer_type_value: None,
         }))
+    }
+
+    /// 配置 continuation 事务安全检查。
+    /// 调用方在 `try_start` 成功后立即调用，设置后续包的安全匹配规则。
+    pub fn configure_continuation_safety(
+        &mut self,
+        marker_offset: usize,
+        marker_value: u8,
+        reject_new_first_packet: bool,
+        outer_type_offset: Option<usize>,
+        outer_type_value: Option<u8>,
+    ) {
+        self.marker_offset_for_safety = Some(marker_offset);
+        self.marker_value_for_safety = marker_value;
+        self.reject_new_first_packet = reject_new_first_packet;
+        self.outer_type_offset = outer_type_offset;
+        self.outer_type_value = outer_type_value;
+    }
+
+    /// 判断 continuation 包是否为新首包（marker 在 actual_marker_off 出现）。
+    /// 仅当 `reject_new_first_packet` 为 true 时启用检查。
+    /// 返回 true 表示这是新首包，调用方应立即终止当前组装并返回错误。
+    pub fn is_new_first_packet(&self, packet_rest: &[u8]) -> bool {
+        if !self.reject_new_first_packet {
+            return false;
+        }
+        let Some(marker_off) = self.marker_offset_for_safety else {
+            return false;
+        };
+        packet_rest.get(marker_off) == Some(&self.marker_value_for_safety)
+    }
+
+    /// 判断 continuation 包的 outer type 是否匹配首包。
+    /// 未配置 outer_type_offset 时返回 true（无校验）。
+    /// 返回 false 表示这是无关报告，调用方应丢弃不拼入。
+    pub fn outer_type_matches(&self, packet_rest: &[u8]) -> bool {
+        let (Some(off), Some(val)) = (self.outer_type_offset, self.outer_type_value) else {
+            return true;
+        };
+        packet_rest.get(off) == Some(&val)
     }
 
     /// 添加后续包。返回 `Ok(true)` 表示已组装完成，`Ok(false)` 表示仍需更多包，
     /// `Err` 表示超限。
-    fn add_continuation(&mut self, packet_rest: &[u8]) -> Result<bool, String> {
+    pub fn add_continuation(&mut self, packet_rest: &[u8]) -> Result<bool, String> {
         self.packets_seen += 1;
         if self.packets_seen > self.max_packets {
             return Err(format!(
@@ -3840,7 +4105,7 @@ impl MultiPacketAssembler {
     }
 
     /// 完成组装，截断到 total_length 并返回。
-    fn finish(mut self) -> Vec<u8> {
+    pub fn finish(mut self) -> Vec<u8> {
         self.accumulated.truncate(self.total_length);
         self.accumulated
     }
@@ -4083,6 +4348,24 @@ fn apply_byte_definition(
                         })?;
                     raw.to_be_bytes().to_vec()
                 }
+                "i8" => {
+                    let raw = value
+                        .as_i64()
+                        .and_then(|value| i8::try_from(value).ok())
+                        .ok_or_else(|| {
+                            format!("command {command_id} parameter {param} is not i8")
+                        })?;
+                    vec![raw as u8]
+                }
+                "le-i16" => {
+                    let raw = value
+                        .as_i64()
+                        .and_then(|value| i16::try_from(value).ok())
+                        .ok_or_else(|| {
+                            format!("command {command_id} parameter {param} is not i16")
+                        })?;
+                    (raw as u16).to_le_bytes().to_vec()
+                }
                 "rgb" => parse_rgb(value.as_str().ok_or_else(|| {
                     format!("command {command_id} parameter {param} is not a color")
                 })?)?
@@ -4131,6 +4414,36 @@ fn apply_byte_definition(
                         format!("command {command_id} parameter {param} has no encoding")
                     })?]
                 }
+                // `sleep-semantic-triple-le-u16` encoding: AM35 sleep 三段拆分。
+                // 输入 semantic 值（-1 表示永不停；正整数表示秒数）。
+                // 转换规则依据 AM35_EVIDENCE.md §5 Sleep：
+                //   wire = 65535 when semantic == -1; otherwise wire = semantic
+                //   base = wire // 3, remainder = wire % 3
+                //   parts = [base, base, base + remainder]
+                // 输出 6 bytes（3 个 le-u16），写入连续 3 个 part 字段。
+                "sleep-semantic-triple-le-u16" => {
+                    let semantic = value
+                        .as_i64()
+                        .ok_or_else(|| {
+                            format!("command {command_id} parameter {param} is not integer")
+                        })?;
+                    if semantic != -1 && !(0..=65535).contains(&semantic) {
+                        return Err(format!(
+                            "command {command_id} parameter {param} sleep semantic out of range"
+                        ));
+                    }
+                    let wire: u16 = if semantic == -1 { 65535 } else { semantic as u16 };
+                    let base = wire / 3;
+                    let remainder = wire % 3;
+                    let parts = [base, base, base.checked_add(remainder).ok_or_else(|| {
+                        format!("command {command_id} parameter {param} sleep part overflow")
+                    })?];
+                    let mut encoded = Vec::with_capacity(6);
+                    for part in parts {
+                        encoded.extend_from_slice(&part.to_le_bytes());
+                    }
+                    encoded
+                }
                 encoding => {
                     return Err(format!(
                         "command {command_id} uses unsupported parameter encoding {encoding}"
@@ -4143,6 +4456,11 @@ fn apply_byte_definition(
                 "command {command_id} byte must have exactly one source"
             ))
         }
+    };
+    let encoded = if definition.repeat > 1 {
+        encoded.repeat(definition.repeat)
+    } else {
+        encoded
     };
     let target = report
         .get_mut(index..index + encoded.len())
@@ -4255,8 +4573,11 @@ fn validate_mutation_inputs(
                 .ok_or_else(|| format!("missing mutation parameter {name}"))?;
             let normalized = match definition.kind.as_str() {
                 "integer" => {
+                    // 支持 signed integer（如 AM35 rotation angle: -128..127）。
+                    // 优先用 as_i64 以接受负数；若数值非负且超出 i64 范围，再用 as_u64。
                     let integer = value
-                        .as_u64()
+                        .as_i64()
+                        .or_else(|| value.as_u64().and_then(|v| i64::try_from(v).ok()))
                         .ok_or_else(|| format!("mutation parameter {name} must be an integer"))?;
                     if definition.min.is_some_and(|min| integer < min)
                         || definition.max.is_some_and(|max| integer > max)
@@ -4269,7 +4590,12 @@ fn validate_mutation_inputs(
                     {
                         return Err(format!("mutation parameter {name} is out of range"));
                     }
-                    Value::from(integer)
+                    // 保持输出为原始数值（负数走 i64，非负数走 u64 以兼容旧契约）。
+                    if integer >= 0 {
+                        Value::from(integer as u64)
+                    } else {
+                        Value::from(integer)
+                    }
                 }
                 "boolean" => Value::from(
                     value
@@ -4464,6 +4790,17 @@ fn parse_field(field: &FieldDefinition, response: &[u8]) -> Result<Value, String
                 .ok_or_else(|| "parser hue-index offset out of range".to_string())?;
             let idx = u16::from_be_bytes([bytes[0], bytes[1]]);
             Ok(Value::String(hue_index_to_hex(idx)))
+        }
+        "i8" => {
+            let raw = byte()?;
+            Ok(Value::from(raw as i8 as i64))
+        }
+        "le-i16" => {
+            let bytes = response
+                .get(field.offset..field.offset + 2)
+                .ok_or_else(|| "parser i16 offset out of range".to_string())?;
+            let raw = u16::from_le_bytes([bytes[0], bytes[1]]);
+            Ok(Value::from(raw as i16 as i64))
         }
         other => Err(format!("unsupported parser field kind {other}")),
     }
@@ -4889,6 +5226,7 @@ mod tests {
             index_base: 1,
             stride: 2,
             lookup: BTreeMap::new(),
+            repeat: 1,
         };
         apply_byte_definition("dpi-value-write", &definition, &params, &mut report).unwrap();
         assert_eq!(&report[10..12], &1600u16.to_le_bytes());
@@ -4909,6 +5247,7 @@ mod tests {
             index_base: 0,
             stride: 1,
             lookup: BTreeMap::from([("true".into(), 0x03), ("false".into(), 0x00)]),
+            repeat: 1,
         };
         apply_byte_definition("rgb-control-set", &definition, &params, &mut report).unwrap();
         assert_eq!(report[4], 0x03);
@@ -6073,6 +6412,85 @@ mod tests {
         assert_eq!(parsed.get("wirelessSleepValue"), Some(&Value::from(60)));
     }
 
+    /// `signed-u8` derived kind converts a raw u8 to a signed i8 via two's complement.
+    /// Used by AM35 rotation parser: rawAngle (u8) → angle (signed).
+    /// Per AM35_EVIDENCE §5: wire = 256 + angle for negatives, so 128..255 → -128..-1.
+    #[test]
+    fn parses_signed_u8_derived_field() {
+        let mut files = BTreeMap::new();
+        files.insert(
+            "protocol/commands.json".into(),
+            br#"{"schemaVersion": 1, "commands": {}}"#.to_vec(),
+        );
+        files.insert(
+            "protocol/parsers.json".into(),
+            br#"{
+                "schemaVersion": 1,
+                "parsers": {
+                    "am35-rotation": {
+                        "validWhen": [],
+                        "fields": {
+                            "rawAngle": {"offset": 9, "kind": "u8"},
+                            "enabled": {"offset": 10, "kind": "bool"}
+                        },
+                        "derived": {
+                            "angle": {"kind": "signed-u8", "source": "rawAngle"}
+                        }
+                    }
+                }
+            }"#
+            .to_vec(),
+        );
+        files.insert(
+            "protocol/transports.json".into(),
+            br#"{"schemaVersion": 1, "transports": {}}"#.to_vec(),
+        );
+        files.insert(
+            "protocol/workflows.json".into(),
+            br#"{"schemaVersion": 1, "workflows": {}, "mutations": {}}"#.to_vec(),
+        );
+        let package = ProtocolPackage::from_files(&files).unwrap();
+
+        // Positive: rawAngle=90 → angle=90
+        let mut response = [0u8; 16];
+        response[9] = 90;
+        response[10] = 1;
+        let parsed = package.parse_response("am35-rotation", &response).unwrap();
+        assert_eq!(parsed.get("rawAngle"), Some(&Value::from(90)));
+        assert_eq!(parsed.get("angle"), Some(&Value::from(90)));
+        assert_eq!(parsed.get("enabled"), Some(&Value::Bool(true)));
+
+        // Negative: rawAngle=255 (0xFF) → angle=-1 (256+(-1)=255)
+        let mut response = [0u8; 16];
+        response[9] = 255;
+        response[10] = 1;
+        let parsed = package.parse_response("am35-rotation", &response).unwrap();
+        assert_eq!(parsed.get("rawAngle"), Some(&Value::from(255)));
+        assert_eq!(parsed.get("angle"), Some(&Value::from(-1)));
+
+        // Boundary: rawAngle=128 (0x80) → angle=-128 (min negative)
+        let mut response = [0u8; 16];
+        response[9] = 128;
+        let parsed = package.parse_response("am35-rotation", &response).unwrap();
+        assert_eq!(parsed.get("rawAngle"), Some(&Value::from(128)));
+        assert_eq!(parsed.get("angle"), Some(&Value::from(-128)));
+
+        // Boundary: rawAngle=127 (0x7F) → angle=127 (max positive)
+        let mut response = [0u8; 16];
+        response[9] = 127;
+        let parsed = package.parse_response("am35-rotation", &response).unwrap();
+        assert_eq!(parsed.get("rawAngle"), Some(&Value::from(127)));
+        assert_eq!(parsed.get("angle"), Some(&Value::from(127)));
+
+        // Disabled: rawAngle=0, enabled=false
+        let mut response = [0u8; 16];
+        response[10] = 0;
+        let parsed = package.parse_response("am35-rotation", &response).unwrap();
+        assert_eq!(parsed.get("rawAngle"), Some(&Value::from(0)));
+        assert_eq!(parsed.get("angle"), Some(&Value::from(0)));
+        assert_eq!(parsed.get("enabled"), Some(&Value::Bool(false)));
+    }
+
     /// `mutate` must reject `settleMs` exceeding the 1-second safety limit.
     #[test]
     fn mutate_rejects_excessive_settle_ms() {
@@ -6780,6 +7198,463 @@ mod tests {
             result.unwrap_err().contains("exceeds max"),
             "error should mention exceeds max"
         );
+    }
+
+    // =========================================================================
+    // ITERATION-003 Gate A §5.1：marker 搜索测试（`resolve_marker_offsets`）
+    // =========================================================================
+
+    /// 搜索模式：marker 出现在预期 offset 3 → 返回 (3, 4, 6)。
+    /// AM35 默认配置：searchStart=2, searchEnd=8, lengthOffsetFromMarker=1, firstDataOffsetFromMarker=3。
+    #[test]
+    fn gate_a_marker_search_at_expected_offset() {
+        // rest = [length, type, 0x05, 0x5B, lenLow, lenHigh, ...]
+        let response = vec![61u8, 0, 5, 91, 80, 0, 207, 48];
+        let result = resolve_marker_offsets(
+            &response,
+            Some(2),
+            Some(8),
+            91,
+            Some(1),
+            Some(3),
+            None,
+            None,
+            6,
+        )
+        .expect("search at expected offset should resolve");
+        assert_eq!(
+            result,
+            Some((3, 4, 6)),
+            "marker at 3 → total_off=4, first_data=6"
+        );
+    }
+
+    /// 搜索模式：marker 出现在非默认 offset 5 → 返回 (5, 6, 8)。
+    /// 验证搜索模式正确处理 marker 位置变化（反编译证据：marker 0x5B 可在首包范围内变化）。
+    #[test]
+    fn gate_a_marker_search_at_alternate_offset() {
+        // rest 中 0x5B 出现在 offset 5：[length, type, 0x05, 0xAA, 0xBB, 0x5B, lenLow, lenHigh, ...]
+        let response = vec![61u8, 0, 5, 0xAA, 0xBB, 91, 80, 0, 207, 48];
+        let result = resolve_marker_offsets(
+            &response,
+            Some(2),
+            Some(8),
+            91,
+            Some(1),
+            Some(3),
+            None,
+            None,
+            6,
+        )
+        .expect("search at alternate offset should resolve");
+        assert_eq!(
+            result,
+            Some((5, 6, 8)),
+            "marker at 5 → total_off=6, first_data=8"
+        );
+    }
+
+    /// 搜索模式：marker 不存在 → 返回 None（按单包处理）。
+    #[test]
+    fn gate_a_marker_search_marker_absent() {
+        let response = vec![61u8, 0, 5, 0xAA, 0xBB, 0xCC, 207, 48];
+        let result = resolve_marker_offsets(
+            &response,
+            Some(2),
+            Some(8),
+            91,
+            Some(1),
+            Some(3),
+            None,
+            None,
+            6,
+        )
+        .expect("absent marker should resolve to None, not error");
+        assert_eq!(result, None, "marker absent → single packet");
+    }
+
+    /// 搜索模式：范围内有多个 marker → 返回第一个出现位置。
+    #[test]
+    fn gate_a_marker_search_multiple_markers_returns_first() {
+        // 0x5B 同时出现在 offset 3 和 offset 5。
+        let response = vec![61u8, 0, 91, 91, 80, 0, 207, 48];
+        let result = resolve_marker_offsets(
+            &response,
+            Some(2),
+            Some(8),
+            91,
+            Some(1),
+            Some(3),
+            None,
+            None,
+            6,
+        )
+        .expect("multiple markers should resolve");
+        // 第一个 marker 在 offset 2。
+        assert_eq!(result, Some((2, 3, 5)), "should return first marker index");
+    }
+
+    /// 搜索模式：search_end 超过 response 长度 → 自动截断到 response.len()。
+    #[test]
+    fn gate_a_marker_search_range_exceeds_response_length() {
+        // response 只有 5 字节，但 search_end=10。
+        let response = vec![61u8, 0, 5, 91, 80];
+        let result = resolve_marker_offsets(
+            &response,
+            Some(2),
+            Some(10),
+            91,
+            Some(1),
+            Some(3),
+            None,
+            None,
+            6,
+        )
+        .expect("range exceeding response length should not error");
+        assert_eq!(
+            result,
+            Some((3, 4, 6)),
+            "marker at 3 still found within bounds"
+        );
+    }
+
+    /// 搜索模式：search_start > search_end → bound_start 截断到 bound_end，等效空范围。
+    #[test]
+    fn gate_a_marker_search_invalid_range_returns_none() {
+        let response = vec![61u8, 0, 5, 91, 80];
+        let result = resolve_marker_offsets(
+            &response,
+            Some(8),
+            Some(2),
+            91,
+            Some(1),
+            Some(3),
+            None,
+            None,
+            6,
+        )
+        .expect("invalid range should not error");
+        assert_eq!(result, None, "invalid range → no marker found");
+    }
+
+    /// 搜索模式：缺 length_offset_from_marker → 返回 Err。
+    #[test]
+    fn gate_a_marker_search_missing_length_offset_errors() {
+        let response = vec![61u8, 0, 5, 91, 80, 0];
+        let result = resolve_marker_offsets(
+            &response,
+            Some(2),
+            Some(8),
+            91,
+            None, // missing
+            Some(3),
+            None,
+            None,
+            6,
+        );
+        assert!(
+            result.is_err(),
+            "missing length_offset_from_marker should error"
+        );
+        assert!(
+            result.unwrap_err().contains("length_offset_from_marker"),
+            "error should mention length_offset_from_marker"
+        );
+    }
+
+    /// 搜索模式：缺 first_data_offset_from_marker → 返回 Err。
+    #[test]
+    fn gate_a_marker_search_missing_first_data_offset_errors() {
+        let response = vec![61u8, 0, 5, 91, 80, 0];
+        let result = resolve_marker_offsets(
+            &response,
+            Some(2),
+            Some(8),
+            91,
+            Some(1),
+            None, // missing
+            None,
+            None,
+            6,
+        );
+        assert!(
+            result.is_err(),
+            "missing first_data_offset_from_marker should error"
+        );
+        assert!(
+            result
+                .unwrap_err()
+                .contains("first_data_offset_from_marker"),
+            "error should mention first_data_offset_from_marker"
+        );
+    }
+
+    /// 固定 offset 模式（向后兼容）：未声明 search range，仅声明 marker_offset+total_length_offset。
+    #[test]
+    fn gate_a_marker_fixed_offset_backward_compatible() {
+        let response = vec![61u8, 0, 5, 91, 80, 0, 207, 48];
+        let result =
+            resolve_marker_offsets(&response, None, None, 91, None, None, Some(3), Some(4), 6)
+                .expect("fixed offset mode should resolve");
+        assert_eq!(result, Some((3, 4, 6)), "fixed offset → (3, 4, 6)");
+    }
+
+    /// 未声明任何偏移 → 返回 None（单包响应）。
+    #[test]
+    fn gate_a_no_offsets_declared_returns_none() {
+        let response = vec![61u8, 0, 5, 91, 80, 0, 207, 48];
+        let result = resolve_marker_offsets(&response, None, None, 91, None, None, None, None, 6)
+            .expect("no offsets declared should not error");
+        assert_eq!(result, None, "no offsets → single packet");
+    }
+
+    /// 搜索模式优先于固定 offset：当两者同时声明时，使用搜索模式。
+    #[test]
+    fn gate_a_search_mode_takes_precedence_over_fixed() {
+        // marker 实际在 offset 5，但固定 offset 声明为 3。
+        // 搜索模式应优先，返回实际位置 5。
+        let response = vec![61u8, 0, 5, 0xAA, 0xBB, 91, 80, 0, 207, 48];
+        let result = resolve_marker_offsets(
+            &response,
+            Some(2),
+            Some(8),
+            91,
+            Some(1),
+            Some(3),
+            Some(3), // fixed offset (should be ignored)
+            Some(4), // fixed offset (should be ignored)
+            6,
+        )
+        .expect("search mode should take precedence");
+        assert_eq!(
+            result,
+            Some((5, 6, 8)),
+            "search mode should override fixed offset"
+        );
+    }
+
+    // =========================================================================
+    // ITERATION-003 Gate A §5.2：continuation 事务安全测试
+    // =========================================================================
+
+    /// is_new_first_packet：未启用时总是返回 false（向后兼容）。
+    #[test]
+    fn gate_a_continuation_safety_disabled_by_default() {
+        let first_rest = vec![61u8, 0, 5, 91, 80, 0, 207, 48];
+        let assembler =
+            MultiPacketAssembler::try_start(&first_rest, 6, 3, 91, 4, 2, 2, 16, 4096, "le")
+                .expect("try_start ok")
+                .expect("multi-packet");
+        // 未调用 configure_continuation_safety → reject_new_first_packet=false。
+        let cont_with_marker = vec![61u8, 0, 5, 91, 80, 0]; // marker at 3
+        assert!(
+            !assembler.is_new_first_packet(&cont_with_marker),
+            "disabled → always false even if marker present"
+        );
+        // outer_type_matches：未配置时总是返回 true。
+        assert!(
+            assembler.outer_type_matches(&cont_with_marker),
+            "disabled → outer type always matches"
+        );
+    }
+
+    /// is_new_first_packet：启用后，continuation 在 marker_offset 出现 marker_value → true。
+    #[test]
+    fn gate_a_continuation_safety_rejects_new_first_packet() {
+        let first_rest = vec![61u8, 0, 5, 91, 80, 0, 207, 48];
+        let mut assembler =
+            MultiPacketAssembler::try_start(&first_rest, 6, 3, 91, 4, 2, 2, 16, 4096, "le")
+                .expect("try_start ok")
+                .expect("multi-packet");
+        assembler.configure_continuation_safety(3, 91, true, None, None);
+        // continuation 包：在 offset 3 出现 0x5B（91）→ 视为新首包。
+        let new_first_packet = vec![61u8, 0, 5, 91, 80, 0, 207, 48];
+        assert!(
+            assembler.is_new_first_packet(&new_first_packet),
+            "marker at offset 3 → new first packet"
+        );
+        // continuation 包：offset 3 不是 0x5B → 正常 continuation。
+        let normal_cont = vec![25u8, 0, 54, 55, 56, 57, 58, 59];
+        assert!(
+            !assembler.is_new_first_packet(&normal_cont),
+            "no marker at offset 3 → not a new first packet"
+        );
+    }
+
+    /// is_new_first_packet：continuation 短于 marker_offset → false（无法判定）。
+    #[test]
+    fn gate_a_continuation_safety_short_packet_not_new_first() {
+        let first_rest = vec![61u8, 0, 5, 91, 80, 0, 207, 48];
+        let mut assembler =
+            MultiPacketAssembler::try_start(&first_rest, 6, 3, 91, 4, 2, 2, 16, 4096, "le")
+                .expect("try_start ok")
+                .expect("multi-packet");
+        assembler.configure_continuation_safety(3, 91, true, None, None);
+        let short_cont = vec![25u8, 0]; // 长度 2 < marker_offset 3
+        assert!(
+            !assembler.is_new_first_packet(&short_cont),
+            "short packet cannot be a new first packet"
+        );
+    }
+
+    /// outer_type_matches：启用后，type_field_offset 处等于 type_field_value → true。
+    #[test]
+    fn gate_a_continuation_safety_outer_type_match() {
+        let first_rest = vec![61u8, 0, 5, 91, 80, 0, 207, 48];
+        let mut assembler =
+            MultiPacketAssembler::try_start(&first_rest, 6, 3, 91, 4, 2, 2, 16, 4096, "le")
+                .expect("try_start ok")
+                .expect("multi-packet");
+        // AM35 direct：type_field_offset=1, type_field_value=0。
+        assembler.configure_continuation_safety(3, 91, true, Some(1), Some(0));
+        let matching_cont = vec![25u8, 0, 54, 55, 56, 57, 58, 59]; // type=0 at offset 1
+        assert!(
+            assembler.outer_type_matches(&matching_cont),
+            "outer type 0 matches"
+        );
+    }
+
+    /// outer_type_matches：type 不匹配 → false（调用方应丢弃）。
+    #[test]
+    fn gate_a_continuation_safety_outer_type_mismatch() {
+        let first_rest = vec![61u8, 0, 5, 91, 80, 0, 207, 48];
+        let mut assembler =
+            MultiPacketAssembler::try_start(&first_rest, 6, 3, 91, 4, 2, 2, 16, 4096, "le")
+                .expect("try_start ok")
+                .expect("multi-packet");
+        // AM35 direct：type_field_offset=1, type_field_value=0。
+        // 但 continuation 是 receiver 类型（type=128）→ 不匹配。
+        assembler.configure_continuation_safety(3, 91, true, Some(1), Some(0));
+        let mismatching_cont = vec![25u8, 128, 54, 55, 56, 57, 58, 59]; // type=128 at offset 1
+        assert!(
+            !assembler.outer_type_matches(&mismatching_cont),
+            "outer type 128 should not match expected 0"
+        );
+    }
+
+    /// outer_type_matches：continuation 短于 type_field_offset → false（无法匹配）。
+    #[test]
+    fn gate_a_continuation_safety_outer_type_short_packet() {
+        let first_rest = vec![61u8, 0, 5, 91, 80, 0, 207, 48];
+        let mut assembler =
+            MultiPacketAssembler::try_start(&first_rest, 6, 3, 91, 4, 2, 2, 16, 4096, "le")
+                .expect("try_start ok")
+                .expect("multi-packet");
+        assembler.configure_continuation_safety(3, 91, true, Some(1), Some(0));
+        let short_cont: Vec<u8> = vec![25u8]; // 长度 1，无法访问 offset 1
+        assert!(
+            !assembler.outer_type_matches(&short_cont),
+            "short packet should not match outer type"
+        );
+    }
+
+    /// 端到端：搜索模式 + continuation safety 联合工作流。
+    /// - marker 在 offset 5（非默认 3）
+    /// - continuation outer type 匹配
+    /// - continuation 不是新首包
+    /// - 完成组装
+    #[test]
+    fn gate_a_search_mode_with_continuation_safety_e2e() {
+        // 首包：marker 0x5B 在 offset 5（搜索范围 [2, 8) 能找到）。
+        // [length=61, type=0, 0x05, 0xAA, 0xBB, 0x5B, totalLow=30, totalHigh=0, data...]
+        let mut first_rest = vec![61u8, 0, 5, 0xAA, 0xBB, 91, 30, 0];
+        first_rest.extend([100u8, 101, 102, 103]); // 4 字节业务数据
+                                                   // 解析 marker 位置。
+        let resolved = resolve_marker_offsets(
+            &first_rest,
+            Some(2),
+            Some(8),
+            91,
+            Some(1),
+            Some(3),
+            None,
+            None,
+            8, // 固定 first_data_offset 不使用（搜索模式生效）
+        )
+        .expect("resolve should succeed")
+        .expect("should be multi-packet");
+        assert_eq!(
+            resolved,
+            (5, 6, 8),
+            "marker at 5, total_off at 6, first_data at 8"
+        );
+        let (actual_marker_off, actual_total_off, actual_first_data_off) = resolved;
+        // 启动 assembler。
+        let mut assembler = MultiPacketAssembler::try_start(
+            &first_rest,
+            actual_first_data_off,
+            actual_marker_off,
+            91,
+            actual_total_off,
+            2,
+            2,
+            16,
+            4096,
+            "le",
+        )
+        .expect("try_start ok")
+        .expect("multi-packet");
+        // 配置 continuation safety（type_field_offset=1, type_field_value=0）。
+        assembler.configure_continuation_safety(actual_marker_off, 91, true, Some(1), Some(0));
+        // continuation：outer type 匹配（type=0 at offset 1），无新首包 marker。
+        // total_length=30，首包贡献 4 字节，需 26 字节。
+        let mut cont_rest = vec![26u8, 0]; // [length=26, type=0]
+        cont_rest.extend(1u8..=26); // 26 字节业务数据
+        assert!(
+            !assembler.is_new_first_packet(&cont_rest),
+            "continuation is not a new first packet"
+        );
+        assert!(
+            assembler.outer_type_matches(&cont_rest),
+            "continuation outer type matches"
+        );
+        // 完成组装。
+        let complete = assembler
+            .add_continuation(&cont_rest)
+            .expect("add_continuation ok");
+        assert!(complete, "should be complete (4 + 26 = 30 = total_length)");
+        let assembled = assembler.finish();
+        assert_eq!(assembled.len(), 30, "assembled length = total_length");
+        // 首包业务数据前缀：[100, 101, 102, 103, 1, 2, 3, ...]
+        assert_eq!(&assembled[..8], &[100, 101, 102, 103, 1, 2, 3, 4]);
+    }
+
+    /// 端到端：continuation 是新首包 → 模拟调用方返回错误。
+    /// 验证 is_new_first_packet 在实际工作流中能正确识别新首包并阻止拼入。
+    #[test]
+    fn gate_a_continuation_safety_rejects_new_first_packet_e2e() {
+        let first_rest = vec![61u8, 0, 5, 91, 30, 0, 207, 48];
+        let mut assembler =
+            MultiPacketAssembler::try_start(&first_rest, 6, 3, 91, 4, 2, 2, 16, 4096, "le")
+                .expect("try_start ok")
+                .expect("multi-packet");
+        assembler.configure_continuation_safety(3, 91, true, Some(1), Some(0));
+        // continuation 是一个新首包（在 offset 3 出现 0x5B）。
+        let new_first = vec![61u8, 0, 5, 91, 30, 0, 207, 48];
+        assert!(
+            assembler.is_new_first_packet(&new_first),
+            "new first packet detected → caller should return Err"
+        );
+        // 调用方应在此情况下返回 Err，不调用 add_continuation。
+        // （engine.rs 实际逻辑：return Err("continuation rejected: new first-packet marker detected")）
+    }
+
+    /// 端到端：continuation outer type 不匹配 → 模拟调用方丢弃（不拼入）。
+    #[test]
+    fn gate_a_continuation_safety_outer_type_mismatch_e2e() {
+        let first_rest = vec![61u8, 0, 5, 91, 30, 0, 207, 48];
+        let mut assembler =
+            MultiPacketAssembler::try_start(&first_rest, 6, 3, 91, 4, 2, 2, 16, 4096, "le")
+                .expect("try_start ok")
+                .expect("multi-packet");
+        // AM35 direct（type=0），但收到 AM35 receiver（type=128）的 continuation。
+        assembler.configure_continuation_safety(3, 91, true, Some(1), Some(0));
+        let unrelated_cont = vec![25u8, 128, 54, 55, 56, 57, 58, 59];
+        assert!(
+            !assembler.outer_type_matches(&unrelated_cont),
+            "outer type mismatch → caller should discard (continue loop)"
+        );
+        // 调用方应 continue 循环，不调用 add_continuation。
     }
 
     /// race_id_mismatch_retry：响应 RaceID 与请求不匹配 → 匹配函数返回 false（触发重试）。

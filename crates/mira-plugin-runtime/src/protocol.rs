@@ -253,6 +253,7 @@ impl SemanticField {
             SemanticField::LightingState => &[
                 "mouseLighting",
                 "receiverLighting",
+                "receiverLight",
                 "lighting",
                 "settings",
                 "rgbControl",

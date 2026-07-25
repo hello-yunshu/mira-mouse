@@ -17,7 +17,10 @@ pub use mira_plugin_api::{
 };
 
 pub use dsl::{execute_workflow, DslError, Limits, Operation, Transport, Workflow};
-pub use engine::{ProtocolPackage, WorkflowProjection};
+pub use engine::{
+    framed_response_matches_request, plan_request_fragments, resolve_marker_offsets,
+    MultiPacketAssembler, ProtocolPackage, WorkflowProjection,
+};
 pub use package::{
     allowed, canonical_json, extract_package, inspect_package, PackageError, PackageInspection,
     TrustStore, PACKAGE_FORMAT_VERSION,
