@@ -329,6 +329,12 @@ enum TransportDefinition {
         multi_packet_total_length_offset: Option<usize>,
         #[serde(default)]
         multi_packet_total_length_bytes: u8,
+        // 首包业务数据起点（相对于 rest）。未声明时回退到 payload_off。
+        // ITERATION-002 §6.1/§6.3：AM35 官方 parse_multi_packet_response 中
+        // 首包业务数据从 markerIndex + 3 开始，与 frame payload offset 解耦。
+        // AM35: payloadOffset=2, markerOffset=3, firstDataOffset=6 (=3+3)。
+        #[serde(default)]
+        multi_packet_first_data_offset: Option<usize>,
         // 后续包 payload 起始偏移（相对于 rest）。未声明时回退到 payload_off。
         #[serde(default)]
         multi_packet_continuation_offset: Option<usize>,
@@ -2914,6 +2920,7 @@ impl Session<'_> {
             multi_packet_marker_value,
             multi_packet_total_length_offset,
             multi_packet_total_length_bytes,
+            multi_packet_first_data_offset,
             multi_packet_continuation_offset,
             multi_packet_max_packets,
             multi_packet_max_total_length,
@@ -2951,15 +2958,26 @@ impl Session<'_> {
         }
         // Section 7：stale-response drain。写请求前主动排空管道中的旧响应，
         // 防止上次请求的残留响应污染本次 RaceID 匹配。best-effort，超时即停。
+        // ITERATION-002 §7：drain 必须复用 transport 的 read mode。
+        // - Interrupt    → read_timeout
+        // - Input Report → get_input_report（AM35 readMode=input-report）
+        // drain 失败不判设备失败；report ID 不匹配的包直接丢弃。
         if *stale_drain_reads > 0 {
             let drain_buf_len = (*read_length).max(1);
+            let drain_is_input_report = matches!(read_mode, HidFramedReadMode::InputReport);
             for _ in 0..*stale_drain_reads {
                 deadline_remaining_ms(self.deadline)?;
                 let mut drain = vec![0u8; drain_buf_len];
-                // 排空只读取 interrupt endpoint，丢弃数据；不区分 read_mode。
-                let _ = self
-                    .device
-                    .read_timeout(&mut drain, *stale_drain_timeout_ms);
+                if drain_is_input_report {
+                    // Input Report 模式：通过 get_input_report 排空，校验 report ID。
+                    drain[0] = *read_report_id;
+                    let _ = self.device.get_input_report(&mut drain);
+                } else {
+                    // Interrupt 模式：短超时读取并丢弃。
+                    let _ = self
+                        .device
+                        .read_timeout(&mut drain, *stale_drain_timeout_ms);
+                }
             }
         }
         // Section 7：出站分片规划。max_payload_per_packet 为 0 时按 rest 容量推断。
@@ -3064,6 +3082,10 @@ impl Session<'_> {
             *read_delay_ms
         };
         let continuation_off = multi_packet_continuation_offset.unwrap_or(payload_off);
+        // ITERATION-002 §6.1/§6.3：多包首包业务数据起点与 frame payload offset 解耦。
+        // AM35: payloadOffset=2, markerOffset=3, firstDataOffset=6 (=3+3)。
+        // 未声明 first_data_offset 时回退到 payload_off（兼容旧配置）。
+        let first_data_off = multi_packet_first_data_offset.unwrap_or(payload_off);
         let is_input_report = matches!(read_mode, HidFramedReadMode::InputReport);
         for attempt in 0..*read_retries {
             // 读取前延迟：首次 InputReport 用 initial_delay；重试用 retry_interval_ms。
@@ -3142,7 +3164,7 @@ impl Session<'_> {
             ) {
                 match MultiPacketAssembler::try_start(
                     &response,
-                    payload_off,
+                    first_data_off,
                     marker_off,
                     *multi_packet_marker_value,
                     total_off,
@@ -3198,10 +3220,13 @@ impl Session<'_> {
                                 break;
                             }
                         }
-                        // 重构为单包 rest 格式：[frame_header, ...assembled_payload]，
-                        // 并更新 length 字段为总 payload 长度，保持与单包响应一致。
+                        // 重构为单包 rest 格式。
+                        // ITERATION-002 §6.1/§6.3：保留首包通过 marker 元数据的前缀
+                        // （[length, type, 0x05, 0x5B, lenLow, lenHigh]），再拼接业务数据。
+                        // 这样 parser 看到的字段偏移与单包响应一致（offset 8 = enabled 等）。
                         let assembled_payload = assembler.finish();
-                        let mut reconstructed = response.get(..payload_off).unwrap_or(&[]).to_vec();
+                        let mut reconstructed =
+                            response.get(..first_data_off).unwrap_or(&[]).to_vec();
                         if let Some(off) = *length_field_offset {
                             let end = off + len_bytes;
                             if end <= reconstructed.len() {
@@ -3415,15 +3440,13 @@ fn write_length_field(buf: &mut [u8], bytes: u8, value: usize, endian: &str) {
                 *slot = value as u8;
             }
         }
-        2 => {
-            if buf.len() >= 2 {
-                let v = value as u16;
-                let pair = match endian {
-                    "be" => v.to_be_bytes(),
-                    _ => v.to_le_bytes(),
-                };
-                buf[..2].copy_from_slice(&pair);
-            }
+        2 if buf.len() >= 2 => {
+            let v = value as u16;
+            let pair = match endian {
+                "be" => v.to_be_bytes(),
+                _ => v.to_le_bytes(),
+            };
+            buf[..2].copy_from_slice(&pair);
         }
         _ => {}
     }
@@ -3545,6 +3568,10 @@ fn plan_request_fragments(
 /// 直到 `complete()` 返回 true 或达到 max_packets/max_total_length。
 ///
 /// 所有 `*_offset` 均相对于 response rest（去掉 reportId 之后的字节）。
+///
+/// `first_data_offset` 与 `payload_off` 解耦（ITERATION-002 §6.1/§6.3）：
+/// - `payload_off`：frame payload 起点（用于单包响应和 reconstruction 前缀）。
+/// - `first_data_offset`：多包首包业务数据起点（AM35 = markerOffset + 3）。
 #[derive(Debug)]
 struct MultiPacketAssembler {
     total_length: usize,
@@ -3558,9 +3585,13 @@ struct MultiPacketAssembler {
 impl MultiPacketAssembler {
     /// 检查首包是否为多包响应。返回 `Ok(None)` 表示非多包（单包行为）；
     /// `Ok(Some(assembler))` 表示多包响应已开始组装；`Err` 表示配置错误。
+    ///
+    /// `first_data_offset` 为首包业务数据起点（相对于 rest）。AM35 官方
+    /// `parse_multi_packet_response` 中该值 = `marker_offset + 3`。
+    #[allow(clippy::too_many_arguments)]
     fn try_start(
         first_packet_rest: &[u8],
-        payload_off: usize,
+        first_data_offset: usize,
         marker_offset: usize,
         marker_value: u8,
         total_length_offset: usize,
@@ -3590,8 +3621,10 @@ impl MultiPacketAssembler {
         if max_packets == 0 {
             return Err("multi-packet max_packets must be > 0".into());
         }
-        // 首包贡献的 payload：从 payload_off 到 rest 末尾。
-        let first_payload = first_packet_rest.get(payload_off..).unwrap_or(&[]);
+        // 首包贡献的业务数据：从 first_data_offset 到 rest 末尾。
+        // ITERATION-002 §6.1：AM35 首包业务数据从 markerIndex + 3 开始，
+        // 不包含 [..markerOffset) 的 frame 前缀和 marker 元数据。
+        let first_payload = first_packet_rest.get(first_data_offset..).unwrap_or(&[]);
         let mut accumulated = Vec::with_capacity(total_len);
         accumulated.extend_from_slice(first_payload);
         Ok(Some(MultiPacketAssembler {
@@ -6276,6 +6309,7 @@ mod tests {
                     "fragmentPayload": true, "maxPayloadPerPacket": 59,
                     "multiPacketMarkerOffset": 3, "multiPacketMarkerValue": 91,
                     "multiPacketTotalLengthOffset": 4, "multiPacketTotalLengthBytes": 2,
+                    "multiPacketFirstDataOffset": 6,
                     "multiPacketContinuationOffset": 2,
                     "multiPacketMaxPackets": 16, "multiPacketMaxTotalLength": 4096,
                     "staleDrainReads": 3, "staleDrainTimeoutMs": 10,
@@ -6286,6 +6320,7 @@ mod tests {
     }
 
     /// stale_response_drain：验证 stale drain 配置正确解析，drain 次数与超时符合声明。
+    /// ITERATION-002 §7：drain 必须复用 read mode（input-report → get_input_report）。
     /// 注：实际 I/O 排空需真实设备/mock，此处验证配置层（hardware-unverified: I/O loop）。
     #[test]
     fn stale_response_drain() {
@@ -6294,6 +6329,8 @@ mod tests {
         let TransportDefinition::HidFramed {
             stale_drain_reads,
             stale_drain_timeout_ms,
+            read_mode,
+            multi_packet_first_data_offset,
             ..
         } = &transports.transports["am35-direct"]
         else {
@@ -6303,6 +6340,17 @@ mod tests {
         assert_eq!(
             *stale_drain_timeout_ms, 10,
             "staleDrainTimeoutMs should be 10"
+        );
+        // ITERATION-002 §7：AM35 readMode 必须为 input-report，drain 须走 get_input_report。
+        assert!(
+            matches!(read_mode, HidFramedReadMode::InputReport),
+            "AM35 readMode must be input-report so stale drain uses get_input_report"
+        );
+        // ITERATION-002 §6.1：firstDataOffset = markerOffset + 3 = 6。
+        assert_eq!(
+            *multi_packet_first_data_offset,
+            Some(6),
+            "multiPacketFirstDataOffset must be 6 (= markerOffset + 3) for AM35"
         );
     }
 
@@ -6345,19 +6393,22 @@ mod tests {
     }
 
     /// multi_packet_response：0x5B 标记 + total_length=80 + 1 个后续包 → 组装 80 字节。
+    /// ITERATION-002 §6.1：firstDataOffset = markerOffset + 3 = 6（AM35 官方行为）。
+    /// 首包业务数据从 offset 6 开始，不含 [length, type, 0x05, 0x5B, lenLow, lenHigh]。
     #[test]
     fn multi_packet_response() {
-        // 首包 rest（reportId 已 strip）：[length=61, type=0, 0x05, 0x5B, 80, 0, 0xCF, 0x30, ...53 字节]
+        // 首包 rest（reportId 已 strip）：
+        // [length=61, type=0, 0x05, 0x5B, 80, 0, 0xCF, 0x30, ...53 字节业务数据]
         let mut first_rest = vec![61u8, 0, 5, 91, 80, 0, 207, 48];
-        first_rest.extend(1u8..=53u8); // 53 字节数据
+        first_rest.extend(1u8..=53u8); // 53 字节业务数据
         assert_eq!(first_rest.len(), 61, "first packet rest = 61 bytes");
-        // 后续包 rest：[length=21, type=0, ...21 字节]
-        let mut cont_rest = vec![21u8, 0];
-        cont_rest.extend(54u8..=74u8); // 21 字节数据
-        assert_eq!(cont_rest.len(), 23, "continuation rest = 23 bytes");
+        // 后续包 rest：[length=25, type=0, ...25 字节业务数据]
+        let mut cont_rest = vec![25u8, 0];
+        cont_rest.extend(54u8..=78u8); // 25 字节业务数据
+        assert_eq!(cont_rest.len(), 27, "continuation rest = 27 bytes");
         let assembler = MultiPacketAssembler::try_start(
             &first_rest,
-            2,    // payload_off
+            6,    // first_data_offset = markerOffset + 3
             3,    // marker_offset
             91,   // marker_value (0x5B)
             4,    // total_length_offset
@@ -6370,7 +6421,8 @@ mod tests {
         .expect("try_start should succeed")
         .expect("first packet should be multi-packet (0x5B marker)");
         let mut assembler = assembler;
-        // 首包贡献 payload = rest[2..] = 59 字节。需 80-59=21 字节。
+        // 首包贡献业务数据 = rest[6..] = 55 字节（0xCF, 0x30, 1..=53）。
+        // 需 80 - 55 = 25 字节来自后续包。
         assert_eq!(assembler.packets_seen, 1);
         // 添加后续包 → 完成。
         let complete = assembler
@@ -6378,7 +6430,7 @@ mod tests {
             .expect("add_continuation should succeed");
         assert!(
             complete,
-            "should be complete after 1 continuation (59+21=80)"
+            "should be complete after 1 continuation (55+25=80)"
         );
         let assembled = assembler.finish();
         assert_eq!(
@@ -6386,12 +6438,42 @@ mod tests {
             80,
             "assembled payload = 80 bytes (total_length)"
         );
-        // 验证前缀：[0x05, 0x5B, 80, 0, 0xCF, 0x30, 1, 2, ...]
+        // 验证前缀：业务数据从 0xCF, 0x30 开始（不含 marker 元数据）。
+        // [0xCF, 0x30, 1, 2, 3, 4, 5, 6, ...]
         assert_eq!(
             &assembled[..8],
-            &[5, 91, 80, 0, 207, 48, 1, 2],
-            "assembled payload prefix should match"
+            &[207, 48, 1, 2, 3, 4, 5, 6],
+            "assembled payload prefix should be pure business data (no marker metadata)"
         );
+    }
+
+    /// multi_packet_first_data_offset_fallback：未声明 firstDataOffset 时回退到 payload_off。
+    /// 验证向后兼容（非 AM35 协议可能不声明 firstDataOffset）。
+    #[test]
+    fn multi_packet_first_data_offset_fallback() {
+        // 首包 rest：[length=10, type=0, 0x05, 0x5B, 6, 0, ...业务数据]
+        // payload_off=2, first_data_offset 回退到 2（未声明 firstDataOffset 的场景）。
+        let mut first_rest = vec![10u8, 0, 5, 91, 6, 0];
+        first_rest.extend([100u8, 101, 102, 103]); // 4 字节业务数据
+        let assembler = MultiPacketAssembler::try_start(
+            &first_rest,
+            2,    // first_data_offset = payload_off (fallback)
+            3,    // marker_offset
+            91,   // marker_value
+            4,    // total_length_offset
+            2,    // total_length_bytes
+            2,    // continuation_offset
+            16,   // max_packets
+            4096, // max_total_length
+            "le",
+        )
+        .expect("try_start should succeed")
+        .expect("multi-packet");
+        // 首包贡献 = rest[2..] = [0x05, 0x5B, 6, 0, 100, 101, 102, 103] = 8 字节。
+        // total_length=6 → finish() 截断到 6 字节 = [0x05, 0x5B, 6, 0, 100, 101]。
+        let assembled = assembler.finish();
+        assert_eq!(assembled.len(), 6, "fallback truncates to total_length");
+        assert_eq!(&assembled[..4], &[5, 91, 6, 0], "fallback includes prefix");
     }
 
     /// multi_packet_max_packets_exceeded：max_packets=1 时，第 2 个包触发错误。
@@ -6400,7 +6482,7 @@ mod tests {
         // 首包：marker=0x5B, total_length=200（需要多个后续包）。
         let first_rest = vec![61u8, 0, 5, 91, 200, 0, 207, 48];
         let mut assembler =
-            MultiPacketAssembler::try_start(&first_rest, 2, 3, 91, 4, 2, 2, 1, 4096, "le")
+            MultiPacketAssembler::try_start(&first_rest, 6, 3, 91, 4, 2, 2, 1, 4096, "le")
                 .expect("try_start ok")
                 .expect("multi-packet");
         // max_packets=1，首包已计为 1。添加第 2 包应报错。
@@ -6419,7 +6501,7 @@ mod tests {
         // total_length=5000，max_total_length=4096 → try_start 报错。
         let first_rest = vec![61u8, 0, 5, 91, 0x88, 0x13, 207, 48]; // 5000 = 0x1388
         let result =
-            MultiPacketAssembler::try_start(&first_rest, 2, 3, 91, 4, 2, 2, 16, 4096, "le");
+            MultiPacketAssembler::try_start(&first_rest, 6, 3, 91, 4, 2, 2, 16, 4096, "le");
         assert!(
             result.is_err(),
             "should error when total_length > max_total_length"
