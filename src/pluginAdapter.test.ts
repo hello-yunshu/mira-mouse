@@ -421,6 +421,26 @@ describe('resolveVisibleWhen', () => {
     const device = makeDevice({}, { capabilities: { lighting: { enabled: true } } });
     expect(resolveVisibleWhen({ path: 'capabilities.lighting.enabled', eq: true }, device)).toBe(true);
   });
+
+  it('returns true when value is in the in-array', () => {
+    const device = makeDevice({}, { family: 'am35-direct' });
+    expect(resolveVisibleWhen({ path: 'family', in: ['am35-direct', 'am35-receiver'] }, device)).toBe(true);
+  });
+
+  it('returns false when value is not in the in-array', () => {
+    const device = makeDevice({}, { family: 'protocol-a-direct' });
+    expect(resolveVisibleWhen({ path: 'family', in: ['am35-direct', 'am35-receiver'] }, device)).toBe(false);
+  });
+
+  it('returns false when in-array is set but value is undefined', () => {
+    const device = makeDevice();
+    expect(resolveVisibleWhen({ path: 'family', in: ['am35-direct'] }, device)).toBe(false);
+  });
+
+  it('eq takes precedence over in when both are declared', () => {
+    const device = makeDevice({}, { family: 'am35-direct' });
+    expect(resolveVisibleWhen({ path: 'family', eq: 'am35-direct', in: ['protocol-a-direct'] }, device)).toBe(true);
+  });
 });
 
 describe('resolveZones', () => {

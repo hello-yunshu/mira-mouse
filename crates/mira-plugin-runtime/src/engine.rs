@@ -171,7 +171,14 @@ struct BitmapEntry {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct DerivedDefinition {
     kind: String,
+    /// `lookup`/`bitmap`/`bit` derived kinds 的单一源字段。
+    /// `sum-lookup` 不使用此字段（改用 `sources`），因此设为可选。
+    #[serde(default)]
     source: String,
+    /// `sum-lookup` derived kind: 对多个 source 字段求和后查表。
+    /// 用于 AM35 sleep 三段求和 + 65535 → -1 sentinel 转换。
+    #[serde(default)]
+    sources: Vec<String>,
     #[serde(default)]
     table: BTreeMap<String, Value>,
     #[serde(default)]
@@ -180,6 +187,12 @@ struct DerivedDefinition {
     /// 用于拆解 nvCaps/capabilities 位域为独立的 supports* 布尔字段。
     #[serde(default)]
     bit: Option<u8>,
+    /// `ascii-extract` derived kind: 从 `source`（bytes 数组）中取前 `lengthSource` 字节
+    /// 解码为 ASCII 字符串（等价 Python `decode('ascii', errors='ignore')`）。
+    /// 用于 AM35 firmware 版本号字符串提取。
+    /// 若不指定 `lengthSource`，则使用整个 `source` 数组。
+    #[serde(default)]
+    length_source: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -878,6 +891,68 @@ impl ProtocolPackage {
         Ok(package)
     }
 
+    /// Iteration 002 §16：fixture runner 实际执行入口。
+    /// 给定 command_id、params 和 response payload，构建请求字节并解析响应。
+    /// 返回 (request_bytes, parsed_fields)。
+    /// 用于 `mira-plugin test` 的 conformance 测试，不需要真实 HID 设备。
+    pub fn execute_fixture_sample(
+        &self,
+        command_id: &str,
+        params: &BTreeMap<String, Value>,
+        response: &[u8],
+    ) -> Result<(Vec<u8>, Value), String> {
+        let request = self.build_command(command_id, params, None)?;
+        let parsed = self.parse_response(command_id, response)?;
+        Ok((request, parsed))
+    }
+
+    /// Iteration 002 §16：仅构建请求字节（不解析响应）。
+    /// 用于 expectFailure fixture：请求构建应成功，但解析应失败。
+    pub fn build_fixture_request(
+        &self,
+        command_id: &str,
+        params: &BTreeMap<String, Value>,
+    ) -> Result<Vec<u8>, String> {
+        self.build_command(command_id, params, None)
+    }
+
+    /// Iteration 002 §16.1：fixture 测试专用 —— 构建需要 read-response base 的 write 命令。
+    /// 对于 `base: "read-response"` 的 Protocol A write 命令，fixture runner 无法预先执行 read，
+    /// 因此当 `base` 未提供时使用全 0 base 作为 fallback，仅用于 fixture 测试。
+    /// 真实运行时必须通过 workflow 的 pre-read 步骤提供 base。
+    pub fn build_fixture_request_with_base(
+        &self,
+        command_id: &str,
+        params: &BTreeMap<String, Value>,
+        base: Option<&[u8]>,
+    ) -> Result<Vec<u8>, String> {
+        if let Some(b) = base {
+            return self.build_command(command_id, params, Some(b));
+        }
+        // base 未提供：若命令需要 ReadResponse，使用全 0 base 作为 fixture fallback
+        let command = self
+            .commands
+            .commands
+            .get(command_id)
+            .ok_or_else(|| format!("missing command {command_id}"))?;
+        if command.request.base == RequestBase::ReadResponse {
+            let zero_base = vec![0u8; command.request.length];
+            self.build_command(command_id, params, Some(&zero_base))
+        } else {
+            self.build_command(command_id, params, None)
+        }
+    }
+
+    /// Iteration 002 §16：仅解析响应（不构建请求）。
+    /// 用于 expectFailure fixture：验证 parser 是否按预期失败。
+    pub fn parse_fixture_response(
+        &self,
+        command_id: &str,
+        response: &[u8],
+    ) -> Result<Value, String> {
+        self.parse_response(command_id, response)
+    }
+
     /// 查询命令的声明式诊断 payload 策略。
     /// 返回 "allow" | "mask" | "deny" | None（未声明，由 Host 回退到关键词分类）。
     pub fn command_payload_policy(&self, command_id: &str) -> Option<&str> {
@@ -904,10 +979,13 @@ impl ProtocolPackage {
 
     /// 将 parsers.json 中 derived lookup 的字符串键（"0x01"/"1"）预编译为 u64 键。
     /// 在 from_files 后调用，结果存储在 compiled_lookups 中供 parse_response 使用。
+    /// 同时预编译 `sum-lookup` derived kind 的 sentinel 表（例如 65535 → -1）。
     fn compile_lookups(&mut self) {
         for (parser_id, parser) in &self.parsers.parsers {
             for (derived_name, derived) in &parser.derived {
-                if derived.kind != "lookup" || derived.table.is_empty() {
+                if !matches!(derived.kind.as_str(), "lookup" | "sum-lookup")
+                    || derived.table.is_empty()
+                {
                     continue;
                 }
                 let mut compiled: HashMap<u64, Value> = HashMap::with_capacity(derived.table.len());
@@ -2232,6 +2310,109 @@ impl ProtocolPackage {
                         .bit
                         .ok_or_else(|| format!("bit derived {} missing 'bit' field", name))?;
                     fields.insert(name.clone(), Value::Bool((source >> bit) & 1 == 1));
+                }
+                // `sum-lookup` derived kind: 对多个 source 字段求和后查 sentinel 表。
+                // 用于 AM35 sleep 三段求和 + 65535 → -1 sentinel 转换。
+                // 若 sum 不在 table 中，则原样返回 sum（避免丢失真实总值）。
+                "sum-lookup" => {
+                    if derived.sources.is_empty() {
+                        return Err(format!(
+                            "sum-lookup derived {} missing 'sources' field",
+                            name
+                        ));
+                    }
+                    let mut sum: u64 = 0;
+                    for source_name in &derived.sources {
+                        let value = fields
+                            .get(source_name)
+                            .and_then(Value::as_u64)
+                            .ok_or_else(|| format!("invalid sum-lookup source {}", source_name))?;
+                        sum = sum
+                            .checked_add(value)
+                            .ok_or_else(|| format!("sum-lookup {} overflow", name))?;
+                    }
+                    let value = self
+                        .compiled_lookups
+                        .get(id)
+                        .and_then(|by_parser| by_parser.get(name))
+                        .and_then(|compiled| compiled.get(&sum).cloned())
+                        .unwrap_or_else(|| {
+                            let hex_key = format!("0x{sum:02X}");
+                            let decimal_key = sum.to_string();
+                            derived
+                                .table
+                                .get(&hex_key)
+                                .or_else(|| derived.table.get(&decimal_key))
+                                .cloned()
+                                .unwrap_or_else(|| Value::from(sum))
+                        });
+                    fields.insert(name.clone(), value);
+                }
+                // `ascii-extract` derived kind: 从 `source`（bytes 数组）取前
+                // `lengthSource` 字节，按 ASCII 解码（忽略非 ASCII 字节），
+                // 并去除尾部 `\x00`（等价 Python `bytes(arr).rstrip(b'\x00')`）。
+                // 用于 AM35 firmware versionString 与 button macroName 提取。
+                "ascii-extract" => {
+                    let bytes_arr = fields
+                        .get(&derived.source)
+                        .and_then(Value::as_array)
+                        .ok_or_else(|| {
+                            format!("ascii-extract source {} is not an array", derived.source)
+                        })?;
+                    let limit = if let Some(length_field) = &derived.length_source {
+                        fields
+                            .get(length_field)
+                            .and_then(Value::as_u64)
+                            .map(|v| v as usize)
+                            .unwrap_or(bytes_arr.len())
+                    } else {
+                        bytes_arr.len()
+                    };
+                    let limit = limit.min(bytes_arr.len());
+                    // 等价 Python decode('ascii', errors='ignore')：仅保留 0-127 字节。
+                    // 然后 rstrip(b'\x00')：去除尾部 ASCII NUL。
+                    let mut chars: Vec<char> = bytes_arr
+                        .iter()
+                        .take(limit)
+                        .filter_map(|v| {
+                            let b = v.as_u64()? as u8;
+                            if b < 128 {
+                                Some(b as char)
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    while chars.last() == Some(&'\0') {
+                        chars.pop();
+                    }
+                    let text: String = chars.into_iter().collect();
+                    fields.insert(name.clone(), Value::from(text));
+                }
+                // `base36` derived kind: 将 `source`（bytes 数组）每个字节转换为
+                // base36 字符（0-9, A-Z），拼接成字符串。
+                // 用于 AM35 serial 序列号转换，等价 Python `convert_to_base36_str`。
+                "base36" => {
+                    let bytes_arr = fields
+                        .get(&derived.source)
+                        .and_then(Value::as_array)
+                        .ok_or_else(|| {
+                            format!("base36 source {} is not an array", derived.source)
+                        })?;
+                    let text: String = bytes_arr
+                        .iter()
+                        .filter_map(|v| {
+                            let n = v.as_u64()? as u8;
+                            if n < 10 {
+                                Some(char::from_digit(n as u32, 10).unwrap())
+                            } else if n < 36 {
+                                Some(char::from_digit(n as u32, 36).unwrap().to_ascii_uppercase())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    fields.insert(name.clone(), Value::from(text));
                 }
                 _ => return Err(format!("unsupported derived kind {}", derived.kind)),
             }
@@ -5801,6 +5982,95 @@ mod tests {
             .parse_response("onboard-description", &response)
             .unwrap();
         assert_eq!(parsed.get("onboardFormatV5"), Some(&Value::Null));
+    }
+
+    /// `sum-lookup` derived kind sums multiple source fields and applies a sentinel table.
+    /// Used by AM35 sleep parser: three le-u16 segments per group, sum=65535 → -1.
+    #[test]
+    fn parses_sum_lookup_derived_field_with_sentinel() {
+        let mut files = BTreeMap::new();
+        files.insert(
+            "protocol/commands.json".into(),
+            br#"{"schemaVersion": 1, "commands": {}}"#.to_vec(),
+        );
+        files.insert(
+            "protocol/parsers.json".into(),
+            br#"{
+                "schemaVersion": 1,
+                "parsers": {
+                    "am35-sleep-time": {
+                        "validWhen": [],
+                        "fields": {
+                            "tfgPart1": {"offset": 9, "kind": "le-u16"},
+                            "tfgPart2": {"offset": 11, "kind": "le-u16"},
+                            "tfgPart3": {"offset": 13, "kind": "le-u16"}
+                        },
+                        "derived": {
+                            "wirelessSleepRawParts": {
+                                "kind": "sum-lookup",
+                                "sources": ["tfgPart1", "tfgPart2", "tfgPart3"],
+                                "table": {}
+                            },
+                            "wirelessSleepValue": {
+                                "kind": "sum-lookup",
+                                "sources": ["tfgPart1", "tfgPart2", "tfgPart3"],
+                                "table": {"65535": -1}
+                            }
+                        }
+                    }
+                }
+            }"#
+            .to_vec(),
+        );
+        files.insert(
+            "protocol/transports.json".into(),
+            br#"{"schemaVersion": 1, "transports": {}}"#.to_vec(),
+        );
+        files.insert(
+            "protocol/workflows.json".into(),
+            br#"{"schemaVersion": 1, "workflows": {}, "mutations": {}}"#.to_vec(),
+        );
+        let package = ProtocolPackage::from_files(&files).unwrap();
+
+        // Sum=60 (no sentinel) → wirelessSleepValue=60, wirelessSleepRawParts=60
+        let mut response = [0u8; 24];
+        response[9] = 60;
+        let parsed = package
+            .parse_response("am35-sleep-time", &response)
+            .unwrap();
+        assert_eq!(parsed.get("tfgPart1"), Some(&Value::from(60)));
+        assert_eq!(parsed.get("tfgPart2"), Some(&Value::from(0)));
+        assert_eq!(parsed.get("tfgPart3"), Some(&Value::from(0)));
+        assert_eq!(parsed.get("wirelessSleepRawParts"), Some(&Value::from(60)));
+        assert_eq!(parsed.get("wirelessSleepValue"), Some(&Value::from(60)));
+
+        // Sum=65535 (sentinel) → wirelessSleepValue=-1, wirelessSleepRawParts=65535
+        let mut response = [0u8; 24];
+        response[9] = 0xFF;
+        response[10] = 0xFF;
+        let parsed = package
+            .parse_response("am35-sleep-time", &response)
+            .unwrap();
+        assert_eq!(parsed.get("tfgPart1"), Some(&Value::from(65535)));
+        assert_eq!(
+            parsed.get("wirelessSleepRawParts"),
+            Some(&Value::from(65535))
+        );
+        assert_eq!(parsed.get("wirelessSleepValue"), Some(&Value::from(-1)));
+
+        // Sum of three non-zero segments = 60 → no sentinel
+        let mut response = [0u8; 24];
+        response[9] = 10;
+        response[11] = 20;
+        response[13] = 30;
+        let parsed = package
+            .parse_response("am35-sleep-time", &response)
+            .unwrap();
+        assert_eq!(parsed.get("tfgPart1"), Some(&Value::from(10)));
+        assert_eq!(parsed.get("tfgPart2"), Some(&Value::from(20)));
+        assert_eq!(parsed.get("tfgPart3"), Some(&Value::from(30)));
+        assert_eq!(parsed.get("wirelessSleepRawParts"), Some(&Value::from(60)));
+        assert_eq!(parsed.get("wirelessSleepValue"), Some(&Value::from(60)));
     }
 
     /// `mutate` must reject `settleMs` exceeding the 1-second safety limit.
