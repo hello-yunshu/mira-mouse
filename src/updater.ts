@@ -5,6 +5,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { notifyInfo } from './notify';
 import i18n from './i18n';
 import { createAutomaticUpdateScheduler } from './update-check-scheduler';
+import { friendlyUpdateError } from './update-errors';
 
 export type AppUpdatePhase = 'idle' | 'checking' | 'up-to-date' | 'available' | 'downloading' | 'installed' | 'error';
 
@@ -69,7 +70,7 @@ export async function checkForAppUpdate(automatic = false): Promise<void> {
       void invoke('show_update_notification', { title, body, action: 'about-update' }).catch(() => {});
     }
   } catch (error) {
-    publish({ phase: 'error', downloadedBytes: 0, error: String(error) });
+    publish({ phase: 'error', downloadedBytes: 0, error: friendlyUpdateError(error) });
     if (!automatic) throw error;
   }
 }
@@ -137,7 +138,7 @@ export async function installAppUpdate(): Promise<void> {
     notifyInfo(title, body, 'relaunch');
     void invoke('show_update_notification', { title, body, action: 'about-update' }).catch(() => {});
   } catch (error) {
-    publish({ ...state, phase: 'error', downloadedBytes, totalBytes, error: String(error) });
+    publish({ ...state, phase: 'error', downloadedBytes, totalBytes, error: friendlyUpdateError(error) });
     throw error;
   }
 }

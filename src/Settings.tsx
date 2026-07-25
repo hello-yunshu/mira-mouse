@@ -21,6 +21,7 @@ import {
   rollbackLocalAiUpdate,
   type LocalAiUpdateState,
 } from './local-ai-updater';
+import { friendlyUpdateError } from './update-errors';
 import { DEFAULT_LOCAL_AI_FEATURES, LOCAL_AI_FEATURE, localAiFeatureEnabled, setLocalAiFeature } from './localAi';
 import { LogPage } from './logs/LogPage';
 
@@ -486,7 +487,7 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
     try {
       await checkForPluginUpdates();
     } catch (error) {
-      notifyError(t('notification.checkPluginUpdateFailed'), String(error));
+      notifyError(t('notification.checkPluginUpdateFailed'), friendlyUpdateError(error));
     }
   }
 
@@ -497,7 +498,7 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
         ? { ...plugin, version: result.version, source: 'installed', signatureVerified: true }
         : plugin));
     } catch (error) {
-      notifyError(t('notification.installPluginUpdateFailed'), String(error));
+      notifyError(t('notification.installPluginUpdateFailed'), friendlyUpdateError(error));
     }
   }
 
@@ -506,7 +507,7 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
     try {
       await checkForLocalAiUpdates();
     } catch (error) {
-      notifyError(t('notification.checkLocalAiUpdateFailed'), String(error));
+      notifyError(t('notification.checkLocalAiUpdateFailed'), friendlyUpdateError(error));
     }
   }
 
@@ -515,7 +516,7 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
     try {
       await installLocalAiUpdate();
     } catch (error) {
-      notifyError(t('notification.installLocalAiUpdateFailed'), String(error));
+      notifyError(t('notification.installLocalAiUpdateFailed'), friendlyUpdateError(error));
     }
   }
 
@@ -524,7 +525,7 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
     try {
       await rollbackLocalAiUpdate();
     } catch (error) {
-      notifyError(t('notification.rollbackLocalAiFailed'), String(error));
+      notifyError(t('notification.rollbackLocalAiFailed'), friendlyUpdateError(error));
     }
   }
 
@@ -976,6 +977,9 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
                 );
               })}
             </div>
+          )}
+          {pluginUpdate.phase === 'error' && pluginUpdate.error && (
+            <p className="setting-hint update-error">{pluginUpdate.error}</p>
           )}
         </section>
         </>

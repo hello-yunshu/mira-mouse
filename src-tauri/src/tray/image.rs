@@ -307,11 +307,14 @@ const FILL_RADIUS: i32 = SHAPE_RADIUS - OUTLINE_WIDTH - OUTLINE_GAP - FILL_INSET
 const CHARGING_BOLT_SHAPE: [(i32, i32); 6] =
     [(38, 13), (32, 28), (46, 28), (29, 47), (35, 32), (23, 32)];
 const CHARGING_BOLT_X_OFFSET: i32 = -2;
+const CHARGING_BOLT_Y_OFFSET: i32 = 2;
 const CHARGING_BOLT_HALO_WIDTH: i32 = 9;
 
-/// 保留既有闪电轮廓，仅水平平移，使面积重心贴近鼠标中轴。
+/// 保留既有闪电轮廓，仅水平 + 垂直平移，使面积重心贴近鼠标中轴。
+/// X_OFFSET=-2 让水平重心对齐 x=32；Y_OFFSET=2 让 bbox 中心和垂直重心
+/// 对齐鼠标内部区域中心 y=32（原轮廓偏上 2px）。
 fn charging_bolt_points() -> [(i32, i32); 6] {
-    CHARGING_BOLT_SHAPE.map(|(x, y)| (x + CHARGING_BOLT_X_OFFSET, y))
+    CHARGING_BOLT_SHAPE.map(|(x, y)| (x + CHARGING_BOLT_X_OFFSET, y + CHARGING_BOLT_Y_OFFSET))
 }
 
 /// 鼠标外形边界：宽 46, 高 60, 居中。
@@ -419,10 +422,13 @@ pub fn draw_mouse_icon(canvas: &mut IconCanvas, state: &TrayStatusState, style: 
     }
 
     // 3. 中键（圆角矩形，亮色）
+    // fill_rounded_rect 是半开区间 [x0, x1)，传入 wheel_right = wheel_left + WHEEL_WIDTH
+    // 绘制 WHEEL_WIDTH 像素宽（x = wheel_left..wheel_right-1），中心 = center_x，与电量填充
+    // 绕开区域（中心 = center_x）对称。曾误用 wheel_right + 1 导致 8 像素宽、偏右 0.5px。
     canvas.fill_rounded_rect(
         wheel_left,
         wheel_top,
-        wheel_right + 1,
+        wheel_right,
         wheel_bottom,
         WHEEL_WIDTH / 2,
         style.outline_secondary,
@@ -542,6 +548,7 @@ mod tests {
             history_identity: None,
             read_statuses: Default::default(),
             mouse_ready: None,
+            family: None,
         };
         TrayStatusState::from_snapshot(Some(&snapshot), &test_settings())
     }
@@ -711,17 +718,18 @@ mod tests {
         let state = make_state(Some(100), true);
         let bytes = render_mouse_icon_rgba(&state, &style);
 
-        let bolt_idx = ((28 * ICON_SIZE as i32 + 32) * 4) as usize;
+        // 闪电顶点应用 X_OFFSET=-2, Y_OFFSET=2 后中部在 y=30
+        let bolt_idx = ((30 * ICON_SIZE as i32 + 32) * 4) as usize;
         assert_eq!(&bytes[bolt_idx..bolt_idx + 4], &[255, 255, 255, 255]);
 
-        let gap_idx = ((29 * ICON_SIZE as i32 + 45) * 4) as usize;
+        let gap_idx = ((31 * ICON_SIZE as i32 + 45) * 4) as usize;
         assert_eq!(
             bytes[gap_idx + 3],
             0,
             "charging bolt should leave transparent spacing around the solid shape"
         );
 
-        for (x, y) in [(38, 12), (20, 31), (45, 29), (26, 48)] {
+        for (x, y) in [(38, 14), (20, 33), (45, 31), (26, 50)] {
             let idx = ((y * ICON_SIZE as i32 + x) * 4) as usize;
             assert_eq!(
                 bytes[idx + 3],
@@ -736,10 +744,59 @@ mod tests {
     }
 
     #[test]
+    fn wheel_is_horizontally_centered_on_mouse_axis() {
+        // 中键必须居中于画布和鼠标外形中轴，左右透明边缘对称。
+        // 曾因 fill_rounded_rect 误用 wheel_right + 1 导致 8 像素宽、中心 32.5、
+        // 左 2px 右 1px 透明边缘不对称。此测试防止回归。
+        let style = make_style();
+        // 用 0% 电量避免电量填充像素干扰中键水平范围检测
+        let state = make_state(Some(0), false);
+        let bytes = render_mouse_icon_rgba(&state, &style);
+
+        let center_x = ICON_SIZE as i32 / 2; // 32
+        let wheel_left = center_x - WHEEL_WIDTH / 2; // 29
+        let wheel_right = wheel_left + WHEEL_WIDTH; // 36，半开区间上界
+        let wheel_top = 12; // inner.1 (8) + 4
+        let wheel_bottom = wheel_top + WHEEL_LENGTH; // 26
+
+        // 在中键主体行（避开圆角顶部/底部）扫描，验证中键水平像素范围
+        let sample_y = (wheel_top + wheel_bottom) / 2; // 19
+        let mut wheel_xs: Vec<i32> = Vec::new();
+        for x in (wheel_left - WHEEL_GAP - 1)..(wheel_right + WHEEL_GAP + 1) {
+            let idx = ((sample_y * ICON_SIZE as i32 + x) * 4) as usize;
+            // 中键像素为 outline_secondary 颜色（深色主题下接近白色高 alpha）
+            // 用 alpha > 100 区分中键与透明区
+            if bytes[idx + 3] > 100 {
+                wheel_xs.push(x);
+            }
+        }
+
+        // 中键应严格落在 [wheel_left, wheel_right) 内
+        let min_x = *wheel_xs.iter().min().unwrap();
+        let max_x = *wheel_xs.iter().max().unwrap();
+        let centroid = (min_x as f64 + max_x as f64) / 2.0;
+
+        assert_eq!(
+            (min_x, max_x),
+            (wheel_left, wheel_right - 1),
+            "wheel horizontal pixels should be [{}, {}], got [{}, {}]",
+            wheel_left,
+            wheel_right - 1,
+            min_x,
+            max_x
+        );
+        assert!(
+            (centroid - center_x as f64).abs() < f64::EPSILON,
+            "wheel centroid {centroid:.2} must equal canvas center {center_x}"
+        );
+    }
+
+    #[test]
     fn charging_bolt_visual_centroid_is_aligned_with_mouse_axis() {
         let points = charging_bolt_points();
         let mut twice_area = 0.0;
         let mut centroid_x_numerator = 0.0;
+        let mut centroid_y_numerator = 0.0;
 
         for index in 0..points.len() {
             let (x0, y0) = points[index];
@@ -747,13 +804,21 @@ mod tests {
             let cross = (x0 * y1 - x1 * y0) as f64;
             twice_area += cross;
             centroid_x_numerator += (x0 + x1) as f64 * cross;
+            centroid_y_numerator += (y0 + y1) as f64 * cross;
         }
 
         let centroid_x = centroid_x_numerator / (3.0 * twice_area);
+        let centroid_y = centroid_y_numerator / (3.0 * twice_area);
         let mouse_axis = ICON_SIZE as f64 / 2.0;
+        // X 方向：面积重心对齐中轴，误差 ≤ 0.25（X_OFFSET=-2 已校准）
         assert!(
             (centroid_x - mouse_axis).abs() <= 0.25,
-            "charging bolt centroid {centroid_x:.2} should align with mouse axis {mouse_axis:.2}"
+            "charging bolt centroid x {centroid_x:.2} should align with mouse axis {mouse_axis:.2}"
+        );
+        // Y 方向：面积重心对齐中轴，误差 ≤ 0.5（闪电形状不对称，Y_OFFSET=2 让 bbox 中心精确对齐）
+        assert!(
+            (centroid_y - mouse_axis).abs() <= 0.5,
+            "charging bolt centroid y {centroid_y:.2} should align with mouse axis {mouse_axis:.2}"
         );
     }
 
@@ -795,6 +860,7 @@ mod tests {
             history_identity: None,
             read_statuses: Default::default(),
             mouse_ready: None,
+            family: None,
         };
 
         settings.show_receiver = false;
