@@ -11,6 +11,15 @@
 *.pem
 *.p12
 *.mira-plugin
+# 3.5 节：本地模拟发布 CLI 时生成的构建产物（应由 release workflow 上传到 GitHub Release）
+/mira-plugin-*.tar.gz
+/mira-plugin-*.tar.gz.sha256
+/mira-plugin-*.zip
+/mira-plugin-*.zip.sha256
+/mira-plugin-aarch64-apple-darwin/
+/mira-plugin-x86_64-apple-darwin/
+/mira-plugin-x86_64-unknown-linux-gnu/
+/mira-plugin-x86_64-pc-windows-msvc/
 .DS_Store
 *.tsbuildinfo
 vite.config.d.ts
