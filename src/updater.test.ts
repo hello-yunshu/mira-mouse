@@ -86,7 +86,7 @@ describe('application updater', () => {
     });
     await checkForAppUpdate();
     await expect(installAppUpdate()).rejects.toThrow('network down');
-    expect(appUpdateState()).toMatchObject({ phase: 'error', error: 'Error: network down' });
+    expect(appUpdateState()).toMatchObject({ phase: 'error', error: 'network down' });
     expect(mocks.invoke).not.toHaveBeenCalledWith('show_update_notification', expect.anything());
   });
 

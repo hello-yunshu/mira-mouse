@@ -5908,17 +5908,19 @@ fn fetch_bounded_with_progress(
     on_progress: &mut dyn FnMut(u64, Option<u64>),
 ) -> Result<Vec<u8>, String> {
     let candidates = mirror_candidates(url);
-    let mut errors = Vec::new();
     for (name, candidate) in &candidates {
         match try_fetch_bounded_with_progress(candidate, max_bytes, on_progress) {
             Ok(bytes) => return Ok(bytes),
-            Err(error) => errors.push(format!("{name} ({candidate}): {error}")),
+            Err(error) => {
+                eprintln!("[mira] download mirror {name} ({candidate}) failed: {error}");
+            }
         }
     }
+    // 友好化错误：详细镜像失败原因已通过 eprintln 输出到 stderr 供诊断，
+    // 返回简洁消息避免在前端 Toast / 卡片中暴露镜像 URL 与堆栈细节。
     Err(format!(
-        "all {} download source(s) failed: {}",
-        candidates.len(),
-        errors.join("; ")
+        "download failed: all {} mirror source(s) unavailable",
+        candidates.len()
     ))
 }
 

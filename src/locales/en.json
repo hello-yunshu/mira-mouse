@@ -237,6 +237,7 @@
         "sleep-time": "Sleep time",
         "profile": "Profile",
         "firmware": "Firmware",
+        "serial": "Serial number",
         "lighting": "Lighting"
       }
     }
@@ -586,7 +587,9 @@
     "loadAboutFailed": "Failed to load about info",
     "openExternalFailed": "Failed to open page",
     "checkUpdateFailed": "Update check failed",
-    "installUpdateFailed": "Update install failed"
+    "installUpdateFailed": "Update install failed",
+    "updateErrorNetwork": "Network connection failed, please check your network and try again",
+    "updateErrorVerification": "Update package verification failed, please try again"
   },
   "tray": {
     "open": "Open Mira",

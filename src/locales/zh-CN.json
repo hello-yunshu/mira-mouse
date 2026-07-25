@@ -237,6 +237,7 @@
         "sleep-time": "休眠时间",
         "profile": "配置文件",
         "firmware": "固件",
+        "serial": "序列号",
         "lighting": "灯光"
       }
     }
@@ -586,7 +587,9 @@
     "loadAboutFailed": "加载关于信息失败",
     "openExternalFailed": "打开网页失败",
     "checkUpdateFailed": "检查更新失败",
-    "installUpdateFailed": "更新安装失败"
+    "installUpdateFailed": "更新安装失败",
+    "updateErrorNetwork": "网络连接失败，请检查网络后重试",
+    "updateErrorVerification": "更新包校验失败，请重试"
   },
   "tray": {
     "open": "打开 Mira",

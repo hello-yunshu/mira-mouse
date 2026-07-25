@@ -165,6 +165,7 @@ mod tests {
             history_identity: None,
             read_statuses: Default::default(),
             mouse_ready: None,
+            family: None,
         };
         TrayStatusState::from_snapshot(Some(&snapshot), &test_settings())
     }
@@ -265,6 +266,7 @@ mod tests {
                 history_identity: None,
                 read_statuses: Default::default(),
                 mouse_ready: None,
+                family: None,
             }),
             &settings,
         );
@@ -306,6 +308,7 @@ mod tests {
                 history_identity: None,
                 read_statuses: Default::default(),
                 mouse_ready: None,
+                family: None,
             }),
             &settings,
         );

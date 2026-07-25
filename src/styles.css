@@ -304,6 +304,10 @@ option {
 .platform-windows .device-hero {
   min-height: 206px;
 }
+/* Windows 下设备 Aura 向上提升 15px，与 Windows 标题栏布局对齐 */
+.platform-windows .device-aura {
+  transform: translateY(-18px);
+}
 .platform-windows .top-nav {
   margin: 0;
 }
@@ -554,9 +558,9 @@ body:has(.platform-fallback:not(.web-preview)) {
   }
 }
 .device-copy { min-width: 0; padding-left: 32px; }
-/* Windows 下 device-copy 上移 25px */
+/* Windows 下 device-copy 上移 10px */
 .platform-windows .device-copy {
-  margin-top: -15px;
+  margin-top: -10px;
 }
 .connection-state {
   display: flex;

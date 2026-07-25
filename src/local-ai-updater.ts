@@ -8,6 +8,7 @@ import i18n from './i18n';
 import { notifyInfo } from './notify';
 import { createAutomaticUpdateScheduler } from './update-check-scheduler';
 import { isComponentUpdateNotificationSuppressed } from './update-priority';
+import { friendlyUpdateError } from './update-errors';
 import type { LocalAiInstallResult, LocalAiStatus, LocalAiUpdateInfo } from './types';
 
 export type LocalAiUpdatePhase = 'idle' | 'checking' | 'up-to-date' | 'available' | 'downloading' | 'installed' | 'error';
@@ -79,7 +80,7 @@ export async function checkForLocalAiUpdates(automatic = false): Promise<LocalAi
     }
     return updates ?? [];
   } catch (error) {
-    publish({ ...state, phase: 'error', error: String(error) });
+    publish({ ...state, phase: 'error', error: friendlyUpdateError(error) });
     if (!automatic) throw error;
     return state.updates;
   }
@@ -160,7 +161,7 @@ export async function installLocalAiUpdate(): Promise<LocalAiInstallResult> {
       progressUnlisten();
       progressUnlisten = undefined;
     }
-    publish({ ...state, phase: 'error', error: String(error) });
+    publish({ ...state, phase: 'error', error: friendlyUpdateError(error) });
     throw error;
   }
 }
@@ -174,7 +175,7 @@ export async function rollbackLocalAiUpdate(): Promise<LocalAiStatus> {
     publishCheckedUpdates(updates ?? []);
     return nextStatus;
   } catch (error) {
-    publish({ ...state, phase: 'error', error: String(error) });
+    publish({ ...state, phase: 'error', error: friendlyUpdateError(error) });
     throw error;
   }
 }

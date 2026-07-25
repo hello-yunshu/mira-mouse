@@ -6,6 +6,7 @@ import { notifyInfo } from './notify';
 import type { PluginInstallResult, PluginUpdateInfo } from './types';
 import { createAutomaticUpdateScheduler } from './update-check-scheduler';
 import { isComponentUpdateNotificationSuppressed } from './update-priority';
+import { friendlyUpdateError } from './update-errors';
 
 export type PluginUpdatePhase = 'idle' | 'checking' | 'up-to-date' | 'available' | 'downloading' | 'installed' | 'error';
 
@@ -74,7 +75,7 @@ export async function checkForPluginUpdates(automatic = false): Promise<PluginUp
     }
     return updates;
   } catch (error) {
-    publish({ ...state, phase: 'error', error: String(error) });
+    publish({ ...state, phase: 'error', error: friendlyUpdateError(error) });
     if (!automatic) throw error;
     return state.updates;
   }
@@ -154,7 +155,7 @@ export async function installPluginUpdate(pluginId: string): Promise<PluginInsta
     if (progressUnlisten) {
       progressUnlisten();
     }
-    publish({ ...state, phase: 'error', error: String(error), installingPluginId: undefined });
+    publish({ ...state, phase: 'error', error: friendlyUpdateError(error), installingPluginId: undefined });
     throw error;
   }
 }

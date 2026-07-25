@@ -368,24 +368,21 @@ fn is_newer(available: &str, current: Option<&str>) -> Result<bool, String> {
 }
 
 fn fetch_and_verify_index() -> Result<SignedReleaseIndex, String> {
-    let mut transport_errors = Vec::new();
     for url in RELEASE_INDEX_URLS {
         let bytes = match fetch_bounded(url, MAX_INDEX_BYTES) {
             Ok(bytes) => bytes,
             Err(error) => {
-                transport_errors.push(format!("{url}: {error}"));
+                eprintln!("[mira] local AI index fetch from {url} failed: {error}");
                 continue;
             }
         };
         let index: SignedReleaseIndex = serde_json::from_slice(&bytes)
-            .map_err(|error| format!("parse local AI release index from {url}: {error}"))?;
+            .map_err(|error| format!("parse local AI release index: {error}"))?;
         verify_index(&index)?;
         return Ok(index);
     }
-    Err(format!(
-        "fetch local AI release index: {}",
-        transport_errors.join("; ")
-    ))
+    // 友好化错误：详细 URL 与镜像失败原因已通过 eprintln 输出到 stderr 供诊断。
+    Err("failed to fetch local AI release index".into())
 }
 
 fn verify_index(index: &SignedReleaseIndex) -> Result<(), String> {
