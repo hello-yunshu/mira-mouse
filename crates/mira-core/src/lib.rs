@@ -131,6 +131,14 @@ pub struct DeviceSnapshot {
     /// them as `"ok" | "skipped" | "not-supported" | { "failed": string }`.
     #[serde(default)]
     pub read_statuses: BTreeMap<String, Value>,
+    /// 接收器场景下鼠标是否就位（基于 receiverIdle.mouseOnline）。
+    /// - `None`：非接收器连接（USB 直连 / 蓝牙），鼠标总是视为就位。
+    /// - `Some(true)`：接收器已插入且鼠标在线。
+    /// - `Some(false)`：接收器已插入但鼠标未就位，UI 应显示等待提示而非
+    ///   残缺的 Dashboard（鼠标名 + 接收器灯光 + 接收器电量）。
+    /// 由协议层（mira-plugin-runtime）填充，宿主与 UI 仅读取。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mouse_ready: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

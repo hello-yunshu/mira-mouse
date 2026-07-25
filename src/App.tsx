@@ -616,6 +616,7 @@ function snapshotToState(snapshot: DeviceSnapshot): DeviceState {
     pluginId: snapshot.pluginId,
     updatedAt: now,
     readStatuses: snapshot.readStatuses,
+    mouseReady: snapshot.mouseReady,
   };
 }
 
@@ -712,6 +713,25 @@ function EmptyState({ onRefresh, onDemo, onOpenSettings }: { onRefresh: () => vo
         <button className="secondary" onClick={onOpenSettings}>{t('dashboard.deviceAndDiagnostics')}</button>
       </div>
       <button className="demo" onClick={onDemo}>{t('dashboard.openFixture')}</button>
+    </main>
+  );
+}
+
+/** 接收器已连接但鼠标未就位时的等待提示。
+ *  复用 EmptyState 的布局风格，但文案明确告知用户接收器已被识别，
+ *  正在等待鼠标就位。后端在此期间会高频检测 mouseOnline。 */
+function AwaitingMouseState({ deviceName, onRefresh, onOpenSettings }: { deviceName: string; onRefresh: () => void; onOpenSettings: () => void }) {
+  const { t } = useTranslation();
+  return (
+    <main className="empty">
+      <DeviceAura />
+      <p className="eyebrow">{t('dashboard.awaitingMouse.eyebrow')}</p>
+      <h1>{t('dashboard.awaitingMouse.title')}</h1>
+      <p>{t('dashboard.awaitingMouse.hint', { name: deviceName })}</p>
+      <div className="actions">
+        <button onClick={onRefresh}>{t('common.refresh')}</button>
+        <button className="secondary" onClick={onOpenSettings}>{t('dashboard.deviceAndDiagnostics')}</button>
+      </div>
     </main>
   );
 }
@@ -3164,7 +3184,13 @@ export default function App() {
       {demoMode && !windowsPlatform && <button className="nav-link nav-exit" onClick={exitDemo} aria-label={t('nav.exitDemo')} title={t('nav.exitDemo')}><SignOut weight="regular" /></button>}
     </div>
     {windowsPlatform && demoMode && view === 'dashboard' && <button className="content-exit" onClick={exitDemo} aria-label={t('nav.exitDemo')} title={t('nav.exitDemo')}><SignOut weight="regular" /></button>}
-    {view === 'dashboard' && (device ? <Dashboard device={device} deviceEntries={deviceEntries} onDeviceChange={setDevice} onDeviceSelect={selectDevice} onOpenBatteryUsage={openBatteryUsage} pluginLocaleRevision={pluginLocaleRevision} demoMode={demoMode} /> : <EmptyState onRefresh={() => { setDemoMode(false); setDevice(undefined); setDeviceEntries([]); deviceEntriesRef.current = []; setRefreshNonce((value) => value + 1); invoke('device_refresh').catch(() => {}); }} onDemo={() => { setDemoMode(true); setDevice(MOCK_DEVICE); setDeviceEntries(MOCK_DEVICE_ENTRIES); deviceEntriesRef.current = MOCK_DEVICE_ENTRIES; }} onOpenSettings={() => setView('settings')} />)}
+    {view === 'dashboard' && (
+      !device
+        ? <EmptyState onRefresh={() => { setDemoMode(false); setDevice(undefined); setDeviceEntries([]); deviceEntriesRef.current = []; setRefreshNonce((value) => value + 1); invoke('device_refresh').catch(() => {}); }} onDemo={() => { setDemoMode(true); setDevice(MOCK_DEVICE); setDeviceEntries(MOCK_DEVICE_ENTRIES); deviceEntriesRef.current = MOCK_DEVICE_ENTRIES; }} onOpenSettings={() => setView('settings')} />
+        : device.mouseReady === false
+          ? <AwaitingMouseState deviceName={device.name} onRefresh={() => { setRefreshNonce((value) => value + 1); invoke('device_refresh').catch(() => {}); }} onOpenSettings={() => setView('settings')} />
+          : <Dashboard device={device} deviceEntries={deviceEntries} onDeviceChange={setDevice} onDeviceSelect={selectDevice} onOpenBatteryUsage={openBatteryUsage} pluginLocaleRevision={pluginLocaleRevision} demoMode={demoMode} />
+    )}
     {view === 'settings' && <SettingsPage initialTab={settingsTab} onTabChange={setSettingsTab} previewMode={pureWeb} focusPluginUpdateToken={settingsPluginFocusToken} focusLocalAiUpdateToken={settingsLocalAiFocusToken} onNavigateAbout={() => setView('about')} onOpenBatteryUsage={openBatteryUsage} onBatteryUsageSettingsChange={syncBatteryUsageSettings} onThemeChange={setTheme} pluginCapabilities={device?.pluginCapabilities ?? []} writableMutations={device?.writableMutations ?? []} />}
     {view === 'about' && <AboutPage previewMode={pureWeb} focusUpdateToken={aboutFocusToken} onBack={() => setView('settings')} />}
     <BatteryUsageModal

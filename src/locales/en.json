@@ -41,6 +41,11 @@
     "plugInHint": "Plug in a mouse and settings will appear here",
     "deviceAndDiagnostics": "Device & Diagnostics",
     "openFixture": "View Demo",
+    "awaitingMouse": {
+      "eyebrow": "Receiver connected",
+      "title": "Waiting for mouse",
+      "hint": "Detected {{name}}, waiting for the mouse to come online"
+    },
     "connectedDevice": "Connected device",
     "switchDevice": "Switch mouse",
     "deviceCount": "{{count}} devices",
