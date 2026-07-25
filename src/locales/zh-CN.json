@@ -41,6 +41,11 @@
     "plugInHint": "插上鼠标，设置就会出现啦",
     "deviceAndDiagnostics": "设备与诊断",
     "openFixture": "查看演示",
+    "awaitingMouse": {
+      "eyebrow": "接收器已连接",
+      "title": "等待鼠标就位",
+      "hint": "已识别到 {{name}}，正在等待鼠标上线"
+    },
     "connectedDevice": "已连接设备",
     "switchDevice": "切换鼠标",
     "deviceCount": "{{count}} 台设备",

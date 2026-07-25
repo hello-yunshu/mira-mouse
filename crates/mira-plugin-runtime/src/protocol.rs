@@ -108,6 +108,9 @@ pub struct DeviceReading {
     /// workflow execution results; serialized into the host snapshot so the UI
     /// can distinguish skipped/failed/unsupported outputs from absent ones.
     pub read_statuses: BTreeMap<String, ReadStatus>,
+    /// 接收器场景下鼠标是否就位（基于 receiverIdle.mouseOnline）。
+    /// 仅在接收器工作流产出 receiverIdle 时填充；其他场景保持 None。
+    pub mouse_ready: Option<bool>,
 }
 
 /// HID 交换事件回调：由宿主实现，用于记录协议诊断事件。
@@ -770,6 +773,14 @@ fn standard_reading(
     let receiver_idle = object(&reading.capabilities, "receiverIdle");
     let receiver_proxy = object(&reading.capabilities, "receiver");
     let receiver = receiver_idle.or(receiver_proxy);
+    // 接收器场景：根据 receiverIdle.mouseOnline 设置 mouse_ready。
+    // - mouseOnline: true → Some(true)，鼠标已就位
+    // - mouseOnline: false → Some(false)，鼠标未就位，UI 显示等待提示
+    // - mouseOnline 字段缺失（旧版插件）→ None，状态未知，UI 按默认行为显示 Dashboard
+    // receiver 代理对象不暴露 mouseOnline，保持 None。
+    if let Some(receiver_idle_obj) = receiver_idle {
+        reading.mouse_ready = boolean_like(receiver_idle_obj, "mouseOnline");
+    }
     if let Some(receiver) = receiver {
         if reading.battery_percent.is_none() {
             reading.battery_percent = receiver_mouse_battery_percentage(receiver);
