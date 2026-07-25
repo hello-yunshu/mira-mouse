@@ -4223,6 +4223,7 @@ mod settings_tests {
                     param: None,
                     source: None,
                     sources: None,
+                    visible_when: None,
                 }
             ),
             Some(serde_json::json!(1600))
@@ -4268,6 +4269,7 @@ mod settings_tests {
                     param: None,
                     source: None,
                     sources: None,
+                    visible_when: None,
                 }
             ),
             ("set-dpi-value".into(), "dpi".into())
@@ -4323,6 +4325,7 @@ mod settings_tests {
                 "color".into(),
                 "capabilities.receiverLighting.color".into(),
             )])),
+            visible_when: None,
         };
 
         assert!(import_params_for_exportable(
@@ -4380,6 +4383,7 @@ mod settings_tests {
             param: None,
             source: None,
             sources: None,
+            visible_when: None,
         };
 
         let (mutation, params) = import_params_for_exportable(

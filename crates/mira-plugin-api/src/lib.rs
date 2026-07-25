@@ -69,6 +69,18 @@ pub struct PluginManifest {
     pub package_format_version: u32,
     pub publisher_key_id: Option<String>,
     pub evidence: EvidenceLevel,
+    /// ITERATION-003 Gate C §7.1：family-level evidence.
+    /// 当插件同时覆盖多个 family（如 Protocol A + AM35）时，每个 family 的证据等级
+    /// 可能不同（Protocol A: hardware-verified；AM35: source-confirmed）。
+    /// 顶层 `evidence` 必须是所有 family 中最保守的等级（用作 fallback）。
+    /// `family_evidence` 为某 family 显式声明证据等级时，Host 显示该 family 时使用
+    /// 更精确的等级。未声明的 family 回退到顶层 `evidence`。
+    ///
+    /// `writes_enabled: true` 要求：顶层 `evidence == HardwareVerified`，
+    /// 或 `family_evidence` 中至少一个 family 为 `HardwareVerified`。
+    /// mutation 通过 family-conditional visibleWhen 限制实际可编辑范围。
+    #[serde(default)]
+    pub family_evidence: BTreeMap<String, EvidenceLevel>,
     #[serde(default)]
     pub permissions: Vec<Permission>,
     /// Host-owned runtime behavior that the plugin explicitly opts into.
@@ -187,6 +199,14 @@ pub struct ExportableField {
     /// 声明后，导出值为 object，导入时将其键值展开为 mutation 参数。
     #[serde(default)]
     pub sources: Option<BTreeMap<String, String>>,
+    /// ITERATION-003 Gate C §7.5：family-conditional export contract。
+    /// 当同一 exportKey 在不同 family 下有不同字段结构时（如 Protocol A receiver lighting
+    /// 5 字段 vs AM35 receiver lighting 十字段），通过 visibleWhen 区分。
+    /// Host 按 device family 选择匹配的 export entry。
+    /// 未声明时该 export entry 在所有 family 下都适用（向后兼容）。
+    /// 当同一 exportKey 存在多个 entry 时，必须每个 entry 都声明 visibleWhen。
+    #[serde(default)]
+    pub visible_when: Option<serde_json::Value>,
 }
 
 /// #12 插件间依赖复用：插件依赖声明。
@@ -227,7 +247,16 @@ impl PluginManifest {
             return Err(ApiError::ApiIncompatible(self.plugin_api.to_string()));
         }
         if self.writes_enabled && self.evidence != EvidenceLevel::HardwareVerified {
-            return Err(ApiError::UnsafeWriteEvidence);
+            // ITERATION-003 Gate C §7.1：若 family_evidence 中至少一个 family 为
+            // HardwareVerified，则允许 writes_enabled（mutation 通过 family-conditional
+            // visibleWhen 限制实际可编辑范围）。
+            let any_family_hw_verified = self
+                .family_evidence
+                .values()
+                .any(|level| *level == EvidenceLevel::HardwareVerified);
+            if !any_family_hw_verified {
+                return Err(ApiError::UnsafeWriteEvidence);
+            }
         }
         if let Some(recovery) = &self.runtime.wake_recovery {
             let valid_component_id = !recovery.component_id.is_empty()
@@ -1160,6 +1189,7 @@ mod tests {
             plugin_api: ">=1.1.0, <2.0.0".parse().unwrap(),
             publisher_key_id: None,
             evidence: EvidenceLevel::FixtureVerified,
+            family_evidence: BTreeMap::new(),
             permissions: vec![],
             runtime,
             capabilities: vec![],
@@ -1225,6 +1255,60 @@ mod tests {
             plugin_api: ">=1.0.0, <2.0.0".parse().unwrap(),
             publisher_key_id: None,
             evidence: EvidenceLevel::FixtureVerified,
+            family_evidence: BTreeMap::new(),
+            permissions: vec![],
+            runtime: PluginRuntime::default(),
+            capabilities: vec![],
+            writes_enabled: true,
+            exportable_fields: vec![],
+            depends_on: vec![],
+        };
+        assert_eq!(manifest.validate(), Err(ApiError::UnsafeWriteEvidence));
+    }
+
+    /// ITERATION-003 Gate C §7.1：family_evidence 中至少一个 family 为 HardwareVerified
+    /// 时，允许 writes_enabled（mutation 通过 family-conditional visibleWhen 限制范围）。
+    #[test]
+    fn accepts_writes_with_family_hardware_evidence() {
+        let mut family_evidence = BTreeMap::new();
+        family_evidence.insert("protocol-a-direct".into(), EvidenceLevel::HardwareVerified);
+        family_evidence.insert("am35-direct".into(), EvidenceLevel::SourceConfirmed);
+        let manifest = PluginManifest {
+            schema_version: 1,
+            package_format_version: PACKAGE_FORMAT_VERSION,
+            plugin_id: "mira.example".into(),
+            name: "Example".into(),
+            version: "1.0.0".into(),
+            plugin_api: ">=1.0.0, <2.0.0".parse().unwrap(),
+            publisher_key_id: None,
+            evidence: EvidenceLevel::SourceConfirmed,
+            family_evidence,
+            permissions: vec![],
+            runtime: PluginRuntime::default(),
+            capabilities: vec![],
+            writes_enabled: true,
+            exportable_fields: vec![],
+            depends_on: vec![],
+        };
+        assert_eq!(manifest.validate(), Ok(()));
+    }
+
+    /// family_evidence 中无任何 HardwareVerified 时，仍拒绝 writes_enabled。
+    #[test]
+    fn refuses_writes_when_family_evidence_all_non_hardware() {
+        let mut family_evidence = BTreeMap::new();
+        family_evidence.insert("am35-direct".into(), EvidenceLevel::SourceConfirmed);
+        family_evidence.insert("am35-receiver".into(), EvidenceLevel::FixtureVerified);
+        let manifest = PluginManifest {
+            schema_version: 1,
+            package_format_version: PACKAGE_FORMAT_VERSION,
+            plugin_id: "mira.example".into(),
+            name: "Example".into(),
+            version: "1.0.0".into(),
+            plugin_api: ">=1.0.0, <2.0.0".parse().unwrap(),
+            publisher_key_id: None,
+            evidence: EvidenceLevel::SourceConfirmed,
+            family_evidence,
             permissions: vec![],
             runtime: PluginRuntime::default(),
             capabilities: vec![],
@@ -1246,6 +1330,7 @@ mod tests {
             plugin_api: ">=1.0.0, <2.0.0".parse().unwrap(),
             publisher_key_id: None,
             evidence: EvidenceLevel::FixtureVerified,
+            family_evidence: BTreeMap::new(),
             permissions: vec![],
             runtime: PluginRuntime::default(),
             capabilities: vec![],
@@ -1281,6 +1366,7 @@ mod tests {
             plugin_api: ">=1.0.0, <2.0.0".parse().unwrap(),
             publisher_key_id: None,
             evidence: EvidenceLevel::FixtureVerified,
+            family_evidence: BTreeMap::new(),
             permissions: vec![],
             runtime: PluginRuntime::default(),
             capabilities: vec![capability],
@@ -1327,6 +1413,7 @@ mod tests {
             plugin_api: ">=1.0.0, <2.0.0".parse().unwrap(),
             publisher_key_id: None,
             evidence: EvidenceLevel::FixtureVerified,
+            family_evidence: BTreeMap::new(),
             permissions: vec![],
             runtime: PluginRuntime::default(),
             capabilities: vec![capability],
@@ -1378,6 +1465,7 @@ mod tests {
             plugin_api: ">=1.0.0, <2.0.0".parse().unwrap(),
             publisher_key_id: None,
             evidence: EvidenceLevel::FixtureVerified,
+            family_evidence: BTreeMap::new(),
             permissions: vec![],
             runtime: PluginRuntime::default(),
             capabilities: vec![capability],
@@ -1421,6 +1509,7 @@ mod tests {
             plugin_api: ">=1.0.0, <2.0.0".parse().unwrap(),
             publisher_key_id: None,
             evidence: EvidenceLevel::FixtureVerified,
+            family_evidence: BTreeMap::new(),
             permissions: vec![],
             runtime: PluginRuntime::default(),
             capabilities: vec![capability],
@@ -1466,6 +1555,7 @@ mod tests {
             plugin_api: ">=1.0.0, <2.0.0".parse().unwrap(),
             publisher_key_id: None,
             evidence: EvidenceLevel::FixtureVerified,
+            family_evidence: BTreeMap::new(),
             permissions: vec![],
             runtime: PluginRuntime::default(),
             capabilities: vec![capability],
@@ -1501,6 +1591,7 @@ mod tests {
             plugin_api: ">=1.0.0, <2.0.0".parse().unwrap(),
             publisher_key_id: None,
             evidence: EvidenceLevel::FixtureVerified,
+            family_evidence: BTreeMap::new(),
             permissions: vec![],
             runtime: PluginRuntime::default(),
             capabilities: vec![capability],
@@ -1555,6 +1646,7 @@ mod tests {
             plugin_api: ">=1.0.0, <2.0.0".parse().unwrap(),
             publisher_key_id: None,
             evidence: EvidenceLevel::FixtureVerified,
+            family_evidence: BTreeMap::new(),
             permissions: vec![],
             runtime: PluginRuntime::default(),
             capabilities: vec![capability.clone()],
@@ -1607,6 +1699,7 @@ mod tests {
             plugin_api: ">=1.0.0, <2.0.0".parse().unwrap(),
             publisher_key_id: None,
             evidence: EvidenceLevel::FixtureVerified,
+            family_evidence: BTreeMap::new(),
             permissions: vec![],
             runtime: PluginRuntime::default(),
             capabilities: vec![capability],
@@ -1650,6 +1743,7 @@ mod tests {
             plugin_api: ">=1.0.0, <2.0.0".parse().unwrap(),
             publisher_key_id: None,
             evidence: EvidenceLevel::FixtureVerified,
+            family_evidence: BTreeMap::new(),
             permissions: vec![],
             runtime: PluginRuntime::default(),
             capabilities,
