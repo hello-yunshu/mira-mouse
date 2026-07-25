@@ -3883,6 +3883,7 @@ mod settings_tests {
             history_identity: None,
             read_statuses: BTreeMap::new(),
             mouse_ready: None,
+            family: None,
         };
         let mut settings = AppSettings::default();
         assert_eq!(battery_title(&snapshot, &settings).as_deref(), Some("64%"));
@@ -3952,6 +3953,7 @@ mod settings_tests {
             history_identity: None,
             read_statuses: BTreeMap::new(),
             mouse_ready: None,
+            family: None,
         }
     }
 
@@ -4208,6 +4210,7 @@ mod settings_tests {
             history_identity: None,
             read_statuses: BTreeMap::new(),
             mouse_ready: None,
+            family: None,
         };
         assert_eq!(
             exportable_value(
@@ -4307,6 +4310,7 @@ mod settings_tests {
             history_identity: None,
             read_statuses: BTreeMap::new(),
             mouse_ready: None,
+            family: None,
         };
         let field = ExportableField {
             id: "receiver-lighting".into(),
@@ -4366,6 +4370,7 @@ mod settings_tests {
             history_identity: None,
             read_statuses: BTreeMap::new(),
             mouse_ready: None,
+            family: None,
         };
         let field = ExportableField {
             id: "receiver-lighting".into(),
@@ -4677,6 +4682,7 @@ mod night_mode_tests {
             history_identity: None,
             read_statuses: BTreeMap::new(),
             mouse_ready: None,
+            family: None,
         };
         // 充电中 → Night
         assert_eq!(
@@ -4745,6 +4751,7 @@ mod night_mode_tests {
             history_identity: None,
             read_statuses: BTreeMap::new(),
             mouse_ready: None,
+            family: None,
         };
         // 电量 15% < 阈值 20% → Night
         assert_eq!(
@@ -4816,6 +4823,7 @@ mod night_mode_tests {
             history_identity: None,
             read_statuses: BTreeMap::new(),
             mouse_ready: None,
+            family: None,
         };
         // 白天但充电中 → Night（OR）
         assert_eq!(
@@ -4862,6 +4870,7 @@ mod night_mode_tests {
             history_identity: None,
             read_statuses: BTreeMap::new(),
             mouse_ready: None,
+            family: None,
         };
         let saved = read_receiver_light_state(&snapshot).unwrap();
         assert_eq!(saved.effect, 3);
@@ -4903,6 +4912,7 @@ mod night_mode_tests {
             history_identity: None,
             read_statuses: BTreeMap::new(),
             mouse_ready: None,
+            family: None,
         };
         let saved = read_receiver_light_state(&snapshot).unwrap();
         assert_eq!(saved.option, 2);
@@ -4932,6 +4942,7 @@ mod night_mode_tests {
             history_identity: None,
             read_statuses: BTreeMap::new(),
             mouse_ready: None,
+            family: None,
         };
         assert!(read_receiver_light_state(&snapshot).is_none());
     }
@@ -4985,6 +4996,7 @@ mod night_mode_tests {
             history_identity: None,
             read_statuses: BTreeMap::new(),
             mouse_ready: None,
+            family: None,
         };
         let (is_on, saved) = read_mouse_light_state(&snapshot).unwrap();
         assert!(is_on);
@@ -5017,6 +5029,7 @@ mod night_mode_tests {
             history_identity: None,
             read_statuses: BTreeMap::new(),
             mouse_ready: None,
+            family: None,
         };
         assert!(read_mouse_light_state(&snapshot).is_none());
     }
@@ -5048,6 +5061,7 @@ mod night_mode_tests {
             history_identity: None,
             read_statuses: BTreeMap::new(),
             mouse_ready: None,
+            family: None,
         };
         // enabled=true 但颜色缺失：返回 None，跳过该目标，
         // 避免 fallback #000000 在退出夜间恢复时覆盖设备原色。
@@ -5102,6 +5116,7 @@ mod night_mode_tests {
             history_identity: None,
             read_statuses: BTreeMap::new(),
             mouse_ready: None,
+            family: None,
         };
 
         let (is_on, saved) = read_mouse_light_state(&snapshot).unwrap();
@@ -5155,6 +5170,7 @@ mod night_mode_tests {
             history_identity: None,
             read_statuses: BTreeMap::new(),
             mouse_ready: None,
+            family: None,
         };
 
         let (mouse, receiver) = resolve_lighting_mutations(&snapshot);
@@ -5216,6 +5232,7 @@ mod night_mode_tests {
             history_identity: None,
             read_statuses: BTreeMap::new(),
             mouse_ready: None,
+            family: None,
         };
 
         let (mouse, receiver) = resolve_lighting_mutations(&snapshot);
@@ -5270,6 +5287,7 @@ mod night_mode_tests {
             history_identity: None,
             read_statuses: BTreeMap::new(),
             mouse_ready: None,
+            family: None,
         };
 
         let (mouse, receiver) = resolve_lighting_mutations(&snapshot);
@@ -5344,6 +5362,7 @@ mod night_mode_tests {
             history_identity: None,
             read_statuses: BTreeMap::new(),
             mouse_ready: None,
+            family: None,
         }
     }
 
@@ -7321,6 +7340,7 @@ fn build_device_snapshot(
             })
             .collect(),
         mouse_ready: reading.mouse_ready,
+        family: Some(device.family.clone()),
     }
 }
 
@@ -8022,6 +8042,7 @@ fn apply_snapshot_patch(
                     read_statuses: BTreeMap::new(),
                     // Presence 阶段尚未读取协议，mouse_ready 未知，保持 None。
                     mouse_ready: None,
+                    family: Some(device.family.clone()),
                 }
             }
         }
@@ -12620,6 +12641,7 @@ mod read_plan_tests {
             history_identity: None,
             read_statuses: BTreeMap::new(),
             mouse_ready: None,
+            family: None,
         }
     }
 
@@ -12751,6 +12773,7 @@ mod snapshot_patch_tests {
             history_identity: None,
             read_statuses: BTreeMap::new(),
             mouse_ready: None,
+            family: None,
         }
     }
 

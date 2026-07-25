@@ -703,6 +703,7 @@ mod tests {
             history_identity: None,
             read_statuses: Default::default(),
             mouse_ready: None,
+            family: None,
         };
         TrayStatusState::from_snapshot(Some(&snapshot), &test_settings())
     }
