@@ -2957,7 +2957,9 @@ impl Session<'_> {
                 deadline_remaining_ms(self.deadline)?;
                 let mut drain = vec![0u8; drain_buf_len];
                 // 排空只读取 interrupt endpoint，丢弃数据；不区分 read_mode。
-                let _ = self.device.read_timeout(&mut drain, *stale_drain_timeout_ms);
+                let _ = self
+                    .device
+                    .read_timeout(&mut drain, *stale_drain_timeout_ms);
             }
         }
         // Section 7：出站分片规划。max_payload_per_packet 为 0 时按 rest 容量推断。
@@ -3134,9 +3136,10 @@ impl Session<'_> {
                 continue;
             }
             // Section 7：多包响应组装。需同时声明 marker_offset 与 total_length_offset。
-            let final_response = if let (Some(marker_off), Some(total_off)) =
-                (*multi_packet_marker_offset, *multi_packet_total_length_offset)
-            {
+            let final_response = if let (Some(marker_off), Some(total_off)) = (
+                *multi_packet_marker_offset,
+                *multi_packet_total_length_offset,
+            ) {
                 match MultiPacketAssembler::try_start(
                     &response,
                     payload_off,
@@ -3165,14 +3168,18 @@ impl Session<'_> {
                                         None => *read_timeout_ms,
                                     };
                                     self.device.read_timeout(&mut cont, timeout).map_err(
-                                        |error| format!("read framed multi-packet continuation: {error}"),
+                                        |error| {
+                                            format!(
+                                                "read framed multi-packet continuation: {error}"
+                                            )
+                                        },
                                     )?
                                 }
                                 HidFramedReadMode::InputReport => {
                                     cont[0] = *read_report_id;
-                                    self.device.get_input_report(&mut cont).map_err(
-                                        |error| format!("get framed multi-packet continuation: {error}"),
-                                    )?
+                                    self.device.get_input_report(&mut cont).map_err(|error| {
+                                        format!("get framed multi-packet continuation: {error}")
+                                    })?
                                 }
                             };
                             if cont_count == 0 {
@@ -3194,8 +3201,7 @@ impl Session<'_> {
                         // 重构为单包 rest 格式：[frame_header, ...assembled_payload]，
                         // 并更新 length 字段为总 payload 长度，保持与单包响应一致。
                         let assembled_payload = assembler.finish();
-                        let mut reconstructed =
-                            response.get(..payload_off).unwrap_or(&[]).to_vec();
+                        let mut reconstructed = response.get(..payload_off).unwrap_or(&[]).to_vec();
                         if let Some(off) = *length_field_offset {
                             let end = off + len_bytes;
                             if end <= reconstructed.len() {
@@ -6306,14 +6312,17 @@ mod tests {
     fn fragmented_request() {
         let payload: Vec<u8> = (0..100u8).collect();
         let fragments = plan_request_fragments(
-            &payload,
-            true, // fragment_payload
+            &payload, true, // fragment_payload
             59,   // max_payload_per_packet
             None, // seq_offset
             0,    // seq_field_bytes
             None, // length_offset
         );
-        assert_eq!(fragments.len(), 2, "100 bytes / 59 per packet = 2 fragments");
+        assert_eq!(
+            fragments.len(),
+            2,
+            "100 bytes / 59 per packet = 2 fragments"
+        );
         assert_eq!(fragments[0].len(), 59, "first fragment = 59 bytes");
         assert_eq!(fragments[1].len(), 41, "second fragment = 41 bytes");
         // 验证数据连续性：拼接后等于原 payload。
@@ -6321,7 +6330,10 @@ mod tests {
         for frag in &fragments {
             reassembled.extend_from_slice(frag);
         }
-        assert_eq!(reassembled, payload, "fragment data should reassemble to original");
+        assert_eq!(
+            reassembled, payload,
+            "fragment data should reassemble to original"
+        );
         // 未启用分片时返回单包。
         let single = plan_request_fragments(&payload, false, 59, None, 0, None);
         assert_eq!(single.len(), 1);
@@ -6364,9 +6376,16 @@ mod tests {
         let complete = assembler
             .add_continuation(&cont_rest)
             .expect("add_continuation should succeed");
-        assert!(complete, "should be complete after 1 continuation (59+21=80)");
+        assert!(
+            complete,
+            "should be complete after 1 continuation (59+21=80)"
+        );
         let assembled = assembler.finish();
-        assert_eq!(assembled.len(), 80, "assembled payload = 80 bytes (total_length)");
+        assert_eq!(
+            assembled.len(),
+            80,
+            "assembled payload = 80 bytes (total_length)"
+        );
         // 验证前缀：[0x05, 0x5B, 80, 0, 0xCF, 0x30, 1, 2, ...]
         assert_eq!(
             &assembled[..8],
@@ -6380,11 +6399,10 @@ mod tests {
     fn multi_packet_max_packets_exceeded() {
         // 首包：marker=0x5B, total_length=200（需要多个后续包）。
         let first_rest = vec![61u8, 0, 5, 91, 200, 0, 207, 48];
-        let mut assembler = MultiPacketAssembler::try_start(
-            &first_rest, 2, 3, 91, 4, 2, 2, 1, 4096, "le",
-        )
-        .expect("try_start ok")
-        .expect("multi-packet");
+        let mut assembler =
+            MultiPacketAssembler::try_start(&first_rest, 2, 3, 91, 4, 2, 2, 1, 4096, "le")
+                .expect("try_start ok")
+                .expect("multi-packet");
         // max_packets=1，首包已计为 1。添加第 2 包应报错。
         let cont_rest = vec![0u8; 61];
         let result = assembler.add_continuation(&cont_rest);
@@ -6400,10 +6418,12 @@ mod tests {
     fn multi_packet_max_total_length_exceeded() {
         // total_length=5000，max_total_length=4096 → try_start 报错。
         let first_rest = vec![61u8, 0, 5, 91, 0x88, 0x13, 207, 48]; // 5000 = 0x1388
-        let result = MultiPacketAssembler::try_start(
-            &first_rest, 2, 3, 91, 4, 2, 2, 16, 4096, "le",
+        let result =
+            MultiPacketAssembler::try_start(&first_rest, 2, 3, 91, 4, 2, 2, 16, 4096, "le");
+        assert!(
+            result.is_err(),
+            "should error when total_length > max_total_length"
         );
-        assert!(result.is_err(), "should error when total_length > max_total_length");
         assert!(
             result.unwrap_err().contains("exceeds max"),
             "error should mention exceeds max"
@@ -6423,9 +6443,9 @@ mod tests {
             !framed_response_matches_request(
                 &request,
                 &response_rest,
-                2,                // payload_off
-                Some((4, 6)),     // request_match_slice
-                Some((4, 6)),     // response_match_slice
+                2,            // payload_off
+                Some((4, 6)), // request_match_slice
+                Some((4, 6)), // response_match_slice
             ),
             "mismatched RaceID should return false (trigger retry)"
         );
@@ -6440,13 +6460,7 @@ mod tests {
         // stale 残留响应：RaceID = [0xC5, 0x30]（更早的查询）
         let stale_rest = [0x09, 0x00, 0x05, 0x5a, 0x02, 0x00, 0xc5, 0x30, 0x32];
         assert!(
-            !framed_response_matches_request(
-                &request,
-                &stale_rest,
-                2,
-                Some((4, 6)),
-                Some((4, 6)),
-            ),
+            !framed_response_matches_request(&request, &stale_rest, 2, Some((4, 6)), Some((4, 6)),),
             "stale response RaceID should not match"
         );
         // 匹配的响应应返回 true。
