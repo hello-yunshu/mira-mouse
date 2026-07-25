@@ -328,22 +328,13 @@ fn sign_package(package: &Path, signing_key: &SigningKey) -> Result<Vec<u8>> {
 fn validate_dir(path: &Path) -> Result<PluginManifest> {
     let manifest: PluginManifest = serde_json::from_slice(&fs::read(path.join("plugin.json"))?)?;
     manifest.validate()?;
+    // 3.5 节：符号链接仍然硬性拒绝（安全要求），但 allowlist 之外的文件
+    //（如 LICENSE/README.md）只跳过、不 bail——`collect_files` 本就会跳过它们，
+    // 源目录保留这些文档是合法的，它们只是不进入生产包。
     for entry in WalkDir::new(path).follow_links(false) {
         let entry = entry?;
         if entry.file_type().is_symlink() {
             bail!("symbolic links are forbidden: {}", entry.path().display());
-        }
-        if entry.file_type().is_file() {
-            let rel = entry
-                .path()
-                .strip_prefix(path)?
-                .to_string_lossy()
-                .replace('\\', "/");
-            // 3.5 节：开发目录校验也使用 runtime 共享的 allowlist，
-            // 确保 CLI pack 与 runtime extract 完全一致。
-            if !allowed(&rel) {
-                bail!("forbidden plugin file: {rel}");
-            }
         }
     }
     Ok(manifest)
