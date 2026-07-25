@@ -121,14 +121,15 @@ export function resolveFieldMutationParams(
   };
 }
 
-/// 对 {path, eq?, ne?} 条件求值。
+/// 对 {path, eq?, ne?, in?} 条件求值。
 /// 无 condition 时返回 true；有 eq 时返回 value === eq；有 ne 时返回 value !== ne；
-/// 都没有时返回 value != null。
+/// 有 in 时返回 value 是否在数组中；都没有时返回 value != null。
 export function resolveVisibleWhen(condition: PluginVisibleWhen | undefined, device: DeviceState): boolean {
   if (!condition) return true;
   const value = readPath(device, condition.path);
   if (condition.eq !== undefined) return value === condition.eq;
   if (condition.ne !== undefined) return value !== condition.ne;
+  if (condition.in !== undefined) return Array.isArray(condition.in) && condition.in.indexOf(value) !== -1;
   return value != null;
 }
 
