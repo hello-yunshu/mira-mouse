@@ -617,6 +617,7 @@ function snapshotToState(snapshot: DeviceSnapshot): DeviceState {
     updatedAt: now,
     readStatuses: snapshot.readStatuses,
     mouseReady: snapshot.mouseReady,
+    family: snapshot.family,
   };
 }
 
