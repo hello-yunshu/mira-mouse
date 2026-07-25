@@ -266,6 +266,7 @@ mod tests {
             plugin_id: None,
             history_identity: None,
             read_statuses: Default::default(),
+            mouse_ready: None,
         }
     }
 

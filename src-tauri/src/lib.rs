@@ -857,6 +857,10 @@ struct SessionState {
     forced_read_plan: Mutex<Option<ReadPlan>>,
     /// 用户活跃交互后的短时 Quick 观察窗口。窗口隐藏时不执行协议读取。
     quick_observe_until: Mutex<Option<Instant>>,
+    /// 接收器在位但鼠标未就位（mouse_ready == Some(false)）的起始时间。
+    /// 用于在接收器刚插入时高频检测鼠标就位（前 5 秒 1s 间隔，之后回退到 5s）。
+    /// mouse_ready 转为 Some(true) 或 None（非接收器连接）时清除。
+    mouse_pending_since: Mutex<Option<Instant>>,
     /// Plugin-declared component wake recovery driven by permission-free
     /// platform pointer activity hints.
     wake_recovery: Mutex<WakeRecoveryState>,
@@ -1051,6 +1055,35 @@ fn request_refresh(state: &SessionState) {
 
 const QUICK_OBSERVE_DURATION: Duration = Duration::from_secs(12);
 const QUICK_OBSERVE_INTERVAL: Duration = Duration::from_secs(1);
+/// 接收器在位但鼠标未就位时的高频检测窗口：前 5 秒每秒检测一次，
+/// 让鼠标一就位就能被读到。超过 5 秒后回退到 `MOUSE_PENDING_FALLBACK_INTERVAL`
+/// 节能，但仍比正常 PresenceOnly（15s）更频繁，保证鼠标就位后较快响应。
+const MOUSE_PENDING_BURST_INTERVAL: Duration = Duration::from_secs(1);
+const MOUSE_PENDING_BURST_WINDOW: Duration = Duration::from_secs(5);
+const MOUSE_PENDING_FALLBACK_INTERVAL: Duration = Duration::from_secs(5);
+
+/// 更新鼠标未就位的起始时间戳，并返回当前是否处于高频检测窗口内。
+///
+/// - `mouse_ready == Some(false)`：接收器在位但鼠标未就位
+///   - 首次检测到时记录起始时间
+///   - 在 `MOUSE_PENDING_BURST_WINDOW`（5s）内返回 true（高频检测）
+///   - 超过窗口返回 false（回退到节能间隔）
+/// - `mouse_ready == Some(true)` 或 `None`：鼠标就位或非接收器连接，清除时间戳，返回 false
+fn update_mouse_pending(state: &SessionState, mouse_ready: Option<bool>, now: Instant) -> bool {
+    let Ok(mut pending) = state.mouse_pending_since.lock() else {
+        return false;
+    };
+    match mouse_ready {
+        Some(false) => {
+            let since = pending.get_or_insert(now);
+            now.duration_since(*since) < MOUSE_PENDING_BURST_WINDOW
+        }
+        _ => {
+            *pending = None;
+            false
+        }
+    }
+}
 
 /// 开启短时状态观察：立即 Quick，随后最多 12 秒每秒 Quick 一次。
 /// 只由 focus / 打开设备编辑 / mutation 等明确交互触发。
@@ -3849,6 +3882,7 @@ mod settings_tests {
             plugin_id: None,
             history_identity: None,
             read_statuses: BTreeMap::new(),
+            mouse_ready: None,
         };
         let mut settings = AppSettings::default();
         assert_eq!(battery_title(&snapshot, &settings).as_deref(), Some("64%"));
@@ -3917,6 +3951,7 @@ mod settings_tests {
             plugin_id: None,
             history_identity: None,
             read_statuses: BTreeMap::new(),
+            mouse_ready: None,
         }
     }
 
@@ -4172,6 +4207,7 @@ mod settings_tests {
             plugin_id: None,
             history_identity: None,
             read_statuses: BTreeMap::new(),
+            mouse_ready: None,
         };
         assert_eq!(
             exportable_value(
@@ -4270,6 +4306,7 @@ mod settings_tests {
             plugin_id: None,
             history_identity: None,
             read_statuses: BTreeMap::new(),
+            mouse_ready: None,
         };
         let field = ExportableField {
             id: "receiver-lighting".into(),
@@ -4328,6 +4365,7 @@ mod settings_tests {
             plugin_id: None,
             history_identity: None,
             read_statuses: BTreeMap::new(),
+            mouse_ready: None,
         };
         let field = ExportableField {
             id: "receiver-lighting".into(),
@@ -4638,6 +4676,7 @@ mod night_mode_tests {
             plugin_id: None,
             history_identity: None,
             read_statuses: BTreeMap::new(),
+            mouse_ready: None,
         };
         // 充电中 → Night
         assert_eq!(
@@ -4705,6 +4744,7 @@ mod night_mode_tests {
             plugin_id: None,
             history_identity: None,
             read_statuses: BTreeMap::new(),
+            mouse_ready: None,
         };
         // 电量 15% < 阈值 20% → Night
         assert_eq!(
@@ -4775,6 +4815,7 @@ mod night_mode_tests {
             plugin_id: None,
             history_identity: None,
             read_statuses: BTreeMap::new(),
+            mouse_ready: None,
         };
         // 白天但充电中 → Night（OR）
         assert_eq!(
@@ -4820,6 +4861,7 @@ mod night_mode_tests {
             plugin_id: None,
             history_identity: None,
             read_statuses: BTreeMap::new(),
+            mouse_ready: None,
         };
         let saved = read_receiver_light_state(&snapshot).unwrap();
         assert_eq!(saved.effect, 3);
@@ -4860,6 +4902,7 @@ mod night_mode_tests {
             plugin_id: None,
             history_identity: None,
             read_statuses: BTreeMap::new(),
+            mouse_ready: None,
         };
         let saved = read_receiver_light_state(&snapshot).unwrap();
         assert_eq!(saved.option, 2);
@@ -4888,6 +4931,7 @@ mod night_mode_tests {
             plugin_id: None,
             history_identity: None,
             read_statuses: BTreeMap::new(),
+            mouse_ready: None,
         };
         assert!(read_receiver_light_state(&snapshot).is_none());
     }
@@ -4940,6 +4984,7 @@ mod night_mode_tests {
             plugin_id: None,
             history_identity: None,
             read_statuses: BTreeMap::new(),
+            mouse_ready: None,
         };
         let (is_on, saved) = read_mouse_light_state(&snapshot).unwrap();
         assert!(is_on);
@@ -4971,6 +5016,7 @@ mod night_mode_tests {
             plugin_id: None,
             history_identity: None,
             read_statuses: BTreeMap::new(),
+            mouse_ready: None,
         };
         assert!(read_mouse_light_state(&snapshot).is_none());
     }
@@ -5001,6 +5047,7 @@ mod night_mode_tests {
             plugin_id: None,
             history_identity: None,
             read_statuses: BTreeMap::new(),
+            mouse_ready: None,
         };
         // enabled=true 但颜色缺失：返回 None，跳过该目标，
         // 避免 fallback #000000 在退出夜间恢复时覆盖设备原色。
@@ -5054,6 +5101,7 @@ mod night_mode_tests {
             plugin_id: Some("mira.logitech-hidpp".into()),
             history_identity: None,
             read_statuses: BTreeMap::new(),
+            mouse_ready: None,
         };
 
         let (is_on, saved) = read_mouse_light_state(&snapshot).unwrap();
@@ -5106,6 +5154,7 @@ mod night_mode_tests {
             plugin_id: Some("mira.logitech-hidpp".into()),
             history_identity: None,
             read_statuses: BTreeMap::new(),
+            mouse_ready: None,
         };
 
         let (mouse, receiver) = resolve_lighting_mutations(&snapshot);
@@ -5166,6 +5215,7 @@ mod night_mode_tests {
             plugin_id: Some("mira.test".into()),
             history_identity: None,
             read_statuses: BTreeMap::new(),
+            mouse_ready: None,
         };
 
         let (mouse, receiver) = resolve_lighting_mutations(&snapshot);
@@ -5219,6 +5269,7 @@ mod night_mode_tests {
             plugin_id: Some("mira.test".into()),
             history_identity: None,
             read_statuses: BTreeMap::new(),
+            mouse_ready: None,
         };
 
         let (mouse, receiver) = resolve_lighting_mutations(&snapshot);
@@ -5292,6 +5343,7 @@ mod night_mode_tests {
             plugin_id: None,
             history_identity: None,
             read_statuses: BTreeMap::new(),
+            mouse_ready: None,
         }
     }
 
@@ -7268,6 +7320,7 @@ fn build_device_snapshot(
                 )
             })
             .collect(),
+        mouse_ready: reading.mouse_ready,
     }
 }
 
@@ -7789,6 +7842,9 @@ enum SnapshotPatch {
         /// Per-output read statuses from the projected read. Merged into the
         /// existing snapshot's read_statuses (brand-neutral diagnostics).
         read_statuses: BTreeMap<String, serde_json::Value>,
+        /// 接收器场景下鼠标是否就位（基于 receiverIdle.mouseOnline）。
+        /// Some(_) 时覆盖现有值；None 时保留现有值（投影未覆盖此字段）。
+        mouse_ready: Option<bool>,
     },
     /// BatteryOnly 补丁：只更新电量和充电。
     Battery {
@@ -7797,6 +7853,9 @@ enum SnapshotPatch {
         batteries: Option<Vec<mira_core::DeviceBattery>>,
         /// Per-output read statuses from the battery-only read.
         read_statuses: BTreeMap<String, serde_json::Value>,
+        /// 接收器场景下鼠标是否就位（基于 receiverIdle.mouseOnline）。
+        /// Some(_) 时覆盖现有值；None 时保留现有值。
+        mouse_ready: Option<bool>,
     },
     /// Full 替换：完整替换快照。
     Full(DeviceSnapshot),
@@ -7961,6 +8020,8 @@ fn apply_snapshot_patch(
                         aliases: identity.aliases.clone(),
                     }),
                     read_statuses: BTreeMap::new(),
+                    // Presence 阶段尚未读取协议，mouse_ready 未知，保持 None。
+                    mouse_ready: None,
                 }
             }
         }
@@ -7977,6 +8038,7 @@ fn apply_snapshot_patch(
             projection_valid: _,
             fallback_reason: _,
             read_statuses,
+            mouse_ready,
         } => {
             if let Some(existing) = existing {
                 let mut updated = existing.clone();
@@ -8007,6 +8069,9 @@ fn apply_snapshot_patch(
                 if let Some(lc) = confirmed_light_color {
                     updated.confirmed_light_color = Some(lc);
                 }
+                if let Some(mr) = mouse_ready {
+                    updated.mouse_ready = Some(mr);
+                }
                 merge_capability_patch(&mut updated.capabilities, capabilities);
                 // Merge per-output read statuses: incoming statuses override
                 // existing ones for the same key (latest read wins). Outputs
@@ -8036,6 +8101,7 @@ fn apply_snapshot_patch(
             charging,
             batteries,
             read_statuses,
+            mouse_ready,
         } => {
             if let Some(existing) = existing {
                 let mut updated = existing.clone();
@@ -8050,6 +8116,9 @@ fn apply_snapshot_patch(
                     // 整体替换会丢掉旧 mouse 条目导致 UI 误显示接收器电量。
                     // 合并保证 mouse 条目粘性保留，直到设备真正断联（Clear 分支）。
                     updated.batteries = merge_batteries(&updated.batteries, &bats);
+                }
+                if let Some(mr) = mouse_ready {
+                    updated.mouse_ready = Some(mr);
                 }
                 for (key, value) in read_statuses {
                     updated.read_statuses.insert(key, value);
@@ -8539,6 +8608,7 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
                                         )
                                     })
                                     .collect(),
+                                mouse_ready: reading.mouse_ready,
                             }
                         } else {
                             // BatteryOnly
@@ -8561,6 +8631,7 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
                                         )
                                     })
                                     .collect(),
+                                mouse_ready: reading.mouse_ready,
                             }
                         };
                         apply_snapshot_patch(
@@ -9017,6 +9088,11 @@ fn spawn_device_reader(app: AppHandle) {
 
         let now = Instant::now();
         let snapshot_before = selected_snapshot(&state);
+        let mouse_ready_before = snapshot_before.as_ref().and_then(|s| s.mouse_ready);
+        // 接收器在位但鼠标未就位：进入高频检测窗口（前 5 秒 1s 间隔）。
+        // 窗口内强制 Quick 读取 receiverIdle.mouseOnline；窗口外回退到 5s 间隔的 BatteryOnly。
+        let mouse_pending_burst = update_mouse_pending(&state, mouse_ready_before, now);
+        let mouse_pending = mouse_ready_before == Some(false);
         let charging = snapshot_before.as_ref().is_some_and(|snapshot| {
             snapshot.charging || snapshot.batteries.iter().any(|battery| battery.charging)
         });
@@ -9036,15 +9112,32 @@ fn spawn_device_reader(app: AppHandle) {
         // Choose ReadPlan:
         // - Connected but no Full snapshot yet → Full (首次读取需要获取能力)
         // - Explicit editor/mutation requests → Quick
+        // - mouse_pending_burst → 强制 Quick（高频检测 mouseOnline）
+        // - mouse_pending（非 burst）→ 升级 PresenceOnly 为 BatteryOnly（读取 mouseOnline）
         // - Battery due → BatteryOnly
         // - Otherwise → PresenceOnly (enumeration only, no protocol reports)
-        let plan = select_read_plan(
-            connected_before,
-            next_initial_plan,
-            forced_plan,
-            observing_quick || wake_probe_due,
-            battery_due,
-        );
+        let plan = if mouse_pending_burst {
+            // 高频检测窗口内强制 Quick：读取 receiverIdle.mouseOnline 并刷新电量。
+            // Quick 不受 skip_already_complete_initial_read 影响（该函数只跳过 Full）。
+            ReadPlan::Quick
+        } else {
+            let requested = select_read_plan(
+                connected_before,
+                next_initial_plan,
+                forced_plan,
+                observing_quick || wake_probe_due,
+                battery_due,
+            );
+            if mouse_pending && requested == ReadPlan::PresenceOnly {
+                // 超过 5s 窗口仍未就位：避免 PresenceOnly（不读协议），
+                // 升级为 BatteryOnly 以读取 receiverIdle.mouseOnline。
+                // BatteryOnly 比 Quick 节能（不读 DPI/polling/lighting），
+                // 但仍能获取 receiverIdle（属于 ReceiverBatteryPercent 语义字段）。
+                ReadPlan::BatteryOnly
+            } else {
+                requested
+            }
+        };
 
         read_device_once(&app, plan);
         if wake_probe_due {
@@ -9093,6 +9186,12 @@ fn spawn_device_reader(app: AppHandle) {
             std::time::Duration::from_millis(500)
         } else if observing_quick {
             QUICK_OBSERVE_INTERVAL
+        } else if mouse_pending_burst {
+            // 高频检测窗口：1s 间隔快速探测 mouseOnline。
+            MOUSE_PENDING_BURST_INTERVAL
+        } else if mouse_pending {
+            // 超过 5s 窗口仍未就位：回退到 5s 间隔，节能但仍比 15s PresenceOnly 频繁。
+            MOUSE_PENDING_FALLBACK_INTERVAL
         } else if connected {
             // Connected devices are only enumerated; protocol reads are on-demand.
             CONNECTED_PRESENCE_INTERVAL
@@ -12520,6 +12619,7 @@ mod read_plan_tests {
             plugin_id: Some("mira.test".into()),
             history_identity: None,
             read_statuses: BTreeMap::new(),
+            mouse_ready: None,
         }
     }
 
@@ -12650,6 +12750,7 @@ mod snapshot_patch_tests {
             plugin_id: None,
             history_identity: None,
             read_statuses: BTreeMap::new(),
+            mouse_ready: None,
         }
     }
 
@@ -12794,6 +12895,7 @@ mod snapshot_patch_tests {
             charging: None,
             batteries: Some(vec![battery("receiver", 98, false)]),
             read_statuses: BTreeMap::new(),
+            mouse_ready: None,
         };
         let result = apply_snapshot_patch(
             Some(&existing),
@@ -12838,6 +12940,7 @@ mod snapshot_patch_tests {
                 battery("receiver", 98, false),
             ]),
             read_statuses: BTreeMap::new(),
+            mouse_ready: None,
         };
         let result = apply_snapshot_patch(
             Some(&existing),
@@ -12879,6 +12982,7 @@ mod snapshot_patch_tests {
             projection_valid: true,
             fallback_reason: None,
             read_statuses: BTreeMap::new(),
+            mouse_ready: None,
         };
         let result = apply_snapshot_patch(
             Some(&existing),

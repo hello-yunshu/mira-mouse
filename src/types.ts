@@ -160,6 +160,8 @@ export interface DeviceState {
   updatedAt: string;
   /** Per-output read statuses from the workflow engine. */
   readStatuses?: Record<string, ReadStatus>;
+  /** 接收器场景下鼠标是否就位，详见 DeviceSnapshot.mouseReady。 */
+  mouseReady?: boolean;
 }
 
 export interface BundledPluginInfo {
@@ -303,6 +305,14 @@ export interface DeviceSnapshot {
   historyIdentity?: DeviceIdentity;
   /** Per-output read statuses from the workflow engine. */
   readStatuses?: Record<string, ReadStatus>;
+  /**
+   * 接收器场景下鼠标是否就位（基于 receiverIdle.mouseOnline）。
+   * - `undefined`：非接收器连接（USB 直连 / 蓝牙），鼠标总是视为就位。
+   * - `true`：接收器已插入且鼠标在线。
+   * - `false`：接收器已插入但鼠标未就位，UI 显示等待提示而非残缺 Dashboard。
+   * 由后端协议层填充，前端只读。
+   */
+  mouseReady?: boolean;
 }
 
 export interface DeviceSnapshotEntry {
