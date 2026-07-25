@@ -1,15 +1,16 @@
 {
   "schemaVersion": 1,
-  "releaseReady": true,
+  "releaseReady": false,
+  "_comment": "Local test-signed bundle (TEST-ONLY-mira-plugins). Production release must re-pack with mira-plugins-2026-001 key and set releaseReady=true.",
   "plugins": [
     {
       "pluginId": "mira.amaster",
       "repository": "hello-yunshu/mira-mouse-plugins",
-      "releaseTag": "release/v2026-07-24",
+      "releaseTag": "plugin/amaster/v1.8.0",
       "version": "1.8.0",
       "asset": "mira-amaster-1.8.0.mira-plugin",
-      "sha256": "d101a0b98fd95adee07bdf44f28ce9a2a348ac5aa275461f0f522366b7a3fd6e",
-      "publisherKeyId": "mira-plugins-2026-001",
+      "sha256": "bb8fc547cd75aaaa4989ba70800de949d990b39fbf2bd7348411303ec44ccc1d",
+      "publisherKeyId": "TEST-ONLY-mira-plugins",
       "pluginApi": ">=1.1.0, <2.0.0",
       "cachePath": "src-tauri/resources/plugins/mira-amaster-1.8.0.mira-plugin",
       "bundleByDefault": true
@@ -29,11 +30,11 @@
     {
       "pluginId": "mira.logitech-hidpp",
       "repository": "hello-yunshu/mira-mouse-plugins",
-      "releaseTag": "release/v2026-07-24",
+      "releaseTag": "plugin/logitech-hidpp/v0.9.2",
       "version": "0.9.2",
       "asset": "mira-logitech-hidpp-0.9.2.mira-plugin",
-      "sha256": "ed71ebfe64ab7beb479d38afad937a2fb15bc26778b80b0ecf1894aa13575427",
-      "publisherKeyId": "mira-plugins-2026-001",
+      "sha256": "ac967c711acd7d40ff4d68ad929f3fea7ef8a67bb721a34f93f19161c5fc9e65",
+      "publisherKeyId": "TEST-ONLY-mira-plugins",
       "pluginApi": ">=1.1.0, <2.0.0",
       "cachePath": "src-tauri/resources/plugins/mira-logitech-hidpp-0.9.2.mira-plugin",
       "bundleByDefault": true
@@ -41,11 +42,11 @@
     {
       "pluginId": "mira.razer-viper",
       "repository": "hello-yunshu/mira-mouse-plugins",
-      "releaseTag": "release/v2026-07-24",
+      "releaseTag": "plugin/razer-viper/v0.3.0",
       "version": "0.3.0",
       "asset": "mira-razer-viper-0.3.0.mira-plugin",
-      "sha256": "9f2435b504f33c7f8b21e9a1ae297d2ff3d84bf68a2c9441318e6ba9533bd800",
-      "publisherKeyId": "mira-plugins-2026-001",
+      "sha256": "328997f235d68b89937862e577035c58cb7125f10fb5dcf07eba4bfe0ce68fe8",
+      "publisherKeyId": "TEST-ONLY-mira-plugins",
       "pluginApi": ">=1.1.0, <2.0.0",
       "cachePath": "src-tauri/resources/plugins/mira-razer-viper-0.3.0.mira-plugin",
       "bundleByDefault": true
