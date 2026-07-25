@@ -22,6 +22,7 @@ ICON_DIR = ROOT / "src-tauri" / "icons"
 LEVELS = range(0, 101, 10)
 CHARGING_BOLT = [(38, 13), (32, 28), (46, 28), (29, 47), (35, 32), (23, 32)]
 CHARGING_BOLT_X_OFFSET = -2  # 保留闪电轮廓，仅补偿其向右偏移的视觉重心
+CHARGING_BOLT_Y_OFFSET = 2  # 垂直下移 2px，让 bbox 中心和重心对齐鼠标内部区域中心 y=32
 
 
 def outline_color(dark: bool):
@@ -57,7 +58,7 @@ def charging_bolt_points(size: int):
     return [
         (
             int(round((x + CHARGING_BOLT_X_OFFSET) * scale)),
-            int(round(y * scale)),
+            int(round((y + CHARGING_BOLT_Y_OFFSET) * scale)),
         )
         for x, y in CHARGING_BOLT
     ]

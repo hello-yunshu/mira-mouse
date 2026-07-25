@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { ExternalLink } from './ExternalLink';
 import type { AboutInfo } from './types';
 import { notifyError } from './notify';
+import { friendlyUpdateError } from './update-errors';
 import { extractChannel } from './plugin-utils';
 import {
   appUpdateState,
@@ -66,7 +67,7 @@ export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0 }:
     try {
       await checkForAppUpdate();
     } catch (err) {
-      notifyError(t('notification.checkUpdateFailed'), String(err));
+      notifyError(t('notification.checkUpdateFailed'), friendlyUpdateError(err));
     }
   }
 
@@ -74,7 +75,7 @@ export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0 }:
     try {
       await installAppUpdate();
     } catch (err) {
-      notifyError(t('notification.installUpdateFailed'), String(err));
+      notifyError(t('notification.installUpdateFailed'), friendlyUpdateError(err));
     }
   }
 
