@@ -128,9 +128,9 @@ export const MOCK_DEVICE: DeviceState = {
         }],
         stateMapping: { pollingRate: 'pollingRateHz', supportedPollingRates: 'supportedPollingRatesHz' },
         summary: [
-          { labelKey: 'mock.motionSync', source: 'capabilities.settings.motionSync' },
-          { labelKey: 'mock.angleSnap', source: 'capabilities.settings.angleSnap' },
-          { labelKey: 'mock.liftCutOff', source: 'capabilities.settings.liftCutOff' },
+          { labelKey: 'mock.motionSync', source: 'capabilities.settings.motionSync', priority: 90 },
+          { labelKey: 'mock.angleSnap', source: 'capabilities.settings.angleSnap', priority: 80 },
+          { labelKey: 'mock.liftCutOff', source: 'capabilities.settings.liftCutOff', priority: 70 },
         ],
       },
     },
@@ -169,8 +169,7 @@ export const MOCK_DEVICE: DeviceState = {
     {
       id: 'lighting', control: 'LightingZone', labelKey: 'plugin.label.capability.lighting', readOnly: false,
       placements: [
-        { region: 'control', group: 'lighting', order: 30, span: 1, icon: 'lightbulb', priority: 100, dashboardRole: 'fixed-core', fixedSlot: 3, fourthSlotEligible: false, dedupeKey: 'dashboard.lighting', fallbackRegion: 'advanced' },
-        { region: 'status', order: 30, span: 1, icon: 'lightbulb', priority: 75, dashboardRole: 'candidate', fourthSlotEligible: false, dedupeKey: 'status.lighting', fallbackRegion: 'advanced' }
+        { region: 'control', group: 'lighting', order: 30, span: 1, icon: 'lightbulb', priority: 100, dashboardRole: 'fixed-core', fixedSlot: 3, fourthSlotEligible: false, dedupeKey: 'dashboard.lighting', fallbackRegion: 'advanced' }
       ],
       metadata: {
         accentSource: 'state.mouseLightColor',
@@ -179,8 +178,8 @@ export const MOCK_DEVICE: DeviceState = {
             id: 'mouse',
             labelKey: 'lighting.mouse',
             fields: [
-              { id: 'status', source: 'capabilities.settings.mouseLightEnabled', mutation: 'set-mouse-lighting', param: 'enabled', editor: 'inline-toggle', switch: { source: 'capabilities.settings.mouseLightEnabled', offValue: false }, labelKey: 'dashboard.status', paramSources: { color: 'state.mouseLightColor', enabled: 'capabilities.settings.mouseLightEnabled' } },
-              { id: 'color', source: 'state.mouseLightColor', mutation: 'set-mouse-lighting', param: 'color', editor: 'modal-color', format: 'color', labelKey: 'receiverLighting.field.color', editTitleKey: 'dashboard.mouseLightColor', paramSources: { color: 'state.mouseLightColor', enabled: 'capabilities.settings.mouseLightEnabled' } },
+              { id: 'status', source: 'capabilities.settings.mouseLightEnabled', mutation: 'set-mouse-lighting', param: 'enabled', editor: 'inline-toggle', switch: { source: 'capabilities.settings.mouseLightEnabled', offValue: false }, labelKey: 'dashboard.status', paramSources: { color: 'state.mouseLightColor', enabled: 'capabilities.settings.mouseLightEnabled' }, lightingRole: 'candidate', priority: 50 },
+              { id: 'color', source: 'state.mouseLightColor', mutation: 'set-mouse-lighting', param: 'color', editor: 'modal-color', format: 'color', labelKey: 'receiverLighting.field.color', editTitleKey: 'dashboard.mouseLightColor', paramSources: { color: 'state.mouseLightColor', enabled: 'capabilities.settings.mouseLightEnabled' }, lightingRole: 'primary-color', priority: 100 },
             ],
           },
           {
@@ -188,11 +187,11 @@ export const MOCK_DEVICE: DeviceState = {
             labelKey: 'lighting.receiver',
             visibleWhen: { path: 'capabilities.receiverLighting', ne: null },
             fields: [
-              { id: 'effect', source: 'state.receiverLightEffect', mutation: 'set-receiver-lighting', param: 'effect', editor: 'modal-select', labelKey: 'receiverLighting.field.effect', labelSource: 'capabilities.receiverLighting.effectName', editTitleKey: 'dashboard.editReceiverLightingTitle', options: LIGHTING_EFFECT_OPTIONS, visibleWhen: { path: 'state.receiverLightEffect', ne: null } },
-              { id: 'option', source: 'capabilities.receiverLighting.option', mutation: 'set-receiver-lighting', param: 'option', editor: 'modal-select', labelKey: 'receiverLighting.field.option', labelSource: 'capabilities.receiverLighting.optionName', editTitleKey: 'dashboard.editReceiverLightingTitle', options: RECEIVER_COLOR_MODE_OPTIONS },
-              { id: 'speed', source: 'state.receiverLightSpeed', mutation: 'set-receiver-lighting', param: 'speed', editor: 'modal-range', labelKey: 'receiverLighting.field.speed', editTitleKey: 'dashboard.editReceiverLightingTitle', range: { min: 0, max: 10, step: 1 }, visibleWhen: { path: 'state.receiverLightEffect', ne: null } },
-              { id: 'brightness', source: 'state.receiverLightBrightness', mutation: 'set-receiver-lighting', param: 'brightness', editor: 'modal-range', labelKey: 'receiverLighting.field.brightness', editTitleKey: 'dashboard.editReceiverLightingTitle', format: 'percent', range: { min: 0, max: 100, step: 1 }, visibleWhen: { path: 'state.receiverLightEffect', ne: null } },
-              { id: 'color', source: 'state.receiverLightColor', mutation: 'set-receiver-lighting', param: 'color', editor: 'modal-color', labelKey: 'receiverLighting.field.color', editTitleKey: 'dashboard.editReceiverLightingTitle', visibleWhen: { path: 'state.receiverLightEffect', ne: null } },
+              { id: 'effect', source: 'state.receiverLightEffect', mutation: 'set-receiver-lighting', param: 'effect', editor: 'modal-select', labelKey: 'receiverLighting.field.effect', labelSource: 'capabilities.receiverLighting.effectName', editTitleKey: 'dashboard.editReceiverLightingTitle', options: LIGHTING_EFFECT_OPTIONS, visibleWhen: { path: 'state.receiverLightEffect', ne: null }, lightingRole: 'effect', priority: 100 },
+              { id: 'option', source: 'capabilities.receiverLighting.option', mutation: 'set-receiver-lighting', param: 'option', editor: 'modal-select', labelKey: 'receiverLighting.field.option', labelSource: 'capabilities.receiverLighting.optionName', editTitleKey: 'dashboard.editReceiverLightingTitle', options: RECEIVER_COLOR_MODE_OPTIONS, lightingRole: 'candidate', priority: 60 },
+              { id: 'speed', source: 'state.receiverLightSpeed', mutation: 'set-receiver-lighting', param: 'speed', editor: 'modal-range', labelKey: 'receiverLighting.field.speed', editTitleKey: 'dashboard.editReceiverLightingTitle', range: { min: 0, max: 10, step: 1 }, visibleWhen: { path: 'state.receiverLightEffect', ne: null }, lightingRole: 'candidate', priority: 80 },
+              { id: 'brightness', source: 'state.receiverLightBrightness', mutation: 'set-receiver-lighting', param: 'brightness', editor: 'modal-range', labelKey: 'receiverLighting.field.brightness', editTitleKey: 'dashboard.editReceiverLightingTitle', format: 'percent', range: { min: 0, max: 100, step: 1 }, visibleWhen: { path: 'state.receiverLightEffect', ne: null }, lightingRole: 'candidate', priority: 70 },
+              { id: 'color', source: 'state.receiverLightColor', mutation: 'set-receiver-lighting', param: 'color', editor: 'modal-color', labelKey: 'receiverLighting.field.color', editTitleKey: 'dashboard.editReceiverLightingTitle', visibleWhen: { path: 'state.receiverLightEffect', ne: null }, lightingRole: 'primary-color', priority: 100 },
             ],
           },
         ],

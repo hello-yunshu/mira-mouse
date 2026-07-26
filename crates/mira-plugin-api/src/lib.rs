@@ -314,6 +314,13 @@ impl PluginManifest {
                     CapabilityRegion::Status => status_items += 1,
                     CapabilityRegion::Hero | CapabilityRegion::Details => {}
                 }
+                // ITERATION-006 §P0-A：跨仓 placement contract 强校验。
+                if let Err(err) = validate_placement_contract(placement) {
+                    return Err(ApiError::CapabilityPlacement(format!(
+                        "{}: {}",
+                        capability.id, err
+                    )));
+                }
             }
             // #4 固件门槛：minFirmware 必须是合法 semver。运行时解析失败会静默
             // fail-closed（能力隐藏），插件作者难以排查；此处预校验快速失败。
@@ -368,12 +375,21 @@ impl PluginManifest {
                                             || valid_declarative_options(options)
                                     })
                                     && item.get("format").is_none_or(valid_value_format)
+                                    && item.get("priority").is_none_or(|priority| {
+                                        priority
+                                            .as_f64()
+                                            .is_some_and(|p| (0.0..=100.0).contains(&p))
+                                    })
                             })
                         })
                 });
                 if !valid {
                     return Err(ApiError::CapabilitySummary(capability.id.clone()));
                 }
+            }
+            // ITERATION-006 §P0-G：validate field lightingRole and priority.
+            if !valid_lighting_field_contract(capability) {
+                return Err(ApiError::CapabilityPresentation(capability.id.clone()));
             }
         }
         if control_groups.len() > MAX_DASHBOARD_ITEMS || status_items > MAX_DASHBOARD_ITEMS {
@@ -465,6 +481,53 @@ fn valid_presentation_contract(capability: &Capability) -> bool {
         }
         _ => true,
     }
+}
+
+/// ITERATION-006 §P0-F/P0-G：validate field-level `priority` and `lightingRole`.
+///
+/// - `priority` must be a number in [0, 100] if present.
+/// - `lightingRole` must be one of `effect`, `primary-color`, `candidate` if present.
+///
+/// Applies to both `metadata.fields[]` and `metadata.zones[].fields[]`.
+fn valid_lighting_field_contract(capability: &Capability) -> bool {
+    let valid_priority = |field: &serde_json::Value| {
+        field.get("priority").is_none_or(|priority| {
+            priority
+                .as_f64()
+                .is_some_and(|p| (0.0..=100.0).contains(&p))
+        })
+    };
+    let valid_lighting_role = |field: &serde_json::Value| {
+        field.get("lightingRole").is_none_or(|role| {
+            role.as_str()
+                .is_some_and(|role| matches!(role, "effect" | "primary-color" | "candidate"))
+        })
+    };
+    let valid_field = |field: &serde_json::Value| {
+        field
+            .as_object()
+            .is_some_and(|_| valid_priority(field) && valid_lighting_role(field))
+    };
+
+    let fields_valid = capability
+        .metadata
+        .get("fields")
+        .and_then(serde_json::Value::as_array)
+        .is_none_or(|fields| fields.iter().all(valid_field));
+
+    let zones_valid = capability
+        .metadata
+        .get("zones")
+        .and_then(serde_json::Value::as_array)
+        .is_none_or(|zones| {
+            zones.iter().all(|zone| {
+                zone.get("fields")
+                    .and_then(serde_json::Value::as_array)
+                    .is_none_or(|fields| fields.iter().all(valid_field))
+            })
+        });
+
+    fields_valid && zones_valid
 }
 
 fn valid_declarative_presentation(capability: &Capability) -> bool {
@@ -586,12 +649,50 @@ fn valid_declarative_presentation(capability: &Capability) -> bool {
             }
         }
     }
-    let status_display_valid = metadata.get("statusDisplay").is_none_or(|display| {
-        display.as_object().is_some_and(|display| {
-            valid_path(display.get("valueSource"))
-                && display
+    // ITERATION-006 §P0-B：statusDisplay 支持两种形态：
+    //   1) 单值形态（向后兼容）：{ valueSource, labelKey?, valueOptions?, valueFormat?, onClickField? }
+    //   2) variants 形态（family-aware）：{ labelKey?, variants: [{ visibleWhen, valueSource,
+    //      onClickField?, valueFormat?, valueOptions? }] }
+    // 当声明 variants 时，运行时按 visibleWhen 选择激活的 variant，因此每个 variant 都
+    // 必须自带 valueSource 与 visibleWhen；onClickField 必须指向 declared_field_ids 中
+    // 已声明的字段。variants 与单值字段可同时存在（单值字段用作 fallback），但只要声明了
+    // variants 就必须有效。与 mira-mouse-plugins/scripts/validate.mjs validStatusDisplay 对齐。
+    let valid_status_display_variant = |variant: &serde_json::Value| {
+        variant.as_object().is_some_and(|variant| {
+            // ITERATION-006 §P0-B：variant 必须自带 visibleWhen（含 path）。
+            variant
+                .get("visibleWhen")
+                .and_then(serde_json::Value::as_object)
+                .is_some_and(|when| valid_path(when.get("path")))
+                && valid_path(variant.get("valueSource"))
+                && variant
+                    .get("valueOptions")
+                    .is_none_or(valid_declarative_options)
+                && variant.get("valueFormat").is_none_or(valid_value_format)
+                && variant.get("onClickField").is_none_or(|field| {
+                    valid_path(Some(field))
+                        && field
+                            .as_str()
+                            .is_some_and(|field| declared_field_ids.contains(field))
+                })
+                && variant
                     .get("labelKey")
                     .is_none_or(|label| valid_path(Some(label)))
+        })
+    };
+    let status_display_valid = metadata.get("statusDisplay").is_none_or(|display| {
+        display.as_object().is_some_and(|display| {
+            display
+                .get("labelKey")
+                .is_none_or(|label| valid_path(Some(label)))
+                && display.get("variants").is_none_or(|variants| {
+                    variants.as_array().is_some_and(|variants| {
+                        !variants.is_empty()
+                            && variants.len() <= 8
+                            && variants.iter().all(valid_status_display_variant)
+                    })
+                })
+                && (display.get("variants").is_some() || valid_path(display.get("valueSource")))
                 && display
                     .get("valueOptions")
                     .is_none_or(valid_declarative_options)
@@ -790,7 +891,12 @@ fn valid_numeric_range(metadata: &BTreeMap<String, serde_json::Value>) -> bool {
 }
 
 fn valid_value_format(value: &serde_json::Value) -> bool {
-    matches!(value.as_str(), Some("sleep" | "color"))
+    // ITERATION-006 §P0-A/P0-B：与 mira-mouse-plugins/scripts/validate.mjs FORMATS 对齐。
+    // 旧版仅允许 sleep|color，导致 percent/hertz/connection/default 在主仓校验失败。
+    matches!(
+        value.as_str(),
+        Some("sleep" | "color" | "percent" | "hertz" | "connection" | "default")
+    )
 }
 
 /// 校验连接类型是否为已知值。允许规范值（usb/receiver/bluetooth）
@@ -1080,11 +1186,13 @@ pub struct CapabilityPlacement {
     pub span: u8,
     pub icon: Option<String>,
     /// ITERATION-004 §2.1：Dashboard priority 0..100（越高越优先）。
+    /// ITERATION-006 §P0-A：跨仓统一强制范围 0..100（旧版 -1000..1000 已废弃）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub priority: Option<i32>,
     /// Dashboard 角色：fixed-core（DPI/回报率/灯光）| candidate（竞争槽位）| system（系统入口）。
+    /// ITERATION-006 §P0-A：使用严格 enum，跨仓与 TS/JS validator 保持一致。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dashboard_role: Option<String>,
+    pub dashboard_role: Option<DashboardRole>,
     /// 固定槽位 1..3（仅 DPI=1、回报率=2、灯光=3）。插件不得声明 fixedSlot=4。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fixed_slot: Option<u8>,
@@ -1095,12 +1203,175 @@ pub struct CapabilityPlacement {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dedupe_key: Option<String>,
     /// 未进入首页时的回退区域。
+    /// ITERATION-006 §P0-A：使用严格 enum，跨仓统一为 advanced | inventory | hidden。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fallback_region: Option<String>,
+    pub fallback_region: Option<FallbackRegion>,
+    /// P0-E：唯一候选槽位位置。仅对 dashboardRole='candidate' 有效。
+    /// leading：核心序列之前；trailing：核心序列之后。未声明时默认 trailing。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub optional_position: Option<OptionalPosition>,
+}
+
+/// ITERATION-006 §P0-A：Dashboard 角色 enum（跨仓统一）。
+/// 替代旧 Option<String>，避免插件作者拼写错误并在编译期固化契约。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum DashboardRole {
+    FixedCore,
+    Candidate,
+    System,
+}
+
+impl DashboardRole {
+    /// 返回与 JSON manifest 一致的 kebab-case 字符串。
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            DashboardRole::FixedCore => "fixed-core",
+            DashboardRole::Candidate => "candidate",
+            DashboardRole::System => "system",
+        }
+    }
+}
+
+/// ITERATION-006 §P0-A：Fallback 区域 enum（跨仓统一）。
+/// 不再接受 details 作为 fallbackRegion（details 是 placement.region，不是 fallback）。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum FallbackRegion {
+    Advanced,
+    Inventory,
+    Hidden,
+}
+
+impl FallbackRegion {
+    /// 返回与 JSON manifest 一致的 kebab-case 字符串。
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            FallbackRegion::Advanced => "advanced",
+            FallbackRegion::Inventory => "inventory",
+            FallbackRegion::Hidden => "hidden",
+        }
+    }
+}
+
+/// ITERATION-006 §P0-E：候选槽位位置 enum。
+/// 唯一候选只能放在核心序列的两端，不得插入核心中间。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum OptionalPosition {
+    Leading,
+    Trailing,
 }
 
 fn default_span() -> u8 {
     1
+}
+
+/// ITERATION-006 §P0-A：跨仓 placement contract 校验（Rust 端）。
+/// 与 mira-mouse-plugins/scripts/validate.mjs 的 validatePlacement 同步：
+/// - region 必填（已由 enum 保证）；
+/// - control/status region 必填 priority/dedupeKey/fallbackRegion；
+/// - priority ∈ [0,100]；
+/// - fixedSlot ∈ {1,2,3}，fixedSlot=4 一律拒绝；
+/// - candidate/system 不得声明 fixedSlot；
+/// - fourthSlotEligible=true 要求 candidate + priority>=90；
+/// - system 角色不得 fourthSlotEligible=true；
+/// - optionalPosition 只允许 leading|trailing，仅 candidate 角色可声明。
+///
+/// 返回 String 错误消息（嵌入 capability id 后由调用方包装成 ApiError）。
+fn validate_placement_contract(placement: &CapabilityPlacement) -> Result<(), String> {
+    let needs_dashboard_contract = matches!(
+        placement.region,
+        CapabilityRegion::Control | CapabilityRegion::Status
+    );
+    if needs_dashboard_contract {
+        if let Some(priority) = placement.priority {
+            if !(0..=100).contains(&priority) {
+                return Err(format!(
+                    "{} placement requires priority in [0,100], got {}",
+                    placement.region.as_str(),
+                    priority
+                ));
+            }
+        } else {
+            return Err(format!(
+                "{} placement requires priority",
+                placement.region.as_str()
+            ));
+        }
+        if placement
+            .dedupe_key
+            .as_deref()
+            .is_none_or(|key| key.is_empty() || key.len() > 96)
+        {
+            return Err(format!(
+                "{} placement requires non-empty dedupeKey (≤96 chars)",
+                placement.region.as_str()
+            ));
+        }
+        if placement.fallback_region.is_none() {
+            return Err(format!(
+                "{} placement requires fallbackRegion",
+                placement.region.as_str()
+            ));
+        }
+    } else if let Some(priority) = placement.priority {
+        if !(0..=100).contains(&priority) {
+            return Err(format!("invalid priority {} (expected 0..100)", priority));
+        }
+    }
+    if placement.fixed_slot == Some(4) {
+        return Err(
+            "fixedSlot=4 is not allowed (use dashboardRole=candidate + fourthSlotEligible instead)"
+                .into(),
+        );
+    }
+    if let Some(role) = placement.dashboard_role {
+        match role {
+            DashboardRole::FixedCore => {
+                if !matches!(placement.fixed_slot, Some(1) | Some(2) | Some(3)) {
+                    return Err("fixed-core placement requires fixedSlot (1..3)".into());
+                }
+            }
+            DashboardRole::Candidate | DashboardRole::System => {
+                if placement.fixed_slot.is_some() {
+                    return Err(format!(
+                        "dashboardRole='{:?}' must not declare fixedSlot (only fixed-core may)",
+                        role
+                    ));
+                }
+            }
+        }
+    }
+    if placement.fourth_slot_eligible == Some(true) {
+        if placement.dashboard_role != Some(DashboardRole::Candidate) {
+            return Err(format!(
+                "fourthSlotEligible=true requires dashboardRole=candidate, got {:?}",
+                placement.dashboard_role
+            ));
+        }
+        let priority = placement.priority.unwrap_or(0);
+        if priority < 90 {
+            return Err(format!(
+                "fourthSlotEligible=true requires priority>=90, got {}",
+                priority
+            ));
+        }
+    }
+    if placement.dashboard_role == Some(DashboardRole::System)
+        && placement.fourth_slot_eligible == Some(true)
+    {
+        return Err("system role must not declare fourthSlotEligible=true".into());
+    }
+    if let Some(role) = placement.dashboard_role {
+        if placement.optional_position.is_some() && role != DashboardRole::Candidate {
+            return Err(format!(
+                "optionalPosition is only valid on dashboardRole=candidate, got {:?}",
+                role
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -1732,6 +2003,182 @@ mod tests {
     }
 
     #[test]
+    fn accepts_status_display_with_variants_form() {
+        // ITERATION-006 §P0-B：statusDisplay.variants 形态必须通过校验。
+        // 每项 variant 自带 visibleWhen + valueSource，onClickField 指向已声明字段。
+        let capability = Capability {
+            id: "sleep-time".into(),
+            control: Control::Number,
+            label_key: "capability.sleep-time".into(),
+            read_only: false,
+            placements: vec![],
+            metadata: BTreeMap::from([
+                (
+                    "fields".into(),
+                    serde_json::json!([
+                        {"id": "protocol-a-wireless", "source": "capabilities.settings.wirelessSleepValue", "editor": "modal-number", "mutation": "set-wireless-sleep", "param": "seconds", "range": {"min": 10, "max": 65535, "step": 10}, "visibleWhen": {"path": "family", "in": ["protocol-a-direct", "protocol-a-receiver"]}},
+                        {"id": "am35-wireless", "source": "capabilities.sleepTime.wirelessSleepValue", "editor": "modal-number", "mutation": "set-sleep", "param": "wirelessSleepValue", "range": {"min": -1, "max": 65535, "step": 10}, "visibleWhen": {"path": "family", "in": ["am35-direct", "am35-receiver"]}}
+                    ]),
+                ),
+                (
+                    "statusDisplay".into(),
+                    serde_json::json!({
+                        "labelKey": "capability.sleep-time",
+                        "variants": [
+                            {"visibleWhen": {"path": "family", "in": ["protocol-a-direct", "protocol-a-receiver"]}, "valueSource": "capabilities.settings.wirelessSleepValue", "onClickField": "protocol-a-wireless", "valueFormat": "sleep"},
+                            {"visibleWhen": {"path": "family", "in": ["am35-direct", "am35-receiver"]}, "valueSource": "capabilities.sleepTime.wirelessSleepValue", "onClickField": "am35-wireless", "valueFormat": "sleep"}
+                        ]
+                    }),
+                ),
+                (
+                    "mutations".into(),
+                    serde_json::json!({
+                        "set-wireless-sleep": {"params": {"seconds": "u16"}},
+                        "set-sleep": {"params": {"wirelessSleepValue": "i16"}}
+                    }),
+                ),
+            ]),
+            probe: None,
+            connections: None,
+            min_firmware: None,
+        };
+        let manifest = PluginManifest {
+            schema_version: 1,
+            package_format_version: PACKAGE_FORMAT_VERSION,
+            plugin_id: "mira.example".into(),
+            name: "Example".into(),
+            version: "1.0.0".into(),
+            plugin_api: ">=1.0.0, <2.0.0".parse().unwrap(),
+            publisher_key_id: None,
+            evidence: EvidenceLevel::FixtureVerified,
+            family_evidence: BTreeMap::new(),
+            permissions: vec![],
+            runtime: PluginRuntime::default(),
+            capabilities: vec![capability],
+            writes_enabled: false,
+            exportable_fields: vec![],
+            depends_on: vec![],
+        };
+        assert!(manifest.validate().is_ok());
+    }
+
+    #[test]
+    fn rejects_status_display_variants_with_missing_visible_when() {
+        // ITERATION-006 §P0-B：variants 中每项必须包含 visibleWhen。
+        let capability = Capability {
+            id: "sleep-time".into(),
+            control: Control::Number,
+            label_key: "capability.sleep-time".into(),
+            read_only: false,
+            placements: vec![],
+            metadata: BTreeMap::from([
+                (
+                    "fields".into(),
+                    serde_json::json!([
+                        {"id": "wireless", "source": "capabilities.settings.wirelessSleepValue", "editor": "modal-number", "mutation": "set-wireless-sleep", "param": "seconds", "range": {"min": 10, "max": 65535, "step": 10}}
+                    ]),
+                ),
+                (
+                    "statusDisplay".into(),
+                    serde_json::json!({
+                        "variants": [
+                            {"valueSource": "capabilities.settings.wirelessSleepValue", "onClickField": "wireless"}
+                        ]
+                    }),
+                ),
+                (
+                    "mutations".into(),
+                    serde_json::json!({
+                        "set-wireless-sleep": {"params": {"seconds": "u16"}}
+                    }),
+                ),
+            ]),
+            probe: None,
+            connections: None,
+            min_firmware: None,
+        };
+        let manifest = PluginManifest {
+            schema_version: 1,
+            package_format_version: PACKAGE_FORMAT_VERSION,
+            plugin_id: "mira.example".into(),
+            name: "Example".into(),
+            version: "1.0.0".into(),
+            plugin_api: ">=1.0.0, <2.0.0".parse().unwrap(),
+            publisher_key_id: None,
+            evidence: EvidenceLevel::FixtureVerified,
+            family_evidence: BTreeMap::new(),
+            permissions: vec![],
+            runtime: PluginRuntime::default(),
+            capabilities: vec![capability],
+            writes_enabled: false,
+            exportable_fields: vec![],
+            depends_on: vec![],
+        };
+        assert_eq!(
+            manifest.validate(),
+            Err(ApiError::CapabilityPresentation("sleep-time".into()))
+        );
+    }
+
+    #[test]
+    fn rejects_status_display_variants_with_undeclared_on_click_field() {
+        // ITERATION-006 §P0-B：variants 中 onClickField 必须指向已声明字段。
+        let capability = Capability {
+            id: "sleep-time".into(),
+            control: Control::Number,
+            label_key: "capability.sleep-time".into(),
+            read_only: false,
+            placements: vec![],
+            metadata: BTreeMap::from([
+                (
+                    "fields".into(),
+                    serde_json::json!([
+                        {"id": "wireless", "source": "capabilities.settings.wirelessSleepValue", "editor": "modal-number", "mutation": "set-wireless-sleep", "param": "seconds", "range": {"min": 10, "max": 65535, "step": 10}}
+                    ]),
+                ),
+                (
+                    "statusDisplay".into(),
+                    serde_json::json!({
+                        "variants": [
+                            {"visibleWhen": {"path": "family", "in": ["protocol-a-direct"]}, "valueSource": "capabilities.settings.wirelessSleepValue", "onClickField": "missing"}
+                        ]
+                    }),
+                ),
+                (
+                    "mutations".into(),
+                    serde_json::json!({
+                        "set-wireless-sleep": {"params": {"seconds": "u16"}}
+                    }),
+                ),
+            ]),
+            probe: None,
+            connections: None,
+            min_firmware: None,
+        };
+        let manifest = PluginManifest {
+            schema_version: 1,
+            package_format_version: PACKAGE_FORMAT_VERSION,
+            plugin_id: "mira.example".into(),
+            name: "Example".into(),
+            version: "1.0.0".into(),
+            plugin_api: ">=1.0.0, <2.0.0".parse().unwrap(),
+            publisher_key_id: None,
+            evidence: EvidenceLevel::FixtureVerified,
+            family_evidence: BTreeMap::new(),
+            permissions: vec![],
+            runtime: PluginRuntime::default(),
+            capabilities: vec![capability],
+            writes_enabled: false,
+            exportable_fields: vec![],
+            depends_on: vec![],
+        };
+        assert_eq!(
+            manifest.validate(),
+            Err(ApiError::CapabilityPresentation("sleep-time".into()))
+        );
+    }
+
+    #[test]
     fn limits_dashboard_control_groups() {
         let capabilities = (0..7)
             .map(|index| Capability {
@@ -1745,12 +2192,13 @@ mod tests {
                     order: index,
                     span: 1,
                     icon: None,
-                    priority: None,
+                    priority: Some(50),
                     dashboard_role: None,
                     fixed_slot: None,
                     fourth_slot_eligible: None,
-                    dedupe_key: None,
-                    fallback_region: None,
+                    dedupe_key: Some(format!("control.{index}")),
+                    fallback_region: Some(FallbackRegion::Advanced),
+                    optional_position: None,
                 }],
                 metadata: BTreeMap::new(),
                 probe: None,
