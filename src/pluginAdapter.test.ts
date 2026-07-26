@@ -12,6 +12,7 @@ import {
   resolveFieldParams,
   resolveLightingMutations,
   resolveMutation,
+  resolveStatusDisplayVariant,
   resolveStatusField,
   resolveStateMapping,
   resolveSwitchState,
@@ -19,9 +20,10 @@ import {
   resolveVisibleWhen,
   resolveZones,
   simulateDemoMutation,
+  validatePlacement,
 } from './pluginAdapter';
 import { MOCK_DEVICE } from './mock';
-import type { DeviceState, PluginCapability, PluginField } from './types';
+import type { DeviceState, PluginCapability, PluginCapabilityPlacement, PluginField, PluginStatusDisplay } from './types';
 
 function makeDevice(state: Record<string, unknown> = {}, overrides: Partial<DeviceState> = {}): DeviceState {
   return {
@@ -732,5 +734,237 @@ describe('simulateDemoMutation', () => {
     const before = (MOCK_DEVICE.state.pollingRate as number);
     simulateDemoMutation(MOCK_DEVICE, 'set-polling-rate', { value: 9999 });
     expect(MOCK_DEVICE.state.pollingRate).toBe(before);
+  });
+});
+
+// ─── P0-E：resolveStatusDisplayVariant ────────────────────────────────────
+// ITERATION-005：AM35 Sleep family-aware status。同一 capability 在不同
+// family/connection 下指向不同的 valueSource/onClickField，由 variants 声明。
+
+describe('resolveStatusDisplayVariant', () => {
+  it('returns display itself when variants is absent', () => {
+    const display: PluginStatusDisplay = {
+      valueSource: 'state.wirelessSleepValue',
+      valueFormat: 'sleep',
+      onClickField: 'value',
+    };
+    const device = makeDevice({}, { family: 'am35-direct' });
+    expect(resolveStatusDisplayVariant(display, device)).toBe(display);
+  });
+
+  it('returns display itself when variants is empty', () => {
+    const display: PluginStatusDisplay = {
+      valueSource: 'state.wirelessSleepValue',
+      valueFormat: 'sleep',
+      onClickField: 'value',
+      variants: [],
+    };
+    const device = makeDevice({}, { family: 'am35-direct' });
+    expect(resolveStatusDisplayVariant(display, device)).toBe(display);
+  });
+
+  it('returns the first variant whose visibleWhen matches the device family', () => {
+    const display: PluginStatusDisplay = {
+      labelKey: 'capability.sleep-time',
+      variants: [
+        {
+          visibleWhen: { path: 'family', eq: 'am35-direct' },
+          valueSource: 'state.am35DirectSleep',
+          valueFormat: 'sleep',
+          onClickField: 'am35-direct-field',
+        },
+        {
+          visibleWhen: { path: 'family', eq: 'am35-receiver' },
+          valueSource: 'state.am35ReceiverSleep',
+          valueFormat: 'sleep',
+          onClickField: 'am35-receiver-field',
+        },
+        {
+          visibleWhen: { path: 'family', in: ['protocol-a-direct', 'protocol-a-receiver'] },
+          valueSource: 'state.protocolASleep',
+          valueFormat: 'sleep',
+          onClickField: 'protocol-a-field',
+        },
+      ],
+    };
+
+    const directDevice = makeDevice({}, { family: 'am35-direct' });
+    const matched = resolveStatusDisplayVariant(display, directDevice);
+    expect(matched.valueSource).toBe('state.am35DirectSleep');
+    expect(matched.onClickField).toBe('am35-direct-field');
+  });
+
+  it('matches variant using in-array for protocol-a families', () => {
+    const display: PluginStatusDisplay = {
+      variants: [
+        {
+          visibleWhen: { path: 'family', eq: 'am35-direct' },
+          valueSource: 'state.am35DirectSleep',
+        },
+        {
+          visibleWhen: { path: 'family', in: ['protocol-a-direct', 'protocol-a-receiver'] },
+          valueSource: 'state.protocolASleep',
+        },
+      ],
+    };
+
+    const protocolADevice = makeDevice({}, { family: 'protocol-a-direct' });
+    const matched = resolveStatusDisplayVariant(display, protocolADevice);
+    expect(matched.valueSource).toBe('state.protocolASleep');
+  });
+
+  it('falls back to display itself when no variant matches', () => {
+    const display: PluginStatusDisplay = {
+      valueSource: 'state.defaultSleep',
+      variants: [
+        {
+          visibleWhen: { path: 'family', eq: 'am35-direct' },
+          valueSource: 'state.am35DirectSleep',
+        },
+      ],
+    };
+
+    const unmatched = makeDevice({}, { family: 'protocol-a-direct' });
+    const result = resolveStatusDisplayVariant(display, unmatched);
+    expect(result).toBe(display);
+    expect(result.valueSource).toBe('state.defaultSleep');
+  });
+
+  it('returns the first matching variant when multiple variants could match', () => {
+    const display: PluginStatusDisplay = {
+      variants: [
+        {
+          visibleWhen: { path: 'connection', eq: 'wireless' },
+          valueSource: 'state.wirelessSleep',
+        },
+        {
+          visibleWhen: { path: 'connection', ne: 'usb' },
+          valueSource: 'state.nonUsbSleep',
+        },
+      ],
+    };
+
+    // wireless 同时匹配两个 variant；应返回第一个。
+    const device = makeDevice({}, { connection: 'wireless' });
+    const matched = resolveStatusDisplayVariant(display, device);
+    expect(matched.valueSource).toBe('state.wirelessSleep');
+  });
+});
+
+// ─── P1-B：validatePlacement ──────────────────────────────────────────────
+// ITERATION-005：Placement Contract Validator。检查 dashboard placement 的
+// 必填字段和非法组合。运行时兼容旧数据：undefined 的 priority/dashboardRole/
+// fallbackRegion 不算非法（由 selector 用默认值兜底）；此函数只检查"声明了但非法"的组合。
+
+describe('validatePlacement', () => {
+  function makePlacement(overrides: Partial<PluginCapabilityPlacement> = {}): PluginCapabilityPlacement {
+    return {
+      region: 'control',
+      order: 10,
+      span: 1,
+      priority: 50,
+      dashboardRole: 'candidate',
+      fallbackRegion: 'advanced',
+      ...overrides,
+    };
+  }
+
+  it('returns null for a valid candidate placement', () => {
+    expect(validatePlacement(makePlacement())).toBeNull();
+  });
+
+  it('returns null for a valid fixed-core placement with fixedSlot=1', () => {
+    expect(validatePlacement(makePlacement({
+      priority: 100, dashboardRole: 'fixed-core', fixedSlot: 1,
+    }))).toBeNull();
+  });
+
+  it('returns null for a valid status placement (no fixedSlot)', () => {
+    expect(validatePlacement(makePlacement({
+      region: 'status', priority: 70, dashboardRole: 'candidate',
+    }))).toBeNull();
+  });
+
+  it('rejects fixedSlot=4 (out of declared range)', () => {
+    // 类型层面禁止，但运行时旧数据可能越界；用 as 强制构造非法值。
+    const placement = makePlacement({
+      priority: 100, dashboardRole: 'fixed-core', fixedSlot: 4 as 1 | 2 | 3,
+    });
+    expect(validatePlacement(placement)).toContain('fixedSlot must be 1, 2, or 3');
+  });
+
+  it('rejects fixedSlot=0', () => {
+    const placement = makePlacement({
+      priority: 100, dashboardRole: 'fixed-core', fixedSlot: 0 as 1 | 2 | 3,
+    });
+    expect(validatePlacement(placement)).toContain('fixedSlot must be 1, 2, or 3');
+  });
+
+  it('rejects fixedSlot on a candidate-role placement', () => {
+    const placement = makePlacement({
+      priority: 100, dashboardRole: 'candidate', fixedSlot: 1,
+    });
+    expect(validatePlacement(placement)).toContain("requires dashboardRole='fixed-core'");
+  });
+
+  it('rejects fixedSlot on a system-role placement', () => {
+    const placement = makePlacement({
+      priority: 100, dashboardRole: 'system', fixedSlot: 2,
+    });
+    expect(validatePlacement(placement)).toContain("requires dashboardRole='fixed-core'");
+  });
+
+  it('rejects negative priority', () => {
+    expect(validatePlacement(makePlacement({ priority: -1 }))).toContain('priority must be in [0, 100]');
+  });
+
+  it('rejects priority greater than 100', () => {
+    expect(validatePlacement(makePlacement({ priority: 101 }))).toContain('priority must be in [0, 100]');
+  });
+
+  it('rejects fourthSlotEligible=true with priority below 90', () => {
+    const placement = makePlacement({
+      priority: 80, dashboardRole: 'candidate', fourthSlotEligible: true,
+    });
+    expect(validatePlacement(placement)).toContain('fourthSlotEligible=true requires priority>=90');
+  });
+
+  it('accepts fourthSlotEligible=true with priority exactly 90', () => {
+    expect(validatePlacement(makePlacement({
+      priority: 90, dashboardRole: 'candidate', fourthSlotEligible: true,
+    }))).toBeNull();
+  });
+
+  it('rejects fixedSlot on a status placement', () => {
+    const placement = makePlacement({
+      region: 'status', priority: 100, dashboardRole: 'fixed-core', fixedSlot: 1,
+    });
+    expect(validatePlacement(placement)).toContain('status placement must not declare fixedSlot');
+  });
+
+  it('rejects dashboardRole=fixed-core on a hero placement', () => {
+    const placement = makePlacement({
+      region: 'hero', priority: 100, dashboardRole: 'fixed-core',
+    });
+    expect(validatePlacement(placement)).toContain("hero placement must not use dashboardRole='fixed-core'");
+  });
+
+  it('rejects dashboardRole=fixed-core on a details placement', () => {
+    const placement = makePlacement({
+      region: 'details', priority: 100, dashboardRole: 'fixed-core',
+    });
+    expect(validatePlacement(placement)).toContain("details placement must not use dashboardRole='fixed-core'");
+  });
+
+  it('accepts a system-role hero placement (e.g. all-readings entry)', () => {
+    expect(validatePlacement(makePlacement({
+      region: 'hero', priority: 0, dashboardRole: 'system', fallbackRegion: 'hidden',
+    }))).toBeNull();
+  });
+
+  it('accepts a details placement with candidate role', () => {
+    expect(validatePlacement(makePlacement({
+      region: 'details', priority: 0, dashboardRole: 'candidate', fallbackRegion: 'hidden',
+    }))).toBeNull();
   });
 });

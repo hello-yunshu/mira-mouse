@@ -928,5 +928,18 @@
     "openDirFailed": "打开日志目录失败",
     "previewEmpty": "当前显示用于调试界面和交互的示例日志。",
     "previewAction": "Web 预览不会执行系统或文件操作。"
+  },
+  "advancedSettings": {
+    "title": "高级设置",
+    "open": "高级设置",
+    "section": {
+      "performance": "性能",
+      "lighting-details": "灯光详情",
+      "profiles": "配置文件",
+      "buttons": "按键",
+      "power": "电源",
+      "sensor": "传感器",
+      "device": "设备"
+    }
   }
 }
