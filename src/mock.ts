@@ -89,7 +89,7 @@ export const MOCK_DEVICE: DeviceState = {
     // 电量：只读静态展示，从 device.battery 顶层读取。
     {
       id: 'battery', control: 'ReadOnlyValue', labelKey: 'plugin.label.capability.battery', readOnly: true,
-      placements: [{ region: 'hero', order: 10, span: 1, icon: 'battery' }],
+      placements: [{ region: 'hero', order: 10, span: 1, icon: 'battery', priority: 0, dashboardRole: 'system', fallbackRegion: 'hidden' }],
       metadata: {
         fields: [{ id: 'value', source: 'battery', editor: 'static-readonly', format: 'percent', labelKey: 'plugin.label.capability.battery' }],
         stateMapping: { battery: 'batteryPercent', charging: 'charging' },
@@ -137,7 +137,7 @@ export const MOCK_DEVICE: DeviceState = {
     // 休眠时间：modal-range，状态栏点击进入编辑。
     {
       id: 'sleep-time', control: 'Number', labelKey: 'plugin.label.capability.sleep-time', readOnly: false,
-      placements: [{ region: 'status', order: 10, span: 1, icon: 'timer', priority: 80, fourthSlotEligible: false, dedupeKey: 'status.sleep', fallbackRegion: 'advanced' }],
+      placements: [{ region: 'status', order: 10, span: 1, icon: 'timer', priority: 80, dashboardRole: 'candidate', fourthSlotEligible: false, dedupeKey: 'status.sleep', fallbackRegion: 'advanced' }],
       metadata: {
         fields: [{
           id: 'value',
@@ -158,7 +158,7 @@ export const MOCK_DEVICE: DeviceState = {
     // 配置文件：只读展示。
     {
       id: 'profile', control: 'ReadOnlyValue', labelKey: 'plugin.label.capability.profile', readOnly: true,
-      placements: [{ region: 'status', order: 20, span: 1, icon: 'profile', priority: 70, fourthSlotEligible: false, dedupeKey: 'status.profile', fallbackRegion: 'advanced' }],
+      placements: [{ region: 'status', order: 20, span: 1, icon: 'profile', priority: 70, dashboardRole: 'candidate', fourthSlotEligible: false, dedupeKey: 'status.profile', fallbackRegion: 'advanced' }],
       metadata: {
         fields: [{ id: 'value', source: 'state.profile', editor: 'static-readonly', labelKey: 'plugin.label.capability.profile' }],
         statusDisplay: { valueSource: 'state.profile', onClickField: 'value' },
@@ -170,7 +170,7 @@ export const MOCK_DEVICE: DeviceState = {
       id: 'lighting', control: 'LightingZone', labelKey: 'plugin.label.capability.lighting', readOnly: false,
       placements: [
         { region: 'control', group: 'lighting', order: 30, span: 1, icon: 'lightbulb', priority: 100, dashboardRole: 'fixed-core', fixedSlot: 3, fourthSlotEligible: false, dedupeKey: 'dashboard.lighting', fallbackRegion: 'advanced' },
-        { region: 'status', order: 30, span: 1, icon: 'lightbulb', priority: 75, fourthSlotEligible: false, dedupeKey: 'status.lighting', fallbackRegion: 'advanced' }
+        { region: 'status', order: 30, span: 1, icon: 'lightbulb', priority: 75, dashboardRole: 'candidate', fourthSlotEligible: false, dedupeKey: 'status.lighting', fallbackRegion: 'advanced' }
       ],
       metadata: {
         accentSource: 'state.mouseLightColor',
@@ -224,7 +224,7 @@ export const MOCK_DEVICE: DeviceState = {
       },
     },
     // 固件：只读展示（多值聚合，无旧 metadata 字段）。
-    { id: 'firmware', control: 'ReadOnlyValue', labelKey: 'plugin.label.capability.firmware', readOnly: true, placements: [{ region: 'details', order: 10, span: 1, icon: 'info' }], metadata: {} },
+    { id: 'firmware', control: 'ReadOnlyValue', labelKey: 'plugin.label.capability.firmware', readOnly: true, placements: [{ region: 'details', order: 10, span: 1, icon: 'info', priority: 0, dashboardRole: 'candidate', fallbackRegion: 'hidden' }], metadata: {} },
   ],
   writableMutations: ['set-active-dpi-stage', 'set-dpi-stage-value', 'set-polling-rate', 'set-mouse-lighting', 'set-receiver-lighting', 'set-sleep'],
   evidence: 'fixture-verified', updatedAt: '00:00',

@@ -67,6 +67,13 @@ export interface PluginField {
   format?: PluginFieldFormat;
   visibleWhen?: PluginVisibleWhen;
   switch?: PluginSwitch;
+  /** P1-A：字段展示层级。`primary` 在 Dashboard 首页渲染；`details` 进入 Advanced Settings。
+   *  未声明时默认为 `primary`（向后兼容）。用于 Receiver Lighting 十字段分层。 */
+  presentation?: 'primary' | 'details';
+  /** P0-C：Advanced Settings 分组。未进入首页的可写字段按此分组展示。 */
+  advancedSection?: 'performance' | 'lighting-details' | 'profiles' | 'buttons' | 'power' | 'sensor' | 'device';
+  /** P0-C：同一 advancedSection 内的排序权重（越小越靠前）。 */
+  advancedOrder?: number;
 }
 
 /** 灯光区域声明：一组相关字段的集合。 */
@@ -95,10 +102,23 @@ export interface PluginStageLayout {
 /** 状态栏显示声明。 */
 export interface PluginStatusDisplay {
   labelKey?: string;
+  /** 当 variants 存在时可省略：由匹配的 variant 提供 valueSource。 */
+  valueSource?: string;
+  valueFormat?: PluginFieldFormat;
+  valueOptions?: PluginFieldOption[];
+  onClickField?: string;
+  /** P0-E：按设备状态选择不同的显示来源（如 AM35 sleep 按 family/connection 分支）。 */
+  variants?: PluginStatusDisplayVariant[];
+}
+
+/** P0-E：状态栏显示变体。第一个 visibleWhen 匹配的 variant 生效。 */
+export interface PluginStatusDisplayVariant {
+  visibleWhen: PluginVisibleWhen;
   valueSource: string;
   valueFormat?: PluginFieldFormat;
   valueOptions?: PluginFieldOption[];
   onClickField?: string;
+  labelKey?: string;
 }
 
 /** 控件下方的只读摘要项；内容与路径均由插件声明。 */
@@ -149,18 +169,21 @@ export interface PluginCapabilityPlacement {
   order: number;
   span: number;
   icon?: string;
-  /** ITERATION-004 §2.1：Dashboard priority 0..100（越高越优先）。 */
-  priority?: number;
-  /** Dashboard 角色：fixed-core（DPI/回报率/灯光）| candidate（竞争槽位）| system（系统入口如全部读数）。 */
-  dashboardRole?: 'fixed-core' | 'candidate' | 'system';
+  /** ITERATION-004 §2.1：Dashboard priority 0..100（越高越优先）。
+   *  P1-B：类型层面必填；运行时仍兼容旧数据（undefined 按 0 处理）。 */
+  priority: number;
+  /** Dashboard 角色：fixed-core（DPI/回报率/灯光）| candidate（竞争槽位）| system（系统入口如全部读数）。
+   *  P1-B：类型层面必填；运行时仍兼容旧数据（undefined 按 'candidate' 处理）。 */
+  dashboardRole: 'fixed-core' | 'candidate' | 'system';
   /** 固定槽位 1..3（仅 DPI=1、回报率=2、灯光=3）。插件不得声明 fixedSlot=4。 */
   fixedSlot?: 1 | 2 | 3;
   /** 是否有资格竞争第 4 槽位（需同时 priority >= 90）。 */
   fourthSlotEligible?: boolean;
   /** 全局去重键（如 "dashboard.dpi"、"system.all-readings"）。相同 dedupeKey 只保留一个。 */
   dedupeKey?: string;
-  /** 未进入首页时的回退区域。 */
-  fallbackRegion?: 'advanced' | 'inventory' | 'hidden';
+  /** 未进入首页时的回退区域。
+   *  P1-B：类型层面必填；运行时仍兼容旧数据（undefined 按 'advanced' 处理）。 */
+  fallbackRegion: 'advanced' | 'inventory' | 'hidden';
 }
 export interface DeviceState {
   name: string;
