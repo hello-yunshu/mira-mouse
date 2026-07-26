@@ -74,6 +74,15 @@ export interface PluginField {
   advancedSection?: 'performance' | 'lighting-details' | 'profiles' | 'buttons' | 'power' | 'sensor' | 'device';
   /** P0-C：同一 advancedSection 内的排序权重（越小越靠前）。 */
   advancedOrder?: number;
+  /** P0-F/P0-G：子块优先级（0..100，越高越优先）。用于回报率/灯光子块选择。
+   *  未声明时按声明顺序处理。 */
+  priority?: number;
+  /** P0-G：灯光子块角色。
+   *  - `effect`：固定最左（灯效/模式）；
+   *  - `primary-color`：固定最右（主颜色）；
+   *  - `candidate`：参与中间最多 4 个位置竞争。
+   *  未声明时视为 `candidate`（向后兼容）。 */
+  lightingRole?: 'effect' | 'primary-color' | 'candidate';
 }
 
 /** 灯光区域声明：一组相关字段的集合。 */
@@ -130,6 +139,9 @@ export interface PluginSummaryItem {
   unit?: string;
   format?: PluginFieldFormat;
   options?: PluginFieldOption[];
+  /** P0-F：子块优先级（0..100，越高越优先）。用于回报率页面子块选择。
+   *  未声明时按声明顺序处理。超过 maxSubBlocks 的低优先级项进入 Advanced Settings。 */
+  priority?: number;
 }
 
 /** 字段名 → snapshot source 路径映射。 */
@@ -182,8 +194,15 @@ export interface PluginCapabilityPlacement {
   /** 全局去重键（如 "dashboard.dpi"、"system.all-readings"）。相同 dedupeKey 只保留一个。 */
   dedupeKey?: string;
   /** 未进入首页时的回退区域。
-   *  P1-B：类型层面必填；运行时仍兼容旧数据（undefined 按 'advanced' 处理）。 */
+   *  P1-B：类型层面必填；运行时仍兼容旧数据（undefined 按 'advanced' 处理）。
+   *  ITERATION-006 §P0-A：跨仓统一为 advanced | inventory | hidden（不再接受 details）。 */
   fallbackRegion: 'advanced' | 'inventory' | 'hidden';
+  /** P0-E：唯一候选槽位位置。仅对 dashboardRole='candidate' 有效。
+   *  - leading：放在核心序列（DPI→回报率→灯光）之前；
+   *  - trailing：放在核心序列之后；
+   *  未声明时默认 trailing。
+   *  不得用 fixedSlot=4 表达候选；核心三项相对顺序不可被打断。 */
+  optionalPosition?: 'leading' | 'trailing';
 }
 export interface DeviceState {
   name: string;
