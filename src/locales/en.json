@@ -928,5 +928,18 @@
     "openDirFailed": "Failed to open log directory",
     "previewEmpty": "Showing sample logs for interface and interaction debugging.",
     "previewAction": "System and file operations are disabled in Web Preview."
+  },
+  "advancedSettings": {
+    "title": "Advanced Settings",
+    "open": "Advanced Settings",
+    "section": {
+      "performance": "Performance",
+      "lighting-details": "Lighting Details",
+      "profiles": "Profiles",
+      "buttons": "Buttons",
+      "power": "Power",
+      "sensor": "Sensor",
+      "device": "Device"
+    }
   }
 }

@@ -36,6 +36,13 @@ export interface DashboardSelectionContext {
   usedDedupeKeys: Set<string>;
 }
 
+/** P0-A：纯函数选择结果。usedDedupeKeys 是新 Set，包含输入 keys + 本次选中的 keys。 */
+export interface DashboardSelectionResult<T> {
+  selected: T[];
+  fallback: T[];
+  usedDedupeKeys: Set<string>;
+}
+
 /** 控制区 placement 候选项：capability + placement + 解析后的优先级。 */
 export interface ControlCandidate {
   capability: PluginCapability;
@@ -53,7 +60,7 @@ export interface ControlCandidate {
 }
 
 /**
- * ITERATION-004 §2.1：Dashboard 上方控制区统一选择器。
+ * ITERATION-005 §P0-A/P0-B：Dashboard 上方控制区统一选择器（纯函数）。
  *
  * 替代旧的 `sort(order).slice(0, MAX_CONTROL_GROUPS)`，按以下规则选择：
  * 1. 过滤 availability / visibleWhen / content；
@@ -62,6 +69,9 @@ export interface ControlCandidate {
  * 4. 从剩余候选中选择第 4 项（需 priority>=90 且 fourthSlotEligible）；
  * 5. 未选中项按 fallbackRegion 回退（调用方可用于高级设置页）。
  *
+ * P0-A：输入 ReadonlySet<string>，绝不 mutate 调用者 Set；返回新的 Set。
+ * P0-B：删除空缺 fixedSlot 回退填充；fixedSlot 1/2/3 仅接受 fixedSlot===1/2/3
+ *       的候选；某 fixedSlot 无候选时该位置为空，普通 candidate 绝不填入 fixedSlot。
  * 没有合格第 4 项时只显示 3 项，不显示空占位，不为凑满 4 格降低阈值。
  */
 export function selectDashboardControls(
@@ -69,8 +79,11 @@ export function selectDashboardControls(
   device: DeviceState,
   availabilityFilter: (capability: PluginCapability) => boolean,
   contentFilter: (capability: PluginCapability) => boolean,
-  context: DashboardSelectionContext,
-): { selected: ControlCandidate[]; fallback: ControlCandidate[] } {
+  usedDedupeKeys: ReadonlySet<string>,
+): DashboardSelectionResult<ControlCandidate> {
+  // P0-A：本地副本，绝不 mutate 调用者 Set。
+  const usedKeys = new Set(usedDedupeKeys);
+
   // 收集所有 control placement 候选项。
   const candidates: ControlCandidate[] = [];
   for (const capability of capabilities) {
@@ -99,7 +112,7 @@ export function selectDashboardControls(
       noDedupeKey.push(candidate);
       continue;
     }
-    if (context.usedDedupeKeys.has(candidate.dedupeKey)) {
+    if (usedKeys.has(candidate.dedupeKey)) {
       continue; // 已被其他区域使用（如系统全部读数入口）。
     }
     const existing = byDedupeKey.get(candidate.dedupeKey);
@@ -109,7 +122,7 @@ export function selectDashboardControls(
   }
   const deduped = [...byDedupeKey.values(), ...noDedupeKey];
 
-  // 放置 fixedSlot 1/2/3。
+  // 放置 fixedSlot 1/2/3。P0-B：仅接受 fixedSlot===1/2/3 的候选，不回退填充。
   const fixedSlots: (ControlCandidate | undefined)[] = [undefined, undefined, undefined];
   const remaining: ControlCandidate[] = [];
   for (const candidate of deduped) {
@@ -121,7 +134,7 @@ export function selectDashboardControls(
       const idx = candidate.fixedSlot - 1;
       if (!fixedSlots[idx]) {
         fixedSlots[idx] = candidate;
-        if (candidate.dedupeKey) context.usedDedupeKeys.add(candidate.dedupeKey);
+        if (candidate.dedupeKey) usedKeys.add(candidate.dedupeKey);
         continue;
       }
     }
@@ -135,17 +148,9 @@ export function selectDashboardControls(
     return a.groupId < b.groupId ? -1 : a.groupId > b.groupId ? 1 : 0;
   });
 
-  // ITERATION-004 §2.1：空缺 fixedSlot 回退填充。
-  // 当设备未声明某 fixedSlot（如无 DPI/polling/lighting）时，从 remaining 中
-  // 按 priority desc → order asc 选出最高优先级候选填充空位，确保 Dashboard
-  // 始终展示最多 3 个核心控件而非空白。填充项不再参与第 4 槽位竞争。
-  for (let idx = 0; idx < fixedSlots.length && remaining.length > 0; idx++) {
-    if (fixedSlots[idx]) continue;
-    const next = remaining.shift();
-    if (!next) break;
-    fixedSlots[idx] = next;
-    if (next.dedupeKey) context.usedDedupeKeys.add(next.dedupeKey);
-  }
+  // P0-B：已删除"空缺 fixedSlot 回退填充"逻辑。
+  // fixedSlot 1/2/3 仅接受 fixedSlot===1/2/3 的候选；若某 fixedSlot 无候选，
+  // 该位置为空（不显示）。普通 candidate 绝不填入 fixedSlot。
 
   const selected: ControlCandidate[] = [];
   for (const candidate of fixedSlots) {
@@ -159,7 +164,7 @@ export function selectDashboardControls(
     );
     if (fourthCandidate) {
       selected.push(fourthCandidate);
-      if (fourthCandidate.dedupeKey) context.usedDedupeKeys.add(fourthCandidate.dedupeKey);
+      if (fourthCandidate.dedupeKey) usedKeys.add(fourthCandidate.dedupeKey);
       remaining.splice(remaining.indexOf(fourthCandidate), 1);
     }
   }
@@ -171,11 +176,11 @@ export function selectDashboardControls(
     return region !== 'hidden';
   });
 
-  return { selected, fallback };
+  return { selected, fallback, usedDedupeKeys: usedKeys };
 }
 
 /**
- * ITERATION-004 §2.1：Dashboard 下方状态区统一选择器。
+ * ITERATION-005 §P0-A/P0-B：Dashboard 下方状态区统一选择器（纯函数）。
  *
  * 替代旧的 `sort(order).slice(0, MAX_STATUS_ITEMS)`，按以下规则选择：
  * 1. 过滤 availability / visibleWhen / reported value；
@@ -183,6 +188,10 @@ export function selectDashboardControls(
  * 3. 按 priority desc、order asc、stable id asc 排序；
  * 4. 选择最多 3 个基础项（priority >= STATUS_BASE_SLOT_MIN_PRIORITY）；
  * 5. 第 4 项单独应用 priority>=90 与 fourthSlotEligible。
+ *
+ * P0-A：输入 ReadonlySet<string>，绝不 mutate 调用者 Set；返回新的 Set。
+ * P0-B：删除"高优先级候选不足时从 deferred 补齐至 PREFERRED_COUNT"逻辑；
+ *       只选 priority >= STATUS_BASE_SLOT_MIN_PRIORITY 的候选；不足 3 项就显示少于 3 项。
  * 不显示空占位，不为了布局完整展示低价值项目。
  */
 export function selectDashboardStatus(
@@ -190,8 +199,11 @@ export function selectDashboardStatus(
   device: DeviceState,
   availabilityFilter: (capability: PluginCapability) => boolean,
   hasReportedValue: (capability: PluginCapability) => boolean,
-  context: DashboardSelectionContext,
-): { selected: ControlCandidate[]; fallback: ControlCandidate[] } {
+  usedDedupeKeys: ReadonlySet<string>,
+): DashboardSelectionResult<ControlCandidate> {
+  // P0-A：本地副本，绝不 mutate 调用者 Set。
+  const usedKeys = new Set(usedDedupeKeys);
+
   const candidates: ControlCandidate[] = [];
   for (const capability of capabilities) {
     if (!availabilityFilter(capability)) continue;
@@ -219,7 +231,7 @@ export function selectDashboardStatus(
       noDedupeKey.push(candidate);
       continue;
     }
-    if (context.usedDedupeKeys.has(candidate.dedupeKey)) {
+    if (usedKeys.has(candidate.dedupeKey)) {
       continue;
     }
     const existing = byDedupeKey.get(candidate.dedupeKey);
@@ -239,9 +251,9 @@ export function selectDashboardStatus(
   const selected: ControlCandidate[] = [];
   const deferred: ControlCandidate[] = [];
 
-  // 基础 3 槽位：优先选择 priority >= STATUS_BASE_SLOT_MIN_PRIORITY 的候选。
-  // ITERATION-004 §2.1：若高优先级候选不足 3 个，从低优先级候选中按排序填充，
-  // 确保 Dashboard 状态区始终展示可用读数而非空白。
+  // P0-B：基础 3 槽位只选 priority >= STATUS_BASE_SLOT_MIN_PRIORITY 的候选。
+  // 已删除"高优先级候选不足时从 deferred 补齐至 PREFERRED_COUNT"逻辑。
+  // 不足 3 项就显示少于 3 项，不显示空占位。
   for (const candidate of deduped) {
     if (selected.length >= STATUS_PREFERRED_COUNT) {
       deferred.push(candidate);
@@ -249,16 +261,10 @@ export function selectDashboardStatus(
     }
     if (candidate.priority >= STATUS_BASE_SLOT_MIN_PRIORITY) {
       selected.push(candidate);
-      if (candidate.dedupeKey) context.usedDedupeKeys.add(candidate.dedupeKey);
+      if (candidate.dedupeKey) usedKeys.add(candidate.dedupeKey);
     } else {
       deferred.push(candidate);
     }
-  }
-  // 回退填充：高优先级候选不足时从 deferred 中按排序补齐至 PREFERRED_COUNT。
-  while (selected.length < STATUS_PREFERRED_COUNT && deferred.length > 0) {
-    const next = deferred.shift()!;
-    selected.push(next);
-    if (next.dedupeKey) context.usedDedupeKeys.add(next.dedupeKey);
   }
 
   // 第 4 槽位：priority>=90 且 fourthSlotEligible。
@@ -268,7 +274,7 @@ export function selectDashboardStatus(
     );
     if (fourthCandidate) {
       selected.push(fourthCandidate);
-      if (fourthCandidate.dedupeKey) context.usedDedupeKeys.add(fourthCandidate.dedupeKey);
+      if (fourthCandidate.dedupeKey) usedKeys.add(fourthCandidate.dedupeKey);
     }
   }
 
@@ -280,7 +286,7 @@ export function selectDashboardStatus(
     if (region !== 'hidden') fallback.push(candidate);
   }
 
-  return { selected, fallback };
+  return { selected, fallback, usedDedupeKeys: usedKeys };
 }
 
 /** 从插件声明的 mutation 候选中选择设备实际允许的第一项。 */
@@ -599,6 +605,64 @@ export function resolveZones(capability: PluginCapability, device: DeviceState):
 /// 读 capability.metadata.statusDisplay。
 export function resolveStatusDisplay(capability: PluginCapability): PluginStatusDisplay | undefined {
   return capability.metadata.statusDisplay;
+}
+
+/**
+ * P0-E：解析状态栏显示变体。
+ *
+ * 若 display.variants 存在，返回第一个 visibleWhen 匹配的 variant；
+ * 否则返回 display 本身（向后兼容）。
+ *
+ * 用于 AM35 Sleep family-aware status：同一 capability 在不同 family/connection
+ * 下指向不同的 valueSource/onClickField，避免在宿主按 pluginId 硬编码协议分支。
+ */
+export function resolveStatusDisplayVariant(
+  display: PluginStatusDisplay,
+  device: DeviceState,
+): PluginStatusDisplay {
+  if (!display.variants || display.variants.length === 0) return display;
+  for (const variant of display.variants) {
+    if (resolveVisibleWhen(variant.visibleWhen, device)) return variant;
+  }
+  // 无匹配 variant 时回退到 display 本身（可能 valueSource 缺失，调用方需处理）。
+  return display;
+}
+
+/**
+ * P1-B：Placement Contract Validator。
+ *
+ * 返回错误消息或 null（合法）。检查 dashboard placement 的必填字段和非法组合。
+ * 运行时兼容旧数据：undefined 的 priority/dashboardRole/fallbackRegion 不算非法
+ * （由 selector 用默认值兜底）；此函数只检查"声明了但非法"的组合。
+ */
+export function validatePlacement(placement: PluginCapabilityPlacement): string | null {
+  // fixedSlot 只能是 1/2/3（类型已约束，但运行时旧数据可能越界）。
+  if (placement.fixedSlot !== undefined && placement.fixedSlot !== 1 && placement.fixedSlot !== 2 && placement.fixedSlot !== 3) {
+    return `fixedSlot must be 1, 2, or 3, got ${String(placement.fixedSlot)}`;
+  }
+  // fixedSlot 仅对 fixed-core 角色合法。
+  const role = placement.dashboardRole ?? 'candidate';
+  if (placement.fixedSlot !== undefined && role !== 'fixed-core') {
+    return `fixedSlot=${placement.fixedSlot} requires dashboardRole='fixed-core', got '${role}'`;
+  }
+  // priority 范围检查（0..100）。
+  const priority = placement.priority ?? 0;
+  if (typeof priority === 'number' && (priority < 0 || priority > 100)) {
+    return `priority must be in [0, 100], got ${priority}`;
+  }
+  // fourthSlotEligible 为 true 时 priority 必须 >= 90。
+  if (placement.fourthSlotEligible && priority < FOURTH_SLOT_MIN_PRIORITY) {
+    return `fourthSlotEligible=true requires priority>=${FOURTH_SLOT_MIN_PRIORITY}, got priority=${priority}`;
+  }
+  // status placement 不应有 fixedSlot。
+  if (placement.region === 'status' && placement.fixedSlot !== undefined) {
+    return `status placement must not declare fixedSlot, got ${placement.fixedSlot}`;
+  }
+  // hero/details placement 不应有 dashboardRole=fixed-core。
+  if ((placement.region === 'hero' || placement.region === 'details') && role === 'fixed-core') {
+    return `${placement.region} placement must not use dashboardRole='fixed-core'`;
+  }
+  return null;
 }
 
 /**
