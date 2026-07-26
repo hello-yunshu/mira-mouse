@@ -7,8 +7,8 @@ use mira_plugin_api::PluginManifest;
 // 不再维护自己的 forbidden_source()。pack/sign/inspect/verify 使用同一实现。
 use mira_plugin_runtime::{
     allowed, canonical_json, framed_response_matches_request, inspect_package,
-    plan_request_fragments, MultiPacketAssembler, ProtocolPackage, TrustStore,
-    PACKAGE_FORMAT_VERSION,
+    plan_request_fragments, resolve_marker_offsets, MultiPacketAssembler, ProtocolPackage,
+    TrustStore, PACKAGE_FORMAT_VERSION,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -545,18 +545,25 @@ fn run_typed_fixture(
         // 验证每个 falseAlarm 都有 command + expectedFromRequestChecksum + actualResponseByte。
         return run_checksum_false_alarm_fixture(fixture);
     }
-    // 未识别的 fixture 类型：结构验证通过，标记为 skipped。
-    Ok(()).map_err(|_: ()| {
-        FixtureError::Skipped("unrecognized fixture type (structural validation only)".into())
-    })?;
-    // 上一行 map_err 永不触发，仅为了类型推断。实际逻辑如下：
-    if fixture.get("case").is_some() {
-        Err(FixtureError::Skipped(
-            "unrecognized fixture type (structural validation only)".into(),
-        ))
-    } else {
-        Err(FixtureError::Failed("fixture missing 'case' field".into()))
+    // ITERATION-004 §2.5：未识别的 fixture 类型默认 FAIL（不再静默 SKIP）。
+    // 仅当 fixture 显式声明 `hardwareOnly: true` 时才 SKIP（需要真实硬件才能执行）。
+    // 这确保 0 unexplained skips：所有 skip 都有明确理由（hardwareOnly）。
+    if fixture.get("case").is_none() {
+        return Err(FixtureError::Failed("fixture missing 'case' field".into()));
     }
+    if fixture
+        .get("hardwareOnly")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return Err(FixtureError::Skipped(
+            "hardwareOnly fixture (requires real device, structural validation only)".into(),
+        ));
+    }
+    Err(FixtureError::Failed(format!(
+        "unrecognized fixture type (case={}) — add hardwareOnly:true to skip, or implement a typed executor",
+        fixture.get("case").and_then(Value::as_str).unwrap_or("<unnamed>")
+    )))
 }
 
 /// Gate B §1：multi-packet response fixture 真实执行。
@@ -565,26 +572,29 @@ fn run_typed_fixture(
 /// - 后续包能正确拼接
 /// - assembled payload 长度匹配 expectedAssembledPayloadLength
 /// - assembled payload 前缀匹配 expectedAssembledPayloadPrefix
+///
+/// ITERATION-004 §2.5：动态 marker 搜索 + continuation 事务安全。
+/// - 优先使用 `multiPacketMarkerSearchStart/End` + `*FromMarker` 偏移（动态搜索模式）。
+/// - 回退到固定 `multiPacketMarkerOffset` + `multiPacketTotalLengthOffset`（向后兼容）。
+/// - 配置 `configure_continuation_safety`：outer type 校验 + 新首包拒绝。
+/// - 每个 continuation 包都经过 `is_new_first_packet` / `outer_type_matches` 校验。
 fn run_multi_packet_fixture(fixture: &Value) -> Result<(), FixtureError> {
     let layout = fixture
         .get("frameLayout")
         .ok_or_else(|| FixtureError::Failed("multi-packet fixture missing frameLayout".into()))?;
-    let marker_offset = layout
+    let marker_offset_opt = layout
         .get("multiPacketMarkerOffset")
         .and_then(Value::as_u64)
-        .ok_or_else(|| FixtureError::Failed("frameLayout missing multiPacketMarkerOffset".into()))?
-        as usize;
+        .map(|v| v as usize);
     let marker_value = layout
         .get("multiPacketMarkerValue")
         .and_then(Value::as_u64)
         .ok_or_else(|| FixtureError::Failed("frameLayout missing multiPacketMarkerValue".into()))?
         as u8;
-    let total_length_offset = layout
+    let total_length_offset_opt = layout
         .get("multiPacketTotalLengthOffset")
         .and_then(Value::as_u64)
-        .ok_or_else(|| {
-            FixtureError::Failed("frameLayout missing multiPacketTotalLengthOffset".into())
-        })? as usize;
+        .map(|v| v as usize);
     let total_length_bytes = layout
         .get("multiPacketTotalLengthBytes")
         .and_then(Value::as_u64)
@@ -597,8 +607,6 @@ fn run_multi_packet_fixture(fixture: &Value) -> Result<(), FixtureError> {
         })? as usize;
     let endian = layout.get("endian").and_then(Value::as_str).unwrap_or("le");
     // ITERATION-003 Gate B §6.1：first_data_offset 与 engine.rs 行为一致。
-    // 优先使用 frameLayout.multiPacketFirstDataOffset；
-    // 未声明时回退到 payloadOffset（与 engine.rs `unwrap_or(payload_off)` 一致）。
     let payload_offset = layout
         .get("payloadOffset")
         .and_then(Value::as_u64)
@@ -608,6 +616,51 @@ fn run_multi_packet_fixture(fixture: &Value) -> Result<(), FixtureError> {
         .and_then(Value::as_u64)
         .map(|v| v as usize)
         .unwrap_or(payload_offset);
+    // ITERATION-004 §2.5：动态 marker 搜索范围 + 相对偏移。
+    let marker_search_start = layout
+        .get("multiPacketMarkerSearchStart")
+        .and_then(Value::as_u64)
+        .map(|v| v as usize);
+    let marker_search_end = layout
+        .get("multiPacketMarkerSearchEnd")
+        .and_then(Value::as_u64)
+        .map(|v| v as usize);
+    let length_offset_from_marker = layout
+        .get("multiPacketLengthOffsetFromMarker")
+        .and_then(Value::as_u64)
+        .map(|v| v as usize);
+    let first_data_offset_from_marker = layout
+        .get("multiPacketFirstDataOffsetFromMarker")
+        .and_then(Value::as_u64)
+        .map(|v| v as usize);
+    // ITERATION-004 §2.5：continuation 事务安全配置。
+    let reject_new_first_packet = layout
+        .get("multiPacketRejectNewFirstPacket")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let type_field_offset = layout
+        .get("typeFieldOffset")
+        .and_then(Value::as_u64)
+        .map(|v| v as usize);
+    let type_field_value = layout
+        .get("typeFieldValue")
+        .and_then(Value::as_u64)
+        .map(|v| v as u8);
+    // ITERATION-004 §2.4：marker 前缀字节（两字节 marker 校验）。
+    let marker_prefix_value = layout
+        .get("multiPacketMarkerPrefixValue")
+        .and_then(Value::as_u64)
+        .map(|v| v as u8);
+    let max_packets = layout
+        .get("multiPacketMaxPackets")
+        .and_then(Value::as_u64)
+        .map(|v| v as u8)
+        .unwrap_or(16);
+    let max_total_length = layout
+        .get("multiPacketMaxTotalLength")
+        .and_then(Value::as_u64)
+        .map(|v| v as usize)
+        .unwrap_or(4096);
     let response_packets = fixture
         .get("responsePackets")
         .and_then(Value::as_array)
@@ -626,16 +679,35 @@ fn run_multi_packet_fixture(fixture: &Value) -> Result<(), FixtureError> {
         .iter()
         .filter_map(|v| v.as_u64().map(|n| n as u8))
         .collect();
+    // ITERATION-004 §2.5：动态 marker 搜索优先于固定 offset（与 engine.rs 行为一致）。
+    let marker_search_result = resolve_marker_offsets(
+        &first_rest,
+        marker_search_start,
+        marker_search_end,
+        marker_value,
+        length_offset_from_marker,
+        first_data_offset_from_marker,
+        marker_offset_opt,
+        total_length_offset_opt,
+        first_data_offset,
+    )
+    .map_err(|e| FixtureError::Failed(format!("resolve_marker_offsets: {e}")))?;
+    let (actual_marker_off, actual_total_off, actual_first_data_off) = marker_search_result
+        .ok_or_else(|| {
+            FixtureError::Failed(
+                "first packet was not recognized as multi-packet (marker mismatch)".into(),
+            )
+        })?;
     let mut assembler = MultiPacketAssembler::try_start(
         &first_rest,
-        first_data_offset,
-        marker_offset,
+        actual_first_data_off,
+        actual_marker_off,
         marker_value,
-        total_length_offset,
+        actual_total_off,
         total_length_bytes,
         continuation_offset,
-        16,
-        4096,
+        max_packets,
+        max_total_length,
         endian,
     )
     .map_err(|e| FixtureError::Failed(format!("try_start: {e}")))?
@@ -644,7 +716,16 @@ fn run_multi_packet_fixture(fixture: &Value) -> Result<(), FixtureError> {
             "first packet was not recognized as multi-packet (marker mismatch)".into(),
         )
     })?;
-    // 后续包
+    // ITERATION-004 §2.5：配置 continuation 事务安全（与 engine.rs 行为一致）。
+    assembler.configure_continuation_safety(
+        actual_marker_off,
+        marker_value,
+        reject_new_first_packet,
+        type_field_offset,
+        type_field_value,
+        marker_prefix_value,
+    );
+    // 后续包：每个包都执行 continuation safety 检查。
     for (idx, pkt) in response_packets.iter().enumerate().skip(1) {
         let rest: Vec<u8> = pkt
             .get("rest")
@@ -653,6 +734,17 @@ fn run_multi_packet_fixture(fixture: &Value) -> Result<(), FixtureError> {
             .iter()
             .filter_map(|v| v.as_u64().map(|n| n as u8))
             .collect();
+        // Gate A §5.2：continuation 事务安全检查。
+        if assembler.is_new_first_packet(&rest) {
+            return Err(FixtureError::Failed(format!(
+                "responsePackets[{idx}] rejected: new first-packet marker detected at offset {actual_marker_off}"
+            )));
+        }
+        if !assembler.outer_type_matches(&rest) {
+            return Err(FixtureError::Failed(format!(
+                "responsePackets[{idx}] rejected: outer type mismatch at type_field_offset"
+            )));
+        }
         let complete = assembler
             .add_continuation(&rest)
             .map_err(|e| FixtureError::Failed(format!("add_continuation[{idx}]: {e}")))?;

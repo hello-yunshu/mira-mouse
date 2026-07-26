@@ -272,10 +272,11 @@ describe('Mira shell', () => {
     fireEvent.click(screen.getByRole('button', { name: '切换鼠标' }));
     fireEvent.click(screen.getByText('Mira Example USB Mouse').closest('button')!);
     expect(screen.getByRole('heading', { name: 'Mira Example USB Mouse' })).toBeInTheDocument();
+    // ITERATION-004 §2.1：fixedSlot 1/2/3 (DPI/回报率/灯光) 排在前 3 位，
+    // 第 4 槽位为 priority>=90 且 fourthSlotEligible 的候选（配置控制 priority=95）。
     expect(screen.getAllByRole('tab').map((tab) => tab.textContent))
-      .toEqual(['配置控制', 'DPI', '回报率', '灯光']);
-    expect(screen.getByRole('tab', { name: '配置控制' })).toHaveAttribute('aria-selected', 'true');
-    fireEvent.click(screen.getByRole('tab', { name: 'DPI' }));
+      .toEqual(['DPI', '回报率', '灯光', '配置控制']);
+    expect(screen.getByRole('tab', { name: 'DPI' })).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByLabelText('当前 DPI：1600，点击编辑')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('tab', { name: '灯光' }));

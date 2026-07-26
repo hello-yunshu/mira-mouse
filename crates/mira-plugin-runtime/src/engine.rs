@@ -386,10 +386,16 @@ enum TransportDefinition {
         // continuation 必须满足的外层 type 校验：若声明，continuation 包在 type_field_offset
         // 处必须等于 type_field_value（同首包），否则视为无关报告或新首包，拒绝拼入。
         // 默认与首包 type_field_offset/type_field_value 一致；无需额外字段，由运行时复用。
-        // continuation 拒绝新首包：若 continuation 包在 marker_search 范围内出现 marker_value，
+        // continuation 拒绝新首包：若 continuation 包在 marker_search 范围内出现 marker_value,
         // 视为新首包，立即终止当前组装并返回错误。
         #[serde(default)]
         multi_packet_reject_new_first_packet: bool,
+        // --- ITERATION-004 §2.4：marker 前缀字节（两字节 marker 校验） ---
+        // AM35 marker 序列为 `0x05 0x5B`：0x05 在 marker_offset - 1, 0x5B 在 marker_offset。
+        // 声明后，is_new_first_packet 会同时校验前缀字节，避免单字节 0x5B 误判。
+        // 未声明时仅校验单字节 marker_value（向后兼容）。
+        #[serde(default)]
+        multi_packet_marker_prefix_value: Option<u8>,
         // 时序分离：read_delay_ms 仍作为兼容回退。
         #[serde(default)]
         initial_read_delay_ms: u64,
@@ -3159,6 +3165,7 @@ impl Session<'_> {
             multi_packet_length_offset_from_marker,
             multi_packet_first_data_offset_from_marker,
             multi_packet_reject_new_first_packet,
+            multi_packet_marker_prefix_value,
             initial_read_delay_ms,
             packet_interval_ms,
             retry_interval_ms,
@@ -3473,6 +3480,7 @@ impl Session<'_> {
                                 *multi_packet_reject_new_first_packet,
                                 *type_field_offset,
                                 *type_field_value,
+                                *multi_packet_marker_prefix_value,
                             );
                             // 循环收取后续包直到完成或超限。
                             loop {
@@ -3967,6 +3975,11 @@ pub fn resolve_marker_offsets(
 /// - `reject_new_first_packet`：若 true，continuation 包在 marker 位置出现 marker_value
 ///   时被 [`Self::is_new_first_packet`] 判定为新首包，调用方应终止组装。
 /// - `outer_type_offset` / `outer_type_value`：外层 type 校验，continuation 包必须匹配。
+///
+/// ITERATION-004 §2.4：单字节 marker 误判修复。
+/// - `marker_prefix_value`：可选的 marker 前缀字节（如 AM35 的 `0x05`）。
+///   配置后，`is_new_first_packet` 会同时校验 `marker_offset - 1` 处的前缀字节，
+///   避免合法 continuation 因业务数据中恰好出现单字节 `0x5B` 被误判为新首包。
 #[derive(Debug)]
 pub struct MultiPacketAssembler {
     total_length: usize,
@@ -3981,6 +3994,8 @@ pub struct MultiPacketAssembler {
     reject_new_first_packet: bool,
     outer_type_offset: Option<usize>,
     outer_type_value: Option<u8>,
+    // ITERATION-004 §2.4：marker 前缀字节（如 AM35 的 0x05）。
+    marker_prefix_value: Option<u8>,
 }
 
 impl MultiPacketAssembler {
@@ -4040,11 +4055,16 @@ impl MultiPacketAssembler {
             reject_new_first_packet: false,
             outer_type_offset: None,
             outer_type_value: None,
+            marker_prefix_value: None,
         }))
     }
 
     /// 配置 continuation 事务安全检查。
     /// 调用方在 `try_start` 成功后立即调用，设置后续包的安全匹配规则。
+    ///
+    /// ITERATION-004 §2.4：新增 `marker_prefix_value` 参数。
+    /// 当声明时，`is_new_first_packet` 会额外校验 `marker_offset - 1` 处的字节，
+    /// 确保只有完整的两字节 marker 序列（如 AM35 的 `0x05 0x5B`）才会被识别为新首包。
     pub fn configure_continuation_safety(
         &mut self,
         marker_offset: usize,
@@ -4052,17 +4072,27 @@ impl MultiPacketAssembler {
         reject_new_first_packet: bool,
         outer_type_offset: Option<usize>,
         outer_type_value: Option<u8>,
+        marker_prefix_value: Option<u8>,
     ) {
         self.marker_offset_for_safety = Some(marker_offset);
         self.marker_value_for_safety = marker_value;
         self.reject_new_first_packet = reject_new_first_packet;
         self.outer_type_offset = outer_type_offset;
         self.outer_type_value = outer_type_value;
+        self.marker_prefix_value = marker_prefix_value;
     }
 
-    /// 判断 continuation 包是否为新首包（marker 在 actual_marker_off 出现）。
+    /// 判断 continuation 包是否为新首包。
     /// 仅当 `reject_new_first_packet` 为 true 时启用检查。
     /// 返回 true 表示这是新首包，调用方应立即终止当前组装并返回错误。
+    ///
+    /// ITERATION-004 §2.4：多条件校验，避免单字节 marker 误判。
+    /// 必须同时满足以下所有条件才判定为新首包：
+    /// 1. `packet_rest[marker_offset] == marker_value`（marker 字节匹配）
+    /// 2. 若声明了 `marker_prefix_value`，则 `packet_rest[marker_offset - 1] == marker_prefix_value`（前缀字节匹配）
+    /// 3. 若声明了 `outer_type_offset/outer_type_value`，则 `packet_rest[outer_type_offset] == outer_type_value`（外层 type 匹配）
+    ///
+    /// 这避免了合法 continuation 因业务数据中恰好出现单字节 marker 值而被误判。
     pub fn is_new_first_packet(&self, packet_rest: &[u8]) -> bool {
         if !self.reject_new_first_packet {
             return false;
@@ -4070,7 +4100,26 @@ impl MultiPacketAssembler {
         let Some(marker_off) = self.marker_offset_for_safety else {
             return false;
         };
-        packet_rest.get(marker_off) == Some(&self.marker_value_for_safety)
+        // 条件 1：marker 字节匹配。
+        if packet_rest.get(marker_off) != Some(&self.marker_value_for_safety) {
+            return false;
+        }
+        // 条件 2：前缀字节匹配（如 AM35 的 0x05）。
+        if let Some(prefix_val) = self.marker_prefix_value {
+            if marker_off == 0 {
+                return false; // 无前缀字节可校验，不判定为新首包。
+            }
+            if packet_rest.get(marker_off - 1) != Some(&prefix_val) {
+                return false;
+            }
+        }
+        // 条件 3：外层 type 匹配。
+        if let (Some(off), Some(val)) = (self.outer_type_offset, self.outer_type_value) {
+            if packet_rest.get(off) != Some(&val) {
+                return false;
+            }
+        }
+        true
     }
 
     /// 判断 continuation 包的 outer type 是否匹配首包。
@@ -7466,7 +7515,7 @@ mod tests {
             MultiPacketAssembler::try_start(&first_rest, 6, 3, 91, 4, 2, 2, 16, 4096, "le")
                 .expect("try_start ok")
                 .expect("multi-packet");
-        assembler.configure_continuation_safety(3, 91, true, None, None);
+        assembler.configure_continuation_safety(3, 91, true, None, None, None);
         // continuation 包：在 offset 3 出现 0x5B（91）→ 视为新首包。
         let new_first_packet = vec![61u8, 0, 5, 91, 80, 0, 207, 48];
         assert!(
@@ -7489,7 +7538,7 @@ mod tests {
             MultiPacketAssembler::try_start(&first_rest, 6, 3, 91, 4, 2, 2, 16, 4096, "le")
                 .expect("try_start ok")
                 .expect("multi-packet");
-        assembler.configure_continuation_safety(3, 91, true, None, None);
+        assembler.configure_continuation_safety(3, 91, true, None, None, None);
         let short_cont = vec![25u8, 0]; // 长度 2 < marker_offset 3
         assert!(
             !assembler.is_new_first_packet(&short_cont),
@@ -7506,7 +7555,7 @@ mod tests {
                 .expect("try_start ok")
                 .expect("multi-packet");
         // AM35 direct：type_field_offset=1, type_field_value=0。
-        assembler.configure_continuation_safety(3, 91, true, Some(1), Some(0));
+        assembler.configure_continuation_safety(3, 91, true, Some(1), Some(0), None);
         let matching_cont = vec![25u8, 0, 54, 55, 56, 57, 58, 59]; // type=0 at offset 1
         assert!(
             assembler.outer_type_matches(&matching_cont),
@@ -7524,7 +7573,7 @@ mod tests {
                 .expect("multi-packet");
         // AM35 direct：type_field_offset=1, type_field_value=0。
         // 但 continuation 是 receiver 类型（type=128）→ 不匹配。
-        assembler.configure_continuation_safety(3, 91, true, Some(1), Some(0));
+        assembler.configure_continuation_safety(3, 91, true, Some(1), Some(0), None);
         let mismatching_cont = vec![25u8, 128, 54, 55, 56, 57, 58, 59]; // type=128 at offset 1
         assert!(
             !assembler.outer_type_matches(&mismatching_cont),
@@ -7540,7 +7589,7 @@ mod tests {
             MultiPacketAssembler::try_start(&first_rest, 6, 3, 91, 4, 2, 2, 16, 4096, "le")
                 .expect("try_start ok")
                 .expect("multi-packet");
-        assembler.configure_continuation_safety(3, 91, true, Some(1), Some(0));
+        assembler.configure_continuation_safety(3, 91, true, Some(1), Some(0), None);
         let short_cont: Vec<u8> = vec![25u8]; // 长度 1，无法访问 offset 1
         assert!(
             !assembler.outer_type_matches(&short_cont),
@@ -7595,7 +7644,14 @@ mod tests {
         .expect("try_start ok")
         .expect("multi-packet");
         // 配置 continuation safety（type_field_offset=1, type_field_value=0）。
-        assembler.configure_continuation_safety(actual_marker_off, 91, true, Some(1), Some(0));
+        assembler.configure_continuation_safety(
+            actual_marker_off,
+            91,
+            true,
+            Some(1),
+            Some(0),
+            None,
+        );
         // continuation：outer type 匹配（type=0 at offset 1），无新首包 marker。
         // total_length=30，首包贡献 4 字节，需 26 字节。
         let mut cont_rest = vec![26u8, 0]; // [length=26, type=0]
@@ -7628,7 +7684,7 @@ mod tests {
             MultiPacketAssembler::try_start(&first_rest, 6, 3, 91, 4, 2, 2, 16, 4096, "le")
                 .expect("try_start ok")
                 .expect("multi-packet");
-        assembler.configure_continuation_safety(3, 91, true, Some(1), Some(0));
+        assembler.configure_continuation_safety(3, 91, true, Some(1), Some(0), None);
         // continuation 是一个新首包（在 offset 3 出现 0x5B）。
         let new_first = vec![61u8, 0, 5, 91, 30, 0, 207, 48];
         assert!(
@@ -7648,13 +7704,60 @@ mod tests {
                 .expect("try_start ok")
                 .expect("multi-packet");
         // AM35 direct（type=0），但收到 AM35 receiver（type=128）的 continuation。
-        assembler.configure_continuation_safety(3, 91, true, Some(1), Some(0));
+        assembler.configure_continuation_safety(3, 91, true, Some(1), Some(0), None);
         let unrelated_cont = vec![25u8, 128, 54, 55, 56, 57, 58, 59];
         assert!(
             !assembler.outer_type_matches(&unrelated_cont),
             "outer type mismatch → caller should discard (continue loop)"
         );
         // 调用方应 continue 循环，不调用 add_continuation。
+    }
+
+    /// ITERATION-004 §2.4：单字节 marker 误判修复。
+    /// 配置 marker_prefix_value=0x05 后，continuation 必须同时满足：
+    /// 1. marker_offset 处 == 0x5B
+    /// 2. marker_offset - 1 处 == 0x05
+    /// 3. outer_type_offset 处 == outer_type_value
+    ///
+    /// 才会被判定为新首包。避免业务数据中恰好出现单字节 0x5B 被误判。
+    #[test]
+    fn gate_a_continuation_safety_prefix_prevents_single_byte_misjudgment() {
+        let first_rest = vec![61u8, 0, 5, 91, 80, 0, 207, 48];
+        let mut assembler =
+            MultiPacketAssembler::try_start(&first_rest, 6, 3, 91, 4, 2, 2, 16, 4096, "le")
+                .expect("try_start ok")
+                .expect("multi-packet");
+        // AM35：marker_prefix=0x05 at offset 2, marker=0x5B at offset 3, type=0 at offset 1。
+        assembler.configure_continuation_safety(3, 91, true, Some(1), Some(0), Some(5));
+        // 情况 1：完整两字节 marker + 正确 outer type → 新首包。
+        let full_new_first = vec![61u8, 0, 5, 91, 80, 0, 207, 48];
+        assert!(
+            assembler.is_new_first_packet(&full_new_first),
+            "full 0x05 0x5B marker + matching outer type → new first packet"
+        );
+        // 情况 2：单字节 0x5B 但前缀不是 0x05 → 不是新首包（合法 continuation 不被误伤）。
+        let single_byte_marker = vec![61u8, 0, 99, 91, 80, 0, 207, 48]; // offset 2 = 99, 不是 0x05
+        assert!(
+            !assembler.is_new_first_packet(&single_byte_marker),
+            "single byte 0x5B without prefix 0x05 → NOT a new first packet (misjudgment prevented)"
+        );
+        // 情况 3：两字节 marker 但 outer type 不匹配 → 不是新首包。
+        let wrong_outer_type = vec![61u8, 128, 5, 91, 80, 0, 207, 48]; // type=128 at offset 1
+        assert!(
+            !assembler.is_new_first_packet(&wrong_outer_type),
+            "two-byte marker but wrong outer type → NOT a new first packet"
+        );
+        // 情况 4：marker_offset == 0 且配置了 prefix → 无法检查前缀，不判定为新首包。
+        let mut assembler2 =
+            MultiPacketAssembler::try_start(&first_rest, 6, 3, 91, 4, 2, 2, 16, 4096, "le")
+                .expect("try_start ok")
+                .expect("multi-packet");
+        assembler2.configure_continuation_safety(0, 91, true, None, None, Some(5));
+        let cont_with_marker_at_0 = vec![91u8, 0, 5, 91, 80, 0];
+        assert!(
+            !assembler2.is_new_first_packet(&cont_with_marker_at_0),
+            "marker_offset == 0 with prefix configured → cannot verify prefix → NOT a new first packet"
+        );
     }
 
     /// race_id_mismatch_retry：响应 RaceID 与请求不匹配 → 匹配函数返回 false（触发重试）。

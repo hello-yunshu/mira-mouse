@@ -98,7 +98,7 @@ export const MOCK_DEVICE: DeviceState = {
     // DPI 分档：使用 stageLayout 声明档位布局与 mutation。
     {
       id: 'dpi', control: 'DpiStages', labelKey: 'plugin.label.capability.dpi', readOnly: false,
-      placements: [{ region: 'control', group: 'performance', order: 10, span: 1, icon: 'gauge' }],
+      placements: [{ region: 'control', group: 'performance', order: 10, span: 1, icon: 'gauge', priority: 100, dashboardRole: 'fixed-core', fixedSlot: 1, fourthSlotEligible: false, dedupeKey: 'dashboard.dpi', fallbackRegion: 'advanced' }],
       metadata: {
         stageLayout: {
           dotsSource: 'state.dpiStages',
@@ -114,7 +114,7 @@ export const MOCK_DEVICE: DeviceState = {
     // 回报率：modal-select，选项由 optionSource 动态读取。
     {
       id: 'polling-rate', control: 'Select', labelKey: 'plugin.label.capability.polling-rate', readOnly: false,
-      placements: [{ region: 'control', group: 'polling', order: 20, span: 1, icon: 'wave' }],
+      placements: [{ region: 'control', group: 'polling', order: 20, span: 1, icon: 'wave', priority: 100, dashboardRole: 'fixed-core', fixedSlot: 2, fourthSlotEligible: false, dedupeKey: 'dashboard.polling', fallbackRegion: 'advanced' }],
       metadata: {
         fields: [{
           id: 'value',
@@ -137,7 +137,7 @@ export const MOCK_DEVICE: DeviceState = {
     // 休眠时间：modal-range，状态栏点击进入编辑。
     {
       id: 'sleep-time', control: 'Number', labelKey: 'plugin.label.capability.sleep-time', readOnly: false,
-      placements: [{ region: 'status', order: 10, span: 1, icon: 'timer' }],
+      placements: [{ region: 'status', order: 10, span: 1, icon: 'timer', priority: 80, fourthSlotEligible: false, dedupeKey: 'status.sleep', fallbackRegion: 'advanced' }],
       metadata: {
         fields: [{
           id: 'value',
@@ -158,7 +158,7 @@ export const MOCK_DEVICE: DeviceState = {
     // 配置文件：只读展示。
     {
       id: 'profile', control: 'ReadOnlyValue', labelKey: 'plugin.label.capability.profile', readOnly: true,
-      placements: [{ region: 'status', order: 20, span: 1, icon: 'profile' }],
+      placements: [{ region: 'status', order: 20, span: 1, icon: 'profile', priority: 70, fourthSlotEligible: false, dedupeKey: 'status.profile', fallbackRegion: 'advanced' }],
       metadata: {
         fields: [{ id: 'value', source: 'state.profile', editor: 'static-readonly', labelKey: 'plugin.label.capability.profile' }],
         statusDisplay: { valueSource: 'state.profile', onClickField: 'value' },
@@ -168,7 +168,10 @@ export const MOCK_DEVICE: DeviceState = {
     // 灯光：LightingZone 声明 mouse 与 receiver 两个区域，每个区域含一组字段。
     {
       id: 'lighting', control: 'LightingZone', labelKey: 'plugin.label.capability.lighting', readOnly: false,
-      placements: [{ region: 'control', group: 'lighting', order: 30, span: 1, icon: 'lightbulb' }, { region: 'status', order: 30, span: 1, icon: 'lightbulb' }],
+      placements: [
+        { region: 'control', group: 'lighting', order: 30, span: 1, icon: 'lightbulb', priority: 100, dashboardRole: 'fixed-core', fixedSlot: 3, fourthSlotEligible: false, dedupeKey: 'dashboard.lighting', fallbackRegion: 'advanced' },
+        { region: 'status', order: 30, span: 1, icon: 'lightbulb', priority: 75, fourthSlotEligible: false, dedupeKey: 'status.lighting', fallbackRegion: 'advanced' }
+      ],
       metadata: {
         accentSource: 'state.mouseLightColor',
         zones: [
@@ -256,7 +259,7 @@ const MOCK_CONTROL_MODE_CAPABILITY: PluginCapability = {
   control: 'Segmented',
   labelKey: '配置控制',
   readOnly: false,
-  placements: [{ region: 'control', group: 'configuration', order: 5, span: 1, icon: 'settings' }],
+  placements: [{ region: 'control', group: 'configuration', order: 5, span: 1, icon: 'settings', priority: 95, dashboardRole: 'candidate', fourthSlotEligible: true, dedupeKey: 'dashboard.control-mode', fallbackRegion: 'advanced' }],
   metadata: {
     fields: [{
       id: 'mode',

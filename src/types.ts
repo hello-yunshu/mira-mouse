@@ -149,6 +149,18 @@ export interface PluginCapabilityPlacement {
   order: number;
   span: number;
   icon?: string;
+  /** ITERATION-004 §2.1：Dashboard priority 0..100（越高越优先）。 */
+  priority?: number;
+  /** Dashboard 角色：fixed-core（DPI/回报率/灯光）| candidate（竞争槽位）| system（系统入口如全部读数）。 */
+  dashboardRole?: 'fixed-core' | 'candidate' | 'system';
+  /** 固定槽位 1..3（仅 DPI=1、回报率=2、灯光=3）。插件不得声明 fixedSlot=4。 */
+  fixedSlot?: 1 | 2 | 3;
+  /** 是否有资格竞争第 4 槽位（需同时 priority >= 90）。 */
+  fourthSlotEligible?: boolean;
+  /** 全局去重键（如 "dashboard.dpi"、"system.all-readings"）。相同 dedupeKey 只保留一个。 */
+  dedupeKey?: string;
+  /** 未进入首页时的回退区域。 */
+  fallbackRegion?: 'advanced' | 'inventory' | 'hidden';
 }
 export interface DeviceState {
   name: string;
