@@ -228,6 +228,12 @@ fn plugin_capabilities(
                         order: placement.order,
                         span: placement.span,
                         icon: placement.icon.clone(),
+                        priority: placement.priority,
+                        dashboard_role: placement.dashboard_role.clone(),
+                        fixed_slot: placement.fixed_slot,
+                        fourth_slot_eligible: placement.fourth_slot_eligible,
+                        dedupe_key: placement.dedupe_key.clone(),
+                        fallback_region: placement.fallback_region.clone(),
                     })
                     .collect(),
                 metadata,

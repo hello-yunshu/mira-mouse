@@ -1,11 +1,287 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // 插件适配层：声明式 capability metadata 解析纯函数。所有插件知识均从 metadata 声明字段读取。
-import type { DeviceState, DpiStage, PluginCapability, PluginField, PluginFieldOption, PluginMutation, PluginStageLayout, PluginStateMapping, PluginStatusDisplay, PluginSwitch, PluginVisibleWhen, PluginZone, RangeSpec } from './types';
+import type { DeviceState, DpiStage, PluginCapability, PluginCapabilityPlacement, PluginField, PluginFieldOption, PluginMutation, PluginStageLayout, PluginStateMapping, PluginStatusDisplay, PluginSwitch, PluginVisibleWhen, PluginZone, RangeSpec } from './types';
 import { resolveLabelKey, resolveRuntimeText } from './i18n';
 
 export const MAX_CONTROL_GROUPS = 6;
 export const MAX_STATUS_ITEMS = 6;
 export const MAX_CONTROL_OPTIONS = 8;
+
+// ─── ITERATION-004 §2.1：Dashboard Priority 全局选择器 ─────────────────────
+// 替代旧的 sort(order) + slice(MAX) 行为，使用 priority/fixedSlot/fourthSlotEligible/
+// dedupeKey/fallbackRegion 实现统一槽位选择。详见 DASHBOARD_PRIORITY_ALL_PLUGINS.md。
+
+/** 上方控制区：preferred=3, max=4, 第 4 项需 priority>=90 且 fourthSlotEligible。 */
+export const CONTROL_PREFERRED_COUNT = 3;
+export const CONTROL_MAX_COUNT = 4;
+/** 下方状态区：preferred=3, max=4, 第 4 项需 priority>=90 且 fourthSlotEligible。 */
+export const STATUS_PREFERRED_COUNT = 3;
+export const STATUS_MAX_COUNT = 4;
+/** 第 4 槽位最低优先级阈值。 */
+export const FOURTH_SLOT_MIN_PRIORITY = 90;
+/** 下方基础槽位最低优先级阈值。 */
+export const STATUS_BASE_SLOT_MIN_PRIORITY = 60;
+
+/** Dashboard placement region。 */
+export type PluginRegion = 'hero' | 'control' | 'status' | 'details';
+
+/** 返回 capability 在指定 region 的所有 placement。 */
+export function placementsFor(capability: PluginCapability, region: PluginRegion): NonNullable<PluginCapability['placements']> {
+  return (capability.placements ?? []).filter((p) => p.region === region);
+}
+
+/** Dashboard 选择上下文：包含去重键已用集合（跨区域共享）。 */
+export interface DashboardSelectionContext {
+  /** 已使用的 dedupeKey 集合（跨 control/status 共享，防止重复入口）。 */
+  usedDedupeKeys: Set<string>;
+}
+
+/** 控制区 placement 候选项：capability + placement + 解析后的优先级。 */
+export interface ControlCandidate {
+  capability: PluginCapability;
+  placement: PluginCapabilityPlacement;
+  /** 解析后的 priority（默认 0）。 */
+  priority: number;
+  /** 解析后的 fixedSlot（1/2/3 或 undefined）。 */
+  fixedSlot: 1 | 2 | 3 | undefined;
+  /** 解析后的 fourthSlotEligible（默认 false）。 */
+  fourthSlotEligible: boolean;
+  /** 解析后的 dedupeKey。 */
+  dedupeKey: string | undefined;
+  /** 槽位组 ID（placement.group || capability.id）。 */
+  groupId: string;
+}
+
+/**
+ * ITERATION-004 §2.1：Dashboard 上方控制区统一选择器。
+ *
+ * 替代旧的 `sort(order).slice(0, MAX_CONTROL_GROUPS)`，按以下规则选择：
+ * 1. 过滤 availability / visibleWhen / content；
+ * 2. 按 dedupeKey 去重（跨区域共享 usedDedupeKeys）；
+ * 3. 放置 fixedSlot 1/2/3（DPI/回报率/灯光，按固定顺序）；
+ * 4. 从剩余候选中选择第 4 项（需 priority>=90 且 fourthSlotEligible）；
+ * 5. 未选中项按 fallbackRegion 回退（调用方可用于高级设置页）。
+ *
+ * 没有合格第 4 项时只显示 3 项，不显示空占位，不为凑满 4 格降低阈值。
+ */
+export function selectDashboardControls(
+  capabilities: PluginCapability[],
+  device: DeviceState,
+  availabilityFilter: (capability: PluginCapability) => boolean,
+  contentFilter: (capability: PluginCapability) => boolean,
+  context: DashboardSelectionContext,
+): { selected: ControlCandidate[]; fallback: ControlCandidate[] } {
+  // 收集所有 control placement 候选项。
+  const candidates: ControlCandidate[] = [];
+  for (const capability of capabilities) {
+    if (!availabilityFilter(capability)) continue;
+    if (!resolveVisibleWhen(capability.metadata.visibleWhen, device)) continue;
+    if (!contentFilter(capability)) continue;
+    for (const placement of placementsFor(capability, 'control')) {
+      const candidate: ControlCandidate = {
+        capability,
+        placement,
+        priority: placement.priority ?? 0,
+        fixedSlot: placement.fixedSlot,
+        fourthSlotEligible: placement.fourthSlotEligible ?? false,
+        dedupeKey: placement.dedupeKey,
+        groupId: placement.group || capability.id,
+      };
+      candidates.push(candidate);
+    }
+  }
+
+  // 按 dedupeKey 去重（同 dedupeKey 只保留 priority 最高的）。
+  const byDedupeKey = new Map<string, ControlCandidate>();
+  const noDedupeKey: ControlCandidate[] = [];
+  for (const candidate of candidates) {
+    if (!candidate.dedupeKey) {
+      noDedupeKey.push(candidate);
+      continue;
+    }
+    if (context.usedDedupeKeys.has(candidate.dedupeKey)) {
+      continue; // 已被其他区域使用（如系统全部读数入口）。
+    }
+    const existing = byDedupeKey.get(candidate.dedupeKey);
+    if (!existing || candidate.priority > existing.priority) {
+      byDedupeKey.set(candidate.dedupeKey, candidate);
+    }
+  }
+  const deduped = [...byDedupeKey.values(), ...noDedupeKey];
+
+  // 放置 fixedSlot 1/2/3。
+  const fixedSlots: (ControlCandidate | undefined)[] = [undefined, undefined, undefined];
+  const remaining: ControlCandidate[] = [];
+  for (const candidate of deduped) {
+    if (
+      candidate.fixedSlot === 1
+      || candidate.fixedSlot === 2
+      || candidate.fixedSlot === 3
+    ) {
+      const idx = candidate.fixedSlot - 1;
+      if (!fixedSlots[idx]) {
+        fixedSlots[idx] = candidate;
+        if (candidate.dedupeKey) context.usedDedupeKeys.add(candidate.dedupeKey);
+        continue;
+      }
+    }
+    remaining.push(candidate);
+  }
+
+  // 排序：priority desc → order asc → groupId asc（stable）。
+  remaining.sort((a, b) => {
+    if (b.priority !== a.priority) return b.priority - a.priority;
+    if (a.placement.order !== b.placement.order) return a.placement.order - b.placement.order;
+    return a.groupId < b.groupId ? -1 : a.groupId > b.groupId ? 1 : 0;
+  });
+
+  // ITERATION-004 §2.1：空缺 fixedSlot 回退填充。
+  // 当设备未声明某 fixedSlot（如无 DPI/polling/lighting）时，从 remaining 中
+  // 按 priority desc → order asc 选出最高优先级候选填充空位，确保 Dashboard
+  // 始终展示最多 3 个核心控件而非空白。填充项不再参与第 4 槽位竞争。
+  for (let idx = 0; idx < fixedSlots.length && remaining.length > 0; idx++) {
+    if (fixedSlots[idx]) continue;
+    const next = remaining.shift();
+    if (!next) break;
+    fixedSlots[idx] = next;
+    if (next.dedupeKey) context.usedDedupeKeys.add(next.dedupeKey);
+  }
+
+  const selected: ControlCandidate[] = [];
+  for (const candidate of fixedSlots) {
+    if (candidate) selected.push(candidate);
+  }
+
+  // 第 4 槽位：只有 priority>=90 且 fourthSlotEligible 的候选才竞争。
+  if (selected.length >= CONTROL_PREFERRED_COUNT && selected.length < CONTROL_MAX_COUNT) {
+    const fourthCandidate = remaining.find(
+      (c) => c.priority >= FOURTH_SLOT_MIN_PRIORITY && c.fourthSlotEligible,
+    );
+    if (fourthCandidate) {
+      selected.push(fourthCandidate);
+      if (fourthCandidate.dedupeKey) context.usedDedupeKeys.add(fourthCandidate.dedupeKey);
+      remaining.splice(remaining.indexOf(fourthCandidate), 1);
+    }
+  }
+
+  // 未选中项作为 fallback 返回（调用方可用于高级设置页）。
+  const fallback = remaining.filter((c) => {
+    if (c.fixedSlot) return false; // 已在 fixedSlot 但未入选的跳过（不应发生）。
+    const region = c.placement.fallbackRegion ?? 'advanced';
+    return region !== 'hidden';
+  });
+
+  return { selected, fallback };
+}
+
+/**
+ * ITERATION-004 §2.1：Dashboard 下方状态区统一选择器。
+ *
+ * 替代旧的 `sort(order).slice(0, MAX_STATUS_ITEMS)`，按以下规则选择：
+ * 1. 过滤 availability / visibleWhen / reported value；
+ * 2. 与系统入口、上方入口、全部读数、电量、连接状态去重（共享 usedDedupeKeys）；
+ * 3. 按 priority desc、order asc、stable id asc 排序；
+ * 4. 选择最多 3 个基础项（priority >= STATUS_BASE_SLOT_MIN_PRIORITY）；
+ * 5. 第 4 项单独应用 priority>=90 与 fourthSlotEligible。
+ * 不显示空占位，不为了布局完整展示低价值项目。
+ */
+export function selectDashboardStatus(
+  capabilities: PluginCapability[],
+  device: DeviceState,
+  availabilityFilter: (capability: PluginCapability) => boolean,
+  hasReportedValue: (capability: PluginCapability) => boolean,
+  context: DashboardSelectionContext,
+): { selected: ControlCandidate[]; fallback: ControlCandidate[] } {
+  const candidates: ControlCandidate[] = [];
+  for (const capability of capabilities) {
+    if (!availabilityFilter(capability)) continue;
+    if (!resolveVisibleWhen(capability.metadata.visibleWhen, device)) continue;
+    if (!hasReportedValue(capability)) continue;
+    for (const placement of placementsFor(capability, 'status')) {
+      const candidate: ControlCandidate = {
+        capability,
+        placement,
+        priority: placement.priority ?? 0,
+        fixedSlot: placement.fixedSlot,
+        fourthSlotEligible: placement.fourthSlotEligible ?? false,
+        dedupeKey: placement.dedupeKey,
+        groupId: placement.group || capability.id,
+      };
+      candidates.push(candidate);
+    }
+  }
+
+  // 按 dedupeKey 去重。
+  const byDedupeKey = new Map<string, ControlCandidate>();
+  const noDedupeKey: ControlCandidate[] = [];
+  for (const candidate of candidates) {
+    if (!candidate.dedupeKey) {
+      noDedupeKey.push(candidate);
+      continue;
+    }
+    if (context.usedDedupeKeys.has(candidate.dedupeKey)) {
+      continue;
+    }
+    const existing = byDedupeKey.get(candidate.dedupeKey);
+    if (!existing || candidate.priority > existing.priority) {
+      byDedupeKey.set(candidate.dedupeKey, candidate);
+    }
+  }
+  const deduped = [...byDedupeKey.values(), ...noDedupeKey];
+
+  // 排序：priority desc → order asc → groupId asc（stable）。
+  deduped.sort((a, b) => {
+    if (b.priority !== a.priority) return b.priority - a.priority;
+    if (a.placement.order !== b.placement.order) return a.placement.order - b.placement.order;
+    return a.groupId < b.groupId ? -1 : a.groupId > b.groupId ? 1 : 0;
+  });
+
+  const selected: ControlCandidate[] = [];
+  const deferred: ControlCandidate[] = [];
+
+  // 基础 3 槽位：优先选择 priority >= STATUS_BASE_SLOT_MIN_PRIORITY 的候选。
+  // ITERATION-004 §2.1：若高优先级候选不足 3 个，从低优先级候选中按排序填充，
+  // 确保 Dashboard 状态区始终展示可用读数而非空白。
+  for (const candidate of deduped) {
+    if (selected.length >= STATUS_PREFERRED_COUNT) {
+      deferred.push(candidate);
+      continue;
+    }
+    if (candidate.priority >= STATUS_BASE_SLOT_MIN_PRIORITY) {
+      selected.push(candidate);
+      if (candidate.dedupeKey) context.usedDedupeKeys.add(candidate.dedupeKey);
+    } else {
+      deferred.push(candidate);
+    }
+  }
+  // 回退填充：高优先级候选不足时从 deferred 中按排序补齐至 PREFERRED_COUNT。
+  while (selected.length < STATUS_PREFERRED_COUNT && deferred.length > 0) {
+    const next = deferred.shift()!;
+    selected.push(next);
+    if (next.dedupeKey) context.usedDedupeKeys.add(next.dedupeKey);
+  }
+
+  // 第 4 槽位：priority>=90 且 fourthSlotEligible。
+  if (selected.length >= STATUS_PREFERRED_COUNT && selected.length < STATUS_MAX_COUNT) {
+    const fourthCandidate = deferred.find(
+      (c) => c.priority >= FOURTH_SLOT_MIN_PRIORITY && c.fourthSlotEligible,
+    );
+    if (fourthCandidate) {
+      selected.push(fourthCandidate);
+      if (fourthCandidate.dedupeKey) context.usedDedupeKeys.add(fourthCandidate.dedupeKey);
+    }
+  }
+
+  // 把 deferred 中未入选的低优先级项也加入 fallback（调用方可决定是否展示）。
+  const fallback: ControlCandidate[] = [];
+  for (const candidate of deferred) {
+    if (selected.includes(candidate)) continue;
+    const region = candidate.placement.fallbackRegion ?? 'advanced';
+    if (region !== 'hidden') fallback.push(candidate);
+  }
+
+  return { selected, fallback };
+}
 
 /** 从插件声明的 mutation 候选中选择设备实际允许的第一项。 */
 export function resolveMutation(mutation: PluginMutation | undefined, writableMutations: string[]): string | undefined {

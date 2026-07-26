@@ -87,6 +87,24 @@ pub struct PluginCapabilityPlacement {
     pub order: i32,
     pub span: u8,
     pub icon: Option<String>,
+    /// ITERATION-004 §2.1：Dashboard priority 0..100（越高越优先）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<i32>,
+    /// Dashboard 角色：fixed-core（DPI/回报率/灯光）| candidate（竞争槽位）| system（系统入口）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dashboard_role: Option<String>,
+    /// 固定槽位 1..3（仅 DPI=1、回报率=2、灯光=3）。插件不得声明 fixedSlot=4。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fixed_slot: Option<u8>,
+    /// 是否有资格竞争第 4 槽位（需同时 priority >= 90）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fourth_slot_eligible: Option<bool>,
+    /// 全局去重键（如 "dashboard.dpi"、"system.all-readings"）。相同 dedupeKey 只保留一个。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dedupe_key: Option<String>,
+    /// 未进入首页时的回退区域。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_region: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
