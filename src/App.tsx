@@ -29,8 +29,11 @@ import { BatteryLevelIcon } from './BatteryLevelIcon';
 import type { AboutInfo, AppSettings, DeviceSnapshot, DeviceSnapshotEntry, DeviceState, DpiStage, PluginCapability, PluginCapabilityPlacement, PluginField, PluginFieldFormat, RangeSpec, ReadStatus, ThemeMode } from './types';
 import { DetailValue } from './DetailValue';
 import {
-  MAX_CONTROL_GROUPS,
-  MAX_STATUS_ITEMS,
+  CONTROL_MAX_COUNT,
+  DashboardSelectionContext,
+  placementsFor,
+  selectDashboardControls,
+  selectDashboardStatus,
   fieldHasReportedValue,
   readPath,
   resolveDetailValueLabel,
@@ -139,6 +142,9 @@ function connectionDisplay(connection: string | undefined, t: (key: string) => s
 
 function formatSleepTime(value: unknown): string {
   const seconds = typeof value === 'number' ? value : Number(value);
+  // ITERATION-004 §2.3：sleep -1 表示“从不休眠”（AM35 协议使用 65535 → -1 映射）。
+  // 之前的实现把 -1 当作“未报告”显示，与实际语义不符。
+  if (seconds === -1) return i18n.t('common.never');
   if (!Number.isFinite(seconds) || seconds <= 0) return i18n.t('common.notReported');
   if (seconds % 60 === 0) return i18n.t('common.minute', { count: seconds / 60 });
   return i18n.t('common.second', { count: seconds });
@@ -735,12 +741,6 @@ function AwaitingMouseState({ deviceName, onRefresh, onOpenSettings }: { deviceN
       </div>
     </main>
   );
-}
-
-type PluginRegion = 'hero' | 'control' | 'status' | 'details';
-
-function placementsFor(capability: PluginCapability, region: PluginRegion): NonNullable<PluginCapability['placements']> {
-  return (capability.placements ?? []).filter((p) => p.region === region);
 }
 
 function capabilityAvailable(capability: PluginCapability): boolean {
@@ -2434,37 +2434,48 @@ function Dashboard({
     }
   };
 
-  const controls = useMemo(() => {
-    const controlPlacements = device.pluginCapabilities
-      .filter(capabilityAvailable)
-      .flatMap((capability) => placementsFor(capability, 'control').map((placement) => ({ capability, placement })))
-      .filter(({ capability }) => resolveVisibleWhen(capability.metadata.visibleWhen, device))
-      .filter(({ capability }) => capabilityHasControlContent(capability, device))
-      .sort((a, b) => a.placement.order - b.placement.order);
-    const groups = new Map<string, { id: string; label: string; icon: string | undefined; capabilities: PluginCapability[] }>();
-    for (const { capability, placement } of controlPlacements) {
-      const id = placement.group || capability.id;
+  const { groups: controlGroups, usedDedupeKeys: controlDedupeKeys } = useMemo(() => {
+    // ITERATION-004 §2.1：使用 Dashboard Priority 选择器替代 sort(order)+slice(MAX)。
+    // 共享 dedupeKey 上下文，防止 control 与 status 区域出现重复入口。
+    const selectionContext: DashboardSelectionContext = { usedDedupeKeys: new Set() };
+    const { selected: controlCandidates } = selectDashboardControls(
+      device.pluginCapabilities,
+      device,
+      capabilityAvailable,
+      (capability) => capabilityHasControlContent(capability, device),
+      selectionContext,
+    );
+    // 将选中的 candidates 按 fixedSlot 顺序 + priority desc 组织成 control groups。
+    // fixedSlot 1/2/3 保持固定顺序（DPI/回报率/灯光），第 4 项按 priority 排在末尾。
+    const groups = new Map<string, { id: string; label: string; icon: string | undefined; capabilities: PluginCapability[]; order: number }>();
+    for (const candidate of controlCandidates) {
+      const id = candidate.groupId;
       const existing = groups.get(id);
       if (existing) {
-        existing.capabilities.push(capability);
+        existing.capabilities.push(candidate.capability);
       } else {
         groups.set(id, {
           id,
-          label: resolveLabelKey(capability.labelKey, device.pluginId),
-          icon: placement.icon,
-          capabilities: [capability],
+          label: resolveLabelKey(candidate.capability.labelKey, device.pluginId),
+          icon: candidate.placement.icon,
+          capabilities: [candidate.capability],
+          order: candidate.fixedSlot ?? (candidate.placement.order + 1000),
         });
       }
     }
-    return [...groups.values()]
-      .slice(0, MAX_CONTROL_GROUPS)
+    const result = [...groups.values()]
+      .sort((a, b) => a.order - b.order)
+      .slice(0, CONTROL_MAX_COUNT)
       .map((group) => ({
         ...group,
         hasMetric: Boolean(sharedControlMetric(group.capabilities, device)),
         hasSurface: Boolean(sharedControlSurface(group.capabilities, device)),
       }));
+    return { groups: result, usedDedupeKeys: selectionContext.usedDedupeKeys };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [device, pluginLocaleRevision]);
+
+  const controls = controlGroups;
 
   const activeMode = controls.some((c) => c.id === mode) ? mode : controls[0]?.id ?? '';
   const activeGroup = controls.find((c) => c.id === activeMode);
@@ -2529,7 +2540,30 @@ function Dashboard({
   };
 
   const statusItems = (() => {
-    const items: { capability: PluginCapability; placement: PluginCapabilityPlacement; onClick: (() => void) | undefined }[] = [];
+    // ITERATION-004 §2.1：使用 Dashboard Status 选择器替代 sort(order)+slice(MAX_STATUS_ITEMS)。
+    // 共享 controlDedupeKeys 上下文，避免与上方控制区出现重复入口（如全部读数、电量）。
+    const statusContext: DashboardSelectionContext = { usedDedupeKeys: controlDedupeKeys };
+    const hasReportedStatus = (capability: PluginCapability): boolean => {
+      const display = resolveStatusDisplay(capability);
+      if (!display) return false;
+      if (capabilityRuntimePending(capability)) return true;
+      const requestedField = resolveStatusField(capability, display.onClickField, device);
+      const displayedValue = readPath(device, display.valueSource);
+      const fallbackValue = requestedField ? readPath(device, requestedField.source) : undefined;
+      if (
+        (displayedValue === undefined || displayedValue === null || displayedValue === '')
+        && (fallbackValue === undefined || fallbackValue === null || fallbackValue === '')
+      ) return false;
+      return true;
+    };
+    const { selected: statusCandidates } = selectDashboardStatus(
+      device.pluginCapabilities,
+      device,
+      capabilityAvailable,
+      hasReportedStatus,
+      statusContext,
+    );
+
     const controlAction = (capability: PluginCapability): (() => void) | undefined => {
       const controlPlacement = placementsFor(capability, 'control')[0];
       if (!controlPlacement) return undefined;
@@ -2545,72 +2579,61 @@ function Dashboard({
       return () => switchMode(target, sync);
     };
 
-    for (const capability of device.pluginCapabilities) {
-      if (!capabilityAvailable(capability)) continue;
-      if (!resolveVisibleWhen(capability.metadata.visibleWhen, device)) continue;
+    const items: { capability: PluginCapability; placement: PluginCapabilityPlacement; onClick: (() => void) | undefined }[] = [];
+    for (const candidate of statusCandidates) {
+      const { capability, placement } = candidate;
       const display = resolveStatusDisplay(capability);
+      // 已通过 hasReportedStatus 校验，display 必然存在；保留防御性检查。
       if (!display) continue;
-      if (!capabilityRuntimePending(capability)) {
-        const requestedField = resolveStatusField(capability, display.onClickField, device);
-        const displayedValue = readPath(device, display.valueSource);
-        const fallbackValue = requestedField ? readPath(device, requestedField.source) : undefined;
-        if (
-          (displayedValue === undefined || displayedValue === null || displayedValue === '')
-          && (fallbackValue === undefined || fallbackValue === null || fallbackValue === '')
-        ) continue;
-      }
-      const placements = placementsFor(capability, 'status');
-      for (const placement of placements) {
-        let onClick: (() => void) | undefined;
-        if (display.onClickField) {
-          const field = resolveStatusField(capability, display.onClickField, device);
-          if (field) {
-            const interaction = resolveFieldInteraction(field);
-            const mutation = resolveMutation(field.mutation, device.writableMutations);
-            if (interaction === 'control') {
-              onClick = controlAction(capability);
-            } else if (mutation && !writeBusy) {
-              if (interaction === 'modal') {
-                onClick = () => {
-                  invoke('device_refresh_quick').catch(() => {});
-                  setEditingField({ capability, field });
-                };
-              } else if (interaction === 'action') {
-                onClick = () => void runMutation(mutation, resolveFieldParams(field, device));
-              } else {
-                const restoreKey = `${device.name}:${capability.id}:${field.id}`;
-                onClick = () => {
-                  const currentValue = readPath(device, field.switch?.source ?? field.source);
-                  const rememberedValue = field.switch
-                    && currentValue !== field.switch.offValue
-                    && currentValue != null
-                    ? currentValue
-                    : statusSwitchRestoreValues[restoreKey];
-                  if (rememberedValue === currentValue && currentValue != null) {
-                    setStatusSwitchRestoreValues((current) => ({
-                      ...current,
-                      [restoreKey]: currentValue,
-                    }));
-                  }
-                  const nextValue = resolveSwitchNextValue(
-                    field,
-                    device,
-                    rememberedValue,
-                  );
-                  if (nextValue !== undefined) {
-                    void runMutation(mutation, resolveFieldMutationParams(field, device, nextValue));
-                  }
-                };
-              }
+      let onClick: (() => void) | undefined;
+      if (display.onClickField) {
+        const field = resolveStatusField(capability, display.onClickField, device);
+        if (field) {
+          const interaction = resolveFieldInteraction(field);
+          const mutation = resolveMutation(field.mutation, device.writableMutations);
+          if (interaction === 'control') {
+            onClick = controlAction(capability);
+          } else if (mutation && !writeBusy) {
+            if (interaction === 'modal') {
+              onClick = () => {
+                invoke('device_refresh_quick').catch(() => {});
+                setEditingField({ capability, field });
+              };
+            } else if (interaction === 'action') {
+              onClick = () => void runMutation(mutation, resolveFieldParams(field, device));
+            } else {
+              const restoreKey = `${device.name}:${capability.id}:${field.id}`;
+              onClick = () => {
+                const currentValue = readPath(device, field.switch?.source ?? field.source);
+                const rememberedValue = field.switch
+                  && currentValue !== field.switch.offValue
+                  && currentValue != null
+                  ? currentValue
+                  : statusSwitchRestoreValues[restoreKey];
+                if (rememberedValue === currentValue && currentValue != null) {
+                  setStatusSwitchRestoreValues((current) => ({
+                    ...current,
+                    [restoreKey]: currentValue,
+                  }));
+                }
+                const nextValue = resolveSwitchNextValue(
+                  field,
+                  device,
+                  rememberedValue,
+                );
+                if (nextValue !== undefined) {
+                  void runMutation(mutation, resolveFieldMutationParams(field, device, nextValue));
+                }
+              };
             }
           }
-        } else {
-          onClick = controlAction(capability);
         }
-        items.push({ capability, placement, onClick });
+      } else {
+        onClick = controlAction(capability);
       }
+      items.push({ capability, placement, onClick });
     }
-    return items.sort((a, b) => a.placement.order - b.placement.order).slice(0, MAX_STATUS_ITEMS);
+    return items;
   })();
 
   const selectedEntry = selectedDeviceEntry(deviceEntries);

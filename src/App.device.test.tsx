@@ -325,9 +325,12 @@ describe('real device snapshot mapping', () => {
 
     render(<App />);
     expect(await screen.findByRole('heading', { name: 'Grid Mouse' })).toBeInTheDocument();
-    expect(screen.getByRole('tablist', { name: '设备控制' })).toHaveStyle({ gridTemplateColumns: 'repeat(6, minmax(0, 1fr))' });
-    expect(screen.getByRole('region', { name: '设备状态' })).toHaveStyle({ gridTemplateColumns: 'repeat(6, minmax(0, 1fr))' });
+    // ITERATION-004 §2.1：Dashboard 上方控制区默认 3、最多 4。
+    // 7 个候选均未声明 priority>=90 与 fourthSlotEligible，故只展示前 3 项。
+    expect(screen.getByRole('tablist', { name: '设备控制' })).toHaveStyle({ gridTemplateColumns: 'repeat(3, minmax(0, 1fr))' });
+    expect(screen.getByRole('region', { name: '设备状态' })).toHaveStyle({ gridTemplateColumns: 'repeat(3, minmax(0, 1fr))' });
     expect(screen.queryByRole('tab', { name: 'Control 7' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: 'Control 4' })).not.toBeInTheDocument();
   });
 
   it('prefers mouse battery over receiver in the card summary regardless of array order', async () => {
