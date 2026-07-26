@@ -952,10 +952,12 @@ impl ProtocolPackage {
         self.build_command(command_id, params, None)
     }
 
-    /// Iteration 002 §16.1：fixture 测试专用 —— 构建需要 read-response base 的 write 命令。
-    /// 对于 `base: "read-response"` 的 Protocol A write 命令，fixture runner 无法预先执行 read，
-    /// 因此当 `base` 未提供时使用全 0 base 作为 fallback，仅用于 fixture 测试。
-    /// 真实运行时必须通过 workflow 的 pre-read 步骤提供 base。
+    /// Iteration 005 §P1-D：fixture 测试专用 —— 构建需要 read-response base 的 write 命令。
+    /// 对于 `base: "read-response"` 的 Protocol A write 命令，fixture runner 必须通过
+    /// sample 的 `preReadResponse` 字段提供真实预读 base，否则返回错误。
+    /// 真实运行时通过 workflow 的 pre-read 步骤提供 base；fixture 用 preReadResponse 模拟。
+    /// 不再使用全 0 base fallback：read-modify-write 测试必须有真实预读字节，
+    /// 否则无法验证保留字段、checksum 更新和 unknown 字节保留行为。
     pub fn build_fixture_request_with_base(
         &self,
         command_id: &str,
@@ -965,18 +967,19 @@ impl ProtocolPackage {
         if let Some(b) = base {
             return self.build_command(command_id, params, Some(b));
         }
-        // base 未提供：若命令需要 ReadResponse，使用全 0 base 作为 fixture fallback
+        // base 未提供：检查命令是否需要 ReadResponse。
+        // P1-D：需要 read-response base 的命令必须显式提供 preReadResponse，不再使用全 0 fallback。
         let command = self
             .commands
             .commands
             .get(command_id)
             .ok_or_else(|| format!("missing command {command_id}"))?;
         if command.request.base == RequestBase::ReadResponse {
-            let zero_base = vec![0u8; command.request.length];
-            self.build_command(command_id, params, Some(&zero_base))
-        } else {
-            self.build_command(command_id, params, None)
+            return Err(format!(
+                "command {command_id} requires read-response base: fixture must declare preReadResponse (all-zero fallback removed per ITERATION-005 §P1-D)"
+            ));
         }
+        self.build_command(command_id, params, None)
     }
 
     /// Iteration 002 §16：仅解析响应（不构建请求）。
@@ -3210,6 +3213,13 @@ impl Session<'_> {
         //   - 错误 best-effort，不判设备失败。
         //   平台限制：hidapi get_input_report 无独立 per-call timeout，
         //   有界性由 stale_drain_reads × 总 deadline 联合保证。
+        // ITERATION-005 §P1-E：transport 证据表述（不得宣称 strict wall-clock
+        //   timeout guaranteed；以下英文短语为规范要求的事实表述）：
+        //   - bounded read attempts（drain 次数有上限）
+        //   - deadline checked between calls（每次 drain 前检查 deadline_remaining_ms）
+        //   - best-effort drain（drain 错误不判设备失败，仅停止排空）
+        //   - platform API call itself may not be interruptible
+        //     （hidapi get_input_report 不可中断，有界性由 drain 次数 × 总 deadline 联合保证）
         if *stale_drain_reads > 0 {
             let drain_buf_len = (*read_length).max(1);
             let drain_is_input_report = matches!(read_mode, HidFramedReadMode::InputReport);
@@ -7810,5 +7820,88 @@ mod tests {
             framed_response_matches_request(&request, &stale_rest, 2, None, None),
             "no match_slice → always match (backward compatible)"
         );
+    }
+
+    // ---- ITERATION-005 §P1-D：read-response base 缺失必须 FAIL ----
+
+    /// P1-D：命令声明 `base: "read-response"` 时，fixture 必须通过 `preReadResponse`
+    /// 提供真实预读 base。删除全零 fallback 后，缺失 base 应返回错误。
+    #[test]
+    fn build_fixture_request_with_base_rejects_missing_pre_read_response() {
+        let package = build_test_package(
+            r#"{
+                "schemaVersion": 1,
+                "commands": {
+                    "rmw-write": {
+                        "request": {
+                            "length": 8,
+                            "base": "read-response",
+                            "bytes": [
+                                { "offset": 0, "value": "0x53" },
+                                { "offset": 4, "param": "seconds", "encoding": "le-u16" }
+                            ],
+                            "checksum": {
+                                "algorithm": "ff-minus-sum8",
+                                "start": 0,
+                                "endExclusive": 7,
+                                "writeOffset": 7
+                            }
+                        }
+                    }
+                }
+            }"#,
+            r#"{"schemaVersion": 1, "parsers": {}}"#,
+            r#"{"schemaVersion": 1, "transports": {}}"#,
+            r#"{"schemaVersion": 1, "workflows": {}}"#,
+        );
+        let params = BTreeMap::from([("seconds".into(), Value::from(600))]);
+
+        // 缺 preReadResponse（base=None）：必须返回错误，不再使用全零 fallback。
+        let err = package
+            .build_fixture_request_with_base("rmw-write", &params, None)
+            .expect_err("missing preReadResponse should FAIL per ITERATION-005 §P1-D");
+        assert!(
+            err.contains("read-response base") && err.contains("preReadResponse"),
+            "error must explain preReadResponse requirement: {err}"
+        );
+
+        // 提供真实 preReadResponse base 后必须成功。
+        let pre_read: Vec<u8> = vec![0x53, 0x01, 0x02, 0x03, 0xaa, 0xbb, 0xcc, 0xdd];
+        let request = package
+            .build_fixture_request_with_base("rmw-write", &params, Some(&pre_read))
+            .expect("valid preReadResponse base should succeed");
+        // 预读 base 的保留字节必须出现在请求中（offset 1..4 未被覆盖）。
+        assert_eq!(&request[1..4], &[0x01, 0x02, 0x03]);
+        // 新写入的 le-u16 seconds=600=0x0258 必须出现在 offset 4..6。
+        assert_eq!(&request[4..6], &[0x58, 0x02]);
+    }
+
+    /// P1-D：命令不依赖 read-response base 时，base=None 应继续工作（向后兼容）。
+    #[test]
+    fn build_fixture_request_with_base_allows_zero_base_commands_without_pre_read() {
+        let package = build_test_package(
+            r#"{
+                "schemaVersion": 1,
+                "commands": {
+                    "plain-write": {
+                        "request": {
+                            "length": 4,
+                            "bytes": [
+                                { "offset": 0, "value": "0x07" },
+                                { "offset": 1, "param": "enabled", "encoding": "bool" }
+                            ]
+                        }
+                    }
+                }
+            }"#,
+            r#"{"schemaVersion": 1, "parsers": {}}"#,
+            r#"{"schemaVersion": 1, "transports": {}}"#,
+            r#"{"schemaVersion": 1, "workflows": {}}"#,
+        );
+        let params = BTreeMap::from([("enabled".into(), Value::from(true))]);
+        let request = package
+            .build_fixture_request_with_base("plain-write", &params, None)
+            .expect("zero-base command should not require preReadResponse");
+        assert_eq!(request, vec![0x07, 0x01, 0x00, 0x00]);
     }
 }
