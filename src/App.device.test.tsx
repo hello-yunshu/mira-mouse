@@ -59,7 +59,7 @@ const snapshot: DeviceSnapshot = {
   pluginCapabilities: [
     {
       id: 'dpi', control: 'DpiStages', labelKey: 'plugin.label.capability.dpi', readOnly: false,
-      placements: [{ region: 'control', group: 'performance', order: 10, span: 1, icon: 'gauge' }],
+      placements: [{ region: 'control', group: 'performance', order: 10, span: 1, icon: 'gauge', priority: 100, dashboardRole: 'fixed-core', fixedSlot: 1, fourthSlotEligible: false, dedupeKey: 'dashboard.dpi', fallbackRegion: 'advanced' }],
       metadata: {
         stageLayout: {
           dotsSource: 'state.dpiStages', selectMutation: 'set-dpi-stage', setMutation: 'set-dpi-value',
@@ -70,7 +70,7 @@ const snapshot: DeviceSnapshot = {
     },
     {
       id: 'polling-rate', control: 'Select', labelKey: 'plugin.label.capability.polling-rate', readOnly: false,
-      placements: [{ region: 'control', group: 'polling', order: 20, span: 1, icon: 'wave' }],
+      placements: [{ region: 'control', group: 'polling', order: 20, span: 1, icon: 'wave', priority: 100, dashboardRole: 'fixed-core', fixedSlot: 2, fourthSlotEligible: false, dedupeKey: 'dashboard.polling', fallbackRegion: 'advanced' }],
       metadata: {
         fields: [{
           id: 'value', source: 'state.pollingRate', mutation: 'set-polling-rate', param: 'value',
@@ -87,7 +87,7 @@ const snapshot: DeviceSnapshot = {
     },
     {
       id: 'sleep-time', control: 'Number', labelKey: 'plugin.label.capability.sleep-time', readOnly: false,
-      placements: [{ region: 'status', order: 30, span: 1, icon: 'timer' }],
+      placements: [{ region: 'status', order: 30, span: 1, icon: 'timer', priority: 80, dashboardRole: 'candidate', fourthSlotEligible: false, dedupeKey: 'status.sleep', fallbackRegion: 'advanced' }],
       metadata: {
         fields: [{
           id: 'value', source: 'state.wirelessSleepValue', mutation: 'set-wireless-sleep-time', param: 'value',
@@ -101,7 +101,7 @@ const snapshot: DeviceSnapshot = {
     },
     {
       id: 'profile', control: 'ReadOnlyValue', labelKey: 'plugin.label.capability.profile', readOnly: true,
-      placements: [{ region: 'status', order: 20, span: 1, icon: 'profile' }],
+      placements: [{ region: 'status', order: 20, span: 1, icon: 'profile', priority: 70, dashboardRole: 'candidate', fourthSlotEligible: false, dedupeKey: 'status.profile', fallbackRegion: 'advanced' }],
       metadata: {
         fields: [{ id: 'value', source: 'state.profile', editor: 'static-readonly', labelKey: 'plugin.label.capability.profile' }],
         statusDisplay: { valueSource: 'state.profile' },
@@ -111,8 +111,8 @@ const snapshot: DeviceSnapshot = {
     {
       id: 'lighting', control: 'LightingZone', labelKey: 'plugin.label.capability.lighting', readOnly: false,
       placements: [
-        { region: 'control', group: 'lighting', order: 30, span: 1, icon: 'lightbulb' },
-        { region: 'status', order: 40, span: 1, icon: 'lightbulb' },
+        { region: 'control', group: 'lighting', order: 30, span: 1, icon: 'lightbulb', priority: 100, dashboardRole: 'fixed-core', fixedSlot: 3, fourthSlotEligible: false, dedupeKey: 'dashboard.lighting', fallbackRegion: 'advanced' },
+        { region: 'status', order: 40, span: 1, icon: 'lightbulb', priority: 75, dashboardRole: 'candidate', fourthSlotEligible: false, dedupeKey: 'status.lighting', fallbackRegion: 'advanced' },
       ],
       metadata: {
         accentSource: 'state.mouseLightColor',
@@ -305,8 +305,30 @@ describe('real device snapshot mapping', () => {
       labelKey: `Control ${index + 1}`,
       readOnly: true,
       placements: [
-        { region: 'control' as const, group: `group-${index}`, order: index, span: 1, icon: 'info' },
-        { region: 'status' as const, order: index, span: 1, icon: 'info' },
+        {
+          region: 'control' as const,
+          group: `group-${index}`,
+          order: index,
+          span: 1,
+          icon: 'info',
+          priority: 100,
+          dashboardRole: 'fixed-core' as const,
+          fixedSlot: (index < 3 ? (index + 1) as 1 | 2 | 3 : undefined),
+          fourthSlotEligible: false,
+          dedupeKey: `dashboard.control-${index}`,
+          fallbackRegion: 'advanced' as const,
+        },
+        {
+          region: 'status' as const,
+          order: index,
+          span: 1,
+          icon: 'info',
+          priority: 70,
+          dashboardRole: 'candidate' as const,
+          fourthSlotEligible: false,
+          dedupeKey: `status.control-${index}`,
+          fallbackRegion: 'advanced' as const,
+        },
       ],
       metadata: {
         fields: [{ id: 'value', source: 'battery', editor: 'static-readonly' as const, format: 'percent' as const }],
@@ -368,7 +390,7 @@ describe('real device snapshot mapping', () => {
           control: 'ReadOnlyValue',
           labelKey: 'plugin.label.capability.battery',
           readOnly: true,
-          placements: [{ region: 'status', order: 10, span: 1, icon: 'battery' }],
+          placements: [{ region: 'status', order: 10, span: 1, icon: 'battery', priority: 70, dashboardRole: 'candidate', fourthSlotEligible: false, dedupeKey: 'status.battery', fallbackRegion: 'advanced' }],
           metadata: {
             fields: [{ id: 'value', source: 'battery', editor: 'static-readonly', format: 'percent', labelKey: 'plugin.label.capability.battery' }],
             statusDisplay: { valueSource: 'battery', valueFormat: 'percent' },
@@ -402,8 +424,8 @@ describe('real device snapshot mapping', () => {
         {
           id: 'lighting', control: 'LightingZone', labelKey: 'plugin.label.capability.lighting', readOnly: false,
           placements: [
-            { region: 'control', group: 'lighting', order: 30, span: 1, icon: 'lightbulb' },
-            { region: 'status', order: 30, span: 1, icon: 'lightbulb' },
+            { region: 'control', group: 'lighting', order: 30, span: 1, icon: 'lightbulb', priority: 100, dashboardRole: 'fixed-core', fixedSlot: 3, fourthSlotEligible: false, dedupeKey: 'dashboard.lighting', fallbackRegion: 'advanced' },
+            { region: 'status', order: 30, span: 1, icon: 'lightbulb', priority: 75, dashboardRole: 'candidate', fourthSlotEligible: false, dedupeKey: 'status.lighting', fallbackRegion: 'advanced' },
           ],
           metadata: {
             zones: [{
@@ -463,8 +485,8 @@ describe('real device snapshot mapping', () => {
         {
           id: 'control-mode', control: 'Segmented', labelKey: 'plugin.label.capability.lighting', readOnly: false,
           placements: [
-            { region: 'control', group: 'configuration', order: 20, span: 1, icon: 'profile' },
-            { region: 'status', order: 10, span: 2, icon: 'profile' },
+            { region: 'control', group: 'configuration', order: 20, span: 1, icon: 'profile', priority: 100, dashboardRole: 'fixed-core', fixedSlot: 3, fourthSlotEligible: false, dedupeKey: 'dashboard.control-mode', fallbackRegion: 'advanced' },
+            { region: 'status', order: 10, span: 2, icon: 'profile', priority: 70, dashboardRole: 'candidate', fourthSlotEligible: false, dedupeKey: 'status.control-mode', fallbackRegion: 'advanced' },
           ],
           metadata: {
             fields: [{
@@ -479,7 +501,7 @@ describe('real device snapshot mapping', () => {
         },
         {
           id: 'dpi', control: 'DpiStages', labelKey: 'plugin.label.capability.dpi', readOnly: false,
-          placements: [{ region: 'control', group: 'performance', order: 10, span: 1, icon: 'gauge' }],
+          placements: [{ region: 'control', group: 'performance', order: 10, span: 1, icon: 'gauge', priority: 100, dashboardRole: 'fixed-core', fixedSlot: 1, fourthSlotEligible: false, dedupeKey: 'dashboard.dpi', fallbackRegion: 'advanced' }],
           metadata: {
             stageLayout: { dotsSource: 'state.dpiStages', selectMutation: 'set-dpi-stage', setMutation: 'set-dpi-value', valueSource: 'state.dpiStages', colorSource: 'state.dpiStages', range: { min: 100, max: 32000, step: 50 } },
             stateMapping: { dpiStages: 'dpiStages' },
@@ -566,8 +588,8 @@ describe('real device snapshot mapping', () => {
         {
           id: 'lighting', control: 'LightingZone', labelKey: 'plugin.label.capability.lighting', readOnly: false,
           placements: [
-            { region: 'control', group: 'lighting', order: 30, span: 1, icon: 'lightbulb' },
-            { region: 'status', order: 30, span: 1, icon: 'lightbulb' },
+            { region: 'control', group: 'lighting', order: 30, span: 1, icon: 'lightbulb', priority: 100, dashboardRole: 'fixed-core', fixedSlot: 3, fourthSlotEligible: false, dedupeKey: 'dashboard.lighting', fallbackRegion: 'advanced' },
+            { region: 'status', order: 30, span: 1, icon: 'lightbulb', priority: 75, dashboardRole: 'candidate', fourthSlotEligible: false, dedupeKey: 'status.lighting', fallbackRegion: 'advanced' },
           ],
           metadata: {
             accentSource: 'state.mouseLightColor',
@@ -634,7 +656,7 @@ describe('real device snapshot mapping', () => {
       pluginCapabilities: [
         {
           id: 'lighting', control: 'LightingZone', labelKey: 'plugin.label.capability.lighting', readOnly: false,
-          placements: [{ region: 'control', group: 'lighting', order: 30, span: 1, icon: 'lightbulb' }],
+          placements: [{ region: 'control', group: 'lighting', order: 30, span: 1, icon: 'lightbulb', priority: 100, dashboardRole: 'fixed-core', fixedSlot: 3, fourthSlotEligible: false, dedupeKey: 'dashboard.lighting', fallbackRegion: 'advanced' }],
           metadata: {
             zones: [
               {
@@ -674,7 +696,7 @@ describe('real device snapshot mapping', () => {
       pluginCapabilities: [
         {
           id: 'pointer-speed', control: 'Slider', labelKey: 'plugin.label.capability.firmware', readOnly: false,
-          placements: [{ region: 'control', group: 'sensor', order: 40, span: 1, icon: 'gauge' }],
+          placements: [{ region: 'control', group: 'sensor', order: 40, span: 1, icon: 'gauge', priority: 100, dashboardRole: 'fixed-core', fixedSlot: 1, fourthSlotEligible: false, dedupeKey: 'dashboard.pointer-speed', fallbackRegion: 'advanced' }],
           metadata: {
             fields: [{
               id: 'value', source: 'state.pointerSpeed', mutation: 'set-pointer-speed', param: 'value',
@@ -712,7 +734,7 @@ describe('real device snapshot mapping', () => {
       pluginCapabilities: [
         {
           id: 'angle-snap', control: 'Toggle', labelKey: 'plugin.label.capability.firmware', readOnly: false,
-          placements: [{ region: 'control', group: 'sensor', order: 10, span: 1, icon: 'gauge' }],
+          placements: [{ region: 'control', group: 'sensor', order: 10, span: 1, icon: 'gauge', priority: 100, dashboardRole: 'fixed-core', fixedSlot: 1, fourthSlotEligible: false, dedupeKey: 'dashboard.angle-snap', fallbackRegion: 'advanced' }],
           metadata: {
             fields: [{ id: 'value', source: 'state.angleSnap', mutation: 'set-angle-snap', param: 'value', editor: 'inline-toggle', labelKey: 'capability.field.sensorIndex' }],
             stateMapping: { angleSnap: 'capabilities.settings.angleSnap' },
@@ -720,7 +742,7 @@ describe('real device snapshot mapping', () => {
         },
         {
           id: 'lift-cutoff', control: 'Select', labelKey: 'plugin.label.capability.profile', readOnly: false,
-          placements: [{ region: 'control', group: 'sensor', order: 20, span: 1, icon: 'settings' }],
+          placements: [{ region: 'control', group: 'sensor', order: 20, span: 1, icon: 'settings', priority: 100, dashboardRole: 'fixed-core', fixedSlot: 2, fourthSlotEligible: false, dedupeKey: 'dashboard.lift-cutoff', fallbackRegion: 'advanced' }],
           metadata: {
             fields: [{ id: 'value', source: 'state.liftCutOff', mutation: 'set-lift-cutoff', param: 'value', editor: 'modal-select', labelKey: 'capability.field.sensorIndex', options: [{ value: 1, labelKey: '1mm' }, { value: 2, labelKey: '2mm' }] }],
             stateMapping: { liftCutOff: 'capabilities.settings.liftCutOff' },
@@ -750,7 +772,7 @@ describe('real device snapshot mapping', () => {
       pluginCapabilities: [
         {
           id: 'pointer-speed', control: 'Slider', labelKey: 'plugin.label.capability.firmware', readOnly: false,
-          placements: [{ region: 'control', group: 'sensor', order: 10, span: 1, icon: 'gauge' }],
+          placements: [{ region: 'control', group: 'sensor', order: 10, span: 1, icon: 'gauge', priority: 50, dashboardRole: 'candidate', fallbackRegion: 'advanced' }],
           metadata: {
             fields: [{
               id: 'value', source: 'state.pointerSpeed', mutation: 'set-pointer-speed', param: 'value',
@@ -785,7 +807,7 @@ describe('real device snapshot mapping', () => {
       pluginCapabilities: [
         {
           id: 'control-mode', control: 'Segmented', labelKey: '配置控制', readOnly: false,
-          placements: [{ region: 'control', group: 'configuration', order: 5, span: 1, icon: 'settings' }],
+          placements: [{ region: 'control', group: 'configuration', order: 5, span: 1, icon: 'settings', priority: 100, dashboardRole: 'fixed-core', fixedSlot: 1, fourthSlotEligible: false, dedupeKey: 'dashboard.control-mode', fallbackRegion: 'advanced' }],
           metadata: { fields: [{
             id: 'value', source: 'capabilities.controlMode.mode', mutation: 'set-control-mode', param: 'mode',
             editor: 'inline-segmented', labelKey: '配置控制',
@@ -794,7 +816,7 @@ describe('real device snapshot mapping', () => {
         },
         {
           id: 'profile-mgmt-current', control: 'Number', labelKey: '当前配置文件', readOnly: false,
-          placements: [{ region: 'control', group: 'configuration', order: 6, span: 1, icon: 'profile' }],
+          placements: [{ region: 'control', group: 'configuration', order: 6, span: 1, icon: 'profile', priority: 70, dashboardRole: 'candidate', fourthSlotEligible: false, dedupeKey: 'dashboard.profile-mgmt-current', fallbackRegion: 'advanced' }],
           metadata: { fields: [{
             id: 'value', source: 'capabilities.profileMgmtCurrent.profileIndex',
             mutation: 'set-profile-mgmt-current', param: 'profileIndex', editor: 'modal-number',
@@ -803,7 +825,7 @@ describe('real device snapshot mapping', () => {
         },
         {
           id: 'dpi', control: 'DpiStages', labelKey: 'DPI', readOnly: false,
-          placements: [{ region: 'control', group: 'performance', order: 10, span: 1, icon: 'gauge' }],
+          placements: [{ region: 'control', group: 'performance', order: 10, span: 1, icon: 'gauge', priority: 100, dashboardRole: 'fixed-core', fixedSlot: 2, fourthSlotEligible: false, dedupeKey: 'dashboard.dpi', fallbackRegion: 'advanced' }],
           metadata: {
             stageLayout: {
               dotsSource: 'state.dpiStages', selectMutation: 'set-dpi-stage',
@@ -815,7 +837,7 @@ describe('real device snapshot mapping', () => {
         },
         {
           id: 'pointer-speed', control: 'Number', labelKey: '指针速度', readOnly: false,
-          placements: [{ region: 'control', group: 'performance', order: 15, span: 1, icon: 'gauge' }],
+          placements: [{ region: 'control', group: 'performance', order: 15, span: 1, icon: 'gauge', priority: 70, dashboardRole: 'candidate', fourthSlotEligible: false, dedupeKey: 'dashboard.pointer-speed', fallbackRegion: 'advanced' }],
           metadata: { fields: [{
             id: 'value', source: 'capabilities.pointerSpeed.speedRaw', mutation: 'set-pointer-speed',
             param: 'speed', editor: 'modal-number', labelKey: '指针速度',
@@ -866,7 +888,7 @@ describe('real device snapshot mapping', () => {
       pluginCapabilities: [
         {
           id: 'pointer-speed', control: 'Slider', labelKey: 'plugin.label.capability.firmware', readOnly: true,
-          placements: [{ region: 'control', group: 'sensor', order: 10, span: 1, icon: 'gauge' }],
+          placements: [{ region: 'control', group: 'sensor', order: 10, span: 1, icon: 'gauge', priority: 100, dashboardRole: 'fixed-core', fixedSlot: 1, fourthSlotEligible: false, dedupeKey: 'dashboard.pointer-speed', fallbackRegion: 'advanced' }],
           metadata: {
             fields: [{ id: 'value', source: 'state.pointerSpeed', editor: 'static-readonly', labelKey: 'capability.field.sensorIndex' }],
             stateMapping: { pointerSpeed: 'capabilities.settings.pointerSpeed' },
@@ -898,7 +920,7 @@ describe('real device snapshot mapping', () => {
       pluginCapabilities: [
         {
           id: 'pointer-speed', control: 'Slider', labelKey: 'plugin.label.capability.firmware', readOnly: false,
-          placements: [{ region: 'control', group: 'sensor', order: 10, span: 1, icon: 'gauge' }],
+          placements: [{ region: 'control', group: 'sensor', order: 10, span: 1, icon: 'gauge', priority: 100, dashboardRole: 'fixed-core', fixedSlot: 1, fourthSlotEligible: false, dedupeKey: 'dashboard.pointer-speed', fallbackRegion: 'advanced' }],
           metadata: {
             fields: [{
               id: 'value', source: 'state.pointerSpeed', mutation: 'set-pointer-speed', param: 'value',
@@ -960,7 +982,7 @@ describe('real device snapshot mapping', () => {
       pluginCapabilities: [
         {
           id: 'lighting', control: 'LightingZone', labelKey: 'plugin.label.capability.lighting', readOnly: false,
-          placements: [{ region: 'control', group: 'lighting', order: 30, span: 1, icon: 'lightbulb' }],
+          placements: [{ region: 'control', group: 'lighting', order: 30, span: 1, icon: 'lightbulb', priority: 100, dashboardRole: 'fixed-core', fixedSlot: 3, fourthSlotEligible: false, dedupeKey: 'dashboard.lighting', fallbackRegion: 'advanced' }],
           metadata: {
             zones: [
               {
@@ -1058,7 +1080,7 @@ describe('real device snapshot mapping', () => {
       pluginCapabilities: [
         {
           id: 'polling-rate', control: 'Select', labelKey: 'plugin.label.capability.polling-rate', readOnly: false,
-          placements: [{ region: 'control', group: 'polling', order: 20, span: 1, icon: 'wave' }],
+          placements: [{ region: 'control', group: 'polling', order: 20, span: 1, icon: 'wave', priority: 100, dashboardRole: 'fixed-core', fixedSlot: 2, fourthSlotEligible: false, dedupeKey: 'dashboard.polling', fallbackRegion: 'advanced' }],
           metadata: {
             fields: [{ id: 'value', source: 'state.pollingRate', mutation: 'set-polling-rate', param: 'value', editor: 'modal-select', optionSource: 'state.supportedPollingRates', format: 'hertz', labelKey: 'plugin.label.capability.polling-rate' }],
             stateMapping: { pollingRate: 'pollingRateHz', supportedPollingRates: 'supportedPollingRatesHz' },
@@ -1091,7 +1113,7 @@ describe('real device snapshot mapping', () => {
       pluginCapabilities: [
         {
           id: 'lighting', control: 'LightingZone', labelKey: 'plugin.label.capability.lighting', readOnly: false,
-          placements: [{ region: 'control', group: 'lighting', order: 30, span: 1, icon: 'lightbulb' }],
+          placements: [{ region: 'control', group: 'lighting', order: 30, span: 1, icon: 'lightbulb', priority: 100, dashboardRole: 'fixed-core', fixedSlot: 3, fourthSlotEligible: false, dedupeKey: 'dashboard.lighting', fallbackRegion: 'advanced' }],
           metadata: {
             zones: [
               {
@@ -1134,7 +1156,7 @@ describe('real device snapshot mapping', () => {
       pluginCapabilities: [
         {
           id: 'lighting', control: 'LightingZone', labelKey: 'plugin.label.capability.lighting', readOnly: false,
-          placements: [{ region: 'control', group: 'lighting', order: 30, span: 1, icon: 'lightbulb' }],
+          placements: [{ region: 'control', group: 'lighting', order: 30, span: 1, icon: 'lightbulb', priority: 100, dashboardRole: 'fixed-core', fixedSlot: 3, fourthSlotEligible: false, dedupeKey: 'dashboard.lighting', fallbackRegion: 'advanced' }],
           metadata: {
             zones: [
               {
@@ -1189,7 +1211,7 @@ describe('real device snapshot mapping', () => {
       pluginCapabilities: [
         {
           id: 'lighting', control: 'LightingZone', labelKey: 'plugin.label.capability.lighting', readOnly: false,
-          placements: [{ region: 'control', group: 'lighting', order: 30, span: 1, icon: 'lightbulb' }],
+          placements: [{ region: 'control', group: 'lighting', order: 30, span: 1, icon: 'lightbulb', priority: 100, dashboardRole: 'fixed-core', fixedSlot: 3, fourthSlotEligible: false, dedupeKey: 'dashboard.lighting', fallbackRegion: 'advanced' }],
           metadata: {
             zones: [
               {
@@ -1231,7 +1253,7 @@ describe('real device snapshot mapping', () => {
       pluginCapabilities: [
         {
           id: 'lighting', control: 'LightingZone', labelKey: 'plugin.label.capability.lighting', readOnly: false,
-          placements: [{ region: 'control', group: 'lighting', order: 30, span: 1, icon: 'lightbulb' }],
+          placements: [{ region: 'control', group: 'lighting', order: 30, span: 1, icon: 'lightbulb', priority: 100, dashboardRole: 'fixed-core', fixedSlot: 3, fourthSlotEligible: false, dedupeKey: 'dashboard.lighting', fallbackRegion: 'advanced' }],
           metadata: {
             zones: [
               {
@@ -1288,7 +1310,7 @@ describe('real device snapshot mapping', () => {
       pluginCapabilities: [
         {
           id: 'lighting', control: 'LightingZone', labelKey: 'plugin.label.capability.lighting', readOnly: false,
-          placements: [{ region: 'control', group: 'lighting', order: 30, span: 1, icon: 'lightbulb' }],
+          placements: [{ region: 'control', group: 'lighting', order: 30, span: 1, icon: 'lightbulb', priority: 100, dashboardRole: 'fixed-core', fixedSlot: 3, fourthSlotEligible: false, dedupeKey: 'dashboard.lighting', fallbackRegion: 'advanced' }],
           metadata: {
             zones: [
               {
