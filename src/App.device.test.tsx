@@ -112,7 +112,6 @@ const snapshot: DeviceSnapshot = {
       id: 'lighting', control: 'LightingZone', labelKey: 'plugin.label.capability.lighting', readOnly: false,
       placements: [
         { region: 'control', group: 'lighting', order: 30, span: 1, icon: 'lightbulb', priority: 100, dashboardRole: 'fixed-core', fixedSlot: 3, fourthSlotEligible: false, dedupeKey: 'dashboard.lighting', fallbackRegion: 'advanced' },
-        { region: 'status', order: 40, span: 1, icon: 'lightbulb', priority: 75, dashboardRole: 'candidate', fourthSlotEligible: false, dedupeKey: 'status.lighting', fallbackRegion: 'advanced' },
       ],
       metadata: {
         accentSource: 'state.mouseLightColor',
@@ -424,7 +423,6 @@ describe('real device snapshot mapping', () => {
         {
           id: 'lighting', control: 'LightingZone', labelKey: 'plugin.label.capability.lighting', readOnly: false,
           placements: [
-            { region: 'control', group: 'lighting', order: 30, span: 1, icon: 'lightbulb', priority: 100, dashboardRole: 'fixed-core', fixedSlot: 3, fourthSlotEligible: false, dedupeKey: 'dashboard.lighting', fallbackRegion: 'advanced' },
             { region: 'status', order: 30, span: 1, icon: 'lightbulb', priority: 75, dashboardRole: 'candidate', fourthSlotEligible: false, dedupeKey: 'status.lighting', fallbackRegion: 'advanced' },
           ],
           metadata: {
@@ -589,7 +587,6 @@ describe('real device snapshot mapping', () => {
           id: 'lighting', control: 'LightingZone', labelKey: 'plugin.label.capability.lighting', readOnly: false,
           placements: [
             { region: 'control', group: 'lighting', order: 30, span: 1, icon: 'lightbulb', priority: 100, dashboardRole: 'fixed-core', fixedSlot: 3, fourthSlotEligible: false, dedupeKey: 'dashboard.lighting', fallbackRegion: 'advanced' },
-            { region: 'status', order: 30, span: 1, icon: 'lightbulb', priority: 75, dashboardRole: 'candidate', fourthSlotEligible: false, dedupeKey: 'status.lighting', fallbackRegion: 'advanced' },
           ],
           metadata: {
             accentSource: 'state.mouseLightColor',
@@ -875,7 +872,8 @@ describe('real device snapshot mapping', () => {
     await screen.findByRole('heading', { name: 'AM INFINITY 8K MOUSE' });
     const tabs = screen.getAllByRole('tab').map((t) => t.textContent);
     expect(tabs).toEqual(expect.arrayContaining(['DPI', '回报率', '灯光']));
-    expect(screen.getByRole('region', { name: '设备状态' })).toHaveAttribute('data-status-count', '3');
+    // ITERATION-006 §P1-A：lighting 下方重复 status placement 已移除，status count 从 3 降为 2。
+    expect(screen.getByRole('region', { name: '设备状态' })).toHaveAttribute('data-status-count', '2');
   });
 
   it('renders a read-only HID++ snapshot', async () => {
@@ -1043,11 +1041,11 @@ describe('real device snapshot mapping', () => {
                 {
                   id: 'receiver', labelKey: 'dashboard.receiverLighting', visibleWhen: { path: 'capabilities.receiverLighting' },
                   fields: [
-                    { id: 'effect', source: 'capabilities.receiverLighting.effect', mutation: 'set-receiver-lighting', param: 'effect', editor: 'modal-select', labelKey: 'receiverLighting.field.effect', options: LIGHTING_EFFECT_OPTIONS },
+                    { id: 'effect', source: 'capabilities.receiverLighting.effect', mutation: 'set-receiver-lighting', param: 'effect', editor: 'modal-select', labelKey: 'receiverLighting.field.effect', options: LIGHTING_EFFECT_OPTIONS, lightingRole: 'effect' },
                     { id: 'option', source: 'capabilities.receiverLighting.option', mutation: 'set-receiver-lighting', param: 'option', editor: 'modal-select', labelKey: 'receiverLighting.field.option', options: LIGHTING_EFFECT_OPTIONS },
                     { id: 'speed', source: 'capabilities.receiverLighting.speed', mutation: 'set-receiver-lighting', param: 'speed', editor: 'modal-select', labelKey: 'receiverLighting.field.speed', options: LIGHTING_EFFECT_OPTIONS },
                     { id: 'brightness', source: 'capabilities.receiverLighting.brightness', mutation: 'set-receiver-lighting', param: 'brightness', editor: 'modal-select', labelKey: 'receiverLighting.field.brightness', options: LIGHTING_EFFECT_OPTIONS },
-                    { id: 'color', source: 'capabilities.receiverLighting.color', mutation: 'set-receiver-lighting', param: 'color', editor: 'modal-color', format: 'color', labelKey: 'receiverLighting.field.color' },
+                    { id: 'color', source: 'capabilities.receiverLighting.color', mutation: 'set-receiver-lighting', param: 'color', editor: 'modal-color', format: 'color', labelKey: 'receiverLighting.field.color', lightingRole: 'primary-color' },
                   ],
                 },
               ],

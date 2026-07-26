@@ -53,6 +53,9 @@ import {
   resolveSwitchNextValue,
   resolveVisibleWhen,
   resolveZones,
+  selectLightingSubblocks,
+  selectSummarySubblocks,
+  POLLING_MAX_SUBBLOCKS,
   simulateDemoMutation,
 } from './pluginAdapter';
 import { onAppNotification, notifyError, notifySuccess, type AppNotification } from './notify';
@@ -538,10 +541,14 @@ function FormattedValue({ value, format, label, className }: {
 }
 
 function CapabilitySummary({ capability, device }: { capability: PluginCapability; device: DeviceState }) {
-  const items = (capability.metadata.summary ?? []).filter((item) => {
+  // P0-F：回报率子块最多 3 个，按 priority desc → order asc → stable id asc 选择。
+  // 超出的低优先级项进入 Advanced Settings（由 advancedFieldGroups 收集）。
+  const allItems = capability.metadata.summary ?? [];
+  const reportedItems = allItems.filter((item) => {
     const value = readPath(device, item.source);
     return value !== undefined && value !== null && value !== '';
   });
+  const { selected: items } = selectSummarySubblocks(reportedItems, POLLING_MAX_SUBBLOCKS);
   if (items.length === 0) return null;
   return (
     <div
@@ -1584,14 +1591,22 @@ function StageLayout({ capability, device, writeBusy, runMutation }: {
   );
 }
 
+/// P0-D：Advanced Settings 条目类型。支持 field / stageLayout / zone 三种形态，
+/// 复用现有 FieldRenderer / StageLayout / ZoneRenderer 渲染。
+type AdvancedSettingsEntry =
+  | { type: 'field'; capability: PluginCapability; field: PluginField }
+  | { type: 'stageLayout'; capability: PluginCapability }
+  | { type: 'zone'; capability: PluginCapability };
+
 /// P0-C：Advanced Settings 模态窗口。展示未进入 Dashboard 首页的可写字段和 details 字段，
 /// 按 advancedSection 分组。可编辑字段点击后打开 FieldEditModal。
-function AdvancedSettingsModal({ groups, device, writeBusy, onClose, onEditField }: {
-  groups: { section: NonNullable<PluginField['advancedSection']>; fields: { capability: PluginCapability; field: PluginField }[] }[];
+function AdvancedSettingsModal({ groups, device, writeBusy, onClose, onEditField, runMutation }: {
+  groups: { section: NonNullable<PluginField['advancedSection']>; entries: AdvancedSettingsEntry[] }[];
   device: DeviceState;
   writeBusy: boolean;
   onClose: () => void;
   onEditField: (capability: PluginCapability, field: PluginField) => void;
+  runMutation: (mutation: string, params: Record<string, unknown>) => Promise<void>;
 }) {
   const sectionLabel = (section: NonNullable<PluginField['advancedSection']>): string => {
     const key = `advancedSettings.section.${section}`;
@@ -1617,15 +1632,42 @@ function AdvancedSettingsModal({ groups, device, writeBusy, onClose, onEditField
           <section key={group.section} className="advanced-settings-section">
             <h3>{sectionLabel(group.section)}</h3>
             <ul className="advanced-settings-list">
-              {group.fields.map(({ capability, field }) => {
+              {group.entries.map((entry, index) => {
+                if (entry.type === 'stageLayout') {
+                  return (
+                    <li key={`${entry.capability.id}:stageLayout`} className="advanced-settings-item advanced-settings-stage-layout">
+                      <StageLayout capability={entry.capability} device={device} writeBusy={writeBusy} runMutation={runMutation} />
+                    </li>
+                  );
+                }
+                if (entry.type === 'zone') {
+                  return (
+                    <li key={`${entry.capability.id}:zone`} className="advanced-settings-item advanced-settings-zone">
+                      <ZoneRenderer capability={entry.capability} device={device} writeBusy={writeBusy} runMutation={runMutation} />
+                    </li>
+                  );
+                }
+                // field entry：复用 FieldRenderer 渲染所有 editor 类型。
+                // inline-* editor 直接在列表中操作；modal-* editor 通过 onEditField 打开模态框。
+                const { capability, field } = entry;
+                const mutation = resolveMutation(field.mutation, device.writableMutations);
+                const isModalEditor = field.editor.startsWith('modal-');
+                if (!isModalEditor) {
+                  // inline-* / static-readonly：直接渲染 FieldRenderer（复用通用 renderer）。
+                  return (
+                    <li key={`${capability.id}:${field.id}:${index}`} className="advanced-settings-item advanced-settings-inline">
+                      <FieldRenderer field={field} device={device} writeBusy={writeBusy} runMutation={runMutation} />
+                    </li>
+                  );
+                }
+                // modal-* editor：label-value 按钮，点击打开模态框。
                 const label = resolveFieldLabel(field, device, device.pluginId);
                 const value = readPath(device, field.source);
-                const mutation = resolveMutation(field.mutation, device.writableMutations);
-                const editable = Boolean(mutation) && !writeBusy && field.editor.startsWith('modal-');
+                const editable = Boolean(mutation) && !writeBusy;
                 const valueText = formatFieldValue(value, field.format, i18n.t);
                 const isColor = field.format === 'color' || valueLooksColor(value);
                 return (
-                  <li key={`${capability.id}:${field.id}`} className="advanced-settings-item">
+                  <li key={`${capability.id}:${field.id}:${index}`} className="advanced-settings-item">
                     <button
                       type="button"
                       className="advanced-settings-field"
@@ -1727,9 +1769,13 @@ function ZoneRenderer({ capability, device, writeBusy, runMutation }: {
     : activeZone.id === zones[0].id;
   const tabAccent = usesThemeAccent ? 'var(--accent)' : zoneColor ?? 'var(--accent)';
 
-  const visibleFields = activeZone.fields.filter((field) =>
+  // P0-G：灯光子块最多 6 个，灯效最左、主颜色最右，中间最多 4 个 candidate。
+  // 先过滤 reported 和 presentation，再用 selectLightingSubblocks 选择。
+  // 未声明的字段视为 candidate（向后兼容）。
+  const lightingCandidates = activeZone.fields.filter((field) =>
     fieldHasReportedValue(field, device) && field.presentation !== 'details',
   );
+  const { selected: visibleFields } = selectLightingSubblocks(lightingCandidates);
   // 条件显示的次级区域通常是接收器等附属对象；字段较多时使用与旧界面一致
   // 的紧凑密度。这里仅依赖 zone 的声明形态，不依赖 zone id。
   const compactDetailGrid = Boolean(activeZone.visibleWhen) && visibleFields.length >= 5;
@@ -2509,10 +2555,10 @@ function Dashboard({
     }
   };
 
-  const { groups: controlGroups, usedDedupeKeys: controlDedupeKeys, fallback: controlFallback } = useMemo(() => {
+  const { groups: controlGroups, usedDedupeKeys: controlDedupeKeys } = useMemo(() => {
     // ITERATION-005 §P0-A：使用纯函数选择器，输入 ReadonlySet<string>，返回新 Set。
     // 共享 dedupeKey 上下文，防止 control 与 status 区域出现重复入口。
-    const { selected: controlCandidates, fallback, usedDedupeKeys } = selectDashboardControls(
+    const { selected: controlCandidates, usedDedupeKeys } = selectDashboardControls(
       device.pluginCapabilities,
       device,
       capabilityAvailable,
@@ -2545,7 +2591,7 @@ function Dashboard({
         hasMetric: Boolean(sharedControlMetric(group.capabilities, device)),
         hasSurface: Boolean(sharedControlSurface(group.capabilities, device)),
       }));
-    return { groups: result, usedDedupeKeys, fallback };
+    return { groups: result, usedDedupeKeys };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [device, pluginLocaleRevision]);
 
@@ -2613,17 +2659,18 @@ function Dashboard({
     setPreviewMessage('');
   };
 
-  const { items: statusItems, fallback: statusFallback } = useMemo(() => {
+  const { items: statusItems } = useMemo(() => {
     // ITERATION-005 §P0-A：纯函数选择器，消费 controlDedupeKeys 作为依赖。
     // 共享 dedupeKey 上下文，避免与上方控制区出现重复入口（如全部读数、电量）。
     const hasReportedStatus = (capability: PluginCapability): boolean => {
-      const display = resolveStatusDisplay(capability);
-      if (!display) return false;
+      const base = resolveStatusDisplay(capability);
+      if (!base) return false;
       if (capabilityRuntimePending(capability)) return true;
-      const requestedField = resolveStatusField(capability, display.onClickField, device);
-      // ITERATION-005 §P0-E：display.valueSource 在声明 variants 时可省略，
-      // 此时应跳过 reported 校验（由 variant 提供实际值）。
-      const displayedValue = display.valueSource ? readPath(device, display.valueSource) : undefined;
+      // ITERATION-006 §P0-C：先解析 active variant，再检查 valueSource/onClickField。
+      // 当 statusDisplay.variants 存在时，valueSource/onClickField 在 variant 上而非 base 上。
+      const active = resolveStatusDisplayVariant(base, device);
+      const requestedField = resolveStatusField(capability, active.onClickField, device);
+      const displayedValue = active.valueSource ? readPath(device, active.valueSource) : undefined;
       const fallbackValue = requestedField ? readPath(device, requestedField.source) : undefined;
       if (
         (displayedValue === undefined || displayedValue === null || displayedValue === '')
@@ -2631,7 +2678,7 @@ function Dashboard({
       ) return false;
       return true;
     };
-    const { selected: statusCandidates, fallback } = selectDashboardStatus(
+    const { selected: statusCandidates } = selectDashboardStatus(
       device.pluginCapabilities,
       device,
       capabilityAvailable,
@@ -2657,9 +2704,11 @@ function Dashboard({
     const items: { capability: PluginCapability; placement: PluginCapabilityPlacement; onClick: (() => void) | undefined }[] = [];
     for (const candidate of statusCandidates) {
       const { capability, placement } = candidate;
-      const display = resolveStatusDisplay(capability);
+      const base = resolveStatusDisplay(capability);
       // 已通过 hasReportedStatus 校验，display 必然存在；保留防御性检查。
-      if (!display) continue;
+      if (!base) continue;
+      // ITERATION-006 §P0-C：使用 active variant 的 onClickField，而非 base。
+      const display = resolveStatusDisplayVariant(base, device);
       let onClick: (() => void) | undefined;
       if (display.onClickField) {
         const field = resolveStatusField(capability, display.onClickField, device);
@@ -2708,63 +2757,105 @@ function Dashboard({
       }
       items.push({ capability, placement, onClick });
     }
-    return { items, fallback };
+    return { items };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [device, pluginLocaleRevision, controlDedupeKeys]);
 
-  // P0-C：Advanced Settings 分组。收集 fallback capabilities 和 presentation='details' 字段，
-  // 按 advancedSection 分组、advancedOrder 排序，供 AdvancedSettingsModal 展示。
+  // P0-D：Advanced Settings 分组。直接消费所有 fallbackRegion=advanced 的 capability
+  // 和 placement.region=details 的可写 capability，按 advancedSection 分组、advancedOrder 排序。
+  // advancedSection 只用于分组，不作为是否进入高级设置的必要条件。
+  // presentation=details 只用于字段分层，不替代 fallbackRegion。
+  // 支持 fields / zones / stageLayout，复用现有 FieldRenderer / ZoneRenderer / StageLayout。
   const advancedFieldGroups = useMemo(() => {
     const sectionOrder: Array<NonNullable<PluginField['advancedSection']>> = [
       'performance', 'lighting-details', 'profiles', 'buttons', 'power', 'sensor', 'device',
     ];
-    const groups = new Map<NonNullable<PluginField['advancedSection']>, { capability: PluginCapability; field: PluginField }[]>();
+    const groups = new Map<string, AdvancedSettingsEntry[]>();
     for (const section of sectionOrder) groups.set(section, []);
 
-    // 收集所有需要进入 Advanced Settings 的 capability：
-    // 1. controlFallback / statusFallback 中的 capability
-    // 2. 所有 dashboard capability 中含 presentation='details' 字段的
-    const seenCapabilityIds = new Set<string>();
-    const collectCapability = (capability: PluginCapability) => {
-      if (seenCapabilityIds.has(capability.id)) return;
-      seenCapabilityIds.add(capability.id);
+    const addEntry = (section: string | undefined, entry: AdvancedSettingsEntry) => {
+      const target = section ?? 'device';
+      if (!groups.has(target)) groups.set(target, []);
+      groups.get(target)!.push(entry);
+    };
+
+    // 判断 capability 是否应进入 Advanced Settings：
+    // 1. 有任意 placement 的 fallbackRegion=advanced（未进入首页时回退到高级设置）
+    // 2. 有任意 placement 的 region=details（专门放在 details 区域）
+    // 3. 已在首页但含 presentation='details' 字段（字段级分层）
+    const hasAdvancedFallback = (capability: PluginCapability): boolean =>
+      (capability.placements ?? []).some(
+        (p) => p.fallbackRegion === 'advanced' || p.region === 'details',
+      );
+
+    const collectCapability = (capability: PluginCapability, dashboardFieldLayering: boolean) => {
       const allFields = [
         ...(capability.metadata.fields ?? []),
         ...(capability.metadata.zones ?? []).flatMap((zone) => zone.fields),
       ];
+      // 收集字段：dashboard 能力只收集 presentation='details' 字段（字段级分层）；
+      // fallback/details 能力收集所有可写或可见字段。
       for (const field of allFields) {
-        const section = field.advancedSection;
         const isDetails = field.presentation === 'details';
-        if (!section && !isDetails) continue;
-        // 可编辑性：有 mutation 且在 writableMutations 中，或为 details 只读展示。
-        const mutation = resolveMutation(field.mutation, device.writableMutations);
-        if (!mutation && !isDetails) continue;
+        if (dashboardFieldLayering && !isDetails) continue;
         // visibleWhen 必须通过（设备当前状态下可见）。
         if (!resolveVisibleWhen(field.visibleWhen, device)) continue;
-        // 默认 details 归入 lighting-details（Receiver Lighting 十字段分层）。
-        const targetSection = section ?? 'lighting-details';
-        if (!groups.has(targetSection)) groups.set(targetSection, []);
-        groups.get(targetSection)!.push({ capability, field });
+        const mutation = resolveMutation(field.mutation, device.writableMutations);
+        // 可写字段或有 details 标记的只读字段都应展示。
+        if (!mutation && !isDetails) continue;
+        addEntry(field.advancedSection, { type: 'field', capability, field });
+      }
+      // DpiStages with stageLayout：作为整体 entry 展示（dots + value 编辑器）。
+      if (
+        !dashboardFieldLayering
+        && capability.control === 'DpiStages'
+        && capability.metadata.stageLayout
+        && !capability.readOnly
+      ) {
+        addEntry('performance', { type: 'stageLayout', capability });
+      }
+      // LightingZone with zones：作为整体 entry 展示（zone tabs + fields）。
+      if (
+        !dashboardFieldLayering
+        && capability.control === 'LightingZone'
+        && (capability.metadata.zones ?? []).length > 0
+        && !capability.readOnly
+      ) {
+        addEntry('lighting-details', { type: 'zone', capability });
       }
     };
 
-    for (const candidate of controlFallback) collectCapability(candidate.capability);
-    for (const candidate of statusFallback) collectCapability(candidate.capability);
-    // 也收集 dashboard 已展示 capability 中的 details 字段。
+    // 收集所有 fallbackRegion=advanced 或 region=details 的 capability。
+    const seenCapabilityIds = new Set<string>();
+    for (const capability of device.pluginCapabilities) {
+      if (!capabilityAvailable(capability)) continue;
+      if (!hasAdvancedFallback(capability)) continue;
+      if (seenCapabilityIds.has(capability.id)) continue;
+      seenCapabilityIds.add(capability.id);
+      collectCapability(capability, false);
+    }
+    // 也收集 dashboard 已展示 capability 中的 presentation='details' 字段（字段级分层）。
     for (const group of controlGroups) {
-      for (const capability of group.capabilities) collectCapability(capability);
+      for (const capability of group.capabilities) {
+        if (seenCapabilityIds.has(capability.id)) continue;
+        collectCapability(capability, true);
+      }
     }
 
-    const result: { section: NonNullable<PluginField['advancedSection']>; fields: { capability: PluginCapability; field: PluginField }[] }[] = [];
+    const result: { section: NonNullable<PluginField['advancedSection']>; entries: AdvancedSettingsEntry[] }[] = [];
     for (const section of sectionOrder) {
-      const fields = groups.get(section) ?? [];
-      if (fields.length === 0) continue;
-      fields.sort((a, b) => (a.field.advancedOrder ?? 100) - (b.field.advancedOrder ?? 100));
-      result.push({ section, fields });
+      const entries = groups.get(section) ?? [];
+      if (entries.length === 0) continue;
+      entries.sort((a, b) => {
+        const orderA = a.type === 'field' ? (a.field.advancedOrder ?? 100) : 50;
+        const orderB = b.type === 'field' ? (b.field.advancedOrder ?? 100) : 50;
+        return orderA - orderB;
+      });
+      result.push({ section, entries });
     }
     return result;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [device, pluginLocaleRevision, controlFallback, statusFallback, controlGroups]);
+  }, [device, pluginLocaleRevision, controlGroups]);
 
   const hasAdvancedSettings = advancedFieldGroups.length > 0;
 
@@ -3068,6 +3159,7 @@ function Dashboard({
           writeBusy={writeBusy}
           onClose={() => setShowAdvancedSettings(false)}
           onEditField={(capability, field) => setEditingField({ capability, field })}
+          runMutation={runMutation}
         />
       )}
     </main>

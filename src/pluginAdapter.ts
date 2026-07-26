@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // 插件适配层：声明式 capability metadata 解析纯函数。所有插件知识均从 metadata 声明字段读取。
-import type { DeviceState, DpiStage, PluginCapability, PluginCapabilityPlacement, PluginField, PluginFieldOption, PluginMutation, PluginStageLayout, PluginStateMapping, PluginStatusDisplay, PluginSwitch, PluginVisibleWhen, PluginZone, RangeSpec } from './types';
+import type { DeviceState, DpiStage, PluginCapability, PluginCapabilityPlacement, PluginField, PluginFieldOption, PluginMutation, PluginStageLayout, PluginStateMapping, PluginStatusDisplay, PluginSummaryItem, PluginSwitch, PluginVisibleWhen, PluginZone, RangeSpec } from './types';
 import { resolveLabelKey, resolveRuntimeText } from './i18n';
 
 export const MAX_CONTROL_GROUPS = 6;
@@ -57,6 +57,8 @@ export interface ControlCandidate {
   dedupeKey: string | undefined;
   /** 槽位组 ID（placement.group || capability.id）。 */
   groupId: string;
+  /** P0-E：候选槽位位置。leading=核心序列之前；trailing=核心序列之后。默认 trailing。 */
+  optionalPosition: 'leading' | 'trailing';
 }
 
 /**
@@ -99,6 +101,7 @@ export function selectDashboardControls(
         fourthSlotEligible: placement.fourthSlotEligible ?? false,
         dedupeKey: placement.dedupeKey,
         groupId: placement.group || capability.id,
+        optionalPosition: placement.optionalPosition ?? 'trailing',
       };
       candidates.push(candidate);
     }
@@ -152,22 +155,40 @@ export function selectDashboardControls(
   // fixedSlot 1/2/3 仅接受 fixedSlot===1/2/3 的候选；若某 fixedSlot 无候选，
   // 该位置为空（不显示）。普通 candidate 绝不填入 fixedSlot。
 
-  const selected: ControlCandidate[] = [];
+  // P0-E：核心序列 DPI→回报率→灯光（fixedSlot 1/2/3），相对顺序不可被打断。
+  // 候选只能放在核心序列的 leading（之前）或 trailing（之后），禁止插入核心中间。
+  // 最多一个候选，通过 optionalPosition 控制位置（默认 trailing）。
+  const coreSequence: ControlCandidate[] = [];
   for (const candidate of fixedSlots) {
-    if (candidate) selected.push(candidate);
+    if (candidate) coreSequence.push(candidate);
   }
 
-  // 第 4 槽位：只有 priority>=90 且 fourthSlotEligible 的候选才竞争。
-  if (selected.length >= CONTROL_PREFERRED_COUNT && selected.length < CONTROL_MAX_COUNT) {
+  // 第 4 槽位（候选）：只有 priority>=90 且 fourthSlotEligible 的候选才竞争。
+  // 候选选择：priority desc → order asc → stable id asc（remaining 已按此排序）。
+  // 核心三项必须全部就位才允许候选竞争第 4 槽（保持核心序列完整性）。
+  let leadingCandidate: ControlCandidate | undefined;
+  let trailingCandidate: ControlCandidate | undefined;
+  if (coreSequence.length >= CONTROL_PREFERRED_COUNT && coreSequence.length < CONTROL_MAX_COUNT) {
     const fourthCandidate = remaining.find(
       (c) => c.priority >= FOURTH_SLOT_MIN_PRIORITY && c.fourthSlotEligible,
     );
     if (fourthCandidate) {
-      selected.push(fourthCandidate);
+      if (fourthCandidate.optionalPosition === 'leading') {
+        leadingCandidate = fourthCandidate;
+      } else {
+        trailingCandidate = fourthCandidate;
+      }
       if (fourthCandidate.dedupeKey) usedKeys.add(fourthCandidate.dedupeKey);
       remaining.splice(remaining.indexOf(fourthCandidate), 1);
     }
   }
+
+  // 组装最终序列：leading → 核心序列 → trailing。
+  // 核心缺失时仍保持剩余核心相对顺序。
+  const selected: ControlCandidate[] = [];
+  if (leadingCandidate) selected.push(leadingCandidate);
+  for (const candidate of coreSequence) selected.push(candidate);
+  if (trailingCandidate) selected.push(trailingCandidate);
 
   // 未选中项作为 fallback 返回（调用方可用于高级设置页）。
   const fallback = remaining.filter((c) => {
@@ -218,6 +239,7 @@ export function selectDashboardStatus(
         fourthSlotEligible: placement.fourthSlotEligible ?? false,
         dedupeKey: placement.dedupeKey,
         groupId: placement.group || capability.id,
+        optionalPosition: placement.optionalPosition ?? 'trailing',
       };
       candidates.push(candidate);
     }
@@ -745,6 +767,114 @@ export function resolveLightingRoles(capabilities: PluginCapability[], writableM
     }
   }
   return roles;
+}
+
+// ─── ITERATION-006 §P0-F/P0-G：子块选择器 ──────────────────────────────────
+// 通用子块选择纯函数：按 priority desc → order asc → stable id asc 排序，
+// 取前 max 项作为选中项，其余作为 fallback。
+// 适用于回报率页面（max=3）和灯光页面（max=6，固定两端）。
+
+/** 回报率页面子块上限。 */
+export const POLLING_MAX_SUBBLOCKS = 3;
+/** 灯光页面子块上限。 */
+export const LIGHTING_MAX_SUBBLOCKS = 6;
+/** 灯光页面中间候选上限（effect 和 primary-color 之外）。 */
+export const LIGHTING_MAX_CANDIDATES = 4;
+
+/** 子块选择结果：selected 为入选项，fallback 为进入 Advanced Settings 的项。 */
+export interface SubblockSelection<T> {
+  selected: T[];
+  fallback: T[];
+}
+
+/**
+ * P0-F：通用子块选择器（纯函数）。
+ *
+ * 按 priority desc → order asc → stable id asc 排序，取前 max 项。
+ * 不足 max 项时保持实际数量，不补空、不拿低优先级项凑数。
+ * 超过 max 项时，前 max 项入选，其余进入 fallback（调用方可用于 Advanced Settings）。
+ *
+ * 适用于回报率页面（max=3）的 summary items 选择。
+ */
+export function selectSummarySubblocks(
+  items: PluginSummaryItem[],
+  max: number,
+): SubblockSelection<PluginSummaryItem> {
+  const candidates = items.map((item, index) => ({
+    item,
+    priority: item.priority ?? 0,
+    order: index,
+    stableId: item.source,
+  }));
+
+  candidates.sort((a, b) => {
+    if (b.priority !== a.priority) return b.priority - a.priority;
+    if (a.order !== b.order) return a.order - b.order;
+    return a.stableId < b.stableId ? -1 : a.stableId > b.stableId ? 1 : 0;
+  });
+
+  const selected = candidates.slice(0, max).map((c) => c.item);
+  const fallback = candidates.slice(max).map((c) => c.item);
+  return { selected, fallback };
+}
+
+/**
+ * P0-G：灯光子块选择器（纯函数）。
+ *
+ * 固定两端：lightingRole='effect' 最左，lightingRole='primary-color' 最右。
+ * 中间最多 4 个 candidate（按 priority desc → id asc 排序）。
+ * 总数最多 6（1 effect + 4 candidate + 1 primary-color）。
+ *
+ * - 多个 effect 只取最高优先级；
+ * - 多个 primary-color 只取最高优先级；
+ * - 未声明 lightingRole 的字段视为 candidate（向后兼容）；
+ * - 次级颜色、比例、raw 字段应声明 presentation='details' 或由 fallback 接收。
+ *
+ * 返回的 selected 已按 [effect, ...candidates, primary-color] 顺序排列。
+ * fallback 包含未入选的 effect/primary-color 候选和超出 4 个的 candidate。
+ */
+export function selectLightingSubblocks(
+  fields: PluginField[],
+): SubblockSelection<PluginField> {
+  const effects: PluginField[] = [];
+  const primaryColors: PluginField[] = [];
+  const candidates: PluginField[] = [];
+
+  for (const field of fields) {
+    const role = field.lightingRole ?? 'candidate';
+    if (role === 'effect') effects.push(field);
+    else if (role === 'primary-color') primaryColors.push(field);
+    else candidates.push(field);
+  }
+
+  const sortByPriority = (a: PluginField, b: PluginField): number => {
+    const pa = a.priority ?? 0;
+    const pb = b.priority ?? 0;
+    if (pb !== pa) return pb - pa;
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  };
+
+  effects.sort(sortByPriority);
+  primaryColors.sort(sortByPriority);
+  candidates.sort(sortByPriority);
+
+  const selectedEffect = effects[0];
+  const selectedPrimaryColor = primaryColors[0];
+  const selectedCandidates = candidates.slice(0, LIGHTING_MAX_CANDIDATES);
+
+  const selected: PluginField[] = [];
+  if (selectedEffect) selected.push(selectedEffect);
+  selected.push(...selectedCandidates);
+  if (selectedPrimaryColor) selected.push(selectedPrimaryColor);
+
+  const selectedSet = new Set(selected);
+  const fallback: PluginField[] = [];
+  for (const field of fields) {
+    if (selectedSet.has(field)) continue;
+    fallback.push(field);
+  }
+
+  return { selected, fallback };
 }
 
 /// 演示模式 mutation 模拟器。深拷贝 device，遍历 pluginCapabilities 找到匹配 mutation 的可写字段，

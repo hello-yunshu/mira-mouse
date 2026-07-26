@@ -1698,7 +1698,7 @@ mod tests {
         let outputs = BTreeMap::from([
             (
                 "mouseLightMode".into(),
-                json!({"mode": 2, "modeName": "霓虹", "speed": 1, "brightness": 3}),
+                json!({"mode": 2, "modeName": "模式 2", "speed": 1, "brightness": 3}),
             ),
             ("mouseLightColor".into(), json!({"color": "#112233"})),
             (
