@@ -163,12 +163,16 @@ export function selectDashboardControls(
     if (candidate) coreSequence.push(candidate);
   }
 
-  // 第 4 槽位（候选）：只有 priority>=90 且 fourthSlotEligible 的候选才竞争。
+  // P0-G：候选选择。只有 priority>=90 且 fourthSlotEligible 的候选才竞争。
   // 候选选择：priority desc → order asc → stable id asc（remaining 已按此排序）。
-  // 核心三项必须全部就位才允许候选竞争第 4 槽（保持核心序列完整性）。
+  // 不再要求核心三项全部就位：核心缺失时仍允许一个候选（leading 或 trailing），
+  // 候选不填 fixedSlot，剩余核心项保持相对顺序。
+  // 示例：无灯光 + leading → candidate → DPI → polling；
+  //       无灯光 + trailing → DPI → polling → candidate；
+  //       仅 DPI → candidate → DPI 或 DPI → candidate。
   let leadingCandidate: ControlCandidate | undefined;
   let trailingCandidate: ControlCandidate | undefined;
-  if (coreSequence.length >= CONTROL_PREFERRED_COUNT && coreSequence.length < CONTROL_MAX_COUNT) {
+  if (coreSequence.length >= 1 && coreSequence.length < CONTROL_MAX_COUNT) {
     const fourthCandidate = remaining.find(
       (c) => c.priority >= FOURTH_SLOT_MIN_PRIORITY && c.fourthSlotEligible,
     );
@@ -683,6 +687,23 @@ export function validatePlacement(placement: PluginCapabilityPlacement): string 
   // hero/details placement 不应有 dashboardRole=fixed-core。
   if ((placement.region === 'hero' || placement.region === 'details') && role === 'fixed-core') {
     return `${placement.region} placement must not use dashboardRole='fixed-core'`;
+  }
+  // P1-B：dedupeKey 如果声明则必须是非空字符串。
+  if (placement.dedupeKey !== undefined) {
+    if (typeof placement.dedupeKey !== 'string' || placement.dedupeKey.length === 0) {
+      return `dedupeKey must be a non-empty string, got ${String(placement.dedupeKey)}`;
+    }
+  }
+  // P1-B：fallbackRegion 只允许 advanced | inventory | hidden（不再接受 details）。
+  if (placement.fallbackRegion !== undefined) {
+    const allowed: ReadonlySet<string> = new Set(['advanced', 'inventory', 'hidden']);
+    if (!allowed.has(placement.fallbackRegion)) {
+      return `fallbackRegion must be one of advanced|inventory|hidden, got '${placement.fallbackRegion}'`;
+    }
+  }
+  // P1-B：optionalPosition 仅对 dashboardRole='candidate' 有效。
+  if (placement.optionalPosition !== undefined && role !== 'candidate') {
+    return `optionalPosition requires dashboardRole='candidate', got '${role}'`;
   }
   return null;
 }

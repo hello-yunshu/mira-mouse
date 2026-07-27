@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // ITERATION-005 §P0-A/P0-B：Dashboard 选择器纯函数 + 覆盖率测试。
+// ITERATION-007 §P1-A：子块选择器 + validatePlacement + leading/trailing 覆盖率测试。
 import { describe, expect, it } from 'vitest';
 import {
   CONTROL_PREFERRED_COUNT,
@@ -8,10 +9,16 @@ import {
   STATUS_BASE_SLOT_MIN_PRIORITY,
   STATUS_PREFERRED_COUNT,
   STATUS_MAX_COUNT,
+  POLLING_MAX_SUBBLOCKS,
+  LIGHTING_MAX_SUBBLOCKS,
+  LIGHTING_MAX_CANDIDATES,
   selectDashboardControls,
   selectDashboardStatus,
+  selectSummarySubblocks,
+  selectLightingSubblocks,
+  validatePlacement,
 } from './pluginAdapter';
-import type { DeviceState, PluginCapability, PluginCapabilityPlacement } from './types';
+import type { DeviceState, PluginCapability, PluginCapabilityPlacement, PluginField, PluginSummaryItem } from './types';
 
 function makeDevice(state: Record<string, unknown> = {}, overrides: Partial<DeviceState> = {}): DeviceState {
   return {
@@ -252,15 +259,18 @@ describe('P0-B: selectDashboardControls fixedSlot placement', () => {
       [dpi, lighting, extra], device, allAvailable, allHaveContent, new Set(),
     );
 
-    // 普通候选绝不填入 fixedSlot=2；fixedSlot=2 位置为空。
+    // 普通候选绝不填入 fixedSlot=2；fixedSlot=2 位置为空（不强制回填）。
     expect(selected.find((c) => c.fixedSlot === 2)).toBeUndefined();
-    // 仅 2 个 fixedSlot 入选（< CONTROL_PREFERRED_COUNT），第 4 槽位逻辑不激活，
-    // extra 进入 fallback 而非 selected。这验证了"不强制填充"和"第 4 槽位需 PREFERRED_COUNT"。
-    expect(selected.map((c) => c.capability.id)).toEqual(['dpi', 'lighting']);
-    expect(fallback.map((c) => c.capability.id)).toContain('extra');
+    // P0-G relaxed gate：核心缺失时仍允许一个候选（trailing 默认），
+    // extra 作为 trailing 候选入选，不填 fixedSlot=2。
+    // 序列为 DPI → lighting → extra（核心相对顺序保持，候选在末尾）。
+    expect(selected.map((c) => c.capability.id)).toEqual(['dpi', 'lighting', 'extra']);
+    expect(selected.find((c) => c.capability.id === 'extra')?.fixedSlot).toBeUndefined();
+    expect(fallback.map((c) => c.capability.id)).not.toContain('extra');
   });
 
-  it('does not fill the 4th slot when fewer than 3 fixed slots are filled', () => {
+  it('fills the 4th slot via P0-G relaxed gate even when fewer than 3 fixed slots are filled', () => {
+    // P0-G relaxed gate：仅 1 个 fixedSlot 时仍允许一个候选（leading 或 trailing）。
     const dpi = makeCapability('dpi', [controlPlacement({
       group: 'performance', order: 10, priority: 100, dashboardRole: 'fixed-core',
       fixedSlot: 1, dedupeKey: 'dashboard.dpi',
@@ -275,8 +285,9 @@ describe('P0-B: selectDashboardControls fixedSlot placement', () => {
       [dpi, extra], device, allAvailable, allHaveContent, new Set(),
     );
 
-    // 仅 1 个 fixedSlot 时不应启用第 4 槽（PREFERRED_COUNT 未达到）。
-    expect(selected.map((c) => c.capability.id)).toEqual(['dpi']);
+    // 仅 1 个 fixedSlot + 1 个 trailing candidate = 2 项（P0-G relaxed gate 允许）。
+    expect(selected.map((c) => c.capability.id)).toEqual(['dpi', 'extra']);
+    expect(selected.find((c) => c.capability.id === 'extra')?.fixedSlot).toBeUndefined();
   });
 });
 
@@ -672,5 +683,306 @@ describe('Dashboard selector constants', () => {
     expect(STATUS_MAX_COUNT).toBe(4);
     expect(FOURTH_SLOT_MIN_PRIORITY).toBe(90);
     expect(STATUS_BASE_SLOT_MIN_PRIORITY).toBe(60);
+  });
+});
+
+// ─── P1-A：子块选择器常量 ────────────────────────────────────────────────
+
+describe('Subblock selector constants', () => {
+  it('exposes the expected subblock limits', () => {
+    expect(POLLING_MAX_SUBBLOCKS).toBe(3);
+    expect(LIGHTING_MAX_SUBBLOCKS).toBe(6);
+    expect(LIGHTING_MAX_CANDIDATES).toBe(4);
+  });
+});
+
+// ─── P0-F：selectSummarySubblocks 覆盖率 ────────────────────────────────
+
+describe('P0-F: selectSummarySubblocks', () => {
+  function makeSummary(source: string, priority?: number): PluginSummaryItem {
+    return { source, priority };
+  }
+
+  it('selects up to max items by priority desc', () => {
+    const items = [
+      makeSummary('a', 50),
+      makeSummary('b', 90),
+      makeSummary('c', 70),
+      makeSummary('d', 30),
+    ];
+    const { selected, fallback } = selectSummarySubblocks(items, 3);
+    expect(selected.map((i) => i.source)).toEqual(['b', 'c', 'a']);
+    expect(fallback.map((i) => i.source)).toEqual(['d']);
+  });
+
+  it('returns all items as selected when count <= max', () => {
+    const items = [makeSummary('a', 50), makeSummary('b', 90)];
+    const { selected, fallback } = selectSummarySubblocks(items, 3);
+    expect(selected.map((i) => i.source)).toEqual(['b', 'a']);
+    expect(fallback).toHaveLength(0);
+  });
+
+  it('preserves declaration order for equal priorities (stable sort)', () => {
+    const items = [
+      makeSummary('first', 80),
+      makeSummary('second', 80),
+      makeSummary('third', 80),
+    ];
+    const { selected } = selectSummarySubblocks(items, 2);
+    expect(selected.map((i) => i.source)).toEqual(['first', 'second']);
+  });
+
+  it('handles empty input', () => {
+    const { selected, fallback } = selectSummarySubblocks([], 3);
+    expect(selected).toHaveLength(0);
+    expect(fallback).toHaveLength(0);
+  });
+});
+
+// ─── P0-G：selectLightingSubblocks 覆盖率 ───────────────────────────────
+
+describe('P0-G: selectLightingSubblocks', () => {
+  function makeField(id: string, role?: PluginField['lightingRole'], priority?: number): PluginField {
+    return { id, source: `state.${id}`, editor: 'modal-select', lightingRole: role, priority };
+  }
+
+  it('places effect at the left and primary-color at the right', () => {
+    const fields = [
+      makeField('speed', 'candidate', 80),
+      makeField('color', 'primary-color', 100),
+      makeField('effect', 'effect', 100),
+      makeField('brightness', 'candidate', 70),
+    ];
+    const { selected } = selectLightingSubblocks(fields);
+    expect(selected.map((f) => f.id)).toEqual(['effect', 'speed', 'brightness', 'color']);
+  });
+
+  it('keeps effect at the left even when other fields have higher priority', () => {
+    const fields = [
+      makeField('high', 'candidate', 95),
+      makeField('effect', 'effect', 50),
+      makeField('color', 'primary-color', 100),
+    ];
+    const { selected } = selectLightingSubblocks(fields);
+    expect(selected[0].id).toBe('effect');
+    expect(selected[selected.length - 1].id).toBe('color');
+  });
+
+  it('selects only the highest-priority effect when multiple exist', () => {
+    const fields = [
+      makeField('effect-low', 'effect', 50),
+      makeField('effect-high', 'effect', 100),
+      makeField('color', 'primary-color', 100),
+    ];
+    const { selected, fallback } = selectLightingSubblocks(fields);
+    expect(selected.find((f) => f.lightingRole === 'effect')?.id).toBe('effect-high');
+    expect(fallback.find((f) => f.id === 'effect-low')).toBeDefined();
+  });
+
+  it('limits candidates to LIGHTING_MAX_CANDIDATES', () => {
+    const fields = [
+      makeField('effect', 'effect', 100),
+      makeField('c1', 'candidate', 90),
+      makeField('c2', 'candidate', 80),
+      makeField('c3', 'candidate', 70),
+      makeField('c4', 'candidate', 60),
+      makeField('c5', 'candidate', 50),
+      makeField('c6', 'candidate', 40),
+      makeField('color', 'primary-color', 100),
+    ];
+    const { selected, fallback } = selectLightingSubblocks(fields);
+    const candidates = selected.filter((f) => f.lightingRole === 'candidate' || !f.lightingRole);
+    expect(candidates).toHaveLength(LIGHTING_MAX_CANDIDATES);
+    expect(fallback.find((f) => f.id === 'c5')).toBeDefined();
+    expect(fallback.find((f) => f.id === 'c6')).toBeDefined();
+  });
+
+  it('treats fields without lightingRole as candidate', () => {
+    const fields = [
+      makeField('effect', 'effect', 100),
+      makeField('untagged'),
+      makeField('color', 'primary-color', 100),
+    ];
+    const { selected } = selectLightingSubblocks(fields);
+    expect(selected.map((f) => f.id)).toEqual(['effect', 'untagged', 'color']);
+  });
+
+  it('works with only candidate fields (no effect or primary-color)', () => {
+    const fields = [
+      makeField('a', 'candidate', 90),
+      makeField('b', 'candidate', 80),
+    ];
+    const { selected } = selectLightingSubblocks(fields);
+    expect(selected.map((f) => f.id)).toEqual(['a', 'b']);
+  });
+});
+
+// ─── P0-E/P0-G：leading/trailing candidate 行为 ──────────────────────────
+
+describe('P0-E/P0-G: leading/trailing candidate placement', () => {
+  it('places a leading candidate before the core sequence', () => {
+    const dpi = makeCapability('dpi', [controlPlacement({
+      group: 'performance', order: 10, priority: 100, dashboardRole: 'fixed-core',
+      fixedSlot: 1, dedupeKey: 'dashboard.dpi',
+    })]);
+    const polling = makeCapability('polling', [controlPlacement({
+      group: 'polling', order: 20, priority: 100, dashboardRole: 'fixed-core',
+      fixedSlot: 2, dedupeKey: 'dashboard.polling',
+    })]);
+    const lighting = makeCapability('lighting', [controlPlacement({
+      group: 'lighting', order: 30, priority: 100, dashboardRole: 'fixed-core',
+      fixedSlot: 3, dedupeKey: 'dashboard.lighting',
+    })]);
+    const leading = makeCapability('leading', [controlPlacement({
+      group: 'leading', order: 5, priority: 95, dashboardRole: 'candidate',
+      fourthSlotEligible: true, dedupeKey: 'dashboard.leading',
+      optionalPosition: 'leading',
+    })]);
+    const device = makeDevice({}, { pluginCapabilities: [dpi, polling, lighting, leading] });
+
+    const { selected } = selectDashboardControls(
+      [dpi, polling, lighting, leading], device, allAvailable, allHaveContent, new Set(),
+    );
+
+    expect(selected.map((c) => c.capability.id)).toEqual(['leading', 'dpi', 'polling', 'lighting']);
+  });
+
+  it('places a trailing candidate after the core sequence', () => {
+    const dpi = makeCapability('dpi', [controlPlacement({
+      group: 'performance', order: 10, priority: 100, dashboardRole: 'fixed-core',
+      fixedSlot: 1, dedupeKey: 'dashboard.dpi',
+    })]);
+    const polling = makeCapability('polling', [controlPlacement({
+      group: 'polling', order: 20, priority: 100, dashboardRole: 'fixed-core',
+      fixedSlot: 2, dedupeKey: 'dashboard.polling',
+    })]);
+    const lighting = makeCapability('lighting', [controlPlacement({
+      group: 'lighting', order: 30, priority: 100, dashboardRole: 'fixed-core',
+      fixedSlot: 3, dedupeKey: 'dashboard.lighting',
+    })]);
+    const trailing = makeCapability('trailing', [controlPlacement({
+      group: 'trailing', order: 100, priority: 95, dashboardRole: 'candidate',
+      fourthSlotEligible: true, dedupeKey: 'dashboard.trailing',
+      optionalPosition: 'trailing',
+    })]);
+    const device = makeDevice({}, { pluginCapabilities: [dpi, polling, lighting, trailing] });
+
+    const { selected } = selectDashboardControls(
+      [dpi, polling, lighting, trailing], device, allAvailable, allHaveContent, new Set(),
+    );
+
+    expect(selected.map((c) => c.capability.id)).toEqual(['dpi', 'polling', 'lighting', 'trailing']);
+  });
+
+  it('defaults optionalPosition to trailing when not declared', () => {
+    const dpi = makeCapability('dpi', [controlPlacement({
+      group: 'performance', order: 10, priority: 100, dashboardRole: 'fixed-core',
+      fixedSlot: 1, dedupeKey: 'dashboard.dpi',
+    })]);
+    const polling = makeCapability('polling', [controlPlacement({
+      group: 'polling', order: 20, priority: 100, dashboardRole: 'fixed-core',
+      fixedSlot: 2, dedupeKey: 'dashboard.polling',
+    })]);
+    const lighting = makeCapability('lighting', [controlPlacement({
+      group: 'lighting', order: 30, priority: 100, dashboardRole: 'fixed-core',
+      fixedSlot: 3, dedupeKey: 'dashboard.lighting',
+    })]);
+    const extra = makeCapability('extra', [controlPlacement({
+      group: 'extra', order: 100, priority: 95, dashboardRole: 'candidate',
+      fourthSlotEligible: true, dedupeKey: 'dashboard.extra',
+    })]);
+    const device = makeDevice({}, { pluginCapabilities: [dpi, polling, lighting, extra] });
+
+    const { selected } = selectDashboardControls(
+      [dpi, polling, lighting, extra], device, allAvailable, allHaveContent, new Set(),
+    );
+
+    expect(selected.map((c) => c.capability.id)).toEqual(['dpi', 'polling', 'lighting', 'extra']);
+  });
+
+  it('allows a candidate when core is incomplete (P0-G relaxed gate)', () => {
+    const dpi = makeCapability('dpi', [controlPlacement({
+      group: 'performance', order: 10, priority: 100, dashboardRole: 'fixed-core',
+      fixedSlot: 1, dedupeKey: 'dashboard.dpi',
+    })]);
+    const trailing = makeCapability('trailing', [controlPlacement({
+      group: 'trailing', order: 100, priority: 95, dashboardRole: 'candidate',
+      fourthSlotEligible: true, dedupeKey: 'dashboard.trailing',
+      optionalPosition: 'trailing',
+    })]);
+    const device = makeDevice({}, { pluginCapabilities: [dpi, trailing] });
+
+    const { selected } = selectDashboardControls(
+      [dpi, trailing], device, allAvailable, allHaveContent, new Set(),
+    );
+
+    // 仅 1 个 fixedSlot + 1 个 trailing candidate = 2 项（不再要求核心三项全部就位）
+    expect(selected.map((c) => c.capability.id)).toEqual(['dpi', 'trailing']);
+  });
+});
+
+// ─── P1-B：validatePlacement 增强 ───────────────────────────────────────
+
+describe('P1-B: validatePlacement enhanced checks', () => {
+  function validPlacement(): PluginCapabilityPlacement {
+    return {
+      region: 'control',
+      order: 10,
+      span: 1,
+      priority: 80,
+      dashboardRole: 'candidate',
+      fallbackRegion: 'advanced',
+      dedupeKey: 'dashboard.test',
+    };
+  }
+
+  it('returns null for a valid placement', () => {
+    expect(validatePlacement(validPlacement())).toBeNull();
+  });
+
+  it('rejects empty dedupeKey string', () => {
+    const p = validPlacement();
+    p.dedupeKey = '';
+    expect(validatePlacement(p)).toContain('dedupeKey must be a non-empty string');
+  });
+
+  it('rejects fallbackRegion=details (no longer accepted)', () => {
+    const p = validPlacement();
+    p.fallbackRegion = 'details' as PluginCapabilityPlacement['fallbackRegion'];
+    expect(validatePlacement(p)).toContain("fallbackRegion must be one of advanced|inventory|hidden");
+  });
+
+  it('accepts fallbackRegion=inventory', () => {
+    const p = validPlacement();
+    p.fallbackRegion = 'inventory';
+    expect(validatePlacement(p)).toBeNull();
+  });
+
+  it('rejects optionalPosition on fixed-core role', () => {
+    const p = validPlacement();
+    p.dashboardRole = 'fixed-core';
+    p.fixedSlot = 1;
+    p.optionalPosition = 'leading';
+    expect(validatePlacement(p)).toContain("optionalPosition requires dashboardRole='candidate'");
+  });
+
+  it('accepts optionalPosition on candidate role', () => {
+    const p = validPlacement();
+    p.optionalPosition = 'leading';
+    expect(validatePlacement(p)).toBeNull();
+  });
+
+  it('rejects fixedSlot on status region', () => {
+    const p = validPlacement();
+    p.region = 'status';
+    p.fixedSlot = 1;
+    p.dashboardRole = 'fixed-core';
+    expect(validatePlacement(p)).toContain('status placement must not declare fixedSlot');
+  });
+
+  it('rejects priority out of range', () => {
+    const p = validPlacement();
+    p.priority = 150;
+    expect(validatePlacement(p)).toContain('priority must be in [0, 100]');
   });
 });
