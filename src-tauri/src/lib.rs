@@ -935,11 +935,6 @@ struct SessionState {
     /// debug 构建中记录上一次 matched device 数量，仅在变化时输出日志。
     #[cfg(debug_assertions)]
     last_matched_count: Mutex<usize>,
-    /// macOS 原生通知点击后待执行的跳转动作。
-    /// macOS 上 `tauri-plugin-notification` 不暴露点击回调，改用 pending action +
-    /// 窗口 focus 消费的方式：发通知时写入 action，前端聚焦窗口时取走并执行跳转。
-    /// Windows/Linux 直接用 `notify-rust` 的 `wait_for_action` 处理点击，不写入此字段。
-    pending_notification_action: Mutex<Option<String>>,
     /// 电量使用情况：内存缓存 + 去重追踪。启动时从 battery_history.json 加载。
     battery_history: BatteryHistoryState,
     /// 电量预测预计算缓存：后台轮询周期中预构建 24h/10d 响应，
@@ -9585,9 +9580,6 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
                     );
                     if !alerts.is_empty() {
                         let lang = effective_language(&settings.language);
-                        if let Ok(mut guard) = state.pending_notification_action.lock() {
-                            *guard = Some("battery-usage".to_string());
-                        }
                         for (_key, device_name) in alerts {
                             let _ = app
                                 .notification()
@@ -9621,9 +9613,6 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
                 if notify {
                     if let Some(percent) = battery_value {
                         let lang = effective_language(&settings.language);
-                        if let Ok(mut guard) = state.pending_notification_action.lock() {
-                            *guard = Some("battery-usage".to_string());
-                        }
                         let _ = app
                             .notification()
                             .builder()
@@ -11368,29 +11357,74 @@ fn hide_to_tray(app: tauri::AppHandle) {
     hide_main_window_to_tray(&app);
 }
 
-#[cfg(any(target_os = "windows", all(unix, not(target_os = "macos"))))]
-fn navigate_about_update(app: &AppHandle) {
-    focus_main(app.get_webview_window("main"));
-    let _ = app.emit("navigate-about-update", ());
+/// ITERATION-009 §4.3：通知 action → 前端事件名的纯函数映射。
+/// Windows/Linux `wait_for_action` 收到点击后由此函数决定 emit 哪个事件，
+/// macOS 方案 B 不使用此映射（系统通知仅提醒，不路由点击）。
+/// 返回 `None` 表示未知 action 或 `__closed`（用户关闭通知），不跳转。
+#[allow(dead_code)]
+fn notification_action_to_event(action: &str) -> Option<&'static str> {
+    match action {
+        "about-update" => Some("navigate-about-update"),
+        "settings-plugin-update" => Some("navigate-plugin-update"),
+        "settings-local-ai-update" => Some("navigate-local-ai-update"),
+        "battery-usage" => Some("open-battery-usage"),
+        _ => None,
+    }
 }
 
-#[cfg(any(target_os = "windows", all(unix, not(target_os = "macos"))))]
-fn navigate_plugin_update(app: &AppHandle) {
-    focus_main(app.get_webview_window("main"));
-    let _ = app.emit("navigate-plugin-update", ());
-}
+#[cfg(test)]
+mod notification_action_tests {
+    use super::*;
 
-#[cfg(any(target_os = "windows", all(unix, not(target_os = "macos"))))]
-fn navigate_local_ai_update(app: &AppHandle) {
-    focus_main(app.get_webview_window("main"));
-    let _ = app.emit("navigate-local-ai-update", ());
+    #[test]
+    fn about_update_routes_to_navigate_event() {
+        assert_eq!(notification_action_to_event("about-update"), Some("navigate-about-update"));
+    }
+
+    #[test]
+    fn plugin_update_routes_to_navigate_event() {
+        assert_eq!(
+            notification_action_to_event("settings-plugin-update"),
+            Some("navigate-plugin-update")
+        );
+    }
+
+    #[test]
+    fn local_ai_update_routes_to_navigate_event() {
+        assert_eq!(
+            notification_action_to_event("settings-local-ai-update"),
+            Some("navigate-local-ai-update")
+        );
+    }
+
+    #[test]
+    fn battery_usage_routes_to_open_battery_usage_event() {
+        assert_eq!(notification_action_to_event("battery-usage"), Some("open-battery-usage"));
+    }
+
+    #[test]
+    fn unknown_action_returns_none() {
+        assert_eq!(notification_action_to_event("unknown-action"), None);
+    }
+
+    #[test]
+    fn closed_marker_returns_none() {
+        // `__closed` 由调用方在 wait_for_action 闭包中提前过滤，
+        // 但纯函数本身也应对此返回 None 以保证健壮。
+        assert_eq!(notification_action_to_event("__closed"), None);
+    }
+
+    #[test]
+    fn empty_string_returns_none() {
+        assert_eq!(notification_action_to_event(""), None);
+    }
 }
 
 /// 发送原生系统通知，可选地携带点击跳转动作。
 /// `action` 目前支持 `"about-update"`、`"settings-plugin-update"`、`"settings-local-ai-update"` 与 `"battery-usage"`。
-/// - macOS：`tauri-plugin-notification` 不暴露点击回调，改将 action 写入
-///   `pending_notification_action`，由前端窗口 focus 时通过
-///   `take_pending_notification_action` 取走并执行跳转。
+/// - macOS（ITERATION-009 §4.2 方案 B）：`tauri-plugin-notification` 不暴露可靠点击回调，
+///   系统通知仅显示 title/body；不存 pending action；不在下次窗口 focus 自动跳转。
+///   应用内 Toast 保留可点击入口。
 /// - Windows/Linux：`notify-rust` 的 `wait_for_action` 直接处理点击并 emit 事件。
 #[tauri::command]
 fn show_update_notification(
@@ -11402,12 +11436,8 @@ fn show_update_notification(
 ) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        if let Some(a) = &action {
-            if let Ok(mut guard) = state.pending_notification_action.lock() {
-                *guard = Some(a.clone());
-            }
-        }
         let _ = state;
+        let _ = action;
         app.notification()
             .builder()
             .title(title)
@@ -11437,11 +11467,9 @@ fn show_update_notification(
                     if let Some(action) = navigate {
                         handle.wait_for_action(|action_kind| {
                             if action_kind != "__closed" {
-                                match action.as_str() {
-                                    "about-update" => navigate_about_update(&app),
-                                    "settings-plugin-update" => navigate_plugin_update(&app),
-                                    "settings-local-ai-update" => navigate_local_ai_update(&app),
-                                    _ => {}
+                                if let Some(event) = notification_action_to_event(&action) {
+                                    focus_main(app.get_webview_window("main"));
+                                    let _ = app.emit(event, ());
                                 }
                             }
                         });
@@ -11455,17 +11483,6 @@ fn show_update_notification(
         });
         Ok(())
     }
-}
-
-/// 取走并返回 macOS 原生通知点击后待执行的跳转动作（供前端窗口 focus 时调用）。
-/// Windows/Linux 不使用此机制（直接由 `wait_for_action` 处理），始终返回 `None`。
-#[tauri::command]
-fn take_pending_notification_action(state: tauri::State<SessionState>) -> Option<String> {
-    state
-        .pending_notification_action
-        .lock()
-        .map(|mut guard| guard.take())
-        .unwrap_or(None)
 }
 
 // 电量使用情况 Tauri 命令
@@ -11563,10 +11580,8 @@ pub(crate) fn focus_main_from_tray(app: &AppHandle) {
 }
 
 pub(crate) fn open_battery_usage_from_tray(app: &AppHandle) {
-    let state = app.state::<SessionState>();
-    if let Ok(mut guard) = state.pending_notification_action.lock() {
-        *guard = Some("battery-usage".to_string());
-    }
+    // ITERATION-009 §4.2 方案 B：不再写入 pending_notification_action。
+    // 托盘入口直接 emit `open-battery-usage`，由前端打开 Battery Usage modal。
     focus_main_from_tray(app);
     let _ = app.emit("open-battery-usage", ());
 }
@@ -11773,6 +11788,21 @@ fn tr_unavailable_capabilities_title(lang: &str) -> &'static str {
         "Some controls are unavailable"
     } else {
         "部分参数不可用"
+    }
+}
+
+/// ITERATION-009 §4.4：托盘构建失败通知本地化。
+/// hidden 启动时托盘构建失败，必须使用当前有效语言，不在 Rust 中硬编码整段英文。
+fn tr_tray_failure_title(_lang: &str) -> &'static str {
+    // 品牌名 "Mira" 在中英文下一致，保留参数以与其它 tr_* 函数签名对齐。
+    "Mira"
+}
+
+fn tr_tray_failure_body(lang: &str) -> &'static str {
+    if lang == "en" {
+        "Mira started in the background but could not create its tray icon. The main window has been opened so you can still use the app."
+    } else {
+        "Mira 已在后台启动，但无法创建托盘图标。已为你打开主窗口，仍可正常使用。"
     }
 }
 
@@ -12760,11 +12790,15 @@ pub fn run() {
                     );
                     // Show a user-understandable error via system notification.
                     // Non-blocking: the window reveal below must still run.
+                    // ITERATION-009 §4.4：使用当前有效语言本地化 title/body。
                     let app_handle = app.handle().clone();
+                    let lang = effective_language(&cached_settings(&app_handle).language);
+                    let title = tr_tray_failure_title(lang);
+                    let body = tr_tray_failure_body(lang);
                     std::thread::spawn(move || {
                         let _ = app_handle.notification().builder()
-                            .title("Mira")
-                            .body("Mira started in the background but could not create its tray icon. The main window has been opened so you can still use the app.")
+                            .title(title)
+                            .body(body)
                             .show();
                     });
                 }
@@ -12957,7 +12991,6 @@ pub fn run() {
             settings_set,
             hide_to_tray,
             show_update_notification,
-            take_pending_notification_action,
             export_diagnostics,
             plugin_locales,
             battery_history_get,
