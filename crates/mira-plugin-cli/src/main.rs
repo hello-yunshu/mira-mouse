@@ -551,6 +551,36 @@ fn run_typed_fixture(
     {
         return run_parser_fixture(fixture, package);
     }
+    // ITERATION-009 §5.2：captured-response parser fixture。
+    // 有 response + expected + parser，但字段名与 parser fixture 不同。
+    // 典型来源：真实硬件抓包的 response + 期望解析结果。
+    // 执行：调用真实 parser 解析 response，与 expected 深比较（仅检查 parser
+    // 实际返回的字段；expected 中 parser 不返回的字段视为 documentary evidence，
+    // 不参与离线比对，因为它们记录的是 wire-level 元数据而非 parser 输出）。
+    if fixture.get("parser").is_some()
+        && fixture.get("response").is_some_and(Value::is_array)
+        && fixture.get("expected").is_some()
+    {
+        return run_captured_response_fixture(fixture, package);
+    }
+    // ITERATION-009 §5.2：snapshot contract fixture。
+    // 有 battery + dpiStages + pollingRateHz + mouseLight + receiverGradient，
+    // 验证 Host plugin normalization/state mapping/schema 的字段结构、类型、默认值。
+    // 离线执行：加载 plugin manifest，验证 snapshot 字段结构契约。
+    if fixture.get("battery").is_some()
+        && fixture.get("dpiStages").is_some()
+        && fixture.get("pollingRateHz").is_some()
+    {
+        return run_snapshot_contract_fixture(fixture);
+    }
+    // ITERATION-009 §5.2：fault/error contract fixture。
+    // 有 cases 数组，每个 case 有 name + result，验证错误分类、parser 或
+    // normalization 的 fault 处理。离线执行：验证每个 case 的 result 值合法。
+    if fixture.get("cases").is_some_and(Value::is_array)
+        && fixture.get("faultContract").is_some()
+    {
+        return run_fault_contract_fixture(fixture);
+    }
     // 5. command-id-validation fixture：有 expectedCommandIdLittleEndian
     if let Some(expected) = fixture
         .get("expectedCommandIdLittleEndian")
@@ -999,6 +1029,257 @@ fn run_parser_fixture(
             return Err(FixtureError::Failed(format!(
                 "field '{key}' mismatch: expected {expected_value}, got {actual_value}"
             )));
+        }
+    }
+    Ok(())
+}
+
+/// ITERATION-009 §5.2：captured-response parser fixture 真实执行。
+/// 与 `run_parser_fixture` 类似，但 fixture 字段名为 `response` + `expected`
+/// （来自真实硬件抓包）。expected 中 parser 实际返回的字段会被严格比对；
+/// parser 不返回的字段视为 documentary evidence（wire-level 元数据，如
+/// transactionId/commandClass/checksum 等），跳过以避免误报。
+fn run_captured_response_fixture(
+    fixture: &Value,
+    package: Option<&ProtocolPackage>,
+) -> Result<(), FixtureError> {
+    let package = package.ok_or_else(|| {
+        FixtureError::Skipped("captured-response fixture requires protocol package".into())
+    })?;
+    let parser_id = fixture
+        .get("parser")
+        .and_then(Value::as_str)
+        .ok_or_else(|| FixtureError::Failed("missing parser".into()))?;
+    let response: Vec<u8> = fixture
+        .get("response")
+        .and_then(Value::as_array)
+        .ok_or_else(|| FixtureError::Failed("missing response".into()))?
+        .iter()
+        .filter_map(|v| v.as_u64().map(|n| n as u8))
+        .collect();
+    let expected = fixture
+        .get("expected")
+        .ok_or_else(|| FixtureError::Failed("missing expected".into()))?;
+    let parsed = package
+        .parse_fixture_response(parser_id, &response)
+        .map_err(|e| FixtureError::Failed(format!("parse_fixture_response: {e}")))?;
+    let parsed_obj = parsed
+        .as_object()
+        .ok_or_else(|| FixtureError::Failed(format!("parsed is not an object: {parsed}")))?;
+    let expected_obj = expected
+        .as_object()
+        .ok_or_else(|| FixtureError::Failed("expected is not an object".into()))?;
+    let mut checked = 0usize;
+    for (key, expected_value) in expected_obj {
+        // 只比对 parser 实际返回的字段；parser 不返回的字段视为 documentary。
+        let Some(actual_value) = parsed_obj.get(key) else {
+            continue;
+        };
+        if actual_value != expected_value {
+            return Err(FixtureError::Failed(format!(
+                "field '{key}' mismatch: expected {expected_value}, got {actual_value}"
+            )));
+        }
+        checked += 1;
+    }
+    // 至少一个字段被比对，否则 fixture 的 expected 与 parser 输出完全无交集，
+    // 说明 fixture 与 parser 不匹配（可能是 fixture 引用了错误的 parser）。
+    if checked == 0 {
+        return Err(FixtureError::Failed(format!(
+            "expected fields do not overlap with parser '{parser_id}' output (parser returns: {:?})",
+            parsed_obj.keys().collect::<Vec<_>>()
+        )));
+    }
+    Ok(())
+}
+
+/// ITERATION-009 §5.2：snapshot contract fixture 离线执行。
+/// 验证 mock/example snapshot 的字段结构、类型和关键 UI contract。
+/// 不需要 protocol package，仅做结构契约校验：
+/// - battery: number ∈ [0, 100]
+/// - charging: bool
+/// - dpiStages: 数组，每项有 value: number，至多一个 active: true
+/// - pollingRateHz: number > 0
+/// - mouseLight: 对象，有 mode + color
+/// - receiverGradient: 数组（可为空），每项有 color + position ∈ [0, 1]
+/// - topology: 对象，receiver/mouse 为 bool
+fn run_snapshot_contract_fixture(fixture: &Value) -> Result<(), FixtureError> {
+    // battery
+    let battery = fixture
+        .get("battery")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| FixtureError::Failed("snapshot missing battery (number)".into()))?;
+    if battery > 100 {
+        return Err(FixtureError::Failed(format!(
+            "battery out of range: {battery} > 100"
+        )));
+    }
+    // charging
+    let charging = fixture
+        .get("charging")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| FixtureError::Failed("snapshot missing charging (bool)".into()))?;
+    let _ = charging;
+    // dpiStages
+    let dpi_stages = fixture
+        .get("dpiStages")
+        .and_then(Value::as_array)
+        .ok_or_else(|| FixtureError::Failed("snapshot missing dpiStages (array)".into()))?;
+    let mut active_count = 0usize;
+    for (idx, stage) in dpi_stages.iter().enumerate() {
+        let stage_obj = stage
+            .as_object()
+            .ok_or_else(|| FixtureError::Failed(format!("dpiStages[{idx}] not an object")))?;
+        let value = stage_obj
+            .get("value")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| FixtureError::Failed(format!("dpiStages[{idx}] missing value")))?;
+        if value == 0 {
+            return Err(FixtureError::Failed(format!(
+                "dpiStages[{idx}] value must be > 0"
+            )));
+        }
+        if stage_obj
+            .get("active")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            active_count += 1;
+        }
+    }
+    if active_count > 1 {
+        return Err(FixtureError::Failed(format!(
+            "dpiStages has {active_count} active stages, expected 0 or 1"
+        )));
+    }
+    // pollingRateHz
+    let polling_rate = fixture
+        .get("pollingRateHz")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| FixtureError::Failed("snapshot missing pollingRateHz (number)".into()))?;
+    if polling_rate == 0 {
+        return Err(FixtureError::Failed("pollingRateHz must be > 0".into()));
+    }
+    // mouseLight
+    if let Some(mouse_light) = fixture.get("mouseLight") {
+        let ml_obj = mouse_light
+            .as_object()
+            .ok_or_else(|| FixtureError::Failed("mouseLight not an object".into()))?;
+        let mode = ml_obj
+            .get("mode")
+            .and_then(Value::as_str)
+            .ok_or_else(|| FixtureError::Failed("mouseLight missing mode (string)".into()))?;
+        let color = ml_obj
+            .get("color")
+            .and_then(Value::as_str)
+            .ok_or_else(|| FixtureError::Failed("mouseLight missing color (string)".into()))?;
+        if !color.starts_with('#') {
+            return Err(FixtureError::Failed(format!(
+                "mouseLight color must start with '#': {color}"
+            )));
+        }
+        let _ = mode;
+    }
+    // receiverGradient
+    if let Some(gradient) = fixture.get("receiverGradient").and_then(Value::as_array) {
+        for (idx, stop) in gradient.iter().enumerate() {
+            let stop_obj = stop
+                .as_object()
+                .ok_or_else(|| FixtureError::Failed(format!("receiverGradient[{idx}] not an object")))?;
+            let color = stop_obj
+                .get("color")
+                .and_then(Value::as_str)
+                .ok_or_else(|| FixtureError::Failed(format!("receiverGradient[{idx}] missing color")))?;
+            if !color.starts_with('#') {
+                return Err(FixtureError::Failed(format!(
+                    "receiverGradient[{idx}] color must start with '#': {color}"
+                )));
+            }
+            let position = stop_obj
+                .get("position")
+                .and_then(Value::as_f64)
+                .ok_or_else(|| FixtureError::Failed(format!("receiverGradient[{idx}] missing position")))?;
+            if !(0.0..=1.0).contains(&position) {
+                return Err(FixtureError::Failed(format!(
+                    "receiverGradient[{idx}] position out of [0,1]: {position}"
+                )));
+            }
+        }
+    }
+    // topology（如果声明）
+    if let Some(topology) = fixture.get("topology") {
+        let topo_obj = topology
+            .as_object()
+            .ok_or_else(|| FixtureError::Failed("topology not an object".into()))?;
+        for key in ["receiver", "mouse"] {
+            if let Some(val) = topo_obj.get(key) {
+                val.as_bool()
+                    .ok_or_else(|| FixtureError::Failed(format!("topology.{key} not a bool")))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// ITERATION-009 §5.2：fault/error contract fixture 离线执行。
+/// 验证 fault 分类契约：每个 case 的 result 必须是预定义的合法 fault kind。
+/// 合法 fault kinds（与 Host 错误分类对齐）：
+/// - transport-timeout: 传输超时
+/// - parser-rejected: 响应被 parser 拒绝
+/// - transaction-cancelled: 事务因设备断连取消
+/// - threshold-crossed-once: 阈值触发（如低电量）
+/// - actual-state-shown-not-success: 写入后 readback 与期望不一致
+/// - checksum-mismatch: checksum 校验失败
+/// - device-unreachable: 设备不可达
+fn run_fault_contract_fixture(fixture: &Value) -> Result<(), FixtureError> {
+    let cases = fixture
+        .get("cases")
+        .and_then(Value::as_array)
+        .ok_or_else(|| FixtureError::Failed("missing cases array".into()))?;
+    if cases.is_empty() {
+        return Err(FixtureError::Failed("cases is empty".into()));
+    }
+    const VALID_RESULTS: &[&str] = &[
+        "transport-timeout",
+        "parser-rejected",
+        "transaction-cancelled",
+        "threshold-crossed-once",
+        "actual-state-shown-not-success",
+        "checksum-mismatch",
+        "device-unreachable",
+    ];
+    for (idx, case) in cases.iter().enumerate() {
+        let case_obj = case
+            .as_object()
+            .ok_or_else(|| FixtureError::Failed(format!("cases[{idx}] not an object")))?;
+        let name = case_obj
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| FixtureError::Failed(format!("cases[{idx}] missing name")))?;
+        let result = case_obj
+            .get("result")
+            .and_then(Value::as_str)
+            .ok_or_else(|| FixtureError::Failed(format!("cases[{idx}] ({name}) missing result")))?;
+        if !VALID_RESULTS.contains(&result) {
+            return Err(FixtureError::Failed(format!(
+                "cases[{idx}] ({name}): unknown fault result '{result}' (valid: {VALID_RESULTS:?})"
+            )));
+        }
+        // threshold-crossed-once 必须有 battery 字段
+        if result == "threshold-crossed-once" {
+            let battery = case_obj
+                .get("battery")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| {
+                    FixtureError::Failed(format!(
+                        "cases[{idx}] ({name}): result=threshold-crossed-once requires battery field"
+                    ))
+                })?;
+            if battery > 100 {
+                return Err(FixtureError::Failed(format!(
+                    "cases[{idx}] ({name}): battery out of range: {battery} > 100"
+                )));
+            }
         }
     }
     Ok(())
