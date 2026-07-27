@@ -31,7 +31,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
-    ffi::OsStr,
     fs,
     io::{Cursor, Read},
     path::PathBuf,
@@ -3491,36 +3490,70 @@ fn mouse_lighting_off_effect(snapshot: &DeviceSnapshot) -> u8 {
         .unwrap_or(0)
 }
 
-fn launch_args_request_hidden<I, S>(args: I) -> bool
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
-{
-    args.into_iter().any(|arg| {
-        matches!(
-            arg.as_ref().to_str(),
-            Some(AUTOSTART_HIDDEN_ARG | "--minimized")
-        )
-    })
+/// Launch intent decided by THIS process's args only.
+/// Persisted `settings.startHidden` must NOT influence this classification —
+/// it exists only for legacy backward-compat reads and is ignored on launch.
+/// See STARTUP_TRAY_BACKGROUND_POLICY.md §P0-A.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaunchIntent {
+    /// User-initiated launch (Dock click, double-click, file association, updater restart).
+    /// The main window must be shown and focused after the tray is ready.
+    Interactive,
+    /// OS-initiated autostart at login with the canonical `--hidden` arg.
+    /// The main window stays hidden; background services run in the tray.
+    AutostartHidden,
 }
 
-fn should_start_hidden_for_args<I, S>(settings: &AppSettings, args: I) -> bool
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
-{
-    settings.start_hidden && launch_args_request_hidden(args)
-}
-
-fn should_start_hidden(settings: &AppSettings) -> bool {
-    should_start_hidden_for_args(settings, std::env::args_os())
-}
-
-fn autostart_args(settings: &AppSettings) -> Vec<&'static str> {
-    if settings.start_hidden {
-        vec![AUTOSTART_HIDDEN_ARG]
+/// Classify the launch intent from process args (excluding the program path).
+///
+/// Rules (case-sensitive):
+/// - `[]` → Interactive
+/// - `["--hidden"]` → AutostartHidden (the single canonical hidden arg)
+/// - Any unknown arg (including file paths) → Interactive
+/// - File path args → Interactive (file association takes precedence)
+///
+/// The caller must strip the program path (first arg) before calling this,
+/// so that `std::env::args().skip(1)` and the single-instance `argv` (after
+/// skipping element 0) can both be classified uniformly.
+pub fn classify_launch_intent(args: &[String]) -> LaunchIntent {
+    for arg in args {
+        if arg == AUTOSTART_HIDDEN_ARG {
+            continue;
+        }
+        // Any arg that is not the canonical hidden flag (unknown flag or file
+        // path) makes this an Interactive launch.
+        return LaunchIntent::Interactive;
+    }
+    if !args.is_empty() {
+        LaunchIntent::AutostartHidden
     } else {
-        Vec::new()
+        LaunchIntent::Interactive
+    }
+}
+
+/// Collect this process's args (excluding the program path) for intent classification.
+fn process_launch_args() -> Vec<String> {
+    std::env::args().skip(1).collect()
+}
+
+/// Canonical autostart args. `set_autostart(true)` always registers `--hidden`
+/// regardless of `settings.startHidden` — the autostart entry's job is to run
+/// in the background at login; whether to reveal the window is decided by
+/// `classify_launch_intent` on the launched process's own args, never by the
+/// persisted toggle. See STARTUP_TRAY_BACKGROUND_POLICY.md §P0-A.
+fn autostart_args() -> Vec<&'static str> {
+    vec![AUTOSTART_HIDDEN_ARG]
+}
+
+/// Decide the effective launch intent after tray setup, applying the §P0-E
+/// fail-safe: an `AutostartHidden` launch whose tray could not be built is
+/// promoted to `Interactive` so the user is not stranded without a window or
+/// tray icon. An `Interactive` launch is never blocked by tray failure.
+fn resolve_effective_intent(intent: LaunchIntent, tray_built: bool) -> LaunchIntent {
+    if intent == LaunchIntent::AutostartHidden && !tray_built {
+        LaunchIntent::Interactive
+    } else {
+        intent
     }
 }
 
@@ -3649,25 +3682,54 @@ mod settings_tests {
     }
 
     #[test]
-    fn launch_arguments_only_hide_startup_window_when_enabled_in_settings() {
-        assert!(!launch_args_request_hidden(["mira"]));
-        assert!(!launch_args_request_hidden(["mira", "--updated"]));
-        assert!(launch_args_request_hidden(["mira", AUTOSTART_HIDDEN_ARG]));
-        assert!(launch_args_request_hidden(["mira", "--minimized"]));
-
-        let mut settings = AppSettings {
-            start_hidden: false,
+    fn launch_intent_is_decided_by_process_args_only() {
+        // Empty args (after stripping program path) → Interactive
+        assert_eq!(
+            classify_launch_intent(&Vec::<String>::new()),
+            LaunchIntent::Interactive
+        );
+        // Canonical hidden arg → AutostartHidden
+        assert_eq!(
+            classify_launch_intent(&[AUTOSTART_HIDDEN_ARG.to_string()]),
+            LaunchIntent::AutostartHidden
+        );
+        // Unknown flag → Interactive
+        assert_eq!(
+            classify_launch_intent(&["--updated".to_string()]),
+            LaunchIntent::Interactive
+        );
+        // File path args → Interactive (file association takes precedence)
+        assert_eq!(
+            classify_launch_intent(&["/path/to/plugin.mira-plugin".to_string()]),
+            LaunchIntent::Interactive
+        );
+        assert_eq!(
+            classify_launch_intent(&[
+                AUTOSTART_HIDDEN_ARG.to_string(),
+                "/path/to/plugin.mira-plugin".to_string()
+            ]),
+            LaunchIntent::Interactive
+        );
+        // Legacy --minimized alias is no longer recognized (pick ONE canonical arg)
+        assert_eq!(
+            classify_launch_intent(&["--minimized".to_string()]),
+            LaunchIntent::Interactive
+        );
+        // Case-sensitive: --HIDDEN is not the canonical arg
+        assert_eq!(
+            classify_launch_intent(&["--HIDDEN".to_string()]),
+            LaunchIntent::Interactive
+        );
+        // Legacy settings.startHidden must NOT affect Interactive launch
+        let legacy_settings = AppSettings {
+            start_hidden: true,
             ..Default::default()
         };
-        assert!(!should_start_hidden_for_args(
-            &settings,
-            ["mira", AUTOSTART_HIDDEN_ARG]
-        ));
-        settings.start_hidden = true;
-        assert!(should_start_hidden_for_args(
-            &settings,
-            ["mira", AUTOSTART_HIDDEN_ARG]
-        ));
+        let _ = legacy_settings; // settings no longer consulted by classify_launch_intent
+        assert_eq!(
+            classify_launch_intent(&Vec::<String>::new()),
+            LaunchIntent::Interactive
+        );
     }
 
     #[test]
@@ -4406,6 +4468,228 @@ mod settings_tests {
         assert_eq!(mutation, "set-receiver-lighting");
         assert_eq!(params.get("effect"), Some(&serde_json::json!(3)));
         assert_eq!(params.get("color"), Some(&serde_json::json!("#AABBCC")));
+    }
+}
+
+/// Lifecycle tests for STARTUP_TRAY_BACKGROUND_POLICY.md (Iteration 007).
+/// Covers LaunchIntent classification, autostart canonical args, legacy
+/// settings migration, single-instance intent, tray-failure fail-safe, and
+/// the unified reveal decision. Pure-logic only — Tauri app state is not
+/// available in unit tests.
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+
+    #[test]
+    fn classify_launch_intent_empty_args_is_interactive() {
+        assert_eq!(
+            classify_launch_intent(&Vec::<String>::new()),
+            LaunchIntent::Interactive
+        );
+    }
+
+    #[test]
+    fn classify_launch_intent_hidden_flag_is_autostart_hidden() {
+        assert_eq!(
+            classify_launch_intent(&[AUTOSTART_HIDDEN_ARG.to_string()]),
+            LaunchIntent::AutostartHidden
+        );
+    }
+
+    #[test]
+    fn classify_launch_intent_unknown_args_is_interactive() {
+        assert_eq!(
+            classify_launch_intent(&["--updated".to_string()]),
+            LaunchIntent::Interactive
+        );
+        assert_eq!(
+            classify_launch_intent(&["--foo".to_string(), "--bar".to_string()]),
+            LaunchIntent::Interactive
+        );
+    }
+
+    #[test]
+    fn classify_launch_intent_file_path_args_is_interactive() {
+        assert_eq!(
+            classify_launch_intent(&["/path/to/plugin.mira-plugin".to_string()]),
+            LaunchIntent::Interactive
+        );
+        assert_eq!(
+            classify_launch_intent(&["C:\\Users\\test\\plugin.mira-plugin".to_string()]),
+            LaunchIntent::Interactive
+        );
+        assert_eq!(
+            classify_launch_intent(&["./plugin.mira-plugin".to_string()]),
+            LaunchIntent::Interactive
+        );
+    }
+
+    #[test]
+    fn classify_launch_intent_hidden_with_file_path_is_interactive() {
+        // File association takes precedence over the hidden flag.
+        assert_eq!(
+            classify_launch_intent(&[
+                AUTOSTART_HIDDEN_ARG.to_string(),
+                "/path/to/plugin.mira-plugin".to_string()
+            ]),
+            LaunchIntent::Interactive
+        );
+    }
+
+    #[test]
+    fn classify_launch_intent_legacy_minimized_alias_is_interactive() {
+        // Only --hidden is canonical; --minimized is no longer recognized.
+        assert_eq!(
+            classify_launch_intent(&["--minimized".to_string()]),
+            LaunchIntent::Interactive
+        );
+    }
+
+    #[test]
+    fn classify_launch_intent_is_case_sensitive() {
+        assert_eq!(
+            classify_launch_intent(&["--HIDDEN".to_string()]),
+            LaunchIntent::Interactive
+        );
+        assert_eq!(
+            classify_launch_intent(&["--Hidden".to_string()]),
+            LaunchIntent::Interactive
+        );
+    }
+
+    #[test]
+    fn autostart_args_always_registers_canonical_hidden_flag() {
+        // §P0-A: set_autostart(true) must ALWAYS register --hidden regardless
+        // of settings.startHidden. autostart_args() takes no settings param.
+        let args = autostart_args();
+        assert_eq!(args, vec![AUTOSTART_HIDDEN_ARG]);
+    }
+
+    #[test]
+    fn autostart_args_is_idempotent() {
+        // Calling autostart_args() multiple times returns the same canonical
+        // arg set — enabling autostart twice does not duplicate or change args.
+        let first = autostart_args();
+        let second = autostart_args();
+        assert_eq!(first, second);
+        assert_eq!(first.len(), 1);
+    }
+
+    #[test]
+    fn legacy_settings_start_hidden_does_not_affect_interactive_launch() {
+        // Old settings.json with startHidden=true must be readable without
+        // crashing, but must NOT make an Interactive launch (no --hidden arg)
+        // start hidden. The launch reason is decided by process args only.
+        let legacy = AppSettings {
+            start_hidden: true,
+            ..Default::default()
+        };
+        assert!(legacy.start_hidden); // legacy field is still readable
+                                      // An Interactive launch (empty args) is Interactive regardless of
+                                      // the persisted startHidden value.
+        assert_eq!(
+            classify_launch_intent(&Vec::<String>::new()),
+            LaunchIntent::Interactive
+        );
+    }
+
+    #[test]
+    fn single_instance_interactive_second_instance_shows_window() {
+        // §P0-D: a second instance launched interactively (e.g. user clicks
+        // the app icon while it's already running hidden) must show + focus
+        // the existing window. The single-instance callback strips the
+        // program path (index 0) before classifying.
+        let second_args = vec!["--updated".to_string()]; // unknown flag → Interactive
+        assert_eq!(
+            classify_launch_intent(&second_args),
+            LaunchIntent::Interactive
+        );
+        // An empty second argv (just the program path, stripped) is also Interactive.
+        assert_eq!(
+            classify_launch_intent(&Vec::<String>::new()),
+            LaunchIntent::Interactive
+        );
+    }
+
+    #[test]
+    fn single_instance_hidden_second_instance_keeps_hidden() {
+        // §P0-D: a second instance launched with --hidden (e.g. OS autostart
+        // fires again) must NOT steal focus or show the window.
+        let second_args = vec![AUTOSTART_HIDDEN_ARG.to_string()];
+        assert_eq!(
+            classify_launch_intent(&second_args),
+            LaunchIntent::AutostartHidden
+        );
+    }
+
+    #[test]
+    fn single_instance_file_association_shows_window() {
+        // §P0-D: a second instance launched with a file path (e.g. user
+        // double-clicks a .mira-plugin file) is Interactive.
+        let second_args = vec!["/path/to/plugin.mira-plugin".to_string()];
+        assert_eq!(
+            classify_launch_intent(&second_args),
+            LaunchIntent::Interactive
+        );
+    }
+
+    #[test]
+    fn tray_failure_fail_safe_promotes_hidden_to_interactive() {
+        // §P0-E: AutostartHidden + tray failure → Interactive
+        assert_eq!(
+            resolve_effective_intent(LaunchIntent::AutostartHidden, false),
+            LaunchIntent::Interactive
+        );
+    }
+
+    #[test]
+    fn tray_failure_does_not_block_interactive_launch() {
+        // §P0-E: Interactive + tray failure → still Interactive (not blocked)
+        assert_eq!(
+            resolve_effective_intent(LaunchIntent::Interactive, false),
+            LaunchIntent::Interactive
+        );
+    }
+
+    #[test]
+    fn tray_success_preserves_hidden_intent() {
+        // §P0-E: AutostartHidden + tray success → stays AutostartHidden
+        assert_eq!(
+            resolve_effective_intent(LaunchIntent::AutostartHidden, true),
+            LaunchIntent::AutostartHidden
+        );
+    }
+
+    #[test]
+    fn tray_success_preserves_interactive_intent() {
+        // §P0-E: Interactive + tray success → stays Interactive
+        assert_eq!(
+            resolve_effective_intent(LaunchIntent::Interactive, true),
+            LaunchIntent::Interactive
+        );
+    }
+
+    #[test]
+    fn interactive_first_reveal_decision() {
+        // §P0-C test 6: Interactive first reveal — the unified reveal function
+        // must show + focus the window. We verify the intent → reveal mapping
+        // is correct (the actual show/focus calls require a Tauri runtime).
+        let intent = LaunchIntent::Interactive;
+        let tray_built = true;
+        let effective = resolve_effective_intent(intent, tray_built);
+        assert_eq!(effective, LaunchIntent::Interactive);
+        // apply_launch_intent_after_tray_ready(Interactive) → show + focus
+    }
+
+    #[test]
+    fn hidden_no_reveal_decision() {
+        // §P0-C test 7: Hidden no reveal — the unified reveal function must
+        // NOT show or focus the window; background services still start.
+        let intent = LaunchIntent::AutostartHidden;
+        let tray_built = true;
+        let effective = resolve_effective_intent(intent, tray_built);
+        assert_eq!(effective, LaunchIntent::AutostartHidden);
+        // apply_launch_intent_after_tray_ready(AutostartHidden) → no show, no focus
     }
 }
 
@@ -9752,14 +10036,11 @@ fn device_mutate_blocking_impl(
     Ok(snapshot)
 }
 
-fn autostart_entry(
-    app: &AppHandle,
-    settings: &AppSettings,
-) -> Result<auto_launch::AutoLaunch, String> {
+fn autostart_entry(app: &AppHandle) -> Result<auto_launch::AutoLaunch, String> {
     let mut builder = AutoLaunchBuilder::new();
     let package = app.package_info();
     builder.set_app_name(package.name.as_ref());
-    builder.set_args(&autostart_args(settings));
+    builder.set_args(&autostart_args());
 
     let current_exe = std::env::current_exe()
         .map_err(|err| format!("failed to resolve current executable: {err}"))?;
@@ -9802,9 +10083,8 @@ fn autostart_entry(
 
 #[tauri::command]
 fn autostart_state(app: tauri::AppHandle) -> Result<bool, String> {
-    let settings = cached_settings(&app);
     #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
-    let mut enabled = autostart_entry(&app, &settings)?
+    let mut enabled = autostart_entry(&app)?
         .is_enabled()
         .map_err(|err| format!("failed to read autostart state: {err}"))?;
     #[cfg(target_os = "macos")]
@@ -9816,8 +10096,7 @@ fn autostart_state(app: tauri::AppHandle) -> Result<bool, String> {
 
 #[tauri::command]
 fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
-    let settings = cached_settings(&app);
-    let autolaunch = autostart_entry(&app, &settings)?;
+    let autolaunch = autostart_entry(&app)?;
     if enabled {
         #[cfg(target_os = "macos")]
         if running_from_disk_image() {
@@ -9854,13 +10133,14 @@ fn refresh_autostart_entry_if_enabled(app: &AppHandle) {
         return;
     }
 
-    let settings = cached_settings(app);
-    let Ok(autolaunch) = autostart_entry(app, &settings) else {
+    let Ok(autolaunch) = autostart_entry(app) else {
         return;
     };
     let Ok(true) = autolaunch.is_enabled() else {
         return;
     };
+    // Re-register with the canonical --hidden arg to repair any legacy entry
+    // that was written without it (or with a stale arg set).
     if let Err(err) = autolaunch.disable() {
         eprintln!("[mira] refresh autostart entry disable failed: {err}");
         return;
@@ -9929,8 +10209,7 @@ fn migrate_legacy_launch_agent(app: &AppHandle, enabled: bool) -> Result<bool, S
             remove_legacy_launch_agent(app)?;
             return Ok(false);
         }
-        let settings = cached_settings(app);
-        autostart_entry(app, &settings)?
+        autostart_entry(app)?
             .enable()
             .map_err(|err| format!("failed to migrate autostart item: {err}"))?;
     }
@@ -10328,7 +10607,10 @@ fn settings_set(app: tauri::AppHandle, settings: AppSettings) -> Result<AppSetti
     let previous_settings = cached_settings(&app);
     let theme_changed = previous_settings.theme != settings.theme;
     let tray_icon_color_changed = previous_settings.tray_icon_color != settings.tray_icon_color;
-    let start_hidden_changed = previous_settings.start_hidden != settings.start_hidden;
+    // startHidden is a deprecated legacy field: it no longer controls autostart
+    // args or window reveal. The autostart entry always registers --hidden and
+    // classify_launch_intent decides the reveal based on this process's args.
+    // We deliberately do NOT refresh the autostart entry when startHidden changes.
     let low_battery_threshold_changed =
         previous_settings.low_battery_threshold != settings.low_battery_threshold;
     // 本地 AI 总开关翻转时,启动或停止常驻 rill-runtime 子进程。
@@ -10350,9 +10632,6 @@ fn settings_set(app: tauri::AppHandle, settings: AppSettings) -> Result<AppSetti
             && previous_settings.low_battery_threshold != settings.low_battery_threshold);
     save_settings(&app, &settings)?;
     update_cached_settings(&app, &settings);
-    if start_hidden_changed {
-        refresh_autostart_entry_if_enabled(&app);
-    }
     if theme_changed {
         apply_saved_app_theme(&app, &settings);
         #[cfg(target_os = "windows")]
@@ -10448,7 +10727,7 @@ fn export_diagnostics(app: tauri::AppHandle) -> Result<serde_json::Value, String
         "platform": std::env::consts::OS,
         "architecture": std::env::consts::ARCH,
         "rust_version": env!("CARGO_PKG_RUST_VERSION"),
-        "autostart_enabled": autostart_entry(&app, &cached_settings(&app))
+        "autostart_enabled": autostart_entry(&app)
             .and_then(|autostart| {
                 autostart
                     .is_enabled()
@@ -10491,6 +10770,87 @@ fn hide_main_window_to_tray(app: &AppHandle) {
         {
             use tauri::ActivationPolicy;
             let _ = app.set_activation_policy(ActivationPolicy::Accessory);
+        }
+    }
+}
+
+/// Unified first-reveal of the main window after the tray is ready (or has
+/// definitively failed). This is the SINGLE show/hide path for startup —
+/// all earlier setup steps only prepare window decorations/backdrops without
+/// calling `show()`/`hide()`. See STARTUP_TRAY_BACKGROUND_POLICY.md §P0-C.
+///
+/// - `Interactive`: macOS → Regular activation policy; all platforms →
+///   show + unminimize + set_focus. The window must flash zero hidden frames.
+/// - `AutostartHidden`: no show, no focus, no request_attention. macOS →
+///   Accessory activation policy; Windows/Linux → window stays unmapped.
+///
+/// `tray_built` indicates whether the tray was successfully constructed. When
+/// the launch is `AutostartHidden` but the tray failed, the fail-safe in the
+/// setup caller has already flipped the intent to Interactive before invoking
+/// this function, so this path only needs to handle the normal cases.
+fn apply_launch_intent_after_tray_ready(app: &AppHandle, intent: LaunchIntent) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let state = app.state::<SessionState>();
+    match intent {
+        LaunchIntent::Interactive => {
+            // macOS: switch to Regular BEFORE show, otherwise the Accessory
+            // policy prevents the window from taking focus.
+            #[cfg(target_os = "macos")]
+            {
+                use tauri::ActivationPolicy;
+                let _ = app.set_activation_policy(ActivationPolicy::Regular);
+            }
+            let _ = window.unminimize();
+            let _ = window.show();
+            let _ = window.set_focus();
+            state.log_input(event_log_input(
+                LogLevel::Info,
+                LogSource::App,
+                "app::startup",
+                "launch-intent-interactive",
+                "interactive launch: main window revealed".to_string(),
+                BTreeMap::from([
+                    ("launchIntent".to_string(), FieldValue::from("interactive")),
+                    (
+                        "windowInitiallyVisible".to_string(),
+                        FieldValue::from(false),
+                    ),
+                    ("trayReady".to_string(), FieldValue::from(true)),
+                ]),
+            ));
+        }
+        LaunchIntent::AutostartHidden => {
+            // Keep the window hidden (tauri.conf.json visible=false already
+            // ensures no frame is shown). No show, no focus, no
+            // request_attention — hidden launch must not steal focus.
+            #[cfg(target_os = "macos")]
+            {
+                use tauri::ActivationPolicy;
+                let _ = app.set_activation_policy(ActivationPolicy::Accessory);
+            }
+            // Ensure the window is hidden even if a prior code path
+            // accidentally showed it during setup.
+            let _ = window.hide();
+            state.log_input(event_log_input(
+                LogLevel::Info,
+                LogSource::App,
+                "app::startup",
+                "launch-intent-autostart-hidden",
+                "autostart hidden launch: main window stays in tray".to_string(),
+                BTreeMap::from([
+                    (
+                        "launchIntent".to_string(),
+                        FieldValue::from("autostart-hidden"),
+                    ),
+                    (
+                        "windowInitiallyVisible".to_string(),
+                        FieldValue::from(false),
+                    ),
+                    ("trayReady".to_string(), FieldValue::from(true)),
+                ]),
+            ));
         }
     }
 }
@@ -11773,8 +12133,20 @@ pub fn run() {
     tauri::Builder::default()
         .manage(SessionState::default())
         .manage(production_trust_store())
-        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
-            focus_main_from_tray(app)
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            // §P0-D: classify the second instance's launch intent from its
+            // args (excluding the program path at index 0). Only an
+            // Interactive second instance reveals + focuses the existing
+            // window; an AutostartHidden second instance keeps the existing
+            // state and does NOT steal focus. File-association args are
+            // Interactive (handled by classify_launch_intent).
+            let second_args: Vec<String> = argv.iter().skip(1).cloned().collect();
+            match classify_launch_intent(&second_args) {
+                LaunchIntent::Interactive => focus_main_from_tray(app),
+                LaunchIntent::AutostartHidden => {
+                    // Keep existing window state; do not show or focus.
+                }
+            }
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
@@ -11782,7 +12154,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let startup_settings = cached_settings(app.handle());
-            let launch_hidden = should_start_hidden(&startup_settings);
+            let launch_intent = classify_launch_intent(&process_launch_args());
             refresh_autostart_entry_if_enabled(app.handle());
 
             // 初始化统一日志服务：在所有其他子系统之前，让后续关键事件可被记录。
@@ -11863,13 +12235,12 @@ pub fn run() {
             // macOS native Vibrancy backdrop.
             // Sidebar 材质提供类似 Finder/Mail 侧边栏的明显毛玻璃效果；
             // UnderWindowBackground 过于微妙，在纯色壁纸下几乎不可见。
+            // NOTE: only prepare the backdrop here — the actual show/hide is
+            // done once by apply_launch_intent_after_tray_ready below, so that
+            // a hidden launch never flashes a frame (§P0-C).
             #[cfg(target_os = "macos")]
             if let Some(window) = app.get_webview_window("main") {
                 apply_macos_vibrancy(&window);
-                // Show after applying Vibrancy to avoid a black startup flash.
-                if !launch_hidden {
-                    let _ = window.show();
-                }
             }
 
             // Windows 11 uses Mica; Windows 10 v1809+ falls back to Acrylic.
@@ -11930,11 +12301,35 @@ pub fn run() {
                     }
                 }
             }
+            // §P0-E: Tray failure fail-safe.
+            // - AutostartHidden + tray failure: the user has no tray icon to
+            //   reopen the window with, and no visible window either. Promote
+            //   the launch to Interactive so the window is shown with an error.
+            // - Interactive + tray failure: the window will still be shown; the
+            //   user can use the app normally, just without a tray icon.
+            let effective_intent = resolve_effective_intent(launch_intent, tray_ok);
             if !tray_ok {
                 app.state::<SessionState>().log_error(
                     "tray::setup",
                     "tray setup failed after 3 attempts; tray icon will be unavailable",
                 );
+                if effective_intent == LaunchIntent::Interactive
+                    && launch_intent == LaunchIntent::AutostartHidden
+                {
+                    app.state::<SessionState>().log_error(
+                        "tray::setup",
+                        "fail-safe activated: autostart-hidden launch promoted to interactive because tray is unavailable",
+                    );
+                    // Show a user-understandable error via system notification.
+                    // Non-blocking: the window reveal below must still run.
+                    let app_handle = app.handle().clone();
+                    std::thread::spawn(move || {
+                        let _ = app_handle.notification().builder()
+                            .title("Mira")
+                            .body("Mira started in the background but could not create its tray icon. The main window has been opened so you can still use the app.")
+                            .show();
+                    });
+                }
             }
 
             // Listen for window events: focus triggers an immediate device read,
@@ -12084,30 +12479,13 @@ pub fn run() {
             // 窗口隐藏到托盘后仍可接收主题变化事件，无需轮询。
             spawn_theme_watcher(app.handle().clone());
 
-            if let Some(window) = app.get_webview_window("main") {
-                if launch_hidden {
-                    if let Err(err) = window.hide() {
-                        app.state::<SessionState>().log_error(
-                            "window::startup",
-                            format!("hide main window failed: {err}"),
-                        );
-                    }
-                    // macOS: 启动即隐藏到托盘时，也从 Dock 中隐藏。
-                    #[cfg(target_os = "macos")]
-                    {
-                        use tauri::ActivationPolicy;
-                        app.set_activation_policy(ActivationPolicy::Accessory);
-                    }
-                } else {
-                    if let Err(err) = window.show() {
-                        app.state::<SessionState>().log_error(
-                            "window::startup",
-                            format!("show main window failed: {err}"),
-                        );
-                    }
-                    let _ = window.set_focus();
-                }
-            }
+            // §P0-C: Unified first reveal. This is the ONLY place at startup
+            // that shows or hides the main window. The window starts with
+            // visible=false in tauri.conf.json; everything above only prepares
+            // decorations/backdrops. `effective_intent` already accounts for
+            // the tray-failure fail-safe (§P0-E).
+            apply_launch_intent_after_tray_ready(app.handle(), effective_intent);
+
             if startup_settings.local_ai_analysis_enabled {
                 // The optional Rill sidecar starts only after Mira's window, tray, and
                 // background services are ready. A broken sidecar must never make the

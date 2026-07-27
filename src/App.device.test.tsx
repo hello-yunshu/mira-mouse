@@ -286,15 +286,17 @@ describe('real device snapshot mapping', () => {
     render(<App />);
     await screen.findByRole('heading', { name: 'First Color Mouse' });
     fireEvent.click(screen.getByRole('tab', { name: '灯光' }));
-    const colorValue = document.querySelector<HTMLElement>('.lighting-group-mouse .color-value')!;
-    expect(colorValue.querySelector<HTMLElement>('.live-value-current')?.style.getPropertyValue('--value-color')).toBe('#112233');
+    // P0-M：颜色字段已从 visibleFields 移除，由 lighting-swatch 统一渲染。
+    // swatch 使用 --light-color CSS 变量，不在 .lighting-group-mouse 内部。
+    const swatch = document.querySelector<HTMLElement>('.lighting-swatch')!;
+    expect(swatch).toBeInTheDocument();
+    expect(swatch.style.getPropertyValue('--light-color')).toBe('#112233');
 
     fireEvent.click(screen.getByRole('button', { name: '切换鼠标' }));
     fireEvent.click(screen.getByText('Second Color Mouse').closest('button')!);
 
-    await waitFor(() => expect(colorValue.querySelector('.live-value-next')).toHaveTextContent('#8fc7b8'));
-    expect(colorValue.querySelector<HTMLElement>('.live-value-current')?.style.getPropertyValue('--value-color')).toBe('#112233');
-    expect(colorValue.querySelector<HTMLElement>('.live-value-next')?.style.getPropertyValue('--value-color')).toBe('#8fc7b8');
+    // 切换设备后 swatch 颜色更新为新值。
+    await waitFor(() => expect(swatch.style.getPropertyValue('--light-color')).toBe('#8fc7b8'));
   });
 
   it('keeps plugin-declared dashboard rows within the host layout limit', async () => {
@@ -1065,8 +1067,11 @@ describe('real device snapshot mapping', () => {
     fireEvent.click(screen.getByRole('tab', { name: '灯光' }));
     fireEvent.click(screen.getByRole('tab', { name: '接收器灯光' }));
     const receiverGroup = document.querySelector('.lighting-group-receiver');
+    // P0-M：color 字段已从 visibleFields 移除（由 lighting-swatch 渲染），
+    // visibleFields = [effect, option, speed, brightness] = 4 行。
+    // 但 totalVisualCount = 4 + 1 (swatch) = 5 >= 5，仍启用 compact 密度。
     expect(receiverGroup).toHaveClass('is-compact');
-    expect(receiverGroup?.querySelectorAll('.lighting-row')).toHaveLength(5);
+    expect(receiverGroup?.querySelectorAll('.lighting-row')).toHaveLength(4);
   });
 
   it('hides polling control when rate not reported', async () => {
@@ -1236,7 +1241,8 @@ describe('real device snapshot mapping', () => {
     render(<App />);
     await screen.findByRole('heading', { name: 'Row Sizing Mouse' });
     fireEvent.click(screen.getByRole('tab', { name: '灯光' }));
-    // 3 个可见字段（status + effect + color），lighting-rows grid 为 3 列
+    // P0-M：color 字段已从 visibleFields 移除，但作为 lighting-swatch 仍在 grid 末尾。
+    // visibleFields = [status, effect] = 2 行 + 1 swatch = 3 列。
     const rows = screen.getByLabelText('灯光分组').querySelector('.lighting-rows');
     expect(rows).toHaveStyle({ gridTemplateColumns: 'repeat(3, minmax(0, 1fr))' });
   });
@@ -1339,5 +1345,194 @@ describe('real device snapshot mapping', () => {
     expect(screen.getByText('关闭')).toHaveClass('lighting-status-value');
     expect(screen.queryByText('灯效')).not.toBeInTheDocument();
     expect(screen.queryByText('鼠标灯光颜色')).not.toBeInTheDocument();
+  });
+
+  // ─── P1-A：Selector 逻辑的 App 集成测试 ────────────────────────────────
+
+  function buildOptionalCandidateSnapshot(optionalPosition: 'leading' | 'trailing'): DeviceSnapshot {
+    return {
+      displayName: `${optionalPosition === 'leading' ? 'Leading' : 'Trailing'} Candidate Mouse`,
+      connection: 'wireless', batteryPercent: 80,
+      charging: false, batteries: [], dpi: 1600,
+      dpiStages: [{ value: 1600, color: '#9a8bd0', active: true, enabled: true }],
+      pollingRateHz: 1000,
+      supportedPollingRatesHz: [125, 250, 500, 1000],
+      capabilities: { settings: { extraMode: 1 } },
+      pluginCapabilities: [
+        {
+          id: 'dpi', control: 'DpiStages', labelKey: 'DPI', readOnly: false,
+          placements: [{ region: 'control', group: 'performance', order: 10, span: 1, icon: 'gauge', priority: 100, dashboardRole: 'fixed-core', fixedSlot: 1, fourthSlotEligible: false, dedupeKey: 'dashboard.dpi', fallbackRegion: 'advanced' }],
+          metadata: {
+            stageLayout: { dotsSource: 'state.dpiStages', selectMutation: 'set-dpi-stage', setMutation: 'set-dpi-value', valueSource: 'state.dpiStages', range: { min: 100, max: 32000, step: 50 } },
+            stateMapping: { dpiStages: 'dpiStages' },
+          },
+        },
+        {
+          id: 'polling-rate', control: 'Select', labelKey: 'Polling', readOnly: false,
+          placements: [{ region: 'control', group: 'polling', order: 20, span: 1, icon: 'wave', priority: 100, dashboardRole: 'fixed-core', fixedSlot: 2, fourthSlotEligible: false, dedupeKey: 'dashboard.polling', fallbackRegion: 'advanced' }],
+          metadata: {
+            fields: [{ id: 'value', source: 'state.pollingRate', mutation: 'set-polling-rate', param: 'value', editor: 'modal-select', optionSource: 'state.supportedPollingRates', format: 'hertz', labelKey: 'Polling' }],
+            stateMapping: { pollingRate: 'pollingRateHz', supportedPollingRates: 'supportedPollingRatesHz' },
+          },
+        },
+        {
+          id: 'extra-mode', control: 'Select', labelKey: 'Extra', readOnly: false,
+          placements: [{ region: 'control', group: 'extra', order: 5, span: 1, icon: 'profile', priority: 95, dashboardRole: 'candidate', fourthSlotEligible: true, dedupeKey: 'dashboard.extra', fallbackRegion: 'advanced', optionalPosition }],
+          metadata: {
+            fields: [{ id: 'value', source: 'state.extraMode', mutation: 'set-extra-mode', param: 'value', editor: 'modal-select', labelKey: 'Extra', options: [{ value: 1, labelKey: 'Mode 1' }, { value: 2, labelKey: 'Mode 2' }] }],
+            stateMapping: { extraMode: 'capabilities.settings.extraMode' },
+          },
+        },
+      ],
+      writableMutations: ['set-dpi-stage', 'set-dpi-value', 'set-polling-rate', 'set-extra-mode'],
+      evidence: 'hardware-verified',
+    };
+  }
+
+  it('places a leading candidate before the core sequence in dashboard tabs', async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'settings_get') return Promise.resolve(settings);
+      if (command === 'device_snapshots') return Promise.resolve(entries(buildOptionalCandidateSnapshot('leading')));
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Leading Candidate Mouse' });
+    // P0-G：leading 候选放在核心序列（DPI → Polling）之前。
+    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['Extra', 'DPI', 'Polling']);
+  });
+
+  it('places a trailing candidate after the core sequence in dashboard tabs', async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'settings_get') return Promise.resolve(settings);
+      if (command === 'device_snapshots') return Promise.resolve(entries(buildOptionalCandidateSnapshot('trailing')));
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Trailing Candidate Mouse' });
+    // P0-G：trailing 候选放在核心序列（DPI → Polling）之后。
+    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['DPI', 'Polling', 'Extra']);
+  });
+
+  it('maintains lighting subblock order: effect (left), candidates (middle), primary-color (right)', async () => {
+    const lightingRolesSnapshot: DeviceSnapshot = {
+      displayName: 'Lighting Roles Mouse', connection: 'wireless', batteryPercent: 80,
+      charging: false, batteries: [], dpi: 1600,
+      dpiStages: [{ value: 1600, color: '#9a8bd0', active: true, enabled: true }],
+      confirmedLightColor: '#112233',
+      capabilities: {
+        mouseLighting: { effect: 1, speed: 5, brightness: 80, pattern: 2, color: '#112233', enabled: true },
+      },
+      pluginCapabilities: [
+        {
+          id: 'dpi', control: 'DpiStages', labelKey: 'DPI', readOnly: false,
+          placements: [{ region: 'control', group: 'performance', order: 10, span: 1, icon: 'gauge', priority: 100, dashboardRole: 'fixed-core', fixedSlot: 1, fourthSlotEligible: false, dedupeKey: 'dashboard.dpi', fallbackRegion: 'advanced' }],
+          metadata: {
+            stageLayout: { dotsSource: 'state.dpiStages', selectMutation: 'set-dpi-stage', setMutation: 'set-dpi-value', valueSource: 'state.dpiStages', range: { min: 100, max: 32000, step: 50 } },
+            stateMapping: { dpiStages: 'dpiStages' },
+          },
+        },
+        {
+          id: 'lighting', control: 'LightingZone', labelKey: 'plugin.label.capability.lighting', readOnly: false,
+          placements: [{ region: 'control', group: 'lighting', order: 30, span: 1, icon: 'lightbulb', priority: 100, dashboardRole: 'fixed-core', fixedSlot: 3, fourthSlotEligible: false, dedupeKey: 'dashboard.lighting', fallbackRegion: 'advanced' }],
+          metadata: {
+            zones: [
+              {
+                id: 'mouse', labelKey: 'dashboard.mouseLighting',
+                fields: [
+                  { id: 'effect', source: 'state.mouseLightEffect', mutation: 'set-mouse-lighting', param: 'effect', editor: 'modal-select', labelKey: 'Test Effect', lightingRole: 'effect', priority: 100, options: [{ value: 1, labelKey: 'On' }, { value: 2, labelKey: 'Breath' }] },
+                  { id: 'speed', source: 'state.mouseLightSpeed', mutation: 'set-mouse-lighting', param: 'speed', editor: 'modal-range', labelKey: 'Test Speed', lightingRole: 'candidate', priority: 80, range: { min: 0, max: 10, step: 1 } },
+                  { id: 'brightness', source: 'state.mouseLightBrightness', mutation: 'set-mouse-lighting', param: 'brightness', editor: 'modal-range', labelKey: 'Test Brightness', lightingRole: 'candidate', priority: 70, range: { min: 0, max: 100, step: 1 } },
+                  { id: 'pattern', source: 'state.mouseLightPattern', mutation: 'set-mouse-lighting', param: 'pattern', editor: 'modal-select', labelKey: 'Test Pattern', lightingRole: 'primary-color', priority: 100, options: [{ value: 1, labelKey: 'Solid' }, { value: 2, labelKey: 'Gradient' }] },
+                ],
+              },
+            ],
+            stateMapping: {
+              mouseLightEffect: 'capabilities.mouseLighting.effect',
+              mouseLightSpeed: 'capabilities.mouseLighting.speed',
+              mouseLightBrightness: 'capabilities.mouseLighting.brightness',
+              mouseLightPattern: 'capabilities.mouseLighting.pattern',
+            },
+          },
+        },
+      ],
+      writableMutations: ['set-mouse-lighting'],
+      evidence: 'hardware-verified',
+    };
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'settings_get') return Promise.resolve(settings);
+      if (command === 'device_snapshots') return Promise.resolve(entries(lightingRolesSnapshot));
+      if (command === 'device_refresh_quick') return Promise.resolve();
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lighting Roles Mouse' });
+    fireEvent.click(screen.getByRole('tab', { name: '灯光' }));
+    // P0-G：灯光子块顺序为 [effect, ...candidates, primary-color]。
+    // 本测试无 colorField（无 modal-color / format=color），primary-color 保留在 visibleFields。
+    const rows = document.querySelectorAll('.lighting-rows .lighting-row');
+    const labels = Array.from(rows).map((row) => row.querySelector('span')?.textContent);
+    expect(labels).toEqual(['Test Effect', 'Test Speed', 'Test Brightness', 'Test Pattern']);
+  });
+
+  it('collects selector fallback fields into Advanced Settings', async () => {
+    const advancedFallbackSnapshot: DeviceSnapshot = {
+      displayName: 'Advanced Fallback Mouse', connection: 'wireless', batteryPercent: 80,
+      charging: false, batteries: [], dpi: 1600,
+      dpiStages: [{ value: 1600, color: '#9a8bd0', active: true, enabled: true }],
+      capabilities: { settings: { angleSnap: false, liftCutOff: 1 } },
+      pluginCapabilities: [
+        {
+          id: 'dpi', control: 'DpiStages', labelKey: 'DPI', readOnly: false,
+          placements: [{ region: 'control', group: 'performance', order: 10, span: 1, icon: 'gauge', priority: 100, dashboardRole: 'fixed-core', fixedSlot: 1, fourthSlotEligible: false, dedupeKey: 'dashboard.dpi', fallbackRegion: 'advanced' }],
+          metadata: {
+            stageLayout: { dotsSource: 'state.dpiStages', selectMutation: 'set-dpi-stage', setMutation: 'set-dpi-value', valueSource: 'state.dpiStages', range: { min: 100, max: 32000, step: 50 } },
+            stateMapping: { dpiStages: 'dpiStages' },
+          },
+        },
+        {
+          id: 'angle-snap', control: 'Toggle', labelKey: 'Angle Snap', readOnly: false,
+          placements: [{ region: 'control', group: 'sensor', order: 10, span: 1, icon: 'gauge', priority: 50, dashboardRole: 'candidate', fourthSlotEligible: false, dedupeKey: 'dashboard.angle-snap', fallbackRegion: 'advanced' }],
+          metadata: {
+            fields: [{ id: 'value', source: 'state.angleSnap', mutation: 'set-angle-snap', param: 'value', editor: 'inline-toggle', labelKey: 'Angle Snap Field', advancedSection: 'sensor' }],
+            stateMapping: { angleSnap: 'capabilities.settings.angleSnap' },
+          },
+        },
+        {
+          id: 'lift-cutoff', control: 'Select', labelKey: 'Lift Cutoff', readOnly: false,
+          placements: [{ region: 'control', group: 'sensor', order: 20, span: 1, icon: 'settings', priority: 50, dashboardRole: 'candidate', fourthSlotEligible: false, dedupeKey: 'dashboard.lift-cutoff', fallbackRegion: 'advanced' }],
+          metadata: {
+            fields: [{ id: 'value', source: 'state.liftCutOff', mutation: 'set-lift-cutoff', param: 'value', editor: 'modal-select', labelKey: 'Lift Cutoff Field', advancedSection: 'sensor', options: [{ value: 1, labelKey: '1mm' }, { value: 2, labelKey: '2mm' }] }],
+            stateMapping: { liftCutOff: 'capabilities.settings.liftCutOff' },
+          },
+        },
+      ],
+      writableMutations: ['set-dpi-stage', 'set-dpi-value', 'set-angle-snap', 'set-lift-cutoff'],
+      evidence: 'hardware-verified',
+    };
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'settings_get') return Promise.resolve(settings);
+      if (command === 'device_snapshots') return Promise.resolve(entries(advancedFallbackSnapshot));
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Advanced Fallback Mouse' });
+    // DPI 在首页；angle-snap / lift-cutoff 因 priority=50 < 90 且 fourthSlotEligible=false
+    // 未入选 dashboard，作为 selector fallback 进入 Advanced Settings。
+    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['DPI']);
+    expect(screen.getByRole('button', { name: /高级设置/ })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /高级设置/ }));
+    // 模态窗口标题为"高级设置"。
+    const modal = await screen.findByRole('heading', { name: '高级设置' });
+    expect(modal).toBeInTheDocument();
+    // 传感器分组应包含两个 fallback 字段。
+    const advancedList = document.querySelector('.advanced-settings-list');
+    expect(advancedList).toBeInTheDocument();
+    expect(advancedList?.textContent).toContain('Angle Snap Field');
+    expect(advancedList?.textContent).toContain('Lift Cutoff Field');
   });
 });

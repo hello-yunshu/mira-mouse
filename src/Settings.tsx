@@ -593,9 +593,6 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
             <SettingRow title={t('settings.autostart.label')} hint={t('settings.autostart.hint')}>
               <Toggle checked={autostartEnabled} onChange={toggleAutostart} label={t('settings.autostart.label')} />
             </SettingRow>
-            <SettingRow title={t('settings.startHidden.label')} hint={t('settings.startHidden.hint')}>
-              <Toggle checked={settings.startHidden} onChange={(v) => update({ startHidden: v })} label={t('settings.startHidden.label')} />
-            </SettingRow>
             <SettingRow title={t('settings.trayBattery.label')} hint={t('settings.trayBattery.hint')}>
               {windowsPlatform ? (
                 <Tooltip label={t('settings.trayBattery.disabledHint')}>

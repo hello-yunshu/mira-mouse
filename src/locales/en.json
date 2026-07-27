@@ -357,7 +357,7 @@
     },
     "autostart": {
       "label": "Launch at login",
-      "hint": "Launch Mira automatically at login"
+      "hint": "Run in the tray after sign-in without opening the main window."
     },
     "startHidden": {
       "label": "Hide window at login",
