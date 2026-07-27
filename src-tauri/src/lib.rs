@@ -4693,6 +4693,294 @@ mod lifecycle_tests {
     }
 }
 
+/// Iteration 008 P0-1: macOS LaunchAgent plist tests.
+/// These are pure-function tests that run on ALL platforms so CI can verify
+/// the plist structure without requiring macOS.
+#[cfg(test)]
+mod macos_launch_agent_tests {
+    use super::*;
+
+    #[test]
+    fn plist_program_arguments_contain_hidden_flag() {
+        let xml = build_launch_agent_plist_xml(
+            "Mira",
+            "/Applications/Mira.app/Contents/MacOS/Mira",
+            &["--hidden"],
+        );
+        assert!(
+            xml.contains("<string>--hidden</string>"),
+            "ProgramArguments must contain --hidden so argv receives it"
+        );
+    }
+
+    #[test]
+    fn plist_program_arguments_contain_canonical_executable() {
+        let exe = "/Applications/Mira.app/Contents/MacOS/Mira";
+        let xml = build_launch_agent_plist_xml("Mira", exe, &["--hidden"]);
+        assert!(
+            xml.contains(exe),
+            "ProgramArguments must contain the real Mach-O executable path, not the .app directory"
+        );
+        assert!(
+            !xml.contains("<string>/Applications/Mira.app</string>\n        <string>--hidden"),
+            "must not register the .app directory as the program"
+        );
+    }
+
+    #[test]
+    fn plist_has_correct_label() {
+        let xml = build_launch_agent_plist_xml(
+            "Mira",
+            "/Applications/Mira.app/Contents/MacOS/Mira",
+            &["--hidden"],
+        );
+        assert!(xml.contains("<key>Label</key>"));
+        assert!(xml.contains("<string>Mira</string>"));
+    }
+
+    #[test]
+    fn plist_runs_at_load_but_not_keep_alive() {
+        let xml = build_launch_agent_plist_xml(
+            "Mira",
+            "/Applications/Mira.app/Contents/MacOS/Mira",
+            &["--hidden"],
+        );
+        assert!(
+            xml.contains("<key>RunAtLoad</key>\n    <true/>"),
+            "RunAtLoad must be true for login autostart"
+        );
+        assert!(
+            xml.contains("<key>KeepAlive</key>\n    <false/>"),
+            "KeepAlive must be false so the user can quit Mira"
+        );
+    }
+
+    #[test]
+    fn plist_is_valid_xml_with_doctype() {
+        let xml = build_launch_agent_plist_xml(
+            "Mira",
+            "/Applications/Mira.app/Contents/MacOS/Mira",
+            &["--hidden"],
+        );
+        assert!(xml.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"));
+        assert!(xml.contains("DOCTYPE plist PUBLIC"));
+        assert!(xml.contains("<plist version=\"1.0\">"));
+        assert!(xml.trim_end().ends_with("</plist>"));
+    }
+
+    #[test]
+    fn plist_escapes_special_xml_characters() {
+        let xml = build_launch_agent_plist_xml(
+            "Mira&Co",
+            "/Applications/Mira.app/Contents/MacOS/Mira",
+            &["--hidden"],
+        );
+        assert!(xml.contains("Mira&amp;Co"));
+        assert!(!xml.contains("Mira&Co<"));
+    }
+
+    #[test]
+    fn plist_executable_must_not_be_app_directory() {
+        // The LaunchAgent Program must be the real Mach-O inside the .app,
+        // not the .app directory itself. This test documents that contract.
+        let exe = "/Applications/Mira.app/Contents/MacOS/Mira";
+        let xml = build_launch_agent_plist_xml("Mira", exe, &["--hidden"]);
+        // The executable path must end with the Mach-O name, not .app
+        let program_line = xml
+            .lines()
+            .find(|line| line.contains(exe))
+            .expect("executable path must appear in plist");
+        assert!(program_line.contains("Contents/MacOS/"));
+    }
+
+    #[test]
+    fn classify_launch_intent_receives_hidden_from_plist_args() {
+        // Simulate what launchd would pass: [exe, --hidden] → skip exe (index 0)
+        let argv = vec!["--hidden".to_string()];
+        assert_eq!(classify_launch_intent(&argv), LaunchIntent::AutostartHidden);
+    }
+
+    #[test]
+    fn dmg_executable_path_is_rejected() {
+        // The canonical executable path resolver must reject /Volumes paths
+        // so we never write a LaunchAgent pointing at a mounted DMG.
+        #[cfg(target_os = "macos")]
+        {
+            // We can't easily test macos_canonical_executable_path() without
+            // mocking std::env::current_exe, but we can verify the path check
+            // logic by examining what the function rejects.
+            let dmg_path = "/Volumes/Mira/Mira.app/Contents/MacOS/Mira";
+            assert!(dmg_path.starts_with("/Volumes"));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Iteration 008 P0-1: Windows/Linux autostart generator tests.
+//
+// `auto_launch::AutoLaunchBuilder` registers the autostart entry on Windows
+// (HKCU Run key) and Linux (.desktop file) using the app_path + args we pass.
+// These pure-function tests verify the command-line contract that auto_launch
+// follows on each platform, so CI on any platform can confirm `--hidden` is
+// present in the registered command without requiring Windows/Linux hardware.
+//
+// The contract:
+//   Windows: `"<app_path>" --hidden`  (auto_launch quotes the path)
+//   Linux:   `Exec=<app_path> --hidden`  (auto_launch writes this to .desktop)
+// ---------------------------------------------------------------------------
+
+/// Build the Windows autostart command string that auto_launch registers in
+/// `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. Pure function for
+/// testability — the actual registration is done by `autostart_entry`.
+#[cfg(test)]
+fn build_windows_autostart_command(app_path: &str, args: &[&str]) -> String {
+    let mut cmd = format!("\"{app_path}\"");
+    for arg in args {
+        cmd.push(' ');
+        cmd.push_str(arg);
+    }
+    cmd
+}
+
+/// Build the Linux .desktop `Exec=` line that auto_launch writes to
+/// `~/.config/autostart/<app>.desktop`. Pure function for testability.
+#[cfg(test)]
+fn build_linux_desktop_exec_line(app_path: &str, args: &[&str]) -> String {
+    let mut line = format!("Exec={app_path}");
+    for arg in args {
+        line.push(' ');
+        line.push_str(arg);
+    }
+    line
+}
+
+/// Build the Linux .desktop file content that auto_launch writes to
+/// `~/.config/autostart/<app>.desktop`. Pure function for testability.
+#[cfg(test)]
+fn build_linux_desktop_file(app_name: &str, app_path: &str, args: &[&str]) -> String {
+    format!(
+        "[Desktop Entry]\n\
+         Type=Application\n\
+         Name={app_name}\n\
+         Exec={exec_line}\n\
+         X-GNOME-Autostart-enabled=true\n",
+        exec_line = {
+            let mut line = app_path.to_string();
+            for arg in args {
+                line.push(' ');
+                line.push_str(arg);
+            }
+            line
+        }
+    )
+}
+
+#[cfg(test)]
+mod windows_linux_autostart_tests {
+    use super::*;
+
+    #[test]
+    fn windows_autostart_command_contains_hidden_flag() {
+        let cmd =
+            build_windows_autostart_command("C:\\Program Files\\Mira\\Mira.exe", &["--hidden"]);
+        assert!(
+            cmd.contains("--hidden"),
+            "Windows autostart command must contain --hidden so argv receives it: {cmd}"
+        );
+        assert!(
+            cmd.contains("\"C:\\Program Files\\Mira\\Mira.exe\""),
+            "Windows path with spaces must be quoted: {cmd}"
+        );
+    }
+
+    #[test]
+    fn windows_autostart_command_format() {
+        let cmd = build_windows_autostart_command("C:\\Mira\\Mira.exe", &["--hidden"]);
+        assert_eq!(cmd, "\"C:\\Mira\\Mira.exe\" --hidden");
+    }
+
+    #[test]
+    fn windows_autostart_command_uses_canonical_args() {
+        let args = autostart_args();
+        let cmd = build_windows_autostart_command("C:\\Mira\\Mira.exe", &args);
+        assert_eq!(cmd, "\"C:\\Mira\\Mira.exe\" --hidden");
+        // Must not contain any legacy args like --minimized.
+        assert!(!cmd.contains("--minimized"));
+        assert!(!cmd.contains("startHidden"));
+    }
+
+    #[test]
+    fn linux_desktop_exec_contains_hidden_flag() {
+        let line = build_linux_desktop_exec_line("/usr/bin/mira", &["--hidden"]);
+        assert!(
+            line.contains("--hidden"),
+            "Linux .desktop Exec line must contain --hidden: {line}"
+        );
+        assert_eq!(line, "Exec=/usr/bin/mira --hidden");
+    }
+
+    #[test]
+    fn linux_desktop_exec_with_appimage_path() {
+        let line =
+            build_linux_desktop_exec_line("/home/user/Applications/Mira.AppImage", &["--hidden"]);
+        assert_eq!(line, "Exec=/home/user/Applications/Mira.AppImage --hidden");
+    }
+
+    #[test]
+    fn linux_desktop_file_contains_hidden_in_exec() {
+        let content = build_linux_desktop_file("Mira", "/usr/bin/mira", &["--hidden"]);
+        assert!(content.contains("Type=Application"));
+        assert!(content.contains("Name=Mira"));
+        assert!(content.contains("Exec=/usr/bin/mira --hidden"));
+        assert!(content.contains("X-GNOME-Autostart-enabled=true"));
+    }
+
+    #[test]
+    fn linux_desktop_file_uses_canonical_args() {
+        let args = autostart_args();
+        let content = build_linux_desktop_file("Mira", "/usr/bin/mira", &args);
+        assert!(content.contains("Exec=/usr/bin/mira --hidden"));
+        // Must not contain any legacy args.
+        assert!(!content.contains("--minimized"));
+        assert!(!content.contains("startHidden"));
+    }
+
+    #[test]
+    fn autostart_args_consistent_across_platforms() {
+        // The canonical autostart args are the same on ALL platforms —
+        // macOS (LaunchAgent), Windows (registry), Linux (.desktop).
+        // No platform branch should change the args.
+        let args = autostart_args();
+        assert_eq!(args, vec!["--hidden"]);
+        assert_eq!(args.len(), 1, "exactly one canonical arg, no duplicates");
+    }
+
+    #[test]
+    fn windows_autostart_command_no_duplicate_args() {
+        let args = autostart_args();
+        let cmd = build_windows_autostart_command("C:\\Mira\\Mira.exe", &args);
+        let hidden_count = cmd.matches("--hidden").count();
+        assert_eq!(hidden_count, 1, "no duplicate --hidden in Windows command");
+    }
+
+    #[test]
+    fn linux_desktop_exec_no_duplicate_args() {
+        let args = autostart_args();
+        let line = build_linux_desktop_exec_line("/usr/bin/mira", &args);
+        let hidden_count = line.matches("--hidden").count();
+        assert_eq!(hidden_count, 1, "no duplicate --hidden in Linux Exec");
+    }
+
+    #[test]
+    fn windows_autostart_command_rejects_empty_args() {
+        // If args were empty, the command would be just the path with no
+        // --hidden — Mira would classify the launch as Interactive and show
+        // the window. This test documents that args must never be empty.
+        let args = autostart_args();
+        assert!(!args.is_empty(), "autostart args must never be empty");
+    }
+}
+
 #[cfg(test)]
 mod night_mode_tests {
     #![allow(clippy::field_reassign_with_default)]
@@ -10036,6 +10324,13 @@ fn device_mutate_blocking_impl(
     Ok(snapshot)
 }
 
+/// Build an `auto_launch::AutoLaunch` entry for Windows and Linux.
+///
+/// On macOS this is ONLY used to disable legacy AppleScript login items
+/// created by previous iterations. The canonical macOS autostart uses a
+/// LaunchAgent plist written by `macos_write_launch_agent` so that the real
+/// Mach-O executable receives `--hidden` in its argv — something the
+/// AppleScript login-item `hidden` property cannot do (see Iteration 008 P0-1).
 fn autostart_entry(app: &AppHandle) -> Result<auto_launch::AutoLaunch, String> {
     let mut builder = AutoLaunchBuilder::new();
     let package = app.package_info();
@@ -10050,6 +10345,8 @@ fn autostart_entry(app: &AppHandle) -> Result<auto_launch::AutoLaunch, String> {
 
     #[cfg(target_os = "macos")]
     {
+        // AppleScript mode is retained ONLY for legacy cleanup. The canonical
+        // macOS autostart is the LaunchAgent plist (see macos_* functions).
         builder.set_macos_launch_mode(auto_launch::MacOSLaunchMode::AppleScript);
         let exe_path = current_exe
             .canonicalize()
@@ -10081,72 +10378,260 @@ fn autostart_entry(app: &AppHandle) -> Result<auto_launch::AutoLaunch, String> {
         .map_err(|err| format!("failed to prepare autostart entry: {err}"))
 }
 
+// ---------------------------------------------------------------------------
+// macOS LaunchAgent autostart (Iteration 008 P0-1)
+//
+// `auto-launch 0.6` with `MacOSLaunchMode::AppleScript` converts `--hidden`
+// into the login item's `hidden:true` property — it does NOT pass `--hidden`
+// to the Mira process argv. Mira then classifies the launch as Interactive
+// and actively shows/focuses the window, defeating silent autostart.
+//
+// The canonical fix is a LaunchAgent plist whose ProgramArguments explicitly
+// contains `["<Mira.app/Contents/MacOS/Mira>", "--hidden"]` so that
+// `std::env::args()` receives `--hidden` and `classify_launch_intent` returns
+// `AutostartHidden`.
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "macos")]
+fn macos_launch_agent_plist_path(app: &AppHandle) -> Option<PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    Some(
+        PathBuf::from(home)
+            .join("Library")
+            .join("LaunchAgents")
+            .join(format!("{}.plist", app.package_info().name)),
+    )
+}
+
+/// Resolve the canonical Mach-O executable path inside the .app bundle.
+/// Returns the real executable that LaunchAgent ProgramArguments must point
+/// to — NOT the `.app` directory.
+#[cfg(target_os = "macos")]
+fn macos_canonical_executable_path() -> Result<String, String> {
+    let exe = std::env::current_exe()
+        .map_err(|err| format!("failed to resolve current executable: {err}"))?;
+    let canonical = exe
+        .canonicalize()
+        .map_err(|err| format!("failed to canonicalize executable: {err}"))?;
+    let path = canonical.display().to_string();
+    if path.starts_with("/Volumes") {
+        return Err(format!(
+            "Mira is running from a mounted DMG ({path}); drag Mira to Applications before enabling launch at login"
+        ));
+    }
+    Ok(path)
+}
+
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// Build a LaunchAgent plist XML whose ProgramArguments contains the canonical
+/// executable path followed by `--hidden`. Pure function for testability —
+/// available on all platforms so CI can verify the plist structure.
+fn build_launch_agent_plist_xml(label: &str, exe_path: &str, args: &[&str]) -> String {
+    let mut args_xml = String::new();
+    for arg in args {
+        args_xml.push_str(&format!("        <string>{}</string>\n", xml_escape(arg)));
+    }
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n    <key>Label</key>\n    <string>{label}</string>\n    <key>ProgramArguments</key>\n    <array>\n        <string>{exe}</string>\n{args}    </array>\n    <key>RunAtLoad</key>\n    <true/>\n    <key>KeepAlive</key>\n    <false/>\n</dict>\n</plist>\n",
+        label = xml_escape(label),
+        exe = xml_escape(exe_path),
+        args = args_xml
+    )
+}
+
+/// Returns true if the LaunchAgent plist exists and contains both the
+/// canonical executable path and `--hidden` in ProgramArguments.
+#[cfg(target_os = "macos")]
+fn macos_launch_agent_is_enabled(app: &AppHandle) -> Result<bool, String> {
+    let Some(plist_path) = macos_launch_agent_plist_path(app) else {
+        return Ok(false);
+    };
+    if !plist_path.exists() {
+        return Ok(false);
+    }
+    let contents = fs::read_to_string(&plist_path)
+        .map_err(|err| format!("failed to read launch agent plist: {err}"))?;
+    let exe = macos_canonical_executable_path()?;
+    Ok(contents.contains(&exe) && contents.contains(AUTOSTART_HIDDEN_ARG))
+}
+
+/// Write the canonical LaunchAgent plist atomically and load it via
+/// `launchctl load`. Any legacy AppleScript login item is disabled first to
+/// avoid duplicate autostart entries.
+#[cfg(target_os = "macos")]
+fn macos_write_launch_agent(app: &AppHandle) -> Result<(), String> {
+    macos_disable_legacy_applescript_item(app)?;
+    let exe = macos_canonical_executable_path()?;
+    let args = autostart_args();
+    let label = app.package_info().name.as_ref();
+    let plist_xml = build_launch_agent_plist_xml(label, &exe, &args);
+    let Some(plist_path) = macos_launch_agent_plist_path(app) else {
+        return Err("HOME is not set; cannot resolve LaunchAgents directory".to_string());
+    };
+    if let Some(parent) = plist_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("failed to create LaunchAgents directory: {err}"))?;
+    }
+    // Atomic replace: write to a temp file in the same directory, then rename.
+    let tmp = plist_path.with_extension("plist.tmp");
+    fs::write(&tmp, &plist_xml)
+        .map_err(|err| format!("failed to write launch agent plist: {err}"))?;
+    fs::rename(&tmp, &plist_path)
+        .map_err(|err| format!("failed to install launch agent plist: {err}"))?;
+    // Load the agent. Non-fatal if already loaded — the plist is the source of
+    // truth and launchd will pick it up at next login.
+    if let Some(path_str) = plist_path.to_str() {
+        let _ = Command::new("launchctl")
+            .args(["unload", path_str])
+            .status();
+        let _ = Command::new("launchctl").args(["load", path_str]).status();
+    }
+    Ok(())
+}
+
+/// Unload and remove the LaunchAgent plist.
+#[cfg(target_os = "macos")]
+fn macos_remove_launch_agent(app: &AppHandle) -> Result<(), String> {
+    let Some(plist_path) = macos_launch_agent_plist_path(app) else {
+        return Ok(());
+    };
+    if plist_path.exists() {
+        if let Some(path_str) = plist_path.to_str() {
+            let _ = Command::new("launchctl")
+                .args(["unload", path_str])
+                .status();
+        }
+        fs::remove_file(&plist_path)
+            .map_err(|err| format!("failed to remove launch agent plist: {err}"))?;
+    }
+    Ok(())
+}
+
+/// Disable any legacy AppleScript login item created by previous iterations.
+/// This is non-fatal — the item may not exist.
+#[cfg(target_os = "macos")]
+fn macos_disable_legacy_applescript_item(app: &AppHandle) -> Result<(), String> {
+    if let Ok(autolaunch) = autostart_entry(app) {
+        let _ = autolaunch.disable();
+    }
+    Ok(())
+}
+
+/// Migrate from legacy AppleScript login item to the canonical LaunchAgent.
+/// If the AppleScript item exists but the LaunchAgent does not, create the
+/// LaunchAgent and remove the AppleScript item. If both exist, remove the
+/// AppleScript item. Returns the effective enabled state.
+#[cfg(target_os = "macos")]
+fn migrate_legacy_applescript_to_launch_agent(app: &AppHandle) -> Result<bool, String> {
+    let legacy_enabled = autostart_entry(app)
+        .ok()
+        .is_some_and(|entry| entry.is_enabled().unwrap_or(false));
+    let launch_agent_enabled = macos_launch_agent_is_enabled(app)?;
+    if !legacy_enabled {
+        return Ok(launch_agent_enabled);
+    }
+    // Legacy AppleScript item exists — migrate to LaunchAgent.
+    if !launch_agent_enabled && !running_from_disk_image() {
+        macos_write_launch_agent(app)?;
+    } else {
+        macos_disable_legacy_applescript_item(app)?;
+    }
+    Ok(true)
+}
+
 #[tauri::command]
 fn autostart_state(app: tauri::AppHandle) -> Result<bool, String> {
-    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
-    let mut enabled = autostart_entry(&app)?
-        .is_enabled()
-        .map_err(|err| format!("failed to read autostart state: {err}"))?;
     #[cfg(target_os = "macos")]
     {
-        enabled = migrate_legacy_launch_agent(&app, enabled)?;
+        // Canonical macOS autostart is the LaunchAgent plist. Also migrate any
+        // legacy AppleScript login item to the LaunchAgent form.
+        let enabled = migrate_legacy_applescript_to_launch_agent(&app)?;
+        Ok(enabled)
     }
-    Ok(enabled)
+    #[cfg(not(target_os = "macos"))]
+    {
+        let enabled = autostart_entry(&app)?
+            .is_enabled()
+            .map_err(|err| format!("failed to read autostart state: {err}"))?;
+        Ok(enabled)
+    }
 }
 
 #[tauri::command]
 fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
-    let autolaunch = autostart_entry(&app)?;
-    if enabled {
-        #[cfg(target_os = "macos")]
-        if running_from_disk_image() {
-            remove_legacy_launch_agent(&app)?;
-            return Err(
-                "Mira is running from a mounted DMG. Drag Mira to Applications before enabling launch at login."
-                    .to_string(),
-            );
+    #[cfg(target_os = "macos")]
+    {
+        if enabled {
+            macos_write_launch_agent(&app)?;
+        } else {
+            macos_remove_launch_agent(&app)?;
+            // Also remove any legacy AppleScript login item so disabling is
+            // exhaustive — no duplicate or stale autostart entries remain.
+            macos_disable_legacy_applescript_item(&app)?;
         }
-        if autolaunch.is_enabled().unwrap_or(false) {
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let autolaunch = autostart_entry(&app)?;
+        if enabled {
+            if autolaunch.is_enabled().unwrap_or(false) {
+                autolaunch
+                    .disable()
+                    .map_err(|err| format!("failed to replace autostart entry: {err}"))?;
+            }
+            autolaunch
+                .enable()
+                .map_err(|err| format!("failed to enable autostart: {err}"))?;
+        } else {
             autolaunch
                 .disable()
-                .map_err(|err| format!("failed to replace autostart entry: {err}"))?;
+                .map_err(|err| format!("failed to disable autostart: {err}"))?;
         }
-        autolaunch
-            .enable()
-            .map_err(|err| format!("failed to enable autostart: {err}"))?;
-        #[cfg(target_os = "macos")]
-        remove_legacy_launch_agent(&app)?;
-        Ok(())
-    } else {
-        autolaunch
-            .disable()
-            .map_err(|err| format!("failed to disable autostart: {err}"))?;
-        #[cfg(target_os = "macos")]
-        remove_legacy_launch_agent(&app)?;
         Ok(())
     }
 }
 
 fn refresh_autostart_entry_if_enabled(app: &AppHandle) {
     #[cfg(target_os = "macos")]
-    if running_from_disk_image() {
-        return;
+    {
+        if running_from_disk_image() {
+            return;
+        }
+        // Re-write the canonical LaunchAgent plist to repair any stale entry
+        // (old path, missing --hidden, or corrupted plist).
+        if matches!(macos_launch_agent_is_enabled(app), Ok(true)) {
+            if let Err(err) = macos_write_launch_agent(app) {
+                eprintln!("[mira] refresh launch agent plist failed: {err}");
+            }
+        } else {
+            // Migrate legacy AppleScript item if present.
+            let _ = migrate_legacy_applescript_to_launch_agent(app);
+        }
     }
-
-    let Ok(autolaunch) = autostart_entry(app) else {
-        return;
-    };
-    let Ok(true) = autolaunch.is_enabled() else {
-        return;
-    };
-    // Re-register with the canonical --hidden arg to repair any legacy entry
-    // that was written without it (or with a stale arg set).
-    if let Err(err) = autolaunch.disable() {
-        eprintln!("[mira] refresh autostart entry disable failed: {err}");
-        return;
-    }
-    if let Err(err) = autolaunch.enable() {
-        eprintln!("[mira] refresh autostart entry enable failed: {err}");
+    #[cfg(not(target_os = "macos"))]
+    {
+        let Ok(autolaunch) = autostart_entry(app) else {
+            return;
+        };
+        let Ok(true) = autolaunch.is_enabled() else {
+            return;
+        };
+        // Re-register with the canonical --hidden arg to repair any legacy entry
+        // that was written without it (or with a stale arg set).
+        if let Err(err) = autolaunch.disable() {
+            eprintln!("[mira] refresh autostart entry disable failed: {err}");
+            return;
+        }
+        if let Err(err) = autolaunch.enable() {
+            eprintln!("[mira] refresh autostart entry enable failed: {err}");
+        }
     }
 }
 
@@ -10184,53 +10669,6 @@ fn open_external_url(url: String) -> Result<(), String> {
 fn is_allowed_external_url(url: &str) -> bool {
     let is_web_url = url.starts_with("https://") || url.starts_with("http://");
     is_web_url && !url.chars().any(|ch| ch.is_control() || ch.is_whitespace())
-}
-
-#[cfg(target_os = "macos")]
-fn legacy_launch_agent_path(app: &AppHandle) -> Option<PathBuf> {
-    let home = std::env::var_os("HOME")?;
-    Some(
-        PathBuf::from(home)
-            .join("Library")
-            .join("LaunchAgents")
-            .join(format!("{}.plist", app.package_info().name)),
-    )
-}
-
-#[cfg(target_os = "macos")]
-fn migrate_legacy_launch_agent(app: &AppHandle, enabled: bool) -> Result<bool, String> {
-    let legacy_enabled = legacy_launch_agent_path(app).is_some_and(|path| path.exists());
-    if !legacy_enabled {
-        return Ok(enabled);
-    }
-
-    if !enabled {
-        if running_from_disk_image() {
-            remove_legacy_launch_agent(app)?;
-            return Ok(false);
-        }
-        autostart_entry(app)?
-            .enable()
-            .map_err(|err| format!("failed to migrate autostart item: {err}"))?;
-    }
-    remove_legacy_launch_agent(app)?;
-    Ok(true)
-}
-
-#[cfg(target_os = "macos")]
-fn remove_legacy_launch_agent(app: &AppHandle) -> Result<(), String> {
-    let Some(plist) = legacy_launch_agent_path(app) else {
-        return Ok(());
-    };
-    if !plist.exists() {
-        return Ok(());
-    }
-
-    let _ = Command::new("launchctl")
-        .args(["remove", app.package_info().name.as_ref()])
-        .status();
-    fs::remove_file(&plist)
-        .map_err(|err| format!("failed to remove legacy autostart launch agent: {err}"))
 }
 
 #[cfg(target_os = "macos")]

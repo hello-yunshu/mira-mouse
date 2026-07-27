@@ -1789,7 +1789,12 @@ body:has(.platform-fallback:not(.web-preview)) {
   border-radius: 999px;
   appearance: none;
   background-color: var(--light-color);
-  box-shadow: 0 5px 18px color-mix(in oklch, var(--light-color), transparent 55%);
+  /* 灯带外发光：底层投影 + 近距离柔光 + 远距离扩散，营造淡淡的发光感。
+     三层均以 --light-color 为光源色，通过 color-mix 调控透明度实现柔和过渡。 */
+  box-shadow:
+    0 5px 18px color-mix(in oklch, var(--light-color), transparent 55%),
+    0 0 6px color-mix(in oklch, var(--light-color), transparent 45%),
+    0 0 14px color-mix(in oklch, var(--light-color), transparent 70%);
   cursor: pointer;
   transition:
     background-color var(--motion-slow) var(--motion-ease-standard),

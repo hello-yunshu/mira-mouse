@@ -120,8 +120,8 @@ const snapshot: DeviceSnapshot = {
             id: 'mouse', labelKey: 'dashboard.mouseLighting',
             fields: [
               { id: 'status', source: 'state.mouseLightEffect', mutation: 'set-mouse-lighting', param: 'effect', editor: 'inline-toggle', switch: { source: 'state.mouseLightEffect', offValue: 0, restoreField: 'effect' }, labelKey: 'dashboard.status' },
-              { id: 'effect', source: 'state.mouseLightEffect', mutation: 'set-mouse-lighting', param: 'effect', editor: 'modal-select', labelKey: 'receiverLighting.field.effect', labelSource: 'capabilities.mouseLighting.effectName', options: LIGHTING_EFFECT_OPTIONS, visibleWhen: { path: 'state.mouseLightEffect', ne: 0 } },
-              { id: 'color', source: 'state.mouseLightColor', mutation: 'set-mouse-lighting', param: 'color', editor: 'modal-color', labelKey: 'dashboard.mouseLightColor', visibleWhen: { path: 'state.mouseLightEffect', ne: 0 } },
+              { id: 'effect', source: 'state.mouseLightEffect', mutation: 'set-mouse-lighting', param: 'effect', editor: 'modal-select', labelKey: 'receiverLighting.field.effect', labelSource: 'capabilities.mouseLighting.effectName', options: LIGHTING_EFFECT_OPTIONS, visibleWhen: { path: 'state.mouseLightEffect', ne: 0 }, lightingRole: 'effect', priority: 100 },
+              { id: 'color', source: 'state.mouseLightColor', mutation: 'set-mouse-lighting', param: 'color', editor: 'modal-color', labelKey: 'dashboard.mouseLightColor', visibleWhen: { path: 'state.mouseLightEffect', ne: 0 }, lightingRole: 'primary-color', priority: 100 },
             ],
           },
           {
@@ -129,8 +129,8 @@ const snapshot: DeviceSnapshot = {
             visibleWhen: { path: 'capabilities.receiverLighting', ne: null },
             fields: [
               { id: 'status', source: 'state.receiverLightEffect', mutation: 'set-receiver-lighting', param: 'effect', editor: 'inline-toggle', switch: { source: 'state.receiverLightEffect', offValue: 0, restoreField: 'effect' }, labelKey: 'dashboard.status' },
-              { id: 'effect', source: 'state.receiverLightEffect', mutation: 'set-receiver-lighting', param: 'effect', editor: 'modal-select', labelKey: 'receiverLighting.field.effect', labelSource: 'capabilities.receiverLighting.effectName', options: LIGHTING_EFFECT_OPTIONS, visibleWhen: { path: 'state.receiverLightEffect', ne: 0 } },
-              { id: 'color', source: 'state.receiverLightColor', mutation: 'set-receiver-lighting', param: 'color', editor: 'modal-color', labelKey: 'receiverLighting.field.color', visibleWhen: { path: 'state.receiverLightEffect', ne: 0 } },
+              { id: 'effect', source: 'state.receiverLightEffect', mutation: 'set-receiver-lighting', param: 'effect', editor: 'modal-select', labelKey: 'receiverLighting.field.effect', labelSource: 'capabilities.receiverLighting.effectName', options: LIGHTING_EFFECT_OPTIONS, visibleWhen: { path: 'state.receiverLightEffect', ne: 0 }, lightingRole: 'effect', priority: 100 },
+              { id: 'color', source: 'state.receiverLightColor', mutation: 'set-receiver-lighting', param: 'color', editor: 'modal-color', labelKey: 'receiverLighting.field.color', visibleWhen: { path: 'state.receiverLightEffect', ne: 0 }, lightingRole: 'primary-color', priority: 100 },
             ],
           },
         ],
@@ -286,8 +286,8 @@ describe('real device snapshot mapping', () => {
     render(<App />);
     await screen.findByRole('heading', { name: 'First Color Mouse' });
     fireEvent.click(screen.getByRole('tab', { name: '灯光' }));
-    // P0-M：颜色字段已从 visibleFields 移除，由 lighting-swatch 统一渲染。
-    // swatch 使用 --light-color CSS 变量，不在 .lighting-group-mouse 内部。
+    // 灯带（lighting-swatch）位于 lighting-group 上方独立渲染，使用 --light-color
+    // CSS 变量承载当前区域颜色，不在 .lighting-group-mouse 内部。
     const swatch = document.querySelector<HTMLElement>('.lighting-swatch')!;
     expect(swatch).toBeInTheDocument();
     expect(swatch.style.getPropertyValue('--light-color')).toBe('#112233');
@@ -597,7 +597,7 @@ describe('real device snapshot mapping', () => {
                 id: 'mouse', labelKey: 'dashboard.mouseLighting',
                 fields: [
                   { id: 'status', source: 'state.mouseLightEffect', mutation: 'set-mouse-lighting', param: 'effect', editor: 'inline-toggle', switch: { source: 'state.mouseLightEffect', offValue: 0, restoreField: 'effect' }, labelKey: 'dashboard.status' },
-                  { id: 'color', source: 'state.mouseLightColor', mutation: 'set-mouse-lighting', param: 'color', editor: 'modal-color', format: 'color', labelKey: 'dashboard.mouseLightColor' },
+                  { id: 'color', source: 'state.mouseLightColor', mutation: 'set-mouse-lighting', param: 'color', editor: 'modal-color', format: 'color', labelKey: 'dashboard.mouseLightColor', lightingRole: 'primary-color', priority: 100 },
                 ],
               },
               {
@@ -605,7 +605,7 @@ describe('real device snapshot mapping', () => {
                 visibleWhen: { path: 'capabilities.receiverLighting', ne: null },
                 fields: [
                   { id: 'status', source: 'state.receiverLightEffect', mutation: 'set-receiver-lighting', param: 'effect', editor: 'inline-toggle', switch: { source: 'state.receiverLightEffect', offValue: 0, restoreField: 'effect' }, labelKey: 'dashboard.status' },
-                  { id: 'color', source: 'state.receiverLightColor', mutation: 'set-receiver-lighting', param: 'color', editor: 'modal-color', labelKey: 'receiverLighting.field.color', visibleWhen: { path: 'state.receiverLightEffect', ne: 0 } },
+                  { id: 'color', source: 'state.receiverLightColor', mutation: 'set-receiver-lighting', param: 'color', editor: 'modal-color', labelKey: 'receiverLighting.field.color', visibleWhen: { path: 'state.receiverLightEffect', ne: 0 }, lightingRole: 'primary-color', priority: 100 },
                 ],
               },
             ],
@@ -1023,7 +1023,7 @@ describe('real device snapshot mapping', () => {
     expect(document.querySelector('.lighting-group-title')).toHaveTextContent('鼠标灯光');
   });
 
-  it('keeps a five-field secondary lighting zone in the legacy compact grid', async () => {
+  it('keeps a secondary lighting zone in the compact grid when subblock count reaches threshold', async () => {
     const compactLightingSnapshot: DeviceSnapshot = {
       ...snapshot,
       displayName: 'Compact Receiver Mouse',
@@ -1047,6 +1047,7 @@ describe('real device snapshot mapping', () => {
                     { id: 'option', source: 'capabilities.receiverLighting.option', mutation: 'set-receiver-lighting', param: 'option', editor: 'modal-select', labelKey: 'receiverLighting.field.option', options: LIGHTING_EFFECT_OPTIONS },
                     { id: 'speed', source: 'capabilities.receiverLighting.speed', mutation: 'set-receiver-lighting', param: 'speed', editor: 'modal-select', labelKey: 'receiverLighting.field.speed', options: LIGHTING_EFFECT_OPTIONS },
                     { id: 'brightness', source: 'capabilities.receiverLighting.brightness', mutation: 'set-receiver-lighting', param: 'brightness', editor: 'modal-select', labelKey: 'receiverLighting.field.brightness', options: LIGHTING_EFFECT_OPTIONS },
+                    { id: 'extra', source: 'capabilities.receiverLighting.option', mutation: 'set-receiver-lighting', param: 'option', editor: 'modal-select', labelKey: 'receiverLighting.field.option', options: LIGHTING_EFFECT_OPTIONS },
                     { id: 'color', source: 'capabilities.receiverLighting.color', mutation: 'set-receiver-lighting', param: 'color', editor: 'modal-color', format: 'color', labelKey: 'receiverLighting.field.color', lightingRole: 'primary-color' },
                   ],
                 },
@@ -1067,11 +1068,11 @@ describe('real device snapshot mapping', () => {
     fireEvent.click(screen.getByRole('tab', { name: '灯光' }));
     fireEvent.click(screen.getByRole('tab', { name: '接收器灯光' }));
     const receiverGroup = document.querySelector('.lighting-group-receiver');
-    // P0-M：color 字段已从 visibleFields 移除（由 lighting-swatch 渲染），
-    // visibleFields = [effect, option, speed, brightness] = 4 行。
-    // 但 totalVisualCount = 4 + 1 (swatch) = 5 >= 5，仍启用 compact 密度。
+    // 灯带（colorField）在 lighting-group 上方独立渲染，不计入子块数量。
+    // visibleFields = [effect, option, speed, brightness, extra] = 5 行（达 compact 阈值）。
+    // color 由 lighting-swatch 渲染，不在 grid 内。
     expect(receiverGroup).toHaveClass('is-compact');
-    expect(receiverGroup?.querySelectorAll('.lighting-row')).toHaveLength(4);
+    expect(receiverGroup?.querySelectorAll('.lighting-row')).toHaveLength(5);
   });
 
   it('hides polling control when rate not reported', async () => {
@@ -1169,7 +1170,7 @@ describe('real device snapshot mapping', () => {
                   { id: 'effect', source: 'state.mouseLightEffect', mutation: 'set-mouse-lighting', param: 'effect', editor: 'modal-select', labelKey: 'receiverLighting.field.effect', labelSource: 'capabilities.mouseLighting.effectName', options: LIGHTING_EFFECT_OPTIONS, visibleWhen: { path: 'state.mouseLightEffect', ne: 0 } },
                   { id: 'speed', source: 'state.mouseLightSpeed', mutation: 'set-mouse-lighting', param: 'speed', editor: 'modal-range', labelKey: 'receiverLighting.field.speed', range: { min: 0, max: 10, step: 1 }, visibleWhen: { path: 'state.mouseLightEffect', ne: 0 } },
                   { id: 'brightness', source: 'state.mouseLightBrightness', mutation: 'set-mouse-lighting', param: 'brightness', editor: 'modal-range', labelKey: 'receiverLighting.field.brightness', range: { min: 0, max: 100, step: 1 }, visibleWhen: { path: 'state.mouseLightEffect', ne: 0 } },
-                  { id: 'color', source: 'state.mouseLightColor', mutation: 'set-mouse-lighting', param: 'color', editor: 'modal-color', labelKey: 'dashboard.mouseLightColor', visibleWhen: { path: 'state.mouseLightEffect', ne: 0 } },
+                  { id: 'color', source: 'state.mouseLightColor', mutation: 'set-mouse-lighting', param: 'color', editor: 'modal-color', labelKey: 'dashboard.mouseLightColor', visibleWhen: { path: 'state.mouseLightEffect', ne: 0 }, lightingRole: 'primary-color' },
                 ],
               },
             ],
@@ -1222,7 +1223,7 @@ describe('real device snapshot mapping', () => {
                 fields: [
                   { id: 'status', source: 'state.mouseLightEffect', mutation: 'set-mouse-lighting', param: 'effect', editor: 'inline-toggle', switch: { source: 'state.mouseLightEffect', offValue: 0, restoreField: 'effect' }, labelKey: 'dashboard.status' },
                   { id: 'effect', source: 'state.mouseLightEffect', mutation: 'set-mouse-lighting', param: 'effect', editor: 'modal-select', labelKey: 'receiverLighting.field.effect', labelSource: 'capabilities.mouseLighting.effectName', options: LIGHTING_EFFECT_OPTIONS, visibleWhen: { path: 'state.mouseLightEffect', ne: 0 } },
-                  { id: 'color', source: 'state.mouseLightColor', mutation: 'set-mouse-lighting', param: 'color', editor: 'modal-color', labelKey: 'dashboard.mouseLightColor', visibleWhen: { path: 'state.mouseLightEffect', ne: 0 } },
+                  { id: 'color', source: 'state.mouseLightColor', mutation: 'set-mouse-lighting', param: 'color', editor: 'modal-color', labelKey: 'dashboard.mouseLightColor', visibleWhen: { path: 'state.mouseLightEffect', ne: 0 }, lightingRole: 'primary-color' },
                 ],
               },
             ],
@@ -1241,10 +1242,10 @@ describe('real device snapshot mapping', () => {
     render(<App />);
     await screen.findByRole('heading', { name: 'Row Sizing Mouse' });
     fireEvent.click(screen.getByRole('tab', { name: '灯光' }));
-    // P0-M：color 字段已从 visibleFields 移除，但作为 lighting-swatch 仍在 grid 末尾。
-    // visibleFields = [status, effect] = 2 行 + 1 swatch = 3 列。
+    // 灯带（colorField）在 lighting-group 上方独立渲染，不计入 grid 列数。
+    // visibleFields = [status, effect] = 2 行，grid 为 2 列。
     const rows = screen.getByLabelText('灯光分组').querySelector('.lighting-rows');
-    expect(rows).toHaveStyle({ gridTemplateColumns: 'repeat(3, minmax(0, 1fr))' });
+    expect(rows).toHaveStyle({ gridTemplateColumns: 'repeat(2, minmax(0, 1fr))' });
   });
 
   it('restores mouse lighting with supported non-off effect', async () => {
@@ -1322,7 +1323,7 @@ describe('real device snapshot mapping', () => {
                 fields: [
                   { id: 'status', source: 'state.mouseLightEffect', mutation: 'set-mouse-lighting', param: 'effect', editor: 'inline-toggle', switch: { source: 'state.mouseLightEffect', offValue: 0, restoreField: 'effect' }, labelKey: 'dashboard.status' },
                   { id: 'effect', source: 'state.mouseLightEffect', mutation: 'set-mouse-lighting', param: 'effect', editor: 'modal-select', labelKey: 'receiverLighting.field.effect', labelSource: 'capabilities.mouseLighting.effectName', options: LIGHTING_EFFECT_OPTIONS, visibleWhen: { path: 'state.mouseLightEffect', ne: 0 } },
-                  { id: 'color', source: 'state.mouseLightColor', mutation: 'set-mouse-lighting', param: 'color', editor: 'modal-color', labelKey: 'dashboard.mouseLightColor', visibleWhen: { path: 'state.mouseLightEffect', ne: 0 } },
+                  { id: 'color', source: 'state.mouseLightColor', mutation: 'set-mouse-lighting', param: 'color', editor: 'modal-color', labelKey: 'dashboard.mouseLightColor', visibleWhen: { path: 'state.mouseLightEffect', ne: 0 }, lightingRole: 'primary-color' },
                 ],
               },
             ],

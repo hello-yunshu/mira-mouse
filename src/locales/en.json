@@ -556,7 +556,7 @@
     },
     "pluginUpdateInstalled": {
       "title": "Plugin update installed",
-      "body": "{{count}} plugin(s) updated to the latest version."
+      "body": "Plugin {{pluginId}} updated to v{{version}}."
     },
     "localAiUpdateFound": {
       "title": "AI engine update available",
