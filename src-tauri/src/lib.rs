@@ -2014,8 +2014,9 @@ fn apply_night_mode_transition(app: &AppHandle, target_phase: NightPhase) {
                 };
                 if let Some((is_on, saved)) = read_mouse_light_state(&snapshot) {
                     if is_on {
-                        // 关闭灯光：off effect 由插件声明，同时传递 speed/brightness 以满足
-                        // HID++ mutation inputs 的校验（即使设备走 memory 路径也兼容）。
+                        // 关闭灯光：优先用插件声明的 off effect（HID++ 体系）；
+                        // 未声明 off effect 时（AM35 体系）用 enabled=false 关闭，
+                        // effect 字段保留设备当前 effect 以满足 mutation inputs 校验。
                         let off_effect = mouse_lighting_off_effect(&snapshot);
                         let mut params = serde_json::Map::from_iter([
                             (
@@ -2025,7 +2026,9 @@ fn apply_night_mode_transition(app: &AppHandle, target_phase: NightPhase) {
                             ("enabled".into(), serde_json::Value::Bool(false)),
                             (
                                 "effect".into(),
-                                serde_json::Value::Number(off_effect.into()),
+                                serde_json::Value::Number(
+                                    off_effect.unwrap_or(saved.effect).into(),
+                                ),
                             ),
                             (
                                 "speed".into(),
@@ -3442,8 +3445,14 @@ fn read_mouse_light_state(snapshot: &DeviceSnapshot) -> Option<(bool, SavedMouse
         .and_then(|v| v.as_str())
         .filter(|s| s.starts_with('#') && s.len() == 7)
         .map(|s| s.to_string());
-    // 判断灯光是否开启：优先用插件声明的 off effect（HID++ 设备），无 effect 时回退到 enabled。
-    let is_on = effect.map(|e| e != off_effect).unwrap_or(enabled);
+    // ITERATION-009 §9：判断灯光是否开启。
+    // - 插件声明了 effectOptions.offValue 时（HID++ 体系），优先用 effect != offValue 判断；
+    // - 插件未声明 offValue 时（AM35 体系，mode 0 = 常亮而非关闭），回退到 enabled 字段，
+    //   避免 AM35 mode=0 被误判为关闭导致夜间模式失效。
+    let is_on = match off_effect {
+        Some(off) => effect.map(|e| e != off).unwrap_or(enabled),
+        None => enabled,
+    };
     if is_on {
         // 灯光开启：必须有有效颜色才能正确保存并恢复，否则跳过该目标，
         // 避免 fallback #000000 在退出夜间恢复时覆盖设备原色。
@@ -3464,7 +3473,7 @@ fn read_mouse_light_state(snapshot: &DeviceSnapshot) -> Option<(bool, SavedMouse
             false,
             SavedMouseLight {
                 color: color.unwrap_or_else(|| "#000000".to_string()),
-                effect: effect.unwrap_or(off_effect),
+                effect: effect.unwrap_or(off_effect.unwrap_or(0)),
                 speed,
                 brightness,
                 extra_color,
@@ -3473,7 +3482,12 @@ fn read_mouse_light_state(snapshot: &DeviceSnapshot) -> Option<(bool, SavedMouse
     }
 }
 
-fn mouse_lighting_off_effect(snapshot: &DeviceSnapshot) -> u8 {
+/// ITERATION-009 §9：返回插件声明的"关闭"灯效值。
+/// 插件通过 `metadata.effectOptions.offValue` 声明哪个 effect 编号代表关闭
+/// （例如 HID++ 体系的 0=off）。返回 `None` 表示插件未声明 offValue，
+/// 调用方应回退到 `enabled` 字段判断灯光开关，避免把 AM35 的 mode 0
+/// （常亮）误判为关闭。
+fn mouse_lighting_off_effect(snapshot: &DeviceSnapshot) -> Option<u8> {
     snapshot
         .plugin_capabilities
         .iter()
@@ -3482,7 +3496,6 @@ fn mouse_lighting_off_effect(snapshot: &DeviceSnapshot) -> u8 {
         .and_then(|effect_options| effect_options.get("offValue"))
         .and_then(|value| value.as_u64())
         .and_then(|value| u8::try_from(value).ok())
-        .unwrap_or(0)
 }
 
 /// Launch intent decided by THIS process's args only.
@@ -5873,7 +5886,291 @@ mod night_mode_tests {
         let (is_on, saved) = read_mouse_light_state(&snapshot).unwrap();
         assert!(!is_on);
         assert_eq!(saved.effect, 9);
-        assert_eq!(mouse_lighting_off_effect(&snapshot), 9);
+        assert_eq!(mouse_lighting_off_effect(&snapshot), Some(9));
+    }
+
+    // ------------------------------------------------------------------
+    // ITERATION-009 §9：AM35 安静灯光状态保留标准化测试。
+    // AM35 的 mode 0 = 常亮（开启），mode 1 = 呼吸，mode 2 = 模式 2。
+    // AM35 不声明 effectOptions.offValue，因此 is_on 判断必须回退到 enabled
+    // 字段（默认 true），而不是用 effect != 0 误判 mode 0 为关闭。
+    // ------------------------------------------------------------------
+
+    fn iteration009_am35_lighting_snapshot(
+        mode: u8,
+        speed: u8,
+        brightness: u8,
+        color: Option<&str>,
+    ) -> DeviceSnapshot {
+        let mut lighting = serde_json::Map::new();
+        // AM35 经 semantic mapping 后：mouseLightMode.mode → effect
+        lighting.insert("effect".into(), serde_json::json!(mode));
+        lighting.insert("speed".into(), serde_json::json!(speed));
+        lighting.insert("brightness".into(), serde_json::json!(brightness));
+        // AM35 没有 enabled 字段（semanticMappings 中无来源），host 默认 true
+        if let Some(c) = color {
+            lighting.insert("color".into(), serde_json::json!(c));
+        }
+        DeviceSnapshot {
+            display_name: "AM35".into(),
+            connection: mira_core::Connection::Usb,
+            selection_priority: 0,
+            battery_percent: None,
+            charging: false,
+            batteries: Vec::new(),
+            dpi: None,
+            dpi_stages: None,
+            polling_rate_hz: None,
+            supported_polling_rates_hz: None,
+            profile: None,
+            confirmed_light_color: None,
+            capabilities: BTreeMap::from([(
+                "mouseLighting".into(),
+                serde_json::Value::Object(lighting),
+            )]),
+            // AM35 不声明 effectOptions.offValue
+            plugin_capabilities: vec![PluginCapability {
+                id: "mouse-lighting".into(),
+                control: "LightingZone".into(),
+                label_key: "capability.mouse-lighting".into(),
+                read_only: false,
+                placements: Vec::new(),
+                metadata: BTreeMap::new(),
+                available: true,
+                connections: None,
+                min_firmware: None,
+            }],
+            writable_mutations: vec!["set-mouse-lighting".into()],
+            evidence: "hardware-verified".into(),
+            readonly: false,
+            plugin_id: Some("mira.amaster".into()),
+            history_identity: None,
+            read_statuses: BTreeMap::new(),
+            mouse_ready: None,
+            family: None,
+        }
+    }
+
+    #[test]
+    fn iteration009_am35_mode_0_fixed_is_on_not_off() {
+        // §9：Mode 0 = 常亮（开启），不是关闭。
+        // 修复前：off_effect 默认 0，effect=0 → is_on = (0 != 0) = false（误判关闭）
+        // 修复后：off_effect = None（未声明 offValue），回退到 enabled（默认 true）→ is_on = true
+        let snapshot = iteration009_am35_lighting_snapshot(0, 2, 100, Some("#FF8800"));
+        assert_eq!(mouse_lighting_off_effect(&snapshot), None);
+        let (is_on, saved) = read_mouse_light_state(&snapshot).unwrap();
+        assert!(is_on, "AM35 mode 0 (fixed) must be recognized as ON");
+        assert_eq!(saved.effect, 0);
+        assert_eq!(saved.color, "#FF8800");
+        assert_eq!(saved.speed, 2);
+        assert_eq!(saved.brightness, 100);
+    }
+
+    #[test]
+    fn iteration009_am35_mode_1_breathing_is_on() {
+        // §9：Mode 1 = 呼吸，同样应识别为开启。
+        let snapshot = iteration009_am35_lighting_snapshot(1, 2, 80, Some("#00AAFF"));
+        let (is_on, saved) = read_mouse_light_state(&snapshot).unwrap();
+        assert!(is_on, "AM35 mode 1 (breathing) must be recognized as ON");
+        assert_eq!(saved.effect, 1);
+        assert_eq!(saved.color, "#00AAFF");
+        assert_eq!(saved.speed, 2);
+        assert_eq!(saved.brightness, 80);
+    }
+
+    #[test]
+    fn iteration009_am35_missing_color_while_on_skips() {
+        // §9：开启但缺颜色时不得用 #000000 覆盖，应跳过（返回 None）。
+        let snapshot = iteration009_am35_lighting_snapshot(0, 2, 100, None);
+        assert!(read_mouse_light_state(&snapshot).is_none());
+    }
+
+    #[test]
+    fn iteration009_am35_explicit_disabled_is_off() {
+        // §9：当 enabled=false 时（用户通过 mutation 关闭），应识别为关闭。
+        let mut lighting = serde_json::Map::new();
+        lighting.insert("enabled".into(), serde_json::json!(false));
+        lighting.insert("effect".into(), serde_json::json!(0));
+        lighting.insert("color".into(), serde_json::json!("#FF0000"));
+        let snapshot = DeviceSnapshot {
+            display_name: "AM35".into(),
+            connection: mira_core::Connection::Usb,
+            selection_priority: 0,
+            battery_percent: None,
+            charging: false,
+            batteries: Vec::new(),
+            dpi: None,
+            dpi_stages: None,
+            polling_rate_hz: None,
+            supported_polling_rates_hz: None,
+            profile: None,
+            confirmed_light_color: None,
+            capabilities: BTreeMap::from([(
+                "mouseLighting".into(),
+                serde_json::Value::Object(lighting),
+            )]),
+            plugin_capabilities: vec![PluginCapability {
+                id: "mouse-lighting".into(),
+                control: "LightingZone".into(),
+                label_key: "capability.mouse-lighting".into(),
+                read_only: false,
+                placements: Vec::new(),
+                metadata: BTreeMap::new(),
+                available: true,
+                connections: None,
+                min_firmware: None,
+            }],
+            writable_mutations: vec!["set-mouse-lighting".into()],
+            evidence: "hardware-verified".into(),
+            readonly: false,
+            plugin_id: Some("mira.amaster".into()),
+            history_identity: None,
+            read_statuses: BTreeMap::new(),
+            mouse_ready: None,
+            family: None,
+        };
+        let (is_on, saved) = read_mouse_light_state(&snapshot).unwrap();
+        assert!(!is_on, "explicitly disabled lighting must be OFF");
+        // 关闭状态下保留设备报告的原色，便于恢复时还原（不覆盖为 #000000）
+        assert_eq!(saved.color, "#FF0000");
+    }
+
+    #[test]
+    fn iteration009_am35_restore_preserves_exact_params() {
+        // §9：退出安静灯光后完整恢复 effect/speed/brightness/extraColor。
+        let snapshot = iteration009_am35_lighting_snapshot(1, 3, 75, Some("#AABBCC"));
+        let (is_on, saved) = read_mouse_light_state(&snapshot).unwrap();
+        assert!(is_on);
+        // SavedMouseLight 应保留全部参数，恢复时原样写回
+        assert_eq!(saved.effect, 1);
+        assert_eq!(saved.speed, 3);
+        assert_eq!(saved.brightness, 75);
+        assert_eq!(saved.color, "#AABBCC");
+        assert_eq!(saved.extra_color, None);
+    }
+
+    #[test]
+    fn iteration009_am35_with_extra_color_preserved() {
+        // §9：starlight 等灯效的 extraColor 也应被保存和恢复。
+        let mut lighting = serde_json::Map::new();
+        lighting.insert("effect".into(), serde_json::json!(5));
+        lighting.insert("speed".into(), serde_json::json!(1));
+        lighting.insert("brightness".into(), serde_json::json!(90));
+        lighting.insert("color".into(), serde_json::json!("#FF0000"));
+        lighting.insert("extraColor".into(), serde_json::json!("#00FF00"));
+        let snapshot = DeviceSnapshot {
+            display_name: "AM35".into(),
+            connection: mira_core::Connection::Usb,
+            selection_priority: 0,
+            battery_percent: None,
+            charging: false,
+            batteries: Vec::new(),
+            dpi: None,
+            dpi_stages: None,
+            polling_rate_hz: None,
+            supported_polling_rates_hz: None,
+            profile: None,
+            confirmed_light_color: None,
+            capabilities: BTreeMap::from([(
+                "mouseLighting".into(),
+                serde_json::Value::Object(lighting),
+            )]),
+            plugin_capabilities: vec![PluginCapability {
+                id: "mouse-lighting".into(),
+                control: "LightingZone".into(),
+                label_key: "capability.mouse-lighting".into(),
+                read_only: false,
+                placements: Vec::new(),
+                metadata: BTreeMap::new(),
+                available: true,
+                connections: None,
+                min_firmware: None,
+            }],
+            writable_mutations: vec!["set-mouse-lighting".into()],
+            evidence: "hardware-verified".into(),
+            readonly: false,
+            plugin_id: Some("mira.amaster".into()),
+            history_identity: None,
+            read_statuses: BTreeMap::new(),
+            mouse_ready: None,
+            family: None,
+        };
+        let (is_on, saved) = read_mouse_light_state(&snapshot).unwrap();
+        assert!(is_on);
+        assert_eq!(saved.extra_color, Some("#00FF00".to_string()));
+    }
+
+    #[test]
+    fn iteration009_am35_raw_outputs_map_to_standard_mouselighting() {
+        // §9：AM35 原始 workflow 输出（mouseLightMode + mouseLightColor）
+        // 经 semantic mapping 后应形成统一标准 mouseLighting 对象。
+        // 这里模拟 mapping 后的结果：effect 来自 mode，color 来自 mouseLightColor。
+        // mode 0 + color #336699 → is_on=true, effect=0, color=#336699
+        let snapshot = iteration009_am35_lighting_snapshot(0, 0, 100, Some("#336699"));
+        assert_eq!(mouse_lighting_off_effect(&snapshot), None);
+        let (is_on, saved) = read_mouse_light_state(&snapshot).unwrap();
+        assert!(is_on);
+        assert_eq!(saved.effect, 0);
+        assert_eq!(saved.color, "#336699");
+    }
+
+    #[test]
+    fn iteration009_am35_mode_2_uses_neutral_semantics() {
+        // §9：Mode 2 使用中性语义（不偏移为 off，也不特殊处理）。
+        let snapshot = iteration009_am35_lighting_snapshot(2, 1, 50, Some("#112233"));
+        let (is_on, saved) = read_mouse_light_state(&snapshot).unwrap();
+        assert!(is_on, "AM35 mode 2 must be recognized as ON (neutral)");
+        assert_eq!(saved.effect, 2);
+    }
+
+    #[test]
+    fn iteration009_am35_off_state_does_not_guess_color() {
+        // §9：关闭状态恢复时不猜原色。
+        // 当 enabled=false 且无 color 时，用 #000000 占位（不猜测原色）。
+        let mut lighting = serde_json::Map::new();
+        lighting.insert("enabled".into(), serde_json::json!(false));
+        lighting.insert("effect".into(), serde_json::json!(0));
+        // 无 color 字段
+        let snapshot = DeviceSnapshot {
+            display_name: "AM35".into(),
+            connection: mira_core::Connection::Usb,
+            selection_priority: 0,
+            battery_percent: None,
+            charging: false,
+            batteries: Vec::new(),
+            dpi: None,
+            dpi_stages: None,
+            polling_rate_hz: None,
+            supported_polling_rates_hz: None,
+            profile: None,
+            confirmed_light_color: None,
+            capabilities: BTreeMap::from([(
+                "mouseLighting".into(),
+                serde_json::Value::Object(lighting),
+            )]),
+            plugin_capabilities: vec![PluginCapability {
+                id: "mouse-lighting".into(),
+                control: "LightingZone".into(),
+                label_key: "capability.mouse-lighting".into(),
+                read_only: false,
+                placements: Vec::new(),
+                metadata: BTreeMap::new(),
+                available: true,
+                connections: None,
+                min_firmware: None,
+            }],
+            writable_mutations: vec!["set-mouse-lighting".into()],
+            evidence: "hardware-verified".into(),
+            readonly: false,
+            plugin_id: Some("mira.amaster".into()),
+            history_identity: None,
+            read_statuses: BTreeMap::new(),
+            mouse_ready: None,
+            family: None,
+        };
+        let (is_on, saved) = read_mouse_light_state(&snapshot).unwrap();
+        assert!(!is_on);
+        assert_eq!(saved.color, "#000000");
     }
 
     #[test]
