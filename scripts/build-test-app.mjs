@@ -1,24 +1,25 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// ITERATION-008 §13.3：Latest Test App 单命令构建入口。
+// ITERATION-008 §13.3 / ITERATION-009 §6：Latest Test App 单命令构建入口。
 //
 // 自动完成：
 //   1. 定位 sibling 插件仓库（mira-mouse-plugins）；
-//   2. 动态发现 plugins/*/plugin.json；
-//   3. 对每个插件运行 mira-plugin CLI: validate / test / pack / inspect / verify；
-//   4. 用 TEST-ONLY-mira-plugins 密钥签名（本地测试，不污染生产 registry）；
-//   5. 把最新测试包安装到 src-tauri/resources/plugins/；
-//   6. 更新 bundled-plugins.lock.json（releaseReady=false，TEST-ONLY）；
-//   7. 同步 tauri.conf.json 的 resources 列表；
-//   8. 调用 tauri build 构建 .app / .dmg；
-//   9. 输出版本清单和 sha256。
+//   2. 自动准备 mira-plugin CLI（若不存在则 cargo build --release）；
+//   3. 动态发现 plugins/*/plugin.json；
+//   4. 对每个插件运行 mira-plugin CLI: validate / test / pack / inspect / verify；
+//   5. 用 TEST-ONLY-mira-plugins 密钥签名（本地测试，不污染生产 registry）；
+//   6. 把最新测试包安装到 src-tauri/resources/plugins/；
+//   7. 更新 bundled-plugins.lock.json（releaseReady=false，TEST-ONLY）；
+//   8. 同步 tauri.conf.json 的 resources 列表；
+//   9. 调用 tauri build 构建 .app / .dmg；
+//  10. 输出版本清单和 sha256（含 CLI SHA-256）。
 //
 // 用法：
 //   npm run build:test-app
 //
 // 环境变量：
 //   MIRA_PLUGIN_REPO    — sibling 插件仓库路径（默认 ../mira-mouse-plugins）
-//   MIRA_PLUGIN_CLI     — 已编译的 mira-plugin 二进制路径（默认 target/release/mira-plugin）
+//   MIRA_PLUGIN_CLI     — 已编译的 mira-plugin 二进制路径（默认 target/release/mira-plugin[.exe]）
 //   PLUGIN_SIGNING_KEY  — PEM 私钥（默认读取 sibling 仓库的 TEST-ONLY-mira-plugins.key.pem）
 //   PLUGIN_KEY_ID       — publisherKeyId（默认 TEST-ONLY-mira-plugins）
 //   TAURI_BUNDLE        — tauri bundle 类型（默认 app,dmg on macOS）
@@ -32,13 +33,26 @@ const root = fileURLToPath(new URL('..', import.meta.url));
 const hostRoot = root;
 const defaultPluginRepo = resolve(hostRoot, '..', 'mira-mouse-plugins');
 const pluginRepo = process.env.MIRA_PLUGIN_REPO || defaultPluginRepo;
-const cliPath = process.env.MIRA_PLUGIN_CLI || resolve(hostRoot, 'target', 'release', 'mira-plugin');
 const keyId = process.env.PLUGIN_KEY_ID || 'TEST-ONLY-mira-plugins';
 const testPemPath = join(pluginRepo, 'TEST-ONLY-mira-plugins.key.pem');
 const testTrustedKeysPath = join(pluginRepo, 'registry', 'test-trusted-keys.json');
 const resourcesDir = join(hostRoot, 'src-tauri', 'resources', 'plugins');
 const lockPath = join(hostRoot, 'bundled-plugins.lock.json');
 const tauriConfPath = join(hostRoot, 'src-tauri', 'tauri.conf.json');
+
+/// ITERATION-009 §6.1：解析 mira-plugin CLI 路径。
+/// 优先级：MIRA_PLUGIN_CLI env > target/release/mira-plugin[.exe]
+/// Windows 上自动追加 .exe 后缀。
+function resolveCliPath() {
+  if (process.env.MIRA_PLUGIN_CLI) {
+    return process.env.MIRA_PLUGIN_CLI;
+  }
+  const base = resolve(hostRoot, 'target', 'release', 'mira-plugin');
+  if (process.platform === 'win32') {
+    return base + '.exe';
+  }
+  return base;
+}
 
 function fail(msg) {
   console.error(`build:test-app: ${msg}`);
@@ -53,6 +67,16 @@ function sha256File(path) {
 function run(cmd, args, opts = {}) {
   console.log(`> ${cmd} ${args.join(' ')}`);
   execFileSync(cmd, args, { stdio: 'inherit', cwd: hostRoot, ...opts });
+}
+
+/// ITERATION-009 §6.1：确保 CLI 存在，不存在则自动 cargo build。
+function ensureCliBuilt(cliPath) {
+  if (existsSync(cliPath)) return;
+  console.log(`mira-plugin CLI not found at ${cliPath}, building automatically...`);
+  run('cargo', ['build', '--release', '-p', 'mira-plugin-cli']);
+  if (!existsSync(cliPath)) {
+    fail(`cargo build completed but CLI still not found at ${cliPath}`);
+  }
 }
 
 function discoverPlugins() {
@@ -113,14 +137,21 @@ function writeLock(plugins) {
   console.log(`bundled-plugins.lock.json updated: ${plugins.length} plugins`);
 }
 
+const cliPath = resolveCliPath();
+
 function main() {
   console.log('=== build:test-app start ===');
   console.log(`host repo:    ${hostRoot}`);
   console.log(`plugin repo:  ${pluginRepo}`);
   console.log(`cli:          ${cliPath}`);
 
-  if (!existsSync(cliPath)) fail(`mira-plugin CLI not found: ${cliPath}. Run \`cargo build --release -p mira-plugin-cli\` first.`);
   if (!existsSync(pluginRepo)) fail(`plugin repo not found: ${pluginRepo}`);
+
+  // ITERATION-009 §6.1：自动准备 CLI（全新 clone 一条命令可运行）
+  console.log('--- step 0: ensure CLI ---');
+  ensureCliBuilt(cliPath);
+  const cliSha256 = sha256File(cliPath);
+  console.log(`cli SHA-256:  ${cliSha256}`);
 
   // 1. 构建前端（vite build）
   console.log('--- step 1: build frontend ---');
@@ -203,6 +234,16 @@ function main() {
   writeLock(installedAssets);
   syncTauriConfResources(installedAssets);
 
+  // ITERATION-009 §6.2：验证 TEST-ONLY 隔离——生产 trusted-keys.json 不得包含测试密钥
+  const prodTrustedKeysPath = join(pluginRepo, 'registry', 'trusted-keys.json');
+  if (existsSync(prodTrustedKeysPath)) {
+    const prodKeys = JSON.parse(readFileSync(prodTrustedKeysPath, 'utf8'));
+    const hasTestKey = prodKeys.keys.some((k) => k.keyId === keyId || k.publicKey === '00d34dac6e039baada3d3d9aa65390f2887d09d73b396af8434ecb29c233d666');
+    if (hasTestKey) {
+      fail(`TEST-ONLY key leaked into production trusted-keys.json — aborting before tauri build`);
+    }
+  }
+
   // 7. 构建 Tauri app
   console.log('--- step 7: tauri build ---');
   const bundle = process.env.TAURI_BUNDLE || (process.platform === 'darwin' ? 'app,dmg' : 'app');
@@ -212,6 +253,8 @@ function main() {
   console.log('=== build:test-app summary ===');
   console.log(`host HEAD: ${execFileSync('git', ['rev-parse', 'HEAD'], { cwd: hostRoot }).toString().trim()}`);
   console.log(`plugin HEAD: ${execFileSync('git', ['rev-parse', 'HEAD'], { cwd: pluginRepo }).toString().trim()}`);
+  console.log(`cli path:     ${cliPath}`);
+  console.log(`cli SHA-256:  ${cliSha256}`);
   for (const a of installedAssets) {
     console.log(`  ${a.pluginId} v${a.version}  ${a.asset}  sha256=${a.sha256}`);
   }
