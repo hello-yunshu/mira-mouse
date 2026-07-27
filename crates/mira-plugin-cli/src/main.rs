@@ -417,6 +417,24 @@ fn validate_fixtures(path: &Path) -> Result<()> {
             // readback 部分（write fixture 可选）
             let readback = fixture.get("readback");
 
+            // ITERATION-008 §P0-D：提取 setter.params 中声明 fixedValue 的常量参数。
+            // 这些参数在 Host 运行时由 field.params 提供，fixture sample.input 不应再携带。
+            // runner 在构建请求前注入这些常量，使 sample.input 保持精简。
+            let fixed_params: Vec<(String, Value)> = fixture
+                .get("setter")
+                .and_then(|s| s.get("params"))
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|p| {
+                            let name = p.get("name").and_then(Value::as_str)?.to_string();
+                            let fixed = p.get("fixedValue")?;
+                            Some((name, fixed.clone()))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+
             for (idx, sample) in samples.iter().enumerate() {
                 total += 1;
                 let label = format!("{rel}::{case}#sample{}", idx + 1);
@@ -426,6 +444,7 @@ fn validate_fixtures(path: &Path) -> Result<()> {
                     fixture_command,
                     is_write_fixture,
                     readback,
+                    &fixed_params,
                 ) {
                     Ok(()) => {
                         passed += 1;
@@ -1100,6 +1119,7 @@ fn run_sample_fixture(
     fixture_command: Option<&str>,
     is_write_fixture: bool,
     readback: Option<&Value>,
+    fixed_params: &[(String, Value)],
 ) -> Result<(), FixtureError> {
     // 1. 确定 command_id：优先 sample 级别，其次 fixture 级别
     let command_id = sample
@@ -1126,6 +1146,11 @@ fn run_sample_fixture(
         .as_object()
         .ok_or_else(|| FixtureError::Failed("sample params/input is not an object".into()))?;
     let mut params = BTreeMap::new();
+    // ITERATION-008 §P0-D：先注入 fixedValue 常量（不覆盖 sample 已有键）。
+    // 这镜像了 Host 运行时 field.params 提供常量、user input 覆盖具体值的行为。
+    for (name, value) in fixed_params {
+        params.entry(name.clone()).or_insert_with(|| value.clone());
+    }
     for (key, value) in params_obj {
         params.insert(key.clone(), value.clone());
     }

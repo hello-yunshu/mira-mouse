@@ -86,20 +86,19 @@ describe('Mira shell', () => {
     fireEvent.click(screen.getByRole('button', { name: '关闭读数详情' }));
     expect(screen.queryByRole('dialog', { name: '全部读数' })).not.toBeInTheDocument();
   });
-  it('does not crossfade color codes when switching lighting zones', () => {
+  it('updates the lighting swatch color when switching lighting zones', () => {
     render(<App />);
     fireEvent.click(screen.getByText('查看演示'));
     fireEvent.click(screen.getByRole('tab', { name: '灯光' }));
 
-    const mouseColorValue = document.querySelector<HTMLElement>('.lighting-group-mouse .color-value')!;
-    expect(mouseColorValue.querySelector('.live-value-current')).toHaveTextContent('#ffb3b3');
+    // 灯带位于 lighting-group 上方，通过 --light-color CSS 变量承载当前区域颜色。
+    const swatch = document.querySelector<HTMLElement>('.lighting-swatch')!;
+    expect(swatch.style.getPropertyValue('--light-color')).toBe('#ffb3b3');
 
     fireEvent.click(screen.getByRole('tab', { name: '接收器灯光' }));
 
-    const receiverColorValue = document.querySelector<HTMLElement>('.lighting-group-receiver .color-value')!;
-    expect(document.body.contains(mouseColorValue)).toBe(false);
-    expect(receiverColorValue.querySelector('.live-value-current')).toHaveTextContent('#4BBFB1');
-    expect(receiverColorValue.querySelector('.live-value-next')).not.toBeInTheDocument();
+    // 切换区域后同一 swatch 元素的 CSS 变量更新为接收器灯光色，无残留旧值。
+    expect(swatch.style.getPropertyValue('--light-color')).toBe('#4BBFB1');
   });
   it('opens the active lighting color editor from the color indicator', () => {
     render(<App />);
@@ -175,6 +174,8 @@ describe('Mira shell', () => {
     expect(document.querySelector('.shared-control-surface')).toBe(surfaceLayer);
     expect(surfaceLayer).toHaveAttribute('data-kind', 'lighting');
     expect(surfaceLayer).toHaveAttribute('data-positioned', 'true');
+    // mouse zone 仅 status 一个子块（color 由灯带渲染），切换到接收器灯光验证多子块错落延迟。
+    fireEvent.click(screen.getByRole('tab', { name: '接收器灯光' }));
     const lightingDelays = [...document.querySelectorAll<HTMLElement>('.lighting-row-slot.secondary-control-item')]
       .map((item) => Number.parseInt(item.style.getPropertyValue('--control-detail-delay'), 10));
     expect(lightingDelays.length).toBeGreaterThan(1);
