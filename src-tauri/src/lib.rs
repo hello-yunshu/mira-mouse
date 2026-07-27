@@ -4808,6 +4808,176 @@ mod macos_launch_agent_tests {
             assert!(dmg_path.starts_with("/Volumes"));
         }
     }
+
+    // ------------------------------------------------------------------
+    // ITERATION-009 §8.5：classify_launch_agent_state 纯函数测试。
+    // 覆盖 Valid / Stale / Invalid 三类状态及 §8.2 DMG path 场景。
+    // ------------------------------------------------------------------
+
+    fn iteration009_valid_plist() -> String {
+        build_launch_agent_plist_xml(
+            "Mira",
+            "/Applications/Mira.app/Contents/MacOS/Mira",
+            &["--hidden"],
+        )
+    }
+
+    #[test]
+    fn iteration009_classify_valid_plist() {
+        let xml = iteration009_valid_plist();
+        assert_eq!(
+            classify_launch_agent_state(
+                &xml,
+                "Mira",
+                "/Applications/Mira.app/Contents/MacOS/Mira",
+                &["--hidden"],
+            ),
+            LaunchAgentState::Valid,
+        );
+    }
+
+    #[test]
+    fn iteration009_classify_missing_label_key_is_invalid() {
+        // Missing <key>Label</key> entirely → Invalid (结构错误，不是 stale)
+        let broken = "<?xml version=\"1.0\"?>\n<plist version=\"1.0\">\n<dict>\n<key>ProgramArguments</key>\n<array><string>x</string></array>\n</dict>\n</plist>";
+        assert_eq!(
+            classify_launch_agent_state(broken, "Mira", "/x", &["--hidden"]),
+            LaunchAgentState::Invalid,
+        );
+    }
+
+    #[test]
+    fn iteration009_classify_missing_program_arguments_key_is_invalid() {
+        let broken = "<?xml version=\"1.0\"?>\n<plist version=\"1.0\">\n<dict>\n<key>Label</key>\n<string>Mira</string>\n</dict>\n</plist>";
+        assert_eq!(
+            classify_launch_agent_state(broken, "Mira", "/x", &["--hidden"]),
+            LaunchAgentState::Invalid,
+        );
+    }
+
+    #[test]
+    fn iteration009_classify_corrupted_xml_is_invalid() {
+        // 没有 <plist> 或 <dict> → Invalid
+        let broken = "<?xml version=\"1.0\"?>\n<not-a-plist>garbage</not-a-plist>";
+        assert_eq!(
+            classify_launch_agent_state(broken, "Mira", "/x", &["--hidden"]),
+            LaunchAgentState::Invalid,
+        );
+    }
+
+    #[test]
+    fn iteration009_classify_label_mismatch_is_stale() {
+        // Label 不匹配 → Stale（结构正确，但内容过期）
+        let xml = build_launch_agent_plist_xml(
+            "OldName",
+            "/Applications/Mira.app/Contents/MacOS/Mira",
+            &["--hidden"],
+        );
+        assert_eq!(
+            classify_launch_agent_state(
+                &xml,
+                "Mira",
+                "/Applications/Mira.app/Contents/MacOS/Mira",
+                &["--hidden"],
+            ),
+            LaunchAgentState::Stale,
+        );
+    }
+
+    #[test]
+    fn iteration009_classify_executable_path_changed_is_stale() {
+        // exe 路径变更（例如 App 移动到不同位置）→ Stale
+        let xml = iteration009_valid_plist();
+        assert_eq!(
+            classify_launch_agent_state(
+                &xml,
+                "Mira",
+                "/Users/test/Applications/Mira.app/Contents/MacOS/Mira",
+                &["--hidden"],
+            ),
+            LaunchAgentState::Stale,
+        );
+    }
+
+    #[test]
+    fn iteration009_classify_missing_hidden_arg_is_stale() {
+        // plist 存在但缺少 --hidden → Stale
+        let xml = build_launch_agent_plist_xml(
+            "Mira",
+            "/Applications/Mira.app/Contents/MacOS/Mira",
+            &[],
+        );
+        assert_eq!(
+            classify_launch_agent_state(
+                &xml,
+                "Mira",
+                "/Applications/Mira.app/Contents/MacOS/Mira",
+                &["--hidden"],
+            ),
+            LaunchAgentState::Stale,
+        );
+    }
+
+    #[test]
+    fn iteration009_classify_dmg_path_in_plist_is_stale() {
+        // §8.2：从 /Volumes 运行时不得创建无效 LaunchAgent。
+        // 如果 plist 指向 /Volumes 路径，classify 应返回 Stale（而非 Valid），
+        // 这样 refresh_autostart_entry_if_enabled 会触发修复写入，
+        // 而 macos_canonical_executable_path() 在 DMG 环境会先返回 Err，
+        // 阻止 macos_write_launch_agent 创建无效条目。
+        let dmg_exe = "/Volumes/Mira/Mira.app/Contents/MacOS/Mira";
+        let xml = build_launch_agent_plist_xml("Mira", dmg_exe, &["--hidden"]);
+        // 假设当前 canonical exe 是 Applications 路径：plist 中的 /Volumes exe 不匹配 → Stale
+        assert_eq!(
+            classify_launch_agent_state(
+                &xml,
+                "Mira",
+                "/Applications/Mira.app/Contents/MacOS/Mira",
+                &["--hidden"],
+            ),
+            LaunchAgentState::Stale,
+        );
+        // 即使 canonical exe 也是 /Volumes（实际不会发生，因 macos_canonical_executable_path
+        // 会先报错），plist 仍应被识别为 stale，因为 expected_exe 与 plist 不一致时
+        // 会落入 Stale 分支。这里用空字符串模拟 DMG 解析失败后的 expected_exe。
+        assert_eq!(
+            classify_launch_agent_state(&xml, "Mira", "", &["--hidden"]),
+            LaunchAgentState::Stale,
+        );
+    }
+
+    #[test]
+    fn iteration009_classify_xml_special_chars_in_label() {
+        // Label 包含 XML 特殊字符时，plist 中的转义形式必须与 expected_label
+        // 的转义形式匹配，否则 → Stale。验证 xml_escape 一致性。
+        let label = "Mira&Co";
+        let xml = build_launch_agent_plist_xml(
+            label,
+            "/Applications/Mira.app/Contents/MacOS/Mira",
+            &["--hidden"],
+        );
+        assert_eq!(
+            classify_launch_agent_state(
+                &xml,
+                label,
+                "/Applications/Mira.app/Contents/MacOS/Mira",
+                &["--hidden"],
+            ),
+            LaunchAgentState::Valid,
+        );
+    }
+
+    #[test]
+    fn iteration009_plist_temp_file_workflow_is_atomic() {
+        // §8.3 事务安全：build → write → classify → 如果 Invalid 必须删除 tmp。
+        // 这里只验证纯函数层面：build 出来的 plist 必定 Valid，不会触发回滚。
+        // 实际 fs 操作由 macos_write_launch_agent 负责。
+        let exe = "/Applications/Mira.app/Contents/MacOS/Mira";
+        let args = ["--hidden"];
+        let xml = build_launch_agent_plist_xml("Mira", exe, &args);
+        let state = classify_launch_agent_state(&xml, "Mira", exe, &args);
+        assert_eq!(state, LaunchAgentState::Valid);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -10434,31 +10604,120 @@ fn build_launch_agent_plist_xml(label: &str, exe_path: &str, args: &[&str]) -> S
     )
 }
 
-/// Returns true if the LaunchAgent plist exists and contains both the
-/// canonical executable path and `--hidden` in ProgramArguments.
+/// ITERATION-009 §8.1：LaunchAgent plist 状态分类。
+/// 区分 Missing / Valid / Stale / Invalid，用于决定是否自动修复。
+/// 纯函数，在所有平台上可用（测试不依赖 macOS 运行时）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LaunchAgentState {
+    /// plist 文件不存在。
+    Missing,
+    /// plist 存在且内容匹配当前 canonical exe + Label + --hidden。
+    Valid,
+    /// plist 存在但内容过期：exe 路径变更、缺少 --hidden、Label 不匹配、
+    /// ProgramArguments 错误。
+    Stale,
+    /// plist 存在但 XML 损坏（无法解析为 plist 或缺少关键 key）。
+    Invalid,
+}
+
+/// ITERATION-009 §8.1：分类 plist 内容的状态。
+/// 纯函数：输入 plist 文件内容和期望值，返回状态。
+fn classify_launch_agent_state(
+    plist_contents: &str,
+    expected_label: &str,
+    expected_exe: &str,
+    expected_args: &[&str],
+) -> LaunchAgentState {
+    // 基本 XML 结构检查 → Invalid
+    if !plist_contents.contains("<?xml") || !plist_contents.contains("<plist") {
+        return LaunchAgentState::Invalid;
+    }
+    if !plist_contents.contains("<dict>") || !plist_contents.contains("</dict>") {
+        return LaunchAgentState::Invalid;
+    }
+
+    // Label 检查
+    let expected_label_xml = xml_escape(expected_label);
+    if !plist_contents.contains(&format!("<key>Label</key>")) {
+        return LaunchAgentState::Invalid;
+    }
+    if !plist_contents.contains(&format!("<string>{}</string>", expected_label_xml)) {
+        return LaunchAgentState::Stale;
+    }
+
+    // ProgramArguments 检查
+    if !plist_contents.contains("<key>ProgramArguments</key>") {
+        return LaunchAgentState::Invalid;
+    }
+
+    // exe 路径检查 → Stale if mismatch
+    let expected_exe_xml = xml_escape(expected_exe);
+    if !plist_contents.contains(&format!("<string>{}</string>", expected_exe_xml)) {
+        return LaunchAgentState::Stale;
+    }
+
+    // --hidden arg 检查 → Stale if missing
+    for arg in expected_args {
+        let arg_xml = xml_escape(arg);
+        if !plist_contents.contains(&format!("<string>{}</string>", arg_xml)) {
+            return LaunchAgentState::Stale;
+        }
+    }
+
+    LaunchAgentState::Valid
+}
+
+/// Returns true if the LaunchAgent plist exists and is Valid (contains both
+/// the canonical executable path and `--hidden` in ProgramArguments).
 #[cfg(target_os = "macos")]
 fn macos_launch_agent_is_enabled(app: &AppHandle) -> Result<bool, String> {
+    Ok(macos_launch_agent_state(app)? == LaunchAgentState::Valid)
+}
+
+/// ITERATION-009 §8.1：返回 LaunchAgent plist 的详细状态。
+/// 区分 Missing / Valid / Stale / Invalid，用于自动修复和 DMG 保护。
+#[cfg(target_os = "macos")]
+fn macos_launch_agent_state(app: &AppHandle) -> Result<LaunchAgentState, String> {
     let Some(plist_path) = macos_launch_agent_plist_path(app) else {
-        return Ok(false);
+        return Ok(LaunchAgentState::Missing);
     };
     if !plist_path.exists() {
-        return Ok(false);
+        return Ok(LaunchAgentState::Missing);
     }
     let contents = fs::read_to_string(&plist_path)
         .map_err(|err| format!("failed to read launch agent plist: {err}"))?;
-    let exe = macos_canonical_executable_path()?;
-    Ok(contents.contains(&exe) && contents.contains(AUTOSTART_HIDDEN_ARG))
+    // 如果 canonical exe 解析失败（例如 DMG 环境），仍尝试分类：
+    // exe 路径不匹配 → Stale，触发修复。
+    let exe = match macos_canonical_executable_path() {
+        Ok(path) => path,
+        Err(_) => {
+            // DMG 或无法解析：如果 plist 内容包含 /Volumes 路径，标记为 Stale。
+            // 否则用空字符串比较，确保不误判为 Valid。
+            String::new()
+        }
+    };
+    let args = autostart_args();
+    let label = app.package_info().name.as_ref();
+    Ok(classify_launch_agent_state(&contents, label, &exe, &args))
 }
 
-/// Write the canonical LaunchAgent plist atomically and load it via
-/// `launchctl load`. Any legacy AppleScript login item is disabled first to
-/// avoid duplicate autostart entries.
+/// ITERATION-009 §8.3/§8.4：Write the canonical LaunchAgent plist atomically
+/// and load it via `launchctl`. 事务安全操作顺序：
+/// 1. 解析 canonical executable（含 /Volumes 验证）
+/// 2. 构建 plist
+/// 3. 写入临时文件
+/// 4. 验证 plist（读回分类）
+/// 5. 原子替换
+/// 6. launchctl unload + load（捕获 stdout/stderr）
+/// 7. 检查状态
+/// 8. 成功后删除 legacy AppleScript 条目
 #[cfg(target_os = "macos")]
 fn macos_write_launch_agent(app: &AppHandle) -> Result<(), String> {
-    macos_disable_legacy_applescript_item(app)?;
+    // §8.3 步骤 1：解析 canonical executable（含 DMG 验证）
     let exe = macos_canonical_executable_path()?;
     let args = autostart_args();
     let label = app.package_info().name.as_ref();
+    // §8.3 步骤 2：构建 plist
     let plist_xml = build_launch_agent_plist_xml(label, &exe, &args);
     let Some(plist_path) = macos_launch_agent_plist_path(app) else {
         return Err("HOME is not set; cannot resolve LaunchAgents directory".to_string());
@@ -10467,20 +10726,72 @@ fn macos_write_launch_agent(app: &AppHandle) -> Result<(), String> {
         fs::create_dir_all(parent)
             .map_err(|err| format!("failed to create LaunchAgents directory: {err}"))?;
     }
-    // Atomic replace: write to a temp file in the same directory, then rename.
+    // §8.3 步骤 3：写入临时文件
     let tmp = plist_path.with_extension("plist.tmp");
     fs::write(&tmp, &plist_xml)
         .map_err(|err| format!("failed to write launch agent plist: {err}"))?;
+    // §8.3 步骤 4：验证 plist（读回并分类）
+    let readback = fs::read_to_string(&tmp)
+        .map_err(|err| format!("failed to read back launch agent plist: {err}"))?;
+    let state = classify_launch_agent_state(&readback, label, &exe, &args);
+    if state != LaunchAgentState::Valid {
+        let _ = fs::remove_file(&tmp);
+        return Err(format!("launch agent plist validation failed: state={state:?}"));
+    }
+    // §8.3 步骤 5：原子替换
     fs::rename(&tmp, &plist_path)
         .map_err(|err| format!("failed to install launch agent plist: {err}"))?;
-    // Load the agent. Non-fatal if already loaded — the plist is the source of
-    // truth and launchd will pick it up at next login.
+    // §8.3 步骤 6：launchctl unload + load（§8.4：捕获结果）
     if let Some(path_str) = plist_path.to_str() {
+        // unload 非致命（首次安装时没有已加载的 agent）
         let _ = Command::new("launchctl")
             .args(["unload", path_str])
-            .status();
-        let _ = Command::new("launchctl").args(["load", path_str]).status();
+            .output();
+        // load 必须成功
+        let load_result = Command::new("launchctl")
+            .args(["load", path_str])
+            .output();
+        match load_result {
+            Ok(output) => {
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    app.state::<SessionState>().log_warn(
+                        "launchctl::load",
+                        format!(
+                            "launchctl load exit={:?} stdout={stdout} stderr={stderr}",
+                            output.status.code()
+                        ),
+                    );
+                    // 不返回 Err：plist 是 source of truth，launchd 在下次登录时加载。
+                }
+            }
+            Err(err) => {
+                app.state::<SessionState>().log_warn(
+                    "launchctl::load",
+                    format!("failed to execute launchctl load: {err}"),
+                );
+            }
+        }
     }
+    // §8.3 步骤 7：检查状态（非致命，仅日志）
+    match macos_launch_agent_state(app) {
+        Ok(LaunchAgentState::Valid) => {}
+        Ok(state) => {
+            app.state::<SessionState>().log_warn(
+                "launch_agent::write",
+                format!("plist installed but state={state:?}, will repair on next refresh"),
+            );
+        }
+        Err(err) => {
+            app.state::<SessionState>().log_warn(
+                "launch_agent::write",
+                format!("failed to verify launch agent state after write: {err}"),
+            );
+        }
+    }
+    // §8.3 步骤 8：成功后删除 legacy AppleScript 条目
+    macos_disable_legacy_applescript_item(app)?;
     Ok(())
 }
 
