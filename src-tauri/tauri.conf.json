@@ -46,11 +46,11 @@
       "icons/icon.ico"
     ],
     "resources": [
-      "resources/plugins/mira-amaster-1.8.0.mira-plugin",
-      "resources/plugins/mira-logitech-hidpp-0.9.2.mira-plugin",
-      "resources/plugins/mira-razer-viper-0.3.0.mira-plugin",
+      "resources/local-ai/handler.rillhandler",
       "resources/local-ai/model.rillpack",
-      "resources/local-ai/handler.rillhandler"
+      "resources/plugins/mira-amaster-1.9.0.mira-plugin",
+      "resources/plugins/mira-logitech-hidpp-0.9.2.mira-plugin",
+      "resources/plugins/mira-razer-viper-0.3.0.mira-plugin"
     ],
     "externalBin": [
       "binaries/rill-runtime"

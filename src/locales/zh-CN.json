@@ -556,7 +556,7 @@
     },
     "pluginUpdateInstalled": {
       "title": "插件更新完成",
-      "body": "{{count}} 个插件已更新至最新版本。"
+      "body": "插件 {{pluginId}} 已更新至 v{{version}}。"
     },
     "localAiUpdateFound": {
       "title": "发现 AI 引擎更新",
