@@ -26,10 +26,9 @@ import { SettingsPage, type SettingsTab } from './Settings';
 import { AboutPage } from './About';
 import { BatteryUsageModal, type BatteryUsageConnectedTarget } from './BatteryUsage';
 import { BatteryLevelIcon } from './BatteryLevelIcon';
-import type { AboutInfo, AppSettings, DeviceSnapshot, DeviceSnapshotEntry, DeviceState, DpiStage, PluginCapability, PluginCapabilityPlacement, PluginField, PluginFieldFormat, RangeSpec, ReadStatus, ThemeMode } from './types';
+import type { AboutInfo, AppSettings, DeviceSnapshot, DeviceSnapshotEntry, DeviceState, DpiStage, PluginCapability, PluginCapabilityPlacement, PluginField, PluginFieldFormat, PluginSummaryItem, RangeSpec, ReadStatus, ThemeMode } from './types';
 import { DetailValue } from './DetailValue';
 import {
-  CONTROL_MAX_COUNT,
   placementsFor,
   selectDashboardControls,
   selectDashboardStatus,
@@ -1591,12 +1590,15 @@ function StageLayout({ capability, device, writeBusy, runMutation }: {
   );
 }
 
-/// P0-D：Advanced Settings 条目类型。支持 field / stageLayout / zone 三种形态，
+/// P0-D：Advanced Settings 条目类型。支持 field / stageLayout / zone / summary 四种形态，
 /// 复用现有 FieldRenderer / StageLayout / ZoneRenderer 渲染。
+/// P0-K：不再为 LightingZone 添加 zone 整体条目，改为收集独立字段（避免 field+zone 双重渲染）。
+/// P0-L：polling overflow 以 summary 条目进入 Advanced Settings。
 type AdvancedSettingsEntry =
   | { type: 'field'; capability: PluginCapability; field: PluginField }
   | { type: 'stageLayout'; capability: PluginCapability }
-  | { type: 'zone'; capability: PluginCapability };
+  | { type: 'zone'; capability: PluginCapability }
+  | { type: 'summary'; capability: PluginCapability; item: PluginSummaryItem };
 
 /// P0-C：Advanced Settings 模态窗口。展示未进入 Dashboard 首页的可写字段和 details 字段，
 /// 按 advancedSection 分组。可编辑字段点击后打开 FieldEditModal。
@@ -1644,6 +1646,24 @@ function AdvancedSettingsModal({ groups, device, writeBusy, onClose, onEditField
                   return (
                     <li key={`${entry.capability.id}:zone`} className="advanced-settings-item advanced-settings-zone">
                       <ZoneRenderer capability={entry.capability} device={device} writeBusy={writeBusy} runMutation={runMutation} />
+                    </li>
+                  );
+                }
+                if (entry.type === 'summary') {
+                  // P0-L：polling overflow 以只读 summary 条目展示。
+                  const { capability, item } = entry;
+                  const value = readPath(device, item.source);
+                  const option = item.options?.find((candidate) => candidate.value === value);
+                  const valueLabel = option
+                    ? resolveLabelKey(option.labelKey, device.pluginId)
+                    : `${formatFieldValue(value, item.format, i18n.t)}${item.unit ? ` ${item.unit}` : ''}`;
+                  const label = item.labelKey
+                    ? resolveLabelKey(item.labelKey, device.pluginId)
+                    : item.label ?? item.source;
+                  return (
+                    <li key={`${capability.id}:${item.source}:${index}`} className="advanced-settings-item advanced-settings-summary">
+                      <span className="advanced-settings-field-label">{label}</span>
+                      <span className="advanced-settings-field-value">{valueLabel || i18n.t('common.notReported')}</span>
                     </li>
                   );
                 }
@@ -1775,10 +1795,18 @@ function ZoneRenderer({ capability, device, writeBusy, runMutation }: {
   const lightingCandidates = activeZone.fields.filter((field) =>
     fieldHasReportedValue(field, device) && field.presentation !== 'details',
   );
-  const { selected: visibleFields } = selectLightingSubblocks(lightingCandidates);
+  const { selected: visibleFieldsRaw } = selectLightingSubblocks(lightingCandidates);
+  // P0-M：主颜色单一入口——colorField 从 visibleFields 移出，
+  // 改为作为最右 lighting-row-slot 渲染（lighting-swatch 视觉 + ColorValue 文本）。
+  // 这样总交互子块仍 ≤ 6，颜色只有一个可点击入口。
+  const visibleFields = colorField
+    ? visibleFieldsRaw.filter((field) => field.id !== colorField.id)
+    : visibleFieldsRaw;
   // 条件显示的次级区域通常是接收器等附属对象；字段较多时使用与旧界面一致
   // 的紧凑密度。这里仅依赖 zone 的声明形态，不依赖 zone id。
-  const compactDetailGrid = Boolean(activeZone.visibleWhen) && visibleFields.length >= 5;
+  const totalVisualCount = visibleFields.length + (colorField ? 1 : 0);
+  const compactDetailGrid = Boolean(activeZone.visibleWhen) && totalVisualCount >= 5;
+  const lightingColumnCount = Math.max(totalVisualCount, 1);
 
   return (
     <>
@@ -1804,24 +1832,12 @@ function ZoneRenderer({ capability, device, writeBusy, runMutation }: {
           ))}
         </div>
       )}
-      <button
-        type="button"
-        className="lighting-swatch"
-        style={{ '--light-color': zoneColor ?? '#b87ab0' } as React.CSSProperties}
-        aria-label={colorLabel}
-        title={colorLabel}
-        disabled={!colorWritable}
-        onClick={() => {
-          invoke('device_refresh_quick').catch(() => {});
-          setEditingColorZoneId(activeZone.id);
-        }}
-      />
       <div className="lighting-sections" aria-label={i18n.t('dashboard.lightingGroups')}>
         <div className={`lighting-group lighting-group-${activeZone.id}${compactDetailGrid ? ' is-compact' : ''}`}>
           <p className="lighting-group-title" data-title-phase={titlePhase}>{displayedLabel}</p>
           <div
             className={`lighting-rows${compactDetailGrid ? ' is-compact' : ''}`}
-            style={{ gridTemplateColumns: `repeat(${Math.max(visibleFields.length, 1)}, minmax(0, 1fr))` }}
+            style={{ gridTemplateColumns: `repeat(${lightingColumnCount}, minmax(0, 1fr))` }}
           >
             {visibleFields.map((field) => (
               <div
@@ -1837,6 +1853,26 @@ function ZoneRenderer({ capability, device, writeBusy, runMutation }: {
                 />
               </div>
             ))}
+            {colorField && (
+              <button
+                key={`${activeZone.id}:color-swatch`}
+                type="button"
+                className="lighting-swatch lighting-row-slot secondary-control-item"
+                style={{
+                  '--light-color': zoneColor ?? '#b87ab0',
+                  ...secondaryRevealStyle(`${capability.id}:${activeZone.id}:color-swatch`),
+                } as React.CSSProperties}
+                aria-label={colorLabel}
+                title={colorLabel}
+                disabled={!colorWritable}
+                onClick={() => {
+                  invoke('device_refresh_quick').catch(() => {});
+                  setEditingColorZoneId(activeZone.id);
+                }}
+              >
+                <ColorValue value={zoneColor} />
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -2555,20 +2591,21 @@ function Dashboard({
     }
   };
 
-  const { groups: controlGroups, usedDedupeKeys: controlDedupeKeys } = useMemo(() => {
+  const { groups: controlGroups, usedDedupeKeys: controlDedupeKeys, fallback: controlFallback } = useMemo(() => {
     // ITERATION-005 §P0-A：使用纯函数选择器，输入 ReadonlySet<string>，返回新 Set。
     // 共享 dedupeKey 上下文，防止 control 与 status 区域出现重复入口。
-    const { selected: controlCandidates, usedDedupeKeys } = selectDashboardControls(
+    const { selected: controlCandidates, fallback, usedDedupeKeys } = selectDashboardControls(
       device.pluginCapabilities,
       device,
       capabilityAvailable,
       (capability) => capabilityHasControlContent(capability, device),
       new Set<string>(),
     );
-    // 将选中的 candidates 按 fixedSlot 顺序 + priority desc 组织成 control groups。
-    // fixedSlot 1/2/3 保持固定顺序（DPI/回报率/灯光），第 4 项按 priority 排在末尾。
-    const groups = new Map<string, { id: string; label: string; icon: string | undefined; capabilities: PluginCapability[]; order: number }>();
-    for (const candidate of controlCandidates) {
+    // P0-F：直接使用选择器返回的最终序列，不再按 fixedSlot/order 重新排序。
+    // 选择器已保证 [leading → 核心(DPI→polling→lighting) → trailing] 顺序。
+    // finalIndex 来自选择器序列的数组索引，用于保持 DOM 顺序与选择器语义一致。
+    const groups = new Map<string, { id: string; label: string; icon: string | undefined; capabilities: PluginCapability[]; finalIndex: number }>();
+    controlCandidates.forEach((candidate, finalIndex) => {
       const id = candidate.groupId;
       const existing = groups.get(id);
       if (existing) {
@@ -2579,19 +2616,18 @@ function Dashboard({
           label: resolveLabelKey(candidate.capability.labelKey, device.pluginId),
           icon: candidate.placement.icon,
           capabilities: [candidate.capability],
-          order: candidate.fixedSlot ?? (candidate.placement.order + 1000),
+          finalIndex,
         });
       }
-    }
+    });
+    // Map 保留插入顺序，不再 .sort()。选择器已限制最多 4 项，无需再次 slice。
     const result = [...groups.values()]
-      .sort((a, b) => a.order - b.order)
-      .slice(0, CONTROL_MAX_COUNT)
       .map((group) => ({
         ...group,
         hasMetric: Boolean(sharedControlMetric(group.capabilities, device)),
         hasSurface: Boolean(sharedControlSurface(group.capabilities, device)),
       }));
-    return { groups: result, usedDedupeKeys };
+    return { groups: result, usedDedupeKeys, fallback };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [device, pluginLocaleRevision]);
 
@@ -2659,7 +2695,7 @@ function Dashboard({
     setPreviewMessage('');
   };
 
-  const { items: statusItems } = useMemo(() => {
+  const { items: statusItems, fallback: statusFallback } = useMemo(() => {
     // ITERATION-005 §P0-A：纯函数选择器，消费 controlDedupeKeys 作为依赖。
     // 共享 dedupeKey 上下文，避免与上方控制区出现重复入口（如全部读数、电量）。
     const hasReportedStatus = (capability: PluginCapability): boolean => {
@@ -2678,7 +2714,7 @@ function Dashboard({
       ) return false;
       return true;
     };
-    const { selected: statusCandidates } = selectDashboardStatus(
+    const { selected: statusCandidates, fallback: statusFallback } = selectDashboardStatus(
       device.pluginCapabilities,
       device,
       capabilityAvailable,
@@ -2757,15 +2793,21 @@ function Dashboard({
       }
       items.push({ capability, placement, onClick });
     }
-    return { items };
+    return { items, fallback: statusFallback };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [device, pluginLocaleRevision, controlDedupeKeys]);
 
-  // P0-D：Advanced Settings 分组。直接消费所有 fallbackRegion=advanced 的 capability
-  // 和 placement.region=details 的可写 capability，按 advancedSection 分组、advancedOrder 排序。
-  // advancedSection 只用于分组，不作为是否进入高级设置的必要条件。
-  // presentation=details 只用于字段分层，不替代 fallbackRegion。
-  // 支持 fields / zones / stageLayout，复用现有 FieldRenderer / ZoneRenderer / StageLayout。
+  // P0-J/P0-K/P0-L：Advanced Settings 分组。消费真实 selector fallback（非声明式），
+  // 不再按 fallbackRegion=advanced 声明收集，而是消费：
+  // 1. selectDashboardControls(...).fallback（控制区未入选的候选）
+  // 2. selectDashboardStatus(...).fallback（状态区未入选的候选）
+  // 3. polling subblock fallback（回报率超过 3 项的溢出）
+  // 4. lighting subblock fallback（灯光超过 6 项的溢出 + presentation=details 字段）
+  // 5. placement.region=details 的 capability 字段
+  // 6. 已在首页的 capability 中的 presentation=details 字段
+  // P0-K：LightingZone 不再添加 zone 整体条目，改为收集独立字段（避免 field+zone 双重渲染）。
+  // inventory fallbackRegion 去 "全部读数"，不进 Advanced；hidden 不展示。
+  // system.all-readings 不重复。
   const advancedFieldGroups = useMemo(() => {
     const sectionOrder: Array<NonNullable<PluginField['advancedSection']>> = [
       'performance', 'lighting-details', 'profiles', 'buttons', 'power', 'sensor', 'device',
@@ -2779,66 +2821,149 @@ function Dashboard({
       groups.get(target)!.push(entry);
     };
 
-    // 判断 capability 是否应进入 Advanced Settings：
-    // 1. 有任意 placement 的 fallbackRegion=advanced（未进入首页时回退到高级设置）
-    // 2. 有任意 placement 的 region=details（专门放在 details 区域）
-    // 3. 已在首页但含 presentation='details' 字段（字段级分层）
-    const hasAdvancedFallback = (capability: PluginCapability): boolean =>
-      (capability.placements ?? []).some(
-        (p) => p.fallbackRegion === 'advanced' || p.region === 'details',
-      );
+    // 字段去重键：capabilityId:zoneId:fieldId（zoneId 可空）。
+    const collectedFieldKeys = new Set<string>();
+    const collectedSummaryKeys = new Set<string>();
+    // 已处理的 capability（避免 fallback 与 details region 重复收集）。
+    const seenCapabilityIds = new Set<string>();
 
-    const collectCapability = (capability: PluginCapability, dashboardFieldLayering: boolean) => {
-      const allFields = [
-        ...(capability.metadata.fields ?? []),
-        ...(capability.metadata.zones ?? []).flatMap((zone) => zone.fields),
-      ];
-      // 收集字段：dashboard 能力只收集 presentation='details' 字段（字段级分层）；
-      // fallback/details 能力收集所有可写或可见字段。
-      for (const field of allFields) {
-        const isDetails = field.presentation === 'details';
-        if (dashboardFieldLayering && !isDetails) continue;
-        // visibleWhen 必须通过（设备当前状态下可见）。
-        if (!resolveVisibleWhen(field.visibleWhen, device)) continue;
-        const mutation = resolveMutation(field.mutation, device.writableMutations);
-        // 可写字段或有 details 标记的只读字段都应展示。
-        if (!mutation && !isDetails) continue;
-        addEntry(field.advancedSection, { type: 'field', capability, field });
+    // 首页 capability ID 集合（用于判断是否只收集 presentation=details）。
+    const homepageCapabilityIds = new Set<string>();
+    for (const group of controlGroups) {
+      for (const capability of group.capabilities) {
+        homepageCapabilityIds.add(capability.id);
       }
-      // DpiStages with stageLayout：作为整体 entry 展示（dots + value 编辑器）。
+    }
+
+    // 收集一个 capability 的所有可写/可见字段（用于 fallback/details 能力）。
+    const collectAllFields = (capability: PluginCapability) => {
+      // DpiStages with stageLayout：作为整体 entry 展示。
       if (
-        !dashboardFieldLayering
-        && capability.control === 'DpiStages'
+        capability.control === 'DpiStages'
         && capability.metadata.stageLayout
         && !capability.readOnly
       ) {
         addEntry('performance', { type: 'stageLayout', capability });
       }
-      // LightingZone with zones：作为整体 entry 展示（zone tabs + fields）。
-      if (
-        !dashboardFieldLayering
-        && capability.control === 'LightingZone'
-        && (capability.metadata.zones ?? []).length > 0
-        && !capability.readOnly
-      ) {
-        addEntry('lighting-details', { type: 'zone', capability });
+      // P0-K：LightingZone 不再添加 zone 整体条目；独立字段在下面收集。
+      const allFields = [
+        ...(capability.metadata.fields ?? []),
+        ...(capability.metadata.zones ?? []).flatMap((zone) => zone.fields),
+      ];
+      for (const field of allFields) {
+        if (!resolveVisibleWhen(field.visibleWhen, device)) continue;
+        const mutation = resolveMutation(field.mutation, device.writableMutations);
+        const isDetails = field.presentation === 'details';
+        // 可写字段或有 details 标记的只读字段都应展示。
+        if (!mutation && !isDetails) continue;
+        const key = `${capability.id}:${field.id}`;
+        if (collectedFieldKeys.has(key)) continue;
+        collectedFieldKeys.add(key);
+        addEntry(field.advancedSection, { type: 'field', capability, field });
       }
     };
 
-    // 收集所有 fallbackRegion=advanced 或 region=details 的 capability。
-    const seenCapabilityIds = new Set<string>();
+    // 收集 homepage capability 中的 presentation=details 字段（字段级分层）。
+    const collectDetailsFields = (capability: PluginCapability) => {
+      const allFields = [
+        ...(capability.metadata.fields ?? []),
+        ...(capability.metadata.zones ?? []).flatMap((zone) => zone.fields),
+      ];
+      for (const field of allFields) {
+        if (field.presentation !== 'details') continue;
+        if (!resolveVisibleWhen(field.visibleWhen, device)) continue;
+        const key = `${capability.id}:${field.id}`;
+        if (collectedFieldKeys.has(key)) continue;
+        collectedFieldKeys.add(key);
+        addEntry(field.advancedSection, { type: 'field', capability, field });
+      }
+    };
+
+    // 1. 消费 controlFallback（真实 selector fallback）。
+    //    inventory fallbackRegion 去 "全部读数"，不进 Advanced；hidden 不展示。
+    for (const candidate of controlFallback) {
+      const { capability, placement } = candidate;
+      if (seenCapabilityIds.has(capability.id)) continue;
+      const region = placement.fallbackRegion ?? 'advanced';
+      if (region !== 'advanced') continue; // inventory/hidden 不进 Advanced
+      seenCapabilityIds.add(capability.id);
+      collectAllFields(capability);
+    }
+
+    // 2. 消费 statusFallback（真实 selector fallback）。
+    for (const candidate of statusFallback) {
+      const { capability, placement } = candidate;
+      if (seenCapabilityIds.has(capability.id)) continue;
+      const region = placement.fallbackRegion ?? 'advanced';
+      if (region !== 'advanced') continue;
+      seenCapabilityIds.add(capability.id);
+      collectAllFields(capability);
+    }
+
+    // 3. 消费 placement.region=details 的 capability（未被 fallback 覆盖的）。
     for (const capability of device.pluginCapabilities) {
       if (!capabilityAvailable(capability)) continue;
-      if (!hasAdvancedFallback(capability)) continue;
       if (seenCapabilityIds.has(capability.id)) continue;
+      if (homepageCapabilityIds.has(capability.id)) continue;
+      const hasDetailsPlacement = (capability.placements ?? []).some((p) => p.region === 'details');
+      if (!hasDetailsPlacement) continue;
       seenCapabilityIds.add(capability.id);
-      collectCapability(capability, false);
+      collectAllFields(capability);
     }
-    // 也收集 dashboard 已展示 capability 中的 presentation='details' 字段（字段级分层）。
+
+    // 4. P0-L：polling overflow。对每个有 summary 的 capability，
+    //    计算 selectSummarySubblocks fallback，溢出项进入 Advanced Settings。
+    for (const capability of device.pluginCapabilities) {
+      if (!capabilityAvailable(capability)) continue;
+      const summary = capability.metadata.summary;
+      if (!summary || summary.length === 0) continue;
+      const reportedItems = summary.filter((item) => {
+        const value = readPath(device, item.source);
+        return value !== undefined && value !== null && value !== '';
+      });
+      const { fallback: summaryFallback } = selectSummarySubblocks(reportedItems, POLLING_MAX_SUBBLOCKS);
+      for (const item of summaryFallback) {
+        const key = `${capability.id}:${item.source}`;
+        if (collectedSummaryKeys.has(key)) continue;
+        collectedSummaryKeys.add(key);
+        addEntry('performance', { type: 'summary', capability, item });
+      }
+    }
+
+    // 5. P0-K：lighting overflow。对每个 LightingZone capability，
+    //    计算 selectLightingSubblocks fallback + presentation=details 字段。
+    for (const capability of device.pluginCapabilities) {
+      if (!capabilityAvailable(capability)) continue;
+      if (capability.control !== 'LightingZone') continue;
+      const zones = resolveZones(capability, device);
+      for (const zone of zones) {
+        const lightingCandidates = zone.fields.filter((field) =>
+          fieldHasReportedValue(field, device) && field.presentation !== 'details',
+        );
+        const { fallback: lightingFallback } = selectLightingSubblocks(lightingCandidates);
+        for (const field of lightingFallback) {
+          const key = `${capability.id}:${field.id}`;
+          if (collectedFieldKeys.has(key)) continue;
+          collectedFieldKeys.add(key);
+          addEntry(field.advancedSection ?? 'lighting-details', { type: 'field', capability, field });
+        }
+        // 同时收集 presentation=details 字段（如 AM35 的 color2/ratio2/color3/ratio3）。
+        for (const field of zone.fields) {
+          if (field.presentation !== 'details') continue;
+          if (!resolveVisibleWhen(field.visibleWhen, device)) continue;
+          const key = `${capability.id}:${field.id}`;
+          if (collectedFieldKeys.has(key)) continue;
+          collectedFieldKeys.add(key);
+          addEntry(field.advancedSection ?? 'lighting-details', { type: 'field', capability, field });
+        }
+      }
+    }
+
+    // 6. 已在首页的 capability 中的 presentation=details 字段（字段级分层）。
     for (const group of controlGroups) {
       for (const capability of group.capabilities) {
         if (seenCapabilityIds.has(capability.id)) continue;
-        collectCapability(capability, true);
+        collectDetailsFields(capability);
       }
     }
 
@@ -2855,7 +2980,7 @@ function Dashboard({
     }
     return result;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [device, pluginLocaleRevision, controlGroups]);
+  }, [device, pluginLocaleRevision, controlGroups, controlFallback, statusFallback]);
 
   const hasAdvancedSettings = advancedFieldGroups.length > 0;
 

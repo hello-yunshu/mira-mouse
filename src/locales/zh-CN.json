@@ -357,7 +357,7 @@
     },
     "autostart": {
       "label": "开机自动启动",
-      "hint": "登录时自动启动 Mira"
+      "hint": "登录系统后在托盘后台运行，不弹出主窗口。"
     },
     "startHidden": {
       "label": "开机启动时隐藏窗口",
