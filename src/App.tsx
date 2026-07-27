@@ -3395,7 +3395,6 @@ export default function App() {
     if (pureWeb) return;
     let unlisten: (() => void) | undefined;
     let unlistenResume: (() => void) | undefined;
-    let unlistenFocus: (() => void) | undefined;
     let unlistenBatteryUsage: (() => void) | undefined;
     let unlistenPluginLocales: (() => void) | undefined;
     listen('navigate-about-update', () => openAboutUpdate())
@@ -3419,30 +3418,15 @@ export default function App() {
       setRefreshNonce((value) => value + 1);
     }).then((un) => { unlistenResume = un; })
       .catch(() => {});
-    // macOS 原生通知不暴露点击回调：发通知时将跳转动作写入 pending action，
-    // 窗口聚焦时取走并执行。Windows/Linux 由 `navigate-about-update` 事件直接处理，
-    // 此处返回 null 不影响。
-    try {
-      getCurrentWindow().onFocusChanged(({ payload: focused }) => {
-        if (!focused) return;
-        invoke<string | null>('take_pending_notification_action')
-          .then((action) => {
-            if (action === 'about-update') openAboutUpdate();
-            if (action === 'settings-plugin-update') openSettingsPluginUpdate();
-            if (action === 'settings-local-ai-update') openSettingsLocalAiUpdate();
-            if (action === 'battery-usage') openBatteryUsage();
-          })
-          .catch(() => {});
-      }).then((un) => { unlistenFocus = un; }).catch(() => {});
-    } catch {
-      // 非 Tauri 环境忽略
-    }
+    // ITERATION-009 §4.2 方案 B：macOS native 通知只提醒。
+    // 不再注册窗口聚焦监听消费 pending_notification_action——此前实现把用户
+    // 任意打开 Mira 误判为点击通知。Windows/Linux 由 navigate-* / open-battery-usage
+    // 事件直接处理；macOS 系统通知仅显示 title/body，应用内 Toast 保留可点击入口。
     return () => {
       if (unlisten) unlisten();
       if (unlistenPluginUpdate) unlistenPluginUpdate();
       if (unlistenLocalAiUpdate) unlistenLocalAiUpdate();
       if (unlistenResume) unlistenResume();
-      if (unlistenFocus) unlistenFocus();
       if (unlistenBatteryUsage) unlistenBatteryUsage();
       if (unlistenPluginLocales) unlistenPluginLocales();
     };
@@ -3634,11 +3618,13 @@ export default function App() {
                 ? openAboutUpdate
                 : appNotification.action === 'settings-plugin-update'
                   ? openSettingsPluginUpdate
-                  : appNotification.action === 'battery-usage'
-                    ? openBatteryUsage
-                    : appNotification.action === 'relaunch'
-                      ? () => void relaunchAfterUpdate()
-                      : undefined
+                  : appNotification.action === 'settings-local-ai-update'
+                    ? openSettingsLocalAiUpdate
+                    : appNotification.action === 'battery-usage'
+                      ? openBatteryUsage
+                      : appNotification.action === 'relaunch'
+                        ? () => void relaunchAfterUpdate()
+                        : undefined
               : undefined
           }
         >
