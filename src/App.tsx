@@ -54,7 +54,7 @@ import {
   resolveZones,
   selectLightingSubblocks,
   selectSummarySubblocks,
-  POLLING_MAX_SUBBLOCKS,
+  summaryMaxForCapability,
   simulateDemoMutation,
 } from './pluginAdapter';
 import { onAppNotification, notifyError, notifySuccess, type AppNotification } from './notify';
@@ -540,14 +540,15 @@ function FormattedValue({ value, format, label, className }: {
 }
 
 function CapabilitySummary({ capability, device }: { capability: PluginCapability; device: DeviceState }) {
-  // P0-F：回报率子块最多 3 个，按 priority desc → order asc → stable id asc 选择。
-  // 超出的低优先级项进入 Advanced Settings（由 advancedFieldGroups 收集）。
+  // P1-1 (Iteration 008)：summary 上限只作用于 polling capability（fixedSlot=2 或 group=polling）。
+  // 非 polling capability 的 summary 不被截断。
   const allItems = capability.metadata.summary ?? [];
   const reportedItems = allItems.filter((item) => {
     const value = readPath(device, item.source);
     return value !== undefined && value !== null && value !== '';
   });
-  const { selected: items } = selectSummarySubblocks(reportedItems, POLLING_MAX_SUBBLOCKS);
+  const max = summaryMaxForCapability(capability);
+  const { selected: items } = selectSummarySubblocks(reportedItems, max);
   if (items.length === 0) return null;
   return (
     <div
@@ -1594,8 +1595,9 @@ function StageLayout({ capability, device, writeBusy, runMutation }: {
 /// 复用现有 FieldRenderer / StageLayout / ZoneRenderer 渲染。
 /// P0-K：不再为 LightingZone 添加 zone 整体条目，改为收集独立字段（避免 field+zone 双重渲染）。
 /// P0-L：polling overflow 以 summary 条目进入 Advanced Settings。
+/// P0-3 (Iteration 008)：field entry 保留 zoneId/zoneLabelKey 以正确区分多 zone 同名字段。
 type AdvancedSettingsEntry =
-  | { type: 'field'; capability: PluginCapability; field: PluginField }
+  | { type: 'field'; capability: PluginCapability; field: PluginField; zoneId?: string; zoneLabelKey?: string }
   | { type: 'stageLayout'; capability: PluginCapability }
   | { type: 'zone'; capability: PluginCapability }
   | { type: 'summary'; capability: PluginCapability; item: PluginSummaryItem };
@@ -1669,25 +1671,29 @@ function AdvancedSettingsModal({ groups, device, writeBusy, onClose, onEditField
                 }
                 // field entry：复用 FieldRenderer 渲染所有 editor 类型。
                 // inline-* editor 直接在列表中操作；modal-* editor 通过 onEditField 打开模态框。
-                const { capability, field } = entry;
+                // P0-3 (Iteration 008)：React key 包含 zoneId，label 包含 zone 前缀以区分多 zone 同名字段。
+                const { capability, field, zoneId, zoneLabelKey } = entry;
                 const mutation = resolveMutation(field.mutation, device.writableMutations);
                 const isModalEditor = field.editor.startsWith('modal-');
+                const zonePrefix = zoneLabelKey
+                  ? `${resolveLabelKey(zoneLabelKey, device.pluginId)} · `
+                  : '';
                 if (!isModalEditor) {
                   // inline-* / static-readonly：直接渲染 FieldRenderer（复用通用 renderer）。
                   return (
-                    <li key={`${capability.id}:${field.id}:${index}`} className="advanced-settings-item advanced-settings-inline">
+                    <li key={`${capability.id}:${zoneId ?? 'root'}:${field.id}:${index}`} className="advanced-settings-item advanced-settings-inline">
                       <FieldRenderer field={field} device={device} writeBusy={writeBusy} runMutation={runMutation} />
                     </li>
                   );
                 }
                 // modal-* editor：label-value 按钮，点击打开模态框。
-                const label = resolveFieldLabel(field, device, device.pluginId);
+                const label = `${zonePrefix}${resolveFieldLabel(field, device, device.pluginId)}`;
                 const value = readPath(device, field.source);
                 const editable = Boolean(mutation) && !writeBusy;
                 const valueText = formatFieldValue(value, field.format, i18n.t);
                 const isColor = field.format === 'color' || valueLooksColor(value);
                 return (
-                  <li key={`${capability.id}:${field.id}:${index}`} className="advanced-settings-item">
+                  <li key={`${capability.id}:${zoneId ?? 'root'}:${field.id}:${index}`} className="advanced-settings-item">
                     <button
                       type="button"
                       className="advanced-settings-field"
@@ -1767,8 +1773,23 @@ function ZoneRenderer({ capability, device, writeBusy, runMutation }: {
   const activeZoneIndex = Math.max(zones.findIndex((zone) => zone.id === activeZone.id), 0);
   const multipleZones = zones.length > 1;
 
-  const colorField = activeZone.fields.find((f) => f.editor === 'modal-color')
-    ?? activeZone.fields.find((f) => f.format === 'color');
+  // P0-2 (Iteration 008)：主颜色入口必须来自 selector 选出的最高优先级、
+  // 当前可见的 primary-color 字段。禁止从 raw fields 中取第一个 modal-color，
+  // 那会选中不可见的 Protocol A color 而不是 AM35 的 am35-color。
+  // 先过滤 reported 和 presentation，再用 selectLightingSubblocks 选择。
+  const lightingCandidates = activeZone.fields.filter((field) =>
+    fieldHasReportedValue(field, device) && field.presentation !== 'details',
+  );
+  const lightingSelection = selectLightingSubblocks(lightingCandidates);
+  // P0-2 (Iteration 008)：主颜色入口必须来自 selector 选出的最高优先级
+  // primary-color 字段，且必须是真正的颜色字段（modal-color 或 format=color）。
+  // 非颜色字段（如 modal-select）即使声明了 lightingRole=primary-color 也保留在
+  // visibleFields 中作为普通子块渲染，不提取为色板。
+  const selectorPrimaryColor = lightingSelection.primaryColor;
+  const isColorField = (field: PluginField | undefined): boolean =>
+    Boolean(field) && (field!.editor === 'modal-color' || field!.format === 'color');
+  const colorField = isColorField(selectorPrimaryColor) ? selectorPrimaryColor : undefined;
+  const visibleFieldsRaw = lightingSelection.selected;
   const zoneColor = colorField ? readPath(device, colorField.source) as string | undefined : undefined;
   const colorMutation = colorField?.editor === 'modal-color'
     ? resolveMutation(colorField.mutation, device.writableMutations)
@@ -1789,24 +1810,17 @@ function ZoneRenderer({ capability, device, writeBusy, runMutation }: {
     : activeZone.id === zones[0].id;
   const tabAccent = usesThemeAccent ? 'var(--accent)' : zoneColor ?? 'var(--accent)';
 
-  // P0-G：灯光子块最多 6 个，灯效最左、主颜色最右，中间最多 4 个 candidate。
-  // 先过滤 reported 和 presentation，再用 selectLightingSubblocks 选择。
-  // 未声明的字段视为 candidate（向后兼容）。
-  const lightingCandidates = activeZone.fields.filter((field) =>
-    fieldHasReportedValue(field, device) && field.presentation !== 'details',
-  );
-  const { selected: visibleFieldsRaw } = selectLightingSubblocks(lightingCandidates);
-  // P0-M：主颜色单一入口——colorField 从 visibleFields 移出，
-  // 改为作为最右 lighting-row-slot 渲染（lighting-swatch 视觉 + ColorValue 文本）。
-  // 这样总交互子块仍 ≤ 6，颜色只有一个可点击入口。
+  // 颜色指示灯带：位于子块上方横贯渲染，不参与 lighting-rows 的 grid 列数与
+  // 子块计数。colorField 仅作为灯带可点击入口（打开 FieldEditModal），不再
+  // 作为 grid 内的子块渲染，从而保持子块数量统计与 selector 上限语义一致。
   const visibleFields = colorField
     ? visibleFieldsRaw.filter((field) => field.id !== colorField.id)
     : visibleFieldsRaw;
   // 条件显示的次级区域通常是接收器等附属对象；字段较多时使用与旧界面一致
   // 的紧凑密度。这里仅依赖 zone 的声明形态，不依赖 zone id。
-  const totalVisualCount = visibleFields.length + (colorField ? 1 : 0);
-  const compactDetailGrid = Boolean(activeZone.visibleWhen) && totalVisualCount >= 5;
-  const lightingColumnCount = Math.max(totalVisualCount, 1);
+  // 灯带不计入子块数量，compact 阈值仅基于真实子块数。
+  const compactDetailGrid = Boolean(activeZone.visibleWhen) && visibleFields.length >= 5;
+  const lightingColumnCount = Math.max(visibleFields.length, 1);
 
   return (
     <>
@@ -1832,6 +1846,20 @@ function ZoneRenderer({ capability, device, writeBusy, runMutation }: {
           ))}
         </div>
       )}
+      {colorField && (
+        <button
+          type="button"
+          className="lighting-swatch"
+          style={{ '--light-color': zoneColor ?? '#b87ab0' } as React.CSSProperties}
+          aria-label={colorLabel}
+          title={colorLabel}
+          disabled={!colorWritable}
+          onClick={() => {
+            invoke('device_refresh_quick').catch(() => {});
+            setEditingColorZoneId(activeZone.id);
+          }}
+        />
+      )}
       <div className="lighting-sections" aria-label={i18n.t('dashboard.lightingGroups')}>
         <div className={`lighting-group lighting-group-${activeZone.id}${compactDetailGrid ? ' is-compact' : ''}`}>
           <p className="lighting-group-title" data-title-phase={titlePhase}>{displayedLabel}</p>
@@ -1853,26 +1881,6 @@ function ZoneRenderer({ capability, device, writeBusy, runMutation }: {
                 />
               </div>
             ))}
-            {colorField && (
-              <button
-                key={`${activeZone.id}:color-swatch`}
-                type="button"
-                className="lighting-swatch lighting-row-slot secondary-control-item"
-                style={{
-                  '--light-color': zoneColor ?? '#b87ab0',
-                  ...secondaryRevealStyle(`${capability.id}:${activeZone.id}:color-swatch`),
-                } as React.CSSProperties}
-                aria-label={colorLabel}
-                title={colorLabel}
-                disabled={!colorWritable}
-                onClick={() => {
-                  invoke('device_refresh_quick').catch(() => {});
-                  setEditingColorZoneId(activeZone.id);
-                }}
-              >
-                <ColorValue value={zoneColor} />
-              </button>
-            )}
           </div>
         </div>
       </div>
@@ -2821,7 +2829,7 @@ function Dashboard({
       groups.get(target)!.push(entry);
     };
 
-    // 字段去重键：capabilityId:zoneId:fieldId（zoneId 可空）。
+    // 字段去重键：capabilityId:zoneId-or-root:fieldId（P0-3 Iteration 008：必须包含 zoneId）。
     const collectedFieldKeys = new Set<string>();
     const collectedSummaryKeys = new Set<string>();
     // 已处理的 capability（避免 fallback 与 details region 重复收集）。
@@ -2835,7 +2843,9 @@ function Dashboard({
       }
     }
 
-    // 收集一个 capability 的所有可写/可见字段（用于 fallback/details 能力）。
+    // P0-3 (Iteration 008)：按 zone 遍历，保留 zoneId/zoneLabelKey 上下文。
+    // 禁止 zones.flatMap(zone => zone.fields) 后丢失 zone。
+    // 顶层字段（capability.metadata.fields）使用 'root' 作为 zoneId。
     const collectAllFields = (capability: PluginCapability) => {
       // DpiStages with stageLayout：作为整体 entry 展示。
       if (
@@ -2846,36 +2856,51 @@ function Dashboard({
         addEntry('performance', { type: 'stageLayout', capability });
       }
       // P0-K：LightingZone 不再添加 zone 整体条目；独立字段在下面收集。
-      const allFields = [
-        ...(capability.metadata.fields ?? []),
-        ...(capability.metadata.zones ?? []).flatMap((zone) => zone.fields),
-      ];
-      for (const field of allFields) {
+      // 顶层字段（无 zone）
+      for (const field of capability.metadata.fields ?? []) {
         if (!resolveVisibleWhen(field.visibleWhen, device)) continue;
         const mutation = resolveMutation(field.mutation, device.writableMutations);
         const isDetails = field.presentation === 'details';
-        // 可写字段或有 details 标记的只读字段都应展示。
         if (!mutation && !isDetails) continue;
-        const key = `${capability.id}:${field.id}`;
+        const key = `${capability.id}:root:${field.id}`;
         if (collectedFieldKeys.has(key)) continue;
         collectedFieldKeys.add(key);
-        addEntry(field.advancedSection, { type: 'field', capability, field });
+        addEntry(field.advancedSection, { type: 'field', capability, field, zoneId: undefined, zoneLabelKey: undefined });
+      }
+      // zone 内字段——保留 zoneId 和 zoneLabelKey
+      for (const zone of capability.metadata.zones ?? []) {
+        for (const field of zone.fields) {
+          if (!resolveVisibleWhen(field.visibleWhen, device)) continue;
+          const mutation = resolveMutation(field.mutation, device.writableMutations);
+          const isDetails = field.presentation === 'details';
+          if (!mutation && !isDetails) continue;
+          const key = `${capability.id}:${zone.id}:${field.id}`;
+          if (collectedFieldKeys.has(key)) continue;
+          collectedFieldKeys.add(key);
+          addEntry(field.advancedSection, { type: 'field', capability, field, zoneId: zone.id, zoneLabelKey: zone.labelKey });
+        }
       }
     };
 
     // 收集 homepage capability 中的 presentation=details 字段（字段级分层）。
     const collectDetailsFields = (capability: PluginCapability) => {
-      const allFields = [
-        ...(capability.metadata.fields ?? []),
-        ...(capability.metadata.zones ?? []).flatMap((zone) => zone.fields),
-      ];
-      for (const field of allFields) {
+      for (const field of capability.metadata.fields ?? []) {
         if (field.presentation !== 'details') continue;
         if (!resolveVisibleWhen(field.visibleWhen, device)) continue;
-        const key = `${capability.id}:${field.id}`;
+        const key = `${capability.id}:root:${field.id}`;
         if (collectedFieldKeys.has(key)) continue;
         collectedFieldKeys.add(key);
-        addEntry(field.advancedSection, { type: 'field', capability, field });
+        addEntry(field.advancedSection, { type: 'field', capability, field, zoneId: undefined, zoneLabelKey: undefined });
+      }
+      for (const zone of capability.metadata.zones ?? []) {
+        for (const field of zone.fields) {
+          if (field.presentation !== 'details') continue;
+          if (!resolveVisibleWhen(field.visibleWhen, device)) continue;
+          const key = `${capability.id}:${zone.id}:${field.id}`;
+          if (collectedFieldKeys.has(key)) continue;
+          collectedFieldKeys.add(key);
+          addEntry(field.advancedSection, { type: 'field', capability, field, zoneId: zone.id, zoneLabelKey: zone.labelKey });
+        }
       }
     };
 
@@ -2913,6 +2938,7 @@ function Dashboard({
 
     // 4. P0-L：polling overflow。对每个有 summary 的 capability，
     //    计算 selectSummarySubblocks fallback，溢出项进入 Advanced Settings。
+    //    P1-1 (Iteration 008)：summary 上限只作用于 polling capability。
     for (const capability of device.pluginCapabilities) {
       if (!capabilityAvailable(capability)) continue;
       const summary = capability.metadata.summary;
@@ -2921,7 +2947,8 @@ function Dashboard({
         const value = readPath(device, item.source);
         return value !== undefined && value !== null && value !== '';
       });
-      const { fallback: summaryFallback } = selectSummarySubblocks(reportedItems, POLLING_MAX_SUBBLOCKS);
+      const max = summaryMaxForCapability(capability);
+      const { fallback: summaryFallback } = selectSummarySubblocks(reportedItems, max);
       for (const item of summaryFallback) {
         const key = `${capability.id}:${item.source}`;
         if (collectedSummaryKeys.has(key)) continue;
@@ -2932,6 +2959,7 @@ function Dashboard({
 
     // 5. P0-K：lighting overflow。对每个 LightingZone capability，
     //    计算 selectLightingSubblocks fallback + presentation=details 字段。
+    //    P0-3 (Iteration 008)：去重键包含 zoneId，保留 zone 上下文。
     for (const capability of device.pluginCapabilities) {
       if (!capabilityAvailable(capability)) continue;
       if (capability.control !== 'LightingZone') continue;
@@ -2942,19 +2970,19 @@ function Dashboard({
         );
         const { fallback: lightingFallback } = selectLightingSubblocks(lightingCandidates);
         for (const field of lightingFallback) {
-          const key = `${capability.id}:${field.id}`;
+          const key = `${capability.id}:${zone.id}:${field.id}`;
           if (collectedFieldKeys.has(key)) continue;
           collectedFieldKeys.add(key);
-          addEntry(field.advancedSection ?? 'lighting-details', { type: 'field', capability, field });
+          addEntry(field.advancedSection ?? 'lighting-details', { type: 'field', capability, field, zoneId: zone.id, zoneLabelKey: zone.labelKey });
         }
         // 同时收集 presentation=details 字段（如 AM35 的 color2/ratio2/color3/ratio3）。
         for (const field of zone.fields) {
           if (field.presentation !== 'details') continue;
           if (!resolveVisibleWhen(field.visibleWhen, device)) continue;
-          const key = `${capability.id}:${field.id}`;
+          const key = `${capability.id}:${zone.id}:${field.id}`;
           if (collectedFieldKeys.has(key)) continue;
           collectedFieldKeys.add(key);
-          addEntry(field.advancedSection ?? 'lighting-details', { type: 'field', capability, field });
+          addEntry(field.advancedSection ?? 'lighting-details', { type: 'field', capability, field, zoneId: zone.id, zoneLabelKey: zone.labelKey });
         }
       }
     }
