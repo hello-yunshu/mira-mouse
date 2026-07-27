@@ -1810,12 +1810,15 @@ function ZoneRenderer({ capability, device, writeBusy, runMutation }: {
     : activeZone.id === zones[0].id;
   const tabAccent = usesThemeAccent ? 'var(--accent)' : zoneColor ?? 'var(--accent)';
 
-  // 颜色指示灯带：位于子块上方横贯渲染，不参与 lighting-rows 的 grid 列数与
-  // 子块计数。colorField 仅作为灯带可点击入口（打开 FieldEditModal），不再
-  // 作为 grid 内的子块渲染，从而保持子块数量统计与 selector 上限语义一致。
-  const visibleFields = colorField
-    ? visibleFieldsRaw.filter((field) => field.id !== colorField.id)
-    : visibleFieldsRaw;
+  // ITERATION-009 §P0-A：顶部灯带与最右普通颜色子块并存。
+  // - 顶部灯带继续使用 colorField 作为可点击入口（不参与 grid 列数与子块计数）；
+  // - 普通 rows 直接使用 selector 的最终顺序（已包含 primaryColor 在最右），
+  //   primaryColor 通过 FieldRenderer + modal-color + lighting-row-slot 渲染，
+  //   恢复此前普通颜色子块样式，不再从 rows 中删除；
+  // - 两处共享同一 colorField / colorMutation / zoneColor / device 状态，
+  //   任意一处写入成功后另一处立即同步，写入失败时两处都保持原色。
+  // - 顶部灯带不计入 6 个普通子块上限；grid 列数与 compact 阈值仅基于 visibleFields。
+  const visibleFields = visibleFieldsRaw;
   // 条件显示的次级区域通常是接收器等附属对象；字段较多时使用与旧界面一致
   // 的紧凑密度。这里仅依赖 zone 的声明形态，不依赖 zone id。
   // 灯带不计入子块数量，compact 阈值仅基于真实子块数。
