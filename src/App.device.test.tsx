@@ -79,7 +79,11 @@ const snapshot: DeviceSnapshot = {
         }],
         stateMapping: { pollingRate: 'pollingRateHz', supportedPollingRates: 'supportedPollingRatesHz' },
         summary: [
-          { labelKey: 'mock.motionSync', source: 'capabilities.settings.motionSync' },
+          {
+            labelKey: 'mock.motionSync',
+            source: 'capabilities.motionSync.motionSync',
+            sourceFallbacks: ['capabilities.settings.motionSync'],
+          },
           { labelKey: 'mock.angleSnap', source: 'capabilities.settings.angleSnap' },
           { labelKey: 'mock.liftCutOff', source: 'capabilities.settings.liftCutOff' },
         ],
@@ -1532,6 +1536,10 @@ describe('real device snapshot mapping', () => {
     // 模态窗口标题为"高级设置"。
     const modal = await screen.findByRole('heading', { name: '高级设置' });
     expect(modal).toBeInTheDocument();
+    const dialog = screen.getByRole('dialog', { name: '高级设置' });
+    expect(dialog).toHaveClass('advanced-settings-modal');
+    expect(dialog.parentElement).toHaveClass('advanced-settings-backdrop');
+    expect(dialog.querySelector('.modal-body')).toHaveClass('modal-body');
     // 传感器分组应包含两个 fallback 字段。
     const advancedList = document.querySelector('.advanced-settings-list');
     expect(advancedList).toBeInTheDocument();
