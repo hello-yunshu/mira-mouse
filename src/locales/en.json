@@ -52,6 +52,7 @@
     "deviceCount": "{{count}} devices",
     "deviceBattery": "Device battery",
     "deviceControl": "Device controls",
+    "configurationTab": "Config",
     "deviceStatus": "Device status",
     "deviceSummary": "Device summary",
     "motionSync": "Motion sync",
