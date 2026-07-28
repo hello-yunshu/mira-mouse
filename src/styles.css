@@ -2235,7 +2235,9 @@ body:has(.platform-fallback:not(.web-preview)) {
 .details-note { margin: 9px 0 11px; color: var(--muted); font-size: 10px; line-height: 1.45; }
 .capability-groups { min-height: 0; overflow-y: auto; overscroll-behavior: contain; columns: 2; column-gap: 8px; padding-right: 3px; scrollbar-width: none; }
 .capability-groups::-webkit-scrollbar { display: none; }
-.capability-groups.scroll-overflow { --scroll-fade: 8px; }
+/* capability-groups 列采用两列布局，淡出距离更短避免遮挡列内容 */
+.capability-groups.scroll-fade-top,
+.capability-groups.scroll-fade-bottom { --scroll-fade: 8px; }
 .capability-group { min-width: 0; break-inside: avoid; margin: 0 0 8px; padding: 10px; border-radius: 12px; background: var(--surface-group-bg); border: 1px solid var(--surface-group-border); }
 .capability-group h3 { margin: 0 0 5px; font-size: 12px; }
 .capability-group dl { margin: 0; }
@@ -2566,7 +2568,7 @@ h2 { margin: 2px 0 0; letter-spacing: -.02em; font-size: 16px; }
 .settings-page header h1, .about-page header h1 { font-size: 22px; }
 .settings-page > .sub-nav { flex-shrink: 0; }
 
-/* 设置页/关于页内容滚动区：独立滚动，溢出时通过 .scroll-overflow 应用淡出 */
+/* 设置页/关于页内容滚动区：独立滚动，溢出时通过 .scroll-fade-* 应用淡出 */
 .settings-scroll-area {
   flex: 1;
   min-height: 0;
@@ -2577,9 +2579,28 @@ h2 { margin: 2px 0 0; letter-spacing: -.02em; font-size: 16px; }
 }
 .settings-scroll-area::-webkit-scrollbar { display: none; }
 
-/* 通用条件淡出：仅当内容溢出时由 JS 添加此类触发顶底渐变 mask */
-.scroll-overflow {
+/* 通用条件淡出：通过 scroll-fade-top / scroll-fade-bottom 两个独立状态类
+   分别控制顶部/底部 mask。四种状态（无溢出/顶部/中间/底部）使用确定性 mask，
+   不靠两层叠加造成内容整体变暗。 */
+.scroll-fade-top,
+.scroll-fade-bottom {
   --scroll-fade: 14px;
+}
+
+/* 仅底部淡出（位于顶部，canScrollUp=false, canScrollDown=true） */
+.scroll-fade-bottom:not(.scroll-fade-top) {
+  -webkit-mask-image: linear-gradient(to bottom, black 0, black calc(100% - var(--scroll-fade)), transparent 100%);
+  mask-image: linear-gradient(to bottom, black 0, black calc(100% - var(--scroll-fade)), transparent 100%);
+}
+
+/* 仅顶部淡出（位于底部，canScrollUp=true, canScrollDown=false） */
+.scroll-fade-top:not(.scroll-fade-bottom) {
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, black var(--scroll-fade), black 100%);
+  mask-image: linear-gradient(to bottom, transparent 0, black var(--scroll-fade), black 100%);
+}
+
+/* 上下都淡出（中间，canScrollUp=true, canScrollDown=true） */
+.scroll-fade-top.scroll-fade-bottom {
   -webkit-mask-image: linear-gradient(to bottom, transparent 0, black var(--scroll-fade), black calc(100% - var(--scroll-fade)), transparent 100%);
   mask-image: linear-gradient(to bottom, transparent 0, black var(--scroll-fade), black calc(100% - var(--scroll-fade)), transparent 100%);
 }
@@ -5165,7 +5186,7 @@ input[type="color"] {
   --accent-alpha: rgb(255 170 50 / .4);
 }
 
-/* 列表：行式布局，无卡片包装。列表区独立滚动，溢出时通过 .scroll-overflow 应用淡出。 */
+/* 列表：行式布局，无卡片包装。列表区独立滚动，溢出时通过 .scroll-fade-* 应用淡出。 */
 .log-list-wrapper {
   flex: 1;
   min-height: 0;
