@@ -189,9 +189,9 @@ dependencies = [
 
 [[package]]
 name = "rill-ml"
-version = "0.8.1"
+version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6825da52fd2e01bc1754bc619e5c26c9ffb71ab3f13a98cdb0df7b6e7bccfeef"
+checksum = "f5bcb553e19f57d493bfd0218286ae64b9f7d3b0a0de21fb9bad09863630a04f"
 dependencies = [
  "thiserror 1.0.69",
 ]
