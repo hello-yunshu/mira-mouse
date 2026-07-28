@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useScrollOverflow } from '../useScrollOverflow';
+import { useScrollFadeState } from '../useScrollOverflow';
 import {
   ArrowsClockwise,
   ArrowsInLineVertical,
@@ -496,10 +496,11 @@ function LogList({
   onScroll: () => void;
 }) {
   const { t } = useTranslation();
-  const canScroll = useScrollOverflow(scrollRef);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const { canScrollUp, canScrollDown } = useScrollFadeState(scrollRef, contentRef);
   return (
-    <div className={`log-list-wrapper${canScroll ? ' scroll-overflow' : ''}`} ref={scrollRef} onScroll={onScroll}>
-      <div className="log-list">
+    <div className={`log-list-wrapper${canScrollUp ? ' scroll-fade-top' : ''}${canScrollDown ? ' scroll-fade-bottom' : ''}`} ref={scrollRef} onScroll={onScroll}>
+      <div className="log-list" ref={contentRef}>
         {entries.length === 0 ? (
           <p className="log-list-empty">{loading ? t('logs.list.loading') : t('logs.list.empty')}</p>
         ) : (

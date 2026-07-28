@@ -20,7 +20,7 @@ import { LOCAL_AI_FEATURE, localAiFeatureEnabled } from './localAi';
 import { segmentedIndicatorStyle } from './segmentedControl';
 import { Modal } from './overlay';
 import { Tooltip } from './Tooltip';
-import { useScrollOverflow } from './useScrollOverflow';
+import { useScrollFadeState } from './useScrollOverflow';
 
 // ─── 工具函数 ───────────────────────────────────────────────────────────────
 
@@ -1165,7 +1165,8 @@ export function BatteryUsageModal({
 }: BatteryUsageModalProps) {
   const { t } = useTranslation();
   const scrollRef = useRef<HTMLDivElement>(null);
-  const canScroll = useScrollOverflow(scrollRef);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const { canScrollUp, canScrollDown } = useScrollFadeState(scrollRef, contentRef);
   const [range, setRange] = useState<BatteryHistoryRange>('24h');
   const [selectedDeviceKey, setSelectedDeviceKey] = useState<string>('');
   // 同时缓存 24h 与 10d 两个 range 的响应：打开时并行拉取，切换 range 命中缓存
@@ -1458,7 +1459,8 @@ export function BatteryUsageModal({
           </button>
         </div>
 
-        <div ref={scrollRef} className={`battery-usage-scroll-region${canScroll ? ' scroll-overflow' : ''}`}>
+        <div ref={scrollRef} className={`battery-usage-scroll-region${canScrollUp ? ' scroll-fade-top' : ''}${canScrollDown ? ' scroll-fade-bottom' : ''}`}>
+          <div ref={contentRef} className="battery-usage-scroll-content">
           {!loading && (!response || selectableDevices.length === 0) ? (
             <BatteryHistoryEmptyState onClose={onClose} />
           ) : (
@@ -1542,6 +1544,7 @@ export function BatteryUsageModal({
               </div>
             </>
           )}
+          </div>
         </div>
       </div>
     </Modal>

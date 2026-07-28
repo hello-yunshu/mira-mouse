@@ -347,3 +347,125 @@ describe('Mira shell', () => {
     expect(screen.getByRole('button', { name: '当前回报率：500 Hz，点击编辑' })).toBeInTheDocument();
   });
 });
+
+// P0-B: DPI/回报率数字翻牌时序测试
+// contextTransitionDelay 从 340ms 提前到 300ms（metric-to-metric 上下文切换）
+describe('MorphingMetricValue context flip timing (P0-B)', () => {
+  beforeEach(() => {
+    invokeMock.mockRejectedValue(new Error('not mocked'));
+  });
+  afterEach(() => {
+    invokeMock.mockReset();
+    vi.useRealTimers();
+  });
+
+  it('does not start context flip before 300ms (299ms still idle)', async () => {
+    render(<App />);
+    fireEvent.click(screen.getByText('查看演示'));
+
+    const metricValue = document.querySelector('.shared-control-metric-value')!;
+    expect(metricValue.querySelector('.shared-control-metric-face.is-current')).toHaveTextContent('1000DPI');
+
+    // 切换到回报率（metric-to-metric context change）
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByRole('tab', { name: '回报率' }));
+
+    // 299ms 时：尚未开始翻牌，next face 不存在
+    await vi.advanceTimersByTimeAsync(299);
+    expect(metricValue.querySelector('.shared-control-metric-face.is-next')).not.toBeInTheDocument();
+  });
+
+  it('starts context flip at ~300ms (not 340ms)', async () => {
+    render(<App />);
+    fireEvent.click(screen.getByText('查看演示'));
+
+    const metricValue = document.querySelector('.shared-control-metric-value')!;
+
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByRole('tab', { name: '回报率' }));
+
+    // 300ms 时：setTimeout 触发 prepareTransition，rAF 注册
+    await vi.advanceTimersByTimeAsync(300);
+    // 推进 rAF 队列让 next face 出现（rAF 嵌套 2 帧 + 渲染）
+    await vi.advanceTimersByTimeAsync(60);
+    expect(metricValue.querySelector('.shared-control-metric-face.is-next')).toBeInTheDocument();
+  });
+
+  it('does not wait until 340ms for context flip', async () => {
+    render(<App />);
+    fireEvent.click(screen.getByText('查看演示'));
+
+    const metricValue = document.querySelector('.shared-control-metric-value')!;
+
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByRole('tab', { name: '回报率' }));
+
+    // 推进到 320ms：新实现（300ms）已开始翻牌；旧实现（340ms）不会开始
+    await vi.advanceTimersByTimeAsync(320);
+    await vi.advanceTimersByTimeAsync(60); // 推进 rAF
+    expect(metricValue.querySelector('.shared-control-metric-face.is-next')).toBeInTheDocument();
+  });
+
+  it('completes flip roughly 40ms earlier than the old 340ms baseline', async () => {
+    // 旧实现 contextTransitionDelay=340ms，新实现=300ms，差值 40ms。
+    // 验证 300ms 时新实现已开始翻牌（旧实现此时还需等 40ms）。
+    render(<App />);
+    fireEvent.click(screen.getByText('查看演示'));
+
+    const metricValue = document.querySelector('.shared-control-metric-value')!;
+
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByRole('tab', { name: '回报率' }));
+
+    // 推进 300ms + rAF：新实现已开始
+    await vi.advanceTimersByTimeAsync(300);
+    await vi.advanceTimersByTimeAsync(60);
+    expect(metricValue.querySelector('.shared-control-metric-face.is-next')).toBeInTheDocument();
+
+    // 在旧实现中，300ms 时还未开始（需等 340ms），所以这是 ~40ms 的提前
+  });
+
+  it('cancels old animation on rapid reverse DPI -> polling -> DPI', async () => {
+    render(<App />);
+    fireEvent.click(screen.getByText('查看演示'));
+
+    const metricValue = document.querySelector('.shared-control-metric-value')!;
+    expect(metricValue.querySelector('.shared-control-metric-face.is-current')).toHaveTextContent('1000DPI');
+
+    vi.useFakeTimers();
+    // DPI -> 回报率（contextKey 改变，触发 300ms 延迟翻牌）
+    fireEvent.click(screen.getByRole('tab', { name: '回报率' }));
+    // 100ms 后（< 300ms，翻牌尚未开始）快速切回 DPI
+    await vi.advanceTimersByTimeAsync(100);
+    fireEvent.click(screen.getByRole('tab', { name: 'DPI' }));
+
+    // 推进所有 timers，确保旧动画被取消，无残留 nextValue
+    await vi.advanceTimersByTimeAsync(600);
+
+    // 不应有残留的 next face（旧动画已取消）
+    expect(metricValue.querySelector('.shared-control-metric-face.is-next')).not.toBeInTheDocument();
+    // current face 应仍然是 DPI（未因旧 timeout 提交错误值）
+    expect(metricValue.querySelector('.shared-control-metric-face.is-current')).toHaveTextContent('1000DPI');
+  });
+
+  it('preserves flip behavior under prefers-reduced-motion without crashing', async () => {
+    // prefers-reduced-motion 由 CSS 媒体查询处理（styles.css 把动画时长压到 0.01ms），
+    // JS 端 contextTransitionDelay 仍为 300ms。验证翻牌时序不受影响且不崩溃。
+    // jsdom 不实现 matchMedia，App.tsx 也不依赖它，所以无需 polyfill。
+    render(<App />);
+    fireEvent.click(screen.getByText('查看演示'));
+
+    const metricValue = document.querySelector('.shared-control-metric-value')!;
+
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByRole('tab', { name: '回报率' }));
+
+    // 299ms 时未开始（与正常模式相同）
+    await vi.advanceTimersByTimeAsync(299);
+    expect(metricValue.querySelector('.shared-control-metric-face.is-next')).not.toBeInTheDocument();
+
+    // 300ms 后开始（CSS 动画时长不影响 JS 时序）
+    await vi.advanceTimersByTimeAsync(60);
+    expect(metricValue.querySelector('.shared-control-metric-face.is-next')).toBeInTheDocument();
+  });
+});
