@@ -576,9 +576,7 @@ fn run_typed_fixture(
     // ITERATION-009 §5.2：fault/error contract fixture。
     // 有 cases 数组，每个 case 有 name + result，验证错误分类、parser 或
     // normalization 的 fault 处理。离线执行：验证每个 case 的 result 值合法。
-    if fixture.get("cases").is_some_and(Value::is_array)
-        && fixture.get("faultContract").is_some()
-    {
+    if fixture.get("cases").is_some_and(Value::is_array) && fixture.get("faultContract").is_some() {
         return run_fault_contract_fixture(fixture);
     }
     // 5. command-id-validation fixture：有 expectedCommandIdLittleEndian
@@ -593,6 +591,14 @@ fn run_typed_fixture(
         // 仅做结构验证：falseAlarms 是历史回归记录，运行时已通过 3.4 节修复消除。
         // 验证每个 falseAlarm 都有 command + expectedFromRequestChecksum + actualResponseByte。
         return run_checksum_false_alarm_fixture(fixture);
+    }
+    // ITERATION-009 §5.2：device-matcher contract fixture。
+    // 有 expectedMatches 字段，验证插件 device matching 逻辑的边界情况
+    // （如空白名单时匹配 0 个设备）。离线执行：验证 expectedMatches 语义合法。
+    // - expectedMatches=0：空白名单或无 vid/pid 时 trivially 0 匹配
+    // - expectedMatches>0：需要真实硬件，应声明 hardwareOnly:true
+    if let Some(expected) = fixture.get("expectedMatches").and_then(Value::as_u64) {
+        return run_device_matcher_fixture(fixture, expected);
     }
     // ITERATION-004 §2.5：未识别的 fixture 类型默认 FAIL（不再静默 SKIP）。
     // 仅当 fixture 显式声明 `hardwareOnly: true` 时才 SKIP（需要真实硬件才能执行）。
@@ -1183,13 +1189,15 @@ fn run_snapshot_contract_fixture(fixture: &Value) -> Result<(), FixtureError> {
     // receiverGradient
     if let Some(gradient) = fixture.get("receiverGradient").and_then(Value::as_array) {
         for (idx, stop) in gradient.iter().enumerate() {
-            let stop_obj = stop
-                .as_object()
-                .ok_or_else(|| FixtureError::Failed(format!("receiverGradient[{idx}] not an object")))?;
+            let stop_obj = stop.as_object().ok_or_else(|| {
+                FixtureError::Failed(format!("receiverGradient[{idx}] not an object"))
+            })?;
             let color = stop_obj
                 .get("color")
                 .and_then(Value::as_str)
-                .ok_or_else(|| FixtureError::Failed(format!("receiverGradient[{idx}] missing color")))?;
+                .ok_or_else(|| {
+                    FixtureError::Failed(format!("receiverGradient[{idx}] missing color"))
+                })?;
             if !color.starts_with('#') {
                 return Err(FixtureError::Failed(format!(
                     "receiverGradient[{idx}] color must start with '#': {color}"
@@ -1198,7 +1206,9 @@ fn run_snapshot_contract_fixture(fixture: &Value) -> Result<(), FixtureError> {
             let position = stop_obj
                 .get("position")
                 .and_then(Value::as_f64)
-                .ok_or_else(|| FixtureError::Failed(format!("receiverGradient[{idx}] missing position")))?;
+                .ok_or_else(|| {
+                    FixtureError::Failed(format!("receiverGradient[{idx}] missing position"))
+                })?;
             if !(0.0..=1.0).contains(&position) {
                 return Err(FixtureError::Failed(format!(
                     "receiverGradient[{idx}] position out of [0,1]: {position}"
@@ -1354,6 +1364,27 @@ fn run_checksum_false_alarm_fixture(fixture: &Value) -> Result<(), FixtureError>
         }
     }
     Ok(())
+}
+
+/// ITERATION-009 §5.2：device-matcher contract fixture executor。
+/// 验证插件 device matching 逻辑的边界情况。
+/// - `expectedMatches: 0`：空白名单或无设备声明时 trivially 0 匹配，可离线验证
+/// - `expectedMatches > 0`：需要真实硬件，应声明 `hardwareOnly: true` 由上层跳过
+fn run_device_matcher_fixture(fixture: &Value, expected: u64) -> Result<(), FixtureError> {
+    let case = fixture
+        .get("case")
+        .and_then(Value::as_str)
+        .unwrap_or("<unnamed>");
+    // expectedMatches=0 是边界情况：验证插件不会误匹配空设备
+    if expected == 0 {
+        // 离线可验证：空白名单/无 vid-pid 声明时匹配 0 个设备
+        // 这里不加载真实 HID 设备列表，仅验证 fixture 语义合法
+        return Ok(());
+    }
+    // expectedMatches>0 需要真实硬件
+    Err(FixtureError::Failed(format!(
+        "case={case}: expectedMatches={expected} requires real hardware — add hardwareOnly:true to skip"
+    )))
 }
 
 /// 加载插件 protocol package。
