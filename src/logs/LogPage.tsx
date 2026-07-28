@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type RefObject } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useScrollOverflow } from '../useScrollOverflow';
 import {
   ArrowsClockwise,
   ArrowsInLineVertical,
@@ -482,6 +483,8 @@ function LogList({
   loading,
   onLoadMore,
   onToggleEntry,
+  scrollRef,
+  onScroll,
 }: {
   entries: LogEntry[];
   expandedEntryIds: ReadonlySet<number>;
@@ -489,10 +492,13 @@ function LogList({
   loading: boolean;
   onLoadMore: () => void;
   onToggleEntry: (entryId: number) => void;
+  scrollRef: RefObject<HTMLDivElement | null>;
+  onScroll: () => void;
 }) {
   const { t } = useTranslation();
+  const canScroll = useScrollOverflow(scrollRef);
   return (
-    <div className="log-list-wrapper">
+    <div className={`log-list-wrapper${canScroll ? ' scroll-overflow' : ''}`} ref={scrollRef} onScroll={onScroll}>
       <div className="log-list">
         {entries.length === 0 ? (
           <p className="log-list-empty">{loading ? t('logs.list.loading') : t('logs.list.empty')}</p>
@@ -981,8 +987,8 @@ export function LogPage({ onBack }: { onBack: () => void }) {
   const atTopRef = useRef(true);
   useEffect(() => { atTopRef.current = atTop; }, [atTop]);
 
-  /** 页面级滚动容器 ref（挂在 <main> 上）。滚动跟随 / atTop 检测均基于此 ref。 */
-  const scrollRef = useRef<HTMLElement>(null);
+  /** 页面级滚动容器 ref（挂在 .log-list-wrapper 上）。滚动跟随 / atTop 检测均基于此 ref。 */
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   /** 检测当前是否在顶部附近。 */
   const checkAtTop = useCallback(() => {
@@ -1503,7 +1509,7 @@ export function LogPage({ onBack }: { onBack: () => void }) {
   }, [diagnosticRemaining, refreshStatus]);
 
   return (
-    <main className="log-page" ref={scrollRef} onScroll={handleScroll}>
+    <main className="log-page">
       <header>
         <div>
           <p className="eyebrow">{t('logs.eyebrow')}</p>
@@ -1550,6 +1556,8 @@ export function LogPage({ onBack }: { onBack: () => void }) {
         loading={loading}
         onLoadMore={loadMore}
         onToggleEntry={toggleExpandedEntry}
+        scrollRef={scrollRef}
+        onScroll={handleScroll}
       />
       <DeleteConfirmDialog state={deleteDialog} onClose={() => setDeleteDialog({ open: false })} onConfirm={confirmDelete} />
       <DiagnosticStartDialog
