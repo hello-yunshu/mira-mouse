@@ -58,6 +58,7 @@ import {
   simulateDemoMutation,
 } from './pluginAdapter';
 import { onAppNotification, notifyError, notifySuccess, type AppNotification } from './notify';
+import { useScrollOverflow } from './useScrollOverflow';
 import { relaunchAfterUpdate, startAutomaticAppUpdateCheck } from './updater';
 import { startAutomaticPluginUpdateCheck } from './plugin-updater';
 import { startAutomaticLocalAiUpdateCheck } from './local-ai-updater';
@@ -272,7 +273,7 @@ const METRIC_DIGIT_STAGGER = 42;
 const METRIC_DIGIT_STEP = 52;
 const METRIC_DIGIT_FINAL_DURATION = 92;
 
-function metricDigitFlip(fromText: string, targetText: string): MetricDigitFlip | undefined {
+function metricDigitFlip(fromText: string, targetText: string, force = false): MetricDigitFlip | undefined {
   if (!/^\d+$/.test(fromText) || !/^\d+$/.test(targetText)) return undefined;
 
   const slotCount = Math.max(fromText.length, targetText.length);
@@ -285,7 +286,7 @@ function metricDigitFlip(fromText: string, targetText: string): MetricDigitFlip 
     const targetCharacter = targetDigits[index];
     const baseDelay = index * METRIC_DIGIT_STAGGER;
 
-    if (fromCharacter === targetCharacter) {
+    if (fromCharacter === targetCharacter && !force) {
       return {
         position: index - leadingSlots,
         frames: [{ character: targetCharacter, delay: baseDelay, kind: 'static' }],
@@ -293,7 +294,9 @@ function metricDigitFlip(fromText: string, targetText: string): MetricDigitFlip 
     }
 
     let intermediateCharacters: string[];
-    if (fromCharacter === ' ') {
+    if (fromCharacter === targetCharacter) {
+      intermediateCharacters = [];
+    } else if (fromCharacter === ' ') {
       const targetDigit = Number(targetCharacter);
       intermediateCharacters = Array.from({ length: targetDigit }, (_, step) => String(step));
     } else if (targetCharacter === ' ') {
@@ -344,8 +347,8 @@ function metricDigitFlip(fromText: string, targetText: string): MetricDigitFlip 
   };
 }
 
-function metricDigitFlipDuration(fromText: string, targetText: string): number | undefined {
-  return metricDigitFlip(fromText, targetText)?.duration;
+function metricDigitFlipDuration(fromText: string, targetText: string, force = false): number | undefined {
+  return metricDigitFlip(fromText, targetText, force)?.duration;
 }
 
 function MorphingMetricValue({
@@ -355,7 +358,8 @@ function MorphingMetricValue({
   unit,
   variant,
   duration = 320,
-}: MetricFlipValue & { active: boolean; duration?: number }) {
+  contextTransitionDelay = 340,
+}: MetricFlipValue & { active: boolean; duration?: number; contextTransitionDelay?: number }) {
   const [currentValue, setCurrentValue] = useState<MetricFlipValue>(() => ({
     contextKey,
     text,
@@ -364,16 +368,17 @@ function MorphingMetricValue({
   }));
   const [nextValue, setNextValue] = useState<MetricFlipValue>();
   const [transitioning, setTransitioning] = useState(false);
-  const [transitionKind, setTransitionKind] = useState<'crossfade' | 'flip'>('crossfade');
   const currentValueRef = useRef(currentValue);
   const transitionIdRef = useRef(0);
 
   useEffect(() => {
     const transitionId = transitionIdRef.current + 1;
     transitionIdRef.current = transitionId;
+    let prepareFrame = 0;
     let transitionFrame = 0;
     let commitFrame = 0;
-    let timeout = 0;
+    let delayTimeout = 0;
+    let fallbackTimeout = 0;
     let resetFrame = 0;
     const displayedValue = currentValueRef.current;
     const incomingValue = {
@@ -399,40 +404,49 @@ function MorphingMetricValue({
       return () => window.cancelAnimationFrame(resetFrame);
     }
 
-    const incomingTransitionKind = contextKey === displayedValue.contextKey ? 'flip' : 'crossfade';
-    const transitionDuration = incomingTransitionKind === 'crossfade'
-      ? 360
-      : metricDigitFlipDuration(displayedValue.text, incomingValue.text) ?? duration;
-    const fallbackDuration = incomingTransitionKind === 'flip'
-      ? transitionDuration + 80
-      : transitionDuration;
-    const prepareFrame = window.requestAnimationFrame(() => {
-      setTransitionKind(incomingTransitionKind);
-      setNextValue(incomingValue);
-      setTransitioning(false);
-      transitionFrame = window.requestAnimationFrame(() => {
-        setTransitioning(true);
-        timeout = window.setTimeout(() => {
-          if (transitionIdRef.current !== transitionId) return;
-          commitFrame = window.requestAnimationFrame(() => {
+    const contextChanged = contextKey !== displayedValue.contextKey;
+    const transitionDuration = metricDigitFlipDuration(
+      displayedValue.text,
+      incomingValue.text,
+      contextChanged,
+    ) ?? duration;
+    const prepareTransition = () => {
+      prepareFrame = window.requestAnimationFrame(() => {
+        setNextValue(incomingValue);
+        setTransitioning(false);
+        transitionFrame = window.requestAnimationFrame(() => {
+          setTransitioning(true);
+          fallbackTimeout = window.setTimeout(() => {
             if (transitionIdRef.current !== transitionId) return;
-            currentValueRef.current = incomingValue;
-            setCurrentValue(incomingValue);
-            setNextValue(undefined);
-            setTransitioning(false);
-          });
-        }, fallbackDuration);
+            commitFrame = window.requestAnimationFrame(() => {
+              if (transitionIdRef.current !== transitionId) return;
+              currentValueRef.current = incomingValue;
+              setCurrentValue(incomingValue);
+              setNextValue(undefined);
+              setTransitioning(false);
+            });
+          }, transitionDuration + 80);
+        });
       });
-    });
+    };
+
+    // DPI 与回报率共用同一个数字层。切换上下文时先完成尺寸和位置
+    // 变形，再开始数字翻牌，避免缩放途中提前露出目标读数。
+    if (contextChanged) {
+      delayTimeout = window.setTimeout(prepareTransition, contextTransitionDelay);
+    } else {
+      prepareTransition();
+    }
 
     return () => {
       window.cancelAnimationFrame(prepareFrame);
       window.cancelAnimationFrame(transitionFrame);
       window.cancelAnimationFrame(commitFrame);
       window.cancelAnimationFrame(resetFrame);
-      window.clearTimeout(timeout);
+      window.clearTimeout(delayTimeout);
+      window.clearTimeout(fallbackTimeout);
     };
-  }, [active, contextKey, duration, text, unit, variant]);
+  }, [active, contextKey, contextTransitionDelay, duration, text, unit, variant]);
 
   const commitNextValue = () => {
     if (!nextValue) return;
@@ -445,8 +459,7 @@ function MorphingMetricValue({
 
   const finishFlipTransition = (event: React.TransitionEvent<HTMLSpanElement>) => {
     if (
-      transitionKind !== 'flip'
-      || event.target !== event.currentTarget
+      event.target !== event.currentTarget
       || event.propertyName !== 'opacity'
     ) return;
 
@@ -456,16 +469,19 @@ function MorphingMetricValue({
   const finishDigitFlip = (event: React.AnimationEvent<HTMLSpanElement>) => {
     const target = event.target as HTMLElement;
     if (
-      transitionKind !== 'flip'
-      || target.dataset.flipLast !== 'true'
+      target.dataset.flipLast !== 'true'
     ) return;
 
     commitNextValue();
   };
 
   const renderFace = (value: MetricFlipValue, className: string) => {
-    const digitFlip = className === 'is-next' && transitionKind === 'flip'
-      ? metricDigitFlip(currentValue.text, value.text)
+    const digitFlip = className === 'is-next'
+      ? metricDigitFlip(
+          currentValue.text,
+          value.text,
+          currentValue.contextKey !== value.contextKey,
+        )
       : undefined;
     return (
       <span
@@ -510,8 +526,8 @@ function MorphingMetricValue({
   return (
     <span
       className={`shared-control-metric-value${transitioning ? ' is-transitioning' : ''}`}
-      data-transition={transitionKind}
-      aria-label={`${text}${unit ? ` ${unit}` : ''}`}
+      data-transition="flip"
+      aria-label={`${(nextValue ?? currentValue).text}${(nextValue ?? currentValue).unit ? ` ${(nextValue ?? currentValue).unit}` : ''}`}
     >
       {renderFace(currentValue, 'is-current')}
       {nextValue && renderFace(nextValue, 'is-next')}
@@ -539,12 +555,24 @@ function FormattedValue({ value, format, label, className }: {
     : <LiveValue text={text} className={className} />;
 }
 
+function resolveSummaryValue(item: PluginSummaryItem, device: DeviceState): {
+  source: string;
+  value: unknown;
+} {
+  const sources = [item.source, ...(item.sourceFallbacks ?? [])];
+  for (const source of sources) {
+    const value = readPath(device, source);
+    if (value !== undefined && value !== null && value !== '') return { source, value };
+  }
+  return { source: item.source, value: readPath(device, item.source) };
+}
+
 function CapabilitySummary({ capability, device }: { capability: PluginCapability; device: DeviceState }) {
   // P1-1 (Iteration 008)：summary 上限只作用于 polling capability（fixedSlot=2 或 group=polling）。
   // 非 polling capability 的 summary 不被截断。
   const allItems = capability.metadata.summary ?? [];
   const reportedItems = allItems.filter((item) => {
-    const value = readPath(device, item.source);
+    const { value } = resolveSummaryValue(item, device);
     return value !== undefined && value !== null && value !== '';
   });
   const max = summaryMaxForCapability(capability);
@@ -557,7 +585,7 @@ function CapabilitySummary({ capability, device }: { capability: PluginCapabilit
       style={{ gridTemplateColumns: `repeat(${items.length}, minmax(0, 1fr))` }}
     >
       {items.map((item) => {
-        const value = readPath(device, item.source);
+        const { source, value } = resolveSummaryValue(item, device);
         const option = item.options?.find((candidate) => candidate.value === value);
         const valueLabel = option
           ? resolveLabelKey(option.labelKey, device.pluginId)
@@ -567,9 +595,9 @@ function CapabilitySummary({ capability, device }: { capability: PluginCapabilit
           : item.label ?? item.source;
         return (
           <span
-            key={`${label}:${item.source}`}
+            key={`${label}:${source}`}
             className="secondary-control-item"
-            style={secondaryRevealStyle(`${capability.id}:${item.source}:${label}`)}
+            style={secondaryRevealStyle(`${capability.id}:${source}:${label}`)}
           >
             {label}
             <FormattedValue value={value} format={item.format} label={valueLabel} />
@@ -1624,6 +1652,7 @@ function AdvancedSettingsModal({ groups, device, writeBusy, onClose, onEditField
       title={i18n.t('advancedSettings.title')}
       size="medium"
       className="advanced-settings-modal"
+      backdropClassName="advanced-settings-backdrop"
     >
       <div className="modal-header">
         <h2>{i18n.t('advancedSettings.title')}</h2>
@@ -1654,7 +1683,7 @@ function AdvancedSettingsModal({ groups, device, writeBusy, onClose, onEditField
                 if (entry.type === 'summary') {
                   // P0-L：polling overflow 以只读 summary 条目展示。
                   const { capability, item } = entry;
-                  const value = readPath(device, item.source);
+                  const { value } = resolveSummaryValue(item, device);
                   const option = item.options?.find((candidate) => candidate.value === value);
                   const valueLabel = option
                     ? resolveLabelKey(option.labelKey, device.pluginId)
@@ -2009,6 +2038,7 @@ function capabilitySourceGroups(capability: PluginCapability): string[] {
   }
   for (const item of capability.metadata.summary ?? []) {
     if (item.source) sources.push(item.source);
+    for (const fallback of item.sourceFallbacks ?? []) sources.push(fallback);
   }
   for (const source of sources) {
     const match = source.match(/^capabilities\.([^.]+)$/);
@@ -2036,6 +2066,8 @@ function DeviceDetails({ device, deviceKey, onClose }: { device: DeviceState; de
   const [includePayload, setIncludePayload] = useState(false);
   const [diagFormat, setDiagFormat] = useState<'markdown' | 'json'>('markdown');
   const [logSessionId, setLogSessionId] = useState<string | null>(null);
+  const capScrollRef = useRef<HTMLDivElement>(null);
+  const capCanScroll = useScrollOverflow(capScrollRef);
   const pluginId = device.pluginId;
 
   // Sync protocol diagnostic state with backend on mount: the session may
@@ -2213,7 +2245,7 @@ function DeviceDetails({ device, deviceKey, onClose }: { device: DeviceState; de
           </button>
         </div>
       </div>
-      <div className="capability-groups">
+      <div ref={capScrollRef} className={`capability-groups${capCanScroll ? ' scroll-overflow' : ''}`}>
         {groups.length ? groups.map(([group, fields]) => (
           <section className="capability-group" key={group}>
             <h3>
@@ -2304,7 +2336,7 @@ function sharedControlSurface(capabilities: PluginCapability[], device: DeviceSt
       return { kind: 'lighting', targetSelector: '.lighting-reading .lighting-group' };
     }
     if ((capability.metadata.summary ?? []).some((item) => {
-      const value = readPath(device, item.source);
+      const { value } = resolveSummaryValue(item, device);
       return value !== undefined && value !== null && value !== '';
     })) {
       return { kind: 'summary', targetSelector: '.metric-reading > .capability-summary' };
@@ -2418,6 +2450,7 @@ function SharedControlMetricLayer({
         text={metric?.text ?? ''}
         unit={metric?.unit ?? ''}
         variant={metric?.variant ?? 'hertz'}
+        contextTransitionDelay={sync === 'surface' ? 320 : 340}
       />
     </div>
   );
@@ -2615,16 +2648,27 @@ function Dashboard({
     // P0-F：直接使用选择器返回的最终序列，不再按 fixedSlot/order 重新排序。
     // 选择器已保证 [leading → 核心(DPI→polling→lighting) → trailing] 顺序。
     // finalIndex 来自选择器序列的数组索引，用于保持 DOM 顺序与选择器语义一致。
-    const groups = new Map<string, { id: string; label: string; icon: string | undefined; capabilities: PluginCapability[]; finalIndex: number }>();
+    const groups = new Map<string, {
+      id: string;
+      label: string;
+      accessibleLabel: string;
+      icon: string | undefined;
+      capabilities: PluginCapability[];
+      finalIndex: number;
+    }>();
     controlCandidates.forEach((candidate, finalIndex) => {
       const id = candidate.groupId;
       const existing = groups.get(id);
       if (existing) {
         existing.capabilities.push(candidate.capability);
       } else {
+        const accessibleLabel = resolveLabelKey(candidate.capability.labelKey, device.pluginId);
         groups.set(id, {
           id,
-          label: resolveLabelKey(candidate.capability.labelKey, device.pluginId),
+          label: candidate.placement.compactLabelKey
+            ? resolveLabelKey(candidate.placement.compactLabelKey, device.pluginId)
+            : accessibleLabel,
+          accessibleLabel,
           icon: candidate.placement.icon,
           capabilities: [candidate.capability],
           finalIndex,
@@ -2947,7 +2991,7 @@ function Dashboard({
       const summary = capability.metadata.summary;
       if (!summary || summary.length === 0) continue;
       const reportedItems = summary.filter((item) => {
-        const value = readPath(device, item.source);
+        const { value } = resolveSummaryValue(item, device);
         return value !== undefined && value !== null && value !== '';
       });
       const max = summaryMaxForCapability(capability);
@@ -3166,7 +3210,7 @@ function Dashboard({
           ),
         }}
       >
-        {controls.map(({ id, label, icon, hasMetric, hasSurface }) => {
+        {controls.map(({ id, label, accessibleLabel, icon, hasMetric, hasSurface }) => {
           const sync = resolveContextMotionSync(
             activeHasMetric,
             activeHasSurface,
@@ -3177,6 +3221,7 @@ function Dashboard({
             <button
               key={id}
               role="tab"
+              aria-label={accessibleLabel}
               aria-selected={activeMode === id}
               className={activeMode === id ? 'active' : ''}
               onClick={() => {

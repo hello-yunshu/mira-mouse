@@ -52,6 +52,7 @@
     "deviceCount": "{{count}} 台设备",
     "deviceBattery": "设备电量",
     "deviceControl": "设备控制",
+    "configurationTab": "配置",
     "deviceStatus": "设备状态",
     "deviceSummary": "设备摘要",
     "motionSync": "运动同步",

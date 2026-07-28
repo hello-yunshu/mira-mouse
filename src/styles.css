@@ -2233,7 +2233,9 @@ body:has(.platform-fallback:not(.web-preview)) {
 .device-details .icon-button { display: grid; place-items: center; border-radius: 50%; }
 .device-details .icon-button svg { width: var(--modal-close-icon); height: var(--modal-close-icon); }
 .details-note { margin: 9px 0 11px; color: var(--muted); font-size: 10px; line-height: 1.45; }
-.capability-groups { min-height: 0; overflow-y: auto; overscroll-behavior: contain; columns: 2; column-gap: 8px; padding-right: 3px; }
+.capability-groups { min-height: 0; overflow-y: auto; overscroll-behavior: contain; columns: 2; column-gap: 8px; padding-right: 3px; scrollbar-width: none; }
+.capability-groups::-webkit-scrollbar { display: none; }
+.capability-groups.scroll-overflow { --scroll-fade: 8px; }
 .capability-group { min-width: 0; break-inside: avoid; margin: 0 0 8px; padding: 10px; border-radius: 12px; background: var(--surface-group-bg); border: 1px solid var(--surface-group-border); }
 .capability-group h3 { margin: 0 0 5px; font-size: 12px; }
 .capability-group dl { margin: 0; }
@@ -2241,6 +2243,120 @@ body:has(.platform-fallback:not(.web-preview)) {
 .capability-group dt { color: var(--muted); }
 .capability-group dd { min-width: 0; margin: 0; text-align: right; overflow-wrap: anywhere; }
 .capability-group dd strong { font: inherit; font-weight: inherit; }
+
+/* Advanced Settings is a portal modal. Its surface and backdrop must both
+   remain visible after Modal makes the dashboard root inert. */
+.advanced-settings-backdrop {
+  position: fixed;
+  z-index: var(--z-modal);
+  inset: 0;
+  padding: var(--modal-backdrop-padding);
+  display: grid;
+  place-items: center;
+  background: var(--modal-backdrop-bg);
+  -webkit-backdrop-filter: var(--modal-backdrop-blur);
+  backdrop-filter: var(--modal-backdrop-blur);
+}
+.advanced-settings-modal {
+  width: min(468px, calc(100vw - 32px));
+  max-height: 100%;
+  overflow: hidden;
+  border: 1px solid var(--floating-glass-border);
+  border-radius: var(--modal-radius-lg);
+  padding: var(--modal-padding);
+  background: var(--floating-glass-bg);
+  -webkit-backdrop-filter: var(--floating-glass-blur);
+  backdrop-filter: var(--floating-glass-blur);
+  box-shadow: var(--floating-glass-shadow);
+}
+.advanced-settings-modal .modal-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.advanced-settings-modal .modal-header h2 {
+  margin: 0;
+  font-size: 18px;
+  letter-spacing: -.01em;
+}
+.advanced-settings-modal .modal-close {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  color: var(--muted);
+  background: transparent;
+}
+.advanced-settings-modal .modal-close:hover {
+  color: var(--text);
+  background: var(--control-hover-bg);
+}
+.advanced-settings-modal .modal-close svg {
+  width: var(--modal-close-icon);
+  height: var(--modal-close-icon);
+}
+.advanced-settings-modal .modal-body {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.advanced-settings-section + .advanced-settings-section { margin-top: 10px; }
+.advanced-settings-section h3 { margin: 0 0 6px; font-size: 12px; }
+.advanced-settings-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--surface-group-border);
+  border-radius: 12px;
+  background: var(--surface-group-bg);
+  overflow: hidden;
+}
+.advanced-settings-item {
+  min-height: 38px;
+  padding: 6px 10px;
+  display: flex;
+  align-items: center;
+}
+.advanced-settings-item + .advanced-settings-item {
+  border-top: 1px solid rgb(127 120 140 / 9%);
+}
+.advanced-settings-field {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--text);
+  background: transparent;
+  text-align: left;
+}
+.advanced-settings-field-label { min-width: 0; font-size: 10px; }
+.advanced-settings-field-value {
+  flex: 0 1 auto;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 10px;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+.advanced-settings-field-value i {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--light-color);
+}
+.advanced-settings-inline { justify-content: space-between; gap: 12px; }
+.advanced-settings-inline > .lighting-row { width: 100%; }
+.advanced-settings-stage-layout { display: block; }
 
 /* Details page actions */
 .details-actions { display: flex; gap: 6px; margin-bottom: 10px; }
@@ -2433,20 +2549,40 @@ h2 { margin: 2px 0 0; letter-spacing: -.02em; font-size: 16px; }
 .nav-exit { width: 30px; height: 30px; padding: 0; display: grid; place-items: center; }
 .nav-exit svg { width: 19px; height: 19px; }
 
-/* Settings page — 紧凑 */
+/* Settings page — 紧凑。header + sub-nav 固定，内容区独立滚动。 */
 .settings-page, .about-page {
   width: 100%;
   max-width: 480px;
   min-height: 0;
   margin: 2vh auto 0;
-  padding-bottom: 16px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}
+.settings-page > header, .about-page > header {
+  display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; flex-shrink: 0;
+}
+.settings-page header h1, .about-page header h1 { font-size: 22px; }
+.settings-page > .sub-nav { flex-shrink: 0; }
+
+/* 设置页/关于页内容滚动区：独立滚动，溢出时通过 .scroll-overflow 应用淡出 */
+.settings-scroll-area {
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-width: none;
+  padding-bottom: 16px;
 }
-.settings-page::-webkit-scrollbar, .about-page::-webkit-scrollbar { display: none; }
-.settings-page header, .about-page header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
-.settings-page header h1, .about-page header h1 { font-size: 22px; }
+.settings-scroll-area::-webkit-scrollbar { display: none; }
+
+/* 通用条件淡出：仅当内容溢出时由 JS 添加此类触发顶底渐变 mask */
+.scroll-overflow {
+  --scroll-fade: 14px;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, black var(--scroll-fade), black calc(100% - var(--scroll-fade)), transparent 100%);
+  mask-image: linear-gradient(to bottom, transparent 0, black var(--scroll-fade), black calc(100% - var(--scroll-fade)), transparent 100%);
+}
 
 /* Sub-navigation — 设置页二级菜单 */
 .sub-nav {
@@ -2985,7 +3121,7 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
 .battery-usage-modal {
   width: min(620px, calc(100vw - 32px));
   max-height: calc(100vh - 54px);
-  overflow-y: auto;
+  overflow: hidden;
   overscroll-behavior: contain;
   scrollbar-width: none;
   display: flex;
@@ -3000,8 +3136,17 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
 }
 .battery-usage-modal::-webkit-scrollbar { display: none; }
 
+/* 布局容器：标题区固定，内容区独立滚动 + 顶底渐变淡出 */
+.battery-usage-modal-layout {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 /* 标题区 */
 .battery-usage-header {
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -3009,6 +3154,17 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   padding: 1px 2px 9px;
   border-bottom: 1px solid var(--surface-group-border);
 }
+
+/* 内容滚动区 */
+.battery-usage-scroll-region {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  padding-top: 4px;
+}
+.battery-usage-scroll-region::-webkit-scrollbar { display: none; }
 .battery-usage-header h2 {
   margin: 0;
   font-size: 16px;
@@ -4185,25 +4341,21 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
 
 .settings-page > header,
 .settings-page > .sub-nav,
-.settings-page > .card,
+.settings-scroll-area > .card,
+.settings-scroll-area > section,
 .about-page > header,
-.about-page > .card,
-.about-page > section,
 .log-page > header,
 .log-page > .log-toolbar,
 .log-page > .log-list-wrapper {
   animation: mira-section-enter var(--motion-base) var(--motion-ease-out) backwards;
 }
 .settings-page > .sub-nav { animation-delay: 40ms; }
-.settings-page > .card:nth-of-type(1),
-.about-page > .card:nth-of-type(1),
-.about-page > section:nth-of-type(1) { animation-delay: 80ms; }
-.settings-page > .card:nth-of-type(2),
-.about-page > .card:nth-of-type(2),
-.about-page > section:nth-of-type(2) { animation-delay: 120ms; }
-.settings-page > .card:nth-of-type(n+3),
-.about-page > .card:nth-of-type(n+3),
-.about-page > section:nth-of-type(n+3) { animation-delay: 160ms; }
+.settings-scroll-area > .card:nth-of-type(1),
+.settings-scroll-area > section:nth-of-type(1) { animation-delay: 80ms; }
+.settings-scroll-area > .card:nth-of-type(2),
+.settings-scroll-area > section:nth-of-type(2) { animation-delay: 120ms; }
+.settings-scroll-area > .card:nth-of-type(n+3),
+.settings-scroll-area > section:nth-of-type(n+3) { animation-delay: 160ms; }
 .log-page > .log-toolbar { animation-delay: 40ms; }
 .log-page > .log-list-wrapper { animation-delay: 80ms; }
 
@@ -4375,11 +4527,13 @@ input[type="color"] {
 /* Transient material gets the strongest depth cue, still under 300 ms. */
 .details-backdrop,
 .edit-modal-backdrop,
+.advanced-settings-backdrop,
 .battery-usage-modal-overlay {
   animation: mira-scrim-enter var(--motion-base) ease-out backwards;
 }
 .device-details,
 .edit-modal,
+.advanced-settings-modal,
 .battery-usage-modal {
   animation: mira-modal-enter var(--motion-slow) var(--motion-ease-out) backwards;
   transform-origin: 50% 42%;
@@ -4506,14 +4660,17 @@ input[type="color"] {
   .empty,
   .dashboard > *,
   .settings-page > *,
+  .settings-scroll-area > *,
   .about-page > *,
   .log-page > *,
   .control-stage > *,
   .details-backdrop,
   .edit-modal-backdrop,
+  .advanced-settings-backdrop,
   .battery-usage-modal-overlay,
   .device-details,
   .edit-modal,
+  .advanced-settings-modal,
   .battery-usage-modal,
   .app-notification,
   .battery-chart-card,
@@ -4644,16 +4801,13 @@ input[type="color"] {
   }
 }
 
-/* 日志页主容器：页面级滚动，与 .about-page 模式一致 */
+/* 日志页主容器：header + toolbar 固定，列表区独立滚动。 */
 .log-page {
   width: 100%;
   max-width: 480px;
   min-height: 0;
   margin: 2vh auto 0;
-  padding-bottom: 16px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  scroll-behavior: smooth;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   flex: 1;
@@ -5011,8 +5165,17 @@ input[type="color"] {
   --accent-alpha: rgb(255 170 50 / .4);
 }
 
-/* 列表：行式布局，无卡片包装 */
-.log-list-wrapper { flex: 1; min-height: 0; }
+/* 列表：行式布局，无卡片包装。列表区独立滚动，溢出时通过 .scroll-overflow 应用淡出。 */
+.log-list-wrapper {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scroll-behavior: smooth;
+  scrollbar-width: none;
+  padding-bottom: 16px;
+}
+.log-list-wrapper::-webkit-scrollbar { display: none; }
 .log-list {
   display: flex;
   flex-direction: column;

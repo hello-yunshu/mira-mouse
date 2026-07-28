@@ -705,6 +705,12 @@ export function validatePlacement(placement: PluginCapabilityPlacement): string 
   if (placement.optionalPosition !== undefined && role !== 'candidate') {
     return `optionalPosition requires dashboardRole='candidate', got '${role}'`;
   }
+  if (
+    placement.compactLabelKey !== undefined
+    && (typeof placement.compactLabelKey !== 'string' || placement.compactLabelKey.trim().length === 0)
+  ) {
+    return `compactLabelKey must be a non-empty string, got ${String(placement.compactLabelKey)}`;
+  }
   return null;
 }
 

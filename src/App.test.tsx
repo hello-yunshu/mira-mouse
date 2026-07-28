@@ -138,13 +138,20 @@ describe('Mira shell', () => {
     expect(metricLayer?.querySelector('.shared-control-metric-text')).toBe(metricText);
     expect(metricLayer).toHaveAttribute('data-variant', 'hertz');
     expect(metricLayer).toHaveAttribute('data-positioned', 'true');
+    const metricValue = metricLayer?.querySelector('.shared-control-metric-value');
+    expect(metricValue?.querySelector('.shared-control-metric-face.is-current')).toHaveTextContent('1000DPI');
+    expect(metricValue?.querySelector('.shared-control-metric-face.is-next')).not.toBeInTheDocument();
     let incomingMetricFace: Element | null = null;
     await waitFor(() => {
-      const metricValue = metricLayer?.querySelector('.shared-control-metric-value');
-      expect(metricValue).toHaveAttribute('data-transition', 'crossfade');
+      expect(metricValue).toHaveAttribute('data-transition', 'flip');
       incomingMetricFace = metricValue?.querySelector('.shared-control-metric-face.is-next') ?? null;
       expect(incomingMetricFace).toBeInTheDocument();
     });
+    const pollingTerminalDigit = metricValue?.querySelector(
+      '.shared-control-metric-face.is-next [data-flip-last="true"]',
+    );
+    expect(pollingTerminalDigit).toBeInTheDocument();
+    fireEvent.animationEnd(pollingTerminalDigit!, { animationName: 'metric-digit-settle' });
     await waitFor(() => {
       expect(metricLayer?.querySelector('.shared-control-metric-face.is-next')).not.toBeInTheDocument();
     });
@@ -163,6 +170,13 @@ describe('Mira shell', () => {
     expect(summaryDelays.length).toBeGreaterThan(1);
     expect(summaryDelays.every((delay) => delay >= 165 && delay < 210)).toBe(true);
     expect(new Set(summaryDelays).size).toBeGreaterThan(1);
+
+    fireEvent.click(screen.getByRole('tab', { name: 'DPI' }));
+    expect(metricValue?.querySelector('.shared-control-metric-face.is-current')).toHaveTextContent('1000Hz');
+    expect(metricValue?.querySelector('.shared-control-metric-face.is-next')).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(metricValue?.querySelector('.shared-control-metric-face.is-current')).toHaveTextContent('1000DPI');
+    });
 
     fireEvent.click(screen.getByRole('tab', { name: '灯光' }));
     expect(document.querySelector('.shared-control-metric')).toBe(metricLayer);
@@ -273,12 +287,15 @@ describe('Mira shell', () => {
     fireEvent.click(screen.getByRole('button', { name: '切换鼠标' }));
     fireEvent.click(screen.getByText('Mira Example USB Mouse').closest('button')!);
     expect(screen.getByRole('heading', { name: 'Mira Example USB Mouse' })).toBeInTheDocument();
-    // ITERATION-004 §2.1：fixedSlot 1/2/3 (DPI/回报率/灯光) 排在前 3 位，
-    // 第 4 槽位为 priority>=90 且 fourthSlotEligible 的候选（配置控制 priority=95）。
+    // 配置控制通过 candidate + optionalPosition=leading 放在核心三项之前；
+    // 可见短标签不超过 3 个中文字符，完整名称保留为 tab 的无障碍名称。
     expect(screen.getAllByRole('tab').map((tab) => tab.textContent))
-      .toEqual(['DPI', '回报率', '灯光', '配置控制']);
-    expect(screen.getByRole('tab', { name: 'DPI' })).toHaveAttribute('aria-selected', 'true');
-    expect(screen.getByLabelText('当前 DPI：1600，点击编辑')).toBeInTheDocument();
+      .toEqual(['配置', 'DPI', '回报率', '灯光']);
+    expect(screen.getAllByRole('tab').every((tab) => Array.from(tab.textContent ?? '').length <= 3))
+      .toBe(true);
+    expect(screen.getByRole('tab', { name: '配置控制' })).toHaveTextContent('配置');
+    expect(screen.getByRole('tab', { name: '配置控制' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('group', { name: '配置控制' })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('tab', { name: '灯光' }));
     fireEvent.click(screen.getByRole('tab', { name: '配置控制' }));

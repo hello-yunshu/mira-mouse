@@ -258,7 +258,20 @@ const MOCK_CONTROL_MODE_CAPABILITY: PluginCapability = {
   control: 'Segmented',
   labelKey: '配置控制',
   readOnly: false,
-  placements: [{ region: 'control', group: 'configuration', order: 5, span: 1, icon: 'settings', priority: 95, dashboardRole: 'candidate', fourthSlotEligible: true, dedupeKey: 'dashboard.control-mode', fallbackRegion: 'advanced' }],
+  placements: [{
+    region: 'control',
+    group: 'configuration',
+    order: 5,
+    span: 1,
+    icon: 'settings',
+    priority: 95,
+    dashboardRole: 'candidate',
+    fourthSlotEligible: true,
+    dedupeKey: 'dashboard.control-mode',
+    fallbackRegion: 'advanced',
+    optionalPosition: 'leading',
+    compactLabelKey: 'dashboard.configurationTab',
+  }],
   metadata: {
     fields: [{
       id: 'mode',
