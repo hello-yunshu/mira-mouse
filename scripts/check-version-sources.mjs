@@ -37,6 +37,15 @@ assertNoOwnVersion('src-tauri/tauri.conf.json', tauriConfig);
 
 for (const member of workspaceMembers(cargoToml)) {
   const manifest = await readFile(`${member}/Cargo.toml`, 'utf8');
+  if (member === 'crates/mira-plugin-cli') {
+    const cliVersion = manifest.match(/^\s*version\s*=\s*"([^"]+)"\s*$/m)?.[1];
+    if (!cliVersion || !semver.test(cliVersion)) {
+      throw new Error(
+        'crates/mira-plugin-cli/Cargo.toml must define its independent SemVer release version',
+      );
+    }
+    continue;
+  }
   if (!/^\s*version\.workspace\s*=\s*true\s*$/m.test(manifest)) {
     throw new Error(`${member}/Cargo.toml must use version.workspace = true`);
   }
