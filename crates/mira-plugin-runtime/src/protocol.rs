@@ -416,6 +416,86 @@ pub fn normalize_device_outputs_with_package(
     standard_reading(outputs, capabilities, BTreeMap::new())
 }
 
+/// Classify a structured runtime failure into the stable fault contract exposed
+/// to fixture tests and host-facing diagnostics.
+///
+/// Keeping this as a pure runtime function lets fixtures execute the same
+/// classification rules without needing HID hardware.
+pub fn classify_contract_fault(input: &Value) -> Result<&'static str, String> {
+    let object = input
+        .as_object()
+        .ok_or_else(|| "fault input must be an object".to_string())?;
+    let kind = object
+        .get("kind")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "fault input missing kind".to_string())?;
+    match kind {
+        "transport" => {
+            let error = object
+                .get("error")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "transport fault missing error".to_string())?
+                .to_ascii_lowercase();
+            if error.contains("disconnect") || error.contains("unplug") {
+                Ok("transaction-cancelled")
+            } else if error.contains("timed out") || error.contains("timeout") {
+                Ok("transport-timeout")
+            } else if error.contains("unreachable") || error.contains("offline") {
+                Ok("device-unreachable")
+            } else {
+                Err(format!("unclassified transport error: {error}"))
+            }
+        }
+        "parser" => {
+            let error = object
+                .get("error")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "parser fault missing error".to_string())?
+                .to_ascii_lowercase();
+            if error.contains("checksum") {
+                Ok("checksum-mismatch")
+            } else {
+                Ok("parser-rejected")
+            }
+        }
+        "battery-threshold" => {
+            let number = |key: &str| {
+                object
+                    .get(key)
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| format!("battery-threshold fault missing {key}"))
+            };
+            let previous = number("previous")?;
+            let current = number("current")?;
+            let threshold = number("threshold")?;
+            if previous > 100 || current > 100 || threshold > 100 {
+                return Err("battery-threshold values must be in [0, 100]".into());
+            }
+            if previous > threshold && current <= threshold {
+                Ok("threshold-crossed-once")
+            } else {
+                Err(format!(
+                    "battery threshold was not crossed: previous={previous}, current={current}, threshold={threshold}"
+                ))
+            }
+        }
+        "readback" => {
+            let expected = object
+                .get("expected")
+                .ok_or_else(|| "readback fault missing expected".to_string())?;
+            let actual = object
+                .get("actual")
+                .ok_or_else(|| "readback fault missing actual".to_string())?;
+            if expected != actual {
+                Ok("actual-state-shown-not-success")
+            } else {
+                Err("readback values match; this is not a failure".into())
+            }
+        }
+        other => Err(format!("unknown fault kind: {other}")),
+    }
+}
+
 /// Like `read_device` but reuses a pre-parsed `ProtocolPackage` to avoid
 /// re-parsing the JSON files on every call.
 pub fn read_device_with_package(
@@ -1298,6 +1378,65 @@ fn array<'a>(object: &'a serde_json::Map<String, Value>, key: &str) -> Option<&'
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn classifies_contract_faults_from_runtime_inputs() {
+        assert_eq!(
+            classify_contract_fault(&json!({
+                "kind": "transport",
+                "error": "operation timed out"
+            })),
+            Ok("transport-timeout")
+        );
+        assert_eq!(
+            classify_contract_fault(&json!({
+                "kind": "transport",
+                "error": "device disconnected"
+            })),
+            Ok("transaction-cancelled")
+        );
+        assert_eq!(
+            classify_contract_fault(&json!({
+                "kind": "parser",
+                "error": "checksum mismatch"
+            })),
+            Ok("checksum-mismatch")
+        );
+        assert_eq!(
+            classify_contract_fault(&json!({
+                "kind": "battery-threshold",
+                "previous": 10,
+                "current": 9,
+                "threshold": 9
+            })),
+            Ok("threshold-crossed-once")
+        );
+        assert_eq!(
+            classify_contract_fault(&json!({
+                "kind": "readback",
+                "expected": { "pollingRateHz": 1000 },
+                "actual": { "pollingRateHz": 500 }
+            })),
+            Ok("actual-state-shown-not-success")
+        );
+    }
+
+    #[test]
+    fn rejects_non_fault_contract_inputs() {
+        assert!(classify_contract_fault(&json!({
+            "kind": "battery-threshold",
+            "previous": 8,
+            "current": 9,
+            "threshold": 9
+        }))
+        .is_err());
+        assert!(classify_contract_fault(&json!({
+            "kind": "readback",
+            "expected": 1000,
+            "actual": 1000
+        }))
+        .is_err());
+    }
 
     #[test]
     fn semantic_mapping_collects_all_available_runtime_sources() {
