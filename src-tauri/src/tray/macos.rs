@@ -48,7 +48,7 @@ use objc2_app_kit::{
 use objc2_foundation::{NSArray, NSData, NSPoint, NSRect, NSSize, NSString};
 
 use crate::tray::dynamic_icon::TrayIconCacheKey;
-use crate::tray::image::{encode_rgba_png, render_mouse_icon_rgba};
+use crate::tray::image::{encode_rgba_png, render_mouse_icon_rgba_macos};
 use crate::tray::renderer::{TauriTrayController, TrayController};
 use crate::tray::state::{TrayBatteryState, TrayRenderMode, TrayStatusState};
 use crate::tray::style::{TrayIconColorMode, TrayTheme, TrayVisualStyle};
@@ -395,8 +395,8 @@ impl MacNativeTrayController {
             );
             Self::ns_image_from_png(icon_bytes)
         } else {
-            // 已连接：使用共享 RGBA 渲染器（与静态 PNG fallback 视觉一致）
-            let rgba = render_mouse_icon_rgba(state, style);
+            // 已连接：使用 macOS 专用 RGBA 渲染器（启用 0.5px 顶部补偿）
+            let rgba = render_mouse_icon_rgba_macos(state, style);
             // 菜单栏高度约 22px，使用 20x20 让图标稍小于菜单栏
             Self::ns_image_from_rgba(&rgba, 20.0, 20.0)
         }
