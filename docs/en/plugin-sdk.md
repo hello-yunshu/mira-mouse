@@ -182,11 +182,15 @@ Evaluation rules: if `eq` is present, compare equality; otherwise if `ne` is pre
 
 After the declarative UI refactor, the following legacy metadata fields have all been removed and are incompatible with old plugins. Plugins must be rewritten against the new schema:
 
-`effectOptions`, `receiverLightingOptions`, `lightingRole`, `switchSource`, `bindings`, `mutation`, `mutations`, `section`, `status`, `source`, `param`, `summary`, `options`, `range`, `format`, `unit`, `actionLabel`, `params`, `label`
+`effectOptions`, `receiverLightingOptions`, `switchSource`, `bindings`, `mutation`, `mutations`, `section`, `status`, `source`, `param`, `summary`, `options`, `range`, `format`, `unit`, `actionLabel`, `params`, `label`
 
 These fields were previously declared directly at the capability top level or in a flat structure under `metadata`. They have now migrated to declarative fields (`fields`/`switch`/`zones`/`stageLayout`/`statusDisplay`/`stateMapping`/`visibleWhen`/`optionSource`/`labelSource`/`format`). When upgrading legacy plugins, the flat fields must be rewritten as field declarations within the `fields` array.
 
 Additionally, the `Info` control type has been removed. The original `Info` control was used for pure informational display; it is now replaced by the `ReadOnlyValue` control with the `static-readonly` editor.
+
+### Structured return of `lightingRole` (ITERATION-008/009)
+
+The legacy flat `metadata.lightingRole` field has been removed, but `lightingRole` is re-enabled as a **structured field-level semantic**: within a `LightingZone` capability's `zones[].fields[]`, a single field may declare `lightingRole: "primary-color"` to identify it as the primary color entry for the current zone. Host uses this to build the "top lighting strip + rightmost plain color subblock" dual-entry layout (see 「Lighting dual-entry layout contract」 below). This differs from the legacy flat field: the legacy field operated at the capability / zone level, while the new semantic operates at the field level and is gated by `visibleWhen`.
 
 ## Complete examples
 
