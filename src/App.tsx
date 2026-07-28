@@ -4,16 +4,22 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import {
+  BatteryHigh,
   CaretDown,
   ChartBar,
+  Cpu,
+  Crosshair,
   Gauge,
   Gear,
   Info,
   Lightbulb,
+  MagnifyingGlass,
   Minus,
+  Mouse,
   ReadCvLogo,
   SignOut,
   SlidersHorizontal,
+  Stack,
   Timer,
   WaveSine,
   X,
@@ -358,7 +364,7 @@ function MorphingMetricValue({
   unit,
   variant,
   duration = 320,
-  contextTransitionDelay = 300,
+  contextTransitionDelay = 50,
 }: MetricFlipValue & { active: boolean; duration?: number; contextTransitionDelay?: number }) {
   const [currentValue, setCurrentValue] = useState<MetricFlipValue>(() => ({
     contextKey,
@@ -430,8 +436,11 @@ function MorphingMetricValue({
       });
     };
 
-    // DPI 与回报率共用同一个数字层。切换上下文时先完成尺寸和位置
-    // 变形，再开始数字翻牌，避免缩放途中提前露出目标读数。
+    // DPI 与回报率共用同一个数字层。切换上下文时让数字翻牌与几何变形
+    // （缩放）重叠。缩放使用 cubic-bezier(.32, .72, 0, 1) 缓动曲线，该曲线
+    // 极其激进：24.5% 时间（83ms）即完成 77% 视觉进度。50ms 对应视觉约
+    // 60%，翻牌在缩放早期就启动，与缩放剩余的大部分时段并行，入场自然
+    // 融入缩放过程，避免"等缩放完全结束才开始翻牌"的串行感知。
     if (contextChanged) {
       delayTimeout = window.setTimeout(prepareTransition, contextTransitionDelay);
     } else {
@@ -1205,6 +1214,38 @@ function FieldRenderer({ field, device, writeBusy, runMutation }: {
       );
     }
 
+    case 'inline-range': {
+      const range = field.range;
+      if (!range) {
+        return (
+          <>
+            <span>{label}</span>
+            <FormattedValue value={value} format={field.format} label={valueLabel} className="plugin-current-value" />
+          </>
+        );
+      }
+      const numericValue = typeof value === 'number' ? value : range.min;
+      const sliderPercent = ((numericValue - range.min) / (range.max - range.min)) * 100;
+      return (
+        <>
+          <span>{label}</span>
+          <div className="as-slider-wrap">
+            <input
+              type="range"
+              className="as-slider"
+              min={range.min}
+              max={range.max}
+              step={range.step}
+              value={numericValue}
+              disabled={!writable}
+              style={{ '--slider-percent': `${sliderPercent}%` } as React.CSSProperties}
+              onChange={(e) => mutation && applyMutation(mutation, resolveFieldMutationParams(field, device, Number(e.target.value)))}
+            />
+            <span className="as-slider-value">{formatFieldValue(numericValue, field.format, i18n.t)}</span>
+          </div>
+        </>
+      );
+    }
     case 'inline-value':
       return (
         <>
@@ -1645,6 +1686,215 @@ function AdvancedSettingsModal({ groups, device, writeBusy, onClose, onEditField
     return i18n.exists(key) ? i18n.t(key) : section;
   };
 
+  // 分区图标：由 UI 根据分区语义选择展示样式（插件仍控制字段与行为）。
+  const sectionIcon = (section: NonNullable<PluginField['advancedSection']>) => {
+    switch (section) {
+      case 'performance': return <Gauge weight="regular" />;
+      case 'lighting-details': return <Lightbulb weight="regular" />;
+      case 'profiles': return <Stack weight="regular" />;
+      case 'buttons': return <Mouse weight="regular" />;
+      case 'power': return <BatteryHigh weight="regular" />;
+      case 'sensor': return <Crosshair weight="regular" />;
+      case 'device': return <Cpu weight="regular" />;
+    }
+  };
+
+  // 用于搜索过滤的可读标签。
+  const entryLabel = (entry: AdvancedSettingsEntry): string => {
+    if (entry.type === 'stageLayout' || entry.type === 'zone') {
+      return resolveLabelKey(entry.capability.labelKey, device.pluginId);
+    }
+    if (entry.type === 'summary') {
+      return entry.item.labelKey
+        ? resolveLabelKey(entry.item.labelKey, device.pluginId)
+        : (entry.item.label ?? entry.item.source);
+    }
+    const zonePrefix = entry.zoneLabelKey ? `${resolveLabelKey(entry.zoneLabelKey, device.pluginId)} ` : '';
+    return `${zonePrefix}${resolveFieldLabel(entry.field, device, device.pluginId)}`;
+  };
+
+  const totalCount = groups.reduce((sum, group) => sum + group.entries.length, 0);
+
+  const [query, setQuery] = useState('');
+  const trimmedQuery = query.trim().toLowerCase();
+  const filteredGroups = trimmedQuery
+    ? groups
+        .map((group) => ({ ...group, entries: group.entries.filter((entry) => entryLabel(entry).toLowerCase().includes(trimmedQuery)) }))
+        .filter((group) => group.entries.length > 0)
+    : groups;
+
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const { canScrollUp, canScrollDown } = useScrollFadeState(bodyRef);
+
+  const renderEntry = (entry: AdvancedSettingsEntry, index: number) => {
+    if (entry.type === 'stageLayout') {
+      return (
+        <li key={`${entry.capability.id}:stageLayout`} className="as-item as-item-stage-layout">
+          <StageLayout capability={entry.capability} device={device} writeBusy={writeBusy} runMutation={runMutation} />
+        </li>
+      );
+    }
+    if (entry.type === 'zone') {
+      return (
+        <li key={`${entry.capability.id}:zone`} className="as-item as-item-zone">
+          <ZoneRenderer capability={entry.capability} device={device} writeBusy={writeBusy} runMutation={runMutation} />
+        </li>
+      );
+    }
+    if (entry.type === 'summary') {
+      // P0-L：polling overflow 以只读 summary 条目展示。
+      const { capability, item } = entry;
+      const { value } = resolveSummaryValue(item, device);
+      const option = item.options?.find((candidate) => candidate.value === value);
+      const valueLabel = option
+        ? resolveLabelKey(option.labelKey, device.pluginId)
+        : `${formatFieldValue(value, item.format, i18n.t)}${item.unit ? ` ${item.unit}` : ''}`;
+      const label = item.labelKey
+        ? resolveLabelKey(item.labelKey, device.pluginId)
+        : (item.label ?? item.source);
+      return (
+        <li key={`${capability.id}:${item.source}:${index}`} className="as-item">
+          <span className="as-item-label">{label}</span>
+          <span className="as-item-right">
+            <span className="as-item-value">{valueLabel || i18n.t('common.notReported')}</span>
+          </span>
+        </li>
+      );
+    }
+    // field entry。P0-3 (Iteration 008)：React key 包含 zoneId，label 包含 zone 前缀以区分多 zone 同名字段。
+    const { capability, field, zoneId, zoneLabelKey } = entry;
+    const label = resolveFieldLabel(field, device, device.pluginId);
+    const mutation = resolveMutation(field.mutation, device.writableMutations);
+    const value = readPath(device, field.source);
+    const editable = Boolean(mutation) && !writeBusy;
+    const itemKey = `${capability.id}:${zoneId ?? 'root'}:${field.id}:${index}`;
+    const zoneLabelNode = zoneLabelKey
+      ? <span className="as-item-label-zone">{resolveLabelKey(zoneLabelKey, device.pluginId)}</span>
+      : null;
+
+    // inline-toggle + switch：复用设置页 .toggle/.toggle-knob 开关样式，保持主题色一致。
+    if (field.editor === 'inline-toggle' && field.switch) {
+      const isOn = resolveSwitchState(field, device);
+      const nextValue = resolveSwitchNextValue(field, device);
+      return (
+        <li key={itemKey} className="as-item">
+          <span className="as-item-label">{zoneLabelNode}{label}</span>
+          <span className="as-item-right">
+            <button
+              type="button"
+              role="switch"
+              aria-checked={isOn}
+              aria-label={label}
+              className={`toggle${isOn ? ' on' : ''}`}
+              disabled={!editable}
+              onClick={() => {
+                if (mutation && nextValue !== undefined) {
+                  void runMutation(mutation, resolveFieldMutationParams(field, device, nextValue));
+                }
+              }}
+            >
+              <span className="toggle-knob" />
+            </button>
+          </span>
+        </li>
+      );
+    }
+
+    // inline-range：滑杆（设计稿 .as-slider-wrap / .as-slider / .as-slider-value）。
+    if (field.editor === 'inline-range') {
+      const range = field.range;
+      if (!range) {
+        const valueText = formatFieldValue(value, field.format, i18n.t);
+        return (
+          <li key={itemKey} className="as-item">
+            <span className="as-item-label">{zoneLabelNode}{label}</span>
+            <span className="as-item-right">
+              <span className="as-item-value readonly">{valueText || i18n.t('common.notReported')}</span>
+            </span>
+          </li>
+        );
+      }
+      const numericValue = typeof value === 'number' ? value : range.min;
+      const sliderPercent = ((numericValue - range.min) / (range.max - range.min)) * 100;
+      return (
+        <li key={itemKey} className="as-item">
+          <span className="as-item-label">{zoneLabelNode}{label}</span>
+          <span className="as-item-right">
+            <div className="as-slider-wrap">
+              <input
+                type="range"
+                className="as-slider"
+                min={range.min}
+                max={range.max}
+                step={range.step}
+                value={numericValue}
+                disabled={!editable}
+                style={{ '--slider-percent': `${sliderPercent}%` } as React.CSSProperties}
+                onChange={(e) => mutation && void runMutation(mutation, resolveFieldMutationParams(field, device, Number(e.target.value)))}
+              />
+              <span className="as-slider-value">{formatFieldValue(numericValue, field.format, i18n.t)}</span>
+            </div>
+          </span>
+        </li>
+      );
+    }
+
+    // static-readonly：只读值；布尔值用徽章展示（如校准状态）。
+    if (field.editor === 'static-readonly') {
+      const isBoolean = typeof value === 'boolean';
+      const valueText = formatFieldValue(value, field.format, i18n.t);
+      return (
+        <li key={itemKey} className="as-item">
+          <span className="as-item-label">{zoneLabelNode}{label}</span>
+          <span className="as-item-right">
+            {isBoolean ? (
+              <span className={`as-badge${value === true ? ' accent' : ''}`}>{valueText}</span>
+            ) : (
+              <span className="as-item-value readonly">{valueText || i18n.t('common.notReported')}</span>
+            )}
+          </span>
+        </li>
+      );
+    }
+
+    // 其他非 modal inline editor（inline-segmented / inline-value / inline-action / inline-toggle without switch）
+    // → 复用 FieldRenderer，但外层用 as-item 结构承载布局。
+    if (!field.editor.startsWith('modal-')) {
+      return (
+        <li key={itemKey} className="as-item as-item-inline">
+          <FieldRenderer field={field} device={device} writeBusy={writeBusy} runMutation={runMutation} />
+        </li>
+      );
+    }
+
+    // modal-* editor：label-value 按钮，点击打开编辑模态框。
+    const valueLabel = resolveFieldValueLabel(field, device, device.pluginId);
+    const valueText = valueLabel ?? formatFieldValue(value, field.format, i18n.t);
+    const isColor = field.format === 'color' || valueLooksColor(value);
+    return (
+      <li key={itemKey} className="as-item editable">
+        <button
+          type="button"
+          className="as-item-btn"
+          disabled={!editable}
+          onClick={() => editable && onEditField(capability, field)}
+        >
+          <span className="as-item-label">{zoneLabelNode}{label}</span>
+          <span className="as-item-right">
+            {isColor && typeof value === 'string' ? (
+              <>
+                <span className="as-color-dot" style={{ background: value }} />
+                <span className="as-item-value">{valueText}</span>
+              </>
+            ) : (
+              <span className="as-item-value">{valueText || i18n.t('common.notReported')}</span>
+            )}
+          </span>
+        </button>
+      </li>
+    );
+  };
+
   return (
     <Modal
       open
@@ -1654,97 +1904,62 @@ function AdvancedSettingsModal({ groups, device, writeBusy, onClose, onEditField
       className="advanced-settings-modal"
       backdropClassName="advanced-settings-backdrop"
     >
-      <div className="modal-header">
-        <h2>{i18n.t('advancedSettings.title')}</h2>
-        <button type="button" className="modal-close" aria-label={i18n.t('common.close')} onClick={onClose}>
-          <X weight="bold" />
+      <div className="as-header">
+        <div className="as-header-icon"><SlidersHorizontal weight="regular" /></div>
+        <div className="as-header-text">
+          <h2 className="as-header-title">{i18n.t('advancedSettings.title')}</h2>
+          <p className="as-header-sub">{device.name} · {i18n.t('advancedSettings.itemCount', { count: totalCount })}</p>
+        </div>
+        <button type="button" className="icon-button" aria-label={i18n.t('common.close')} onClick={onClose}>
+          <X weight="regular" />
         </button>
       </div>
-      <div className="modal-body">
-        {groups.map((group) => (
-          <section key={group.section} className="advanced-settings-section">
-            <h3>{sectionLabel(group.section)}</h3>
-            <ul className="advanced-settings-list">
-              {group.entries.map((entry, index) => {
-                if (entry.type === 'stageLayout') {
-                  return (
-                    <li key={`${entry.capability.id}:stageLayout`} className="advanced-settings-item advanced-settings-stage-layout">
-                      <StageLayout capability={entry.capability} device={device} writeBusy={writeBusy} runMutation={runMutation} />
-                    </li>
-                  );
-                }
-                if (entry.type === 'zone') {
-                  return (
-                    <li key={`${entry.capability.id}:zone`} className="advanced-settings-item advanced-settings-zone">
-                      <ZoneRenderer capability={entry.capability} device={device} writeBusy={writeBusy} runMutation={runMutation} />
-                    </li>
-                  );
-                }
-                if (entry.type === 'summary') {
-                  // P0-L：polling overflow 以只读 summary 条目展示。
-                  const { capability, item } = entry;
-                  const { value } = resolveSummaryValue(item, device);
-                  const option = item.options?.find((candidate) => candidate.value === value);
-                  const valueLabel = option
-                    ? resolveLabelKey(option.labelKey, device.pluginId)
-                    : `${formatFieldValue(value, item.format, i18n.t)}${item.unit ? ` ${item.unit}` : ''}`;
-                  const label = item.labelKey
-                    ? resolveLabelKey(item.labelKey, device.pluginId)
-                    : item.label ?? item.source;
-                  return (
-                    <li key={`${capability.id}:${item.source}:${index}`} className="advanced-settings-item advanced-settings-summary">
-                      <span className="advanced-settings-field-label">{label}</span>
-                      <span className="advanced-settings-field-value">{valueLabel || i18n.t('common.notReported')}</span>
-                    </li>
-                  );
-                }
-                // field entry：复用 FieldRenderer 渲染所有 editor 类型。
-                // inline-* editor 直接在列表中操作；modal-* editor 通过 onEditField 打开模态框。
-                // P0-3 (Iteration 008)：React key 包含 zoneId，label 包含 zone 前缀以区分多 zone 同名字段。
-                const { capability, field, zoneId, zoneLabelKey } = entry;
-                const mutation = resolveMutation(field.mutation, device.writableMutations);
-                const isModalEditor = field.editor.startsWith('modal-');
-                const zonePrefix = zoneLabelKey
-                  ? `${resolveLabelKey(zoneLabelKey, device.pluginId)} · `
-                  : '';
-                if (!isModalEditor) {
-                  // inline-* / static-readonly：直接渲染 FieldRenderer（复用通用 renderer）。
-                  return (
-                    <li key={`${capability.id}:${zoneId ?? 'root'}:${field.id}:${index}`} className="advanced-settings-item advanced-settings-inline">
-                      <FieldRenderer field={field} device={device} writeBusy={writeBusy} runMutation={runMutation} />
-                    </li>
-                  );
-                }
-                // modal-* editor：label-value 按钮，点击打开模态框。
-                const label = `${zonePrefix}${resolveFieldLabel(field, device, device.pluginId)}`;
-                const value = readPath(device, field.source);
-                const editable = Boolean(mutation) && !writeBusy;
-                const valueText = formatFieldValue(value, field.format, i18n.t);
-                const isColor = field.format === 'color' || valueLooksColor(value);
-                return (
-                  <li key={`${capability.id}:${zoneId ?? 'root'}:${field.id}:${index}`} className="advanced-settings-item">
-                    <button
-                      type="button"
-                      className="advanced-settings-field"
-                      disabled={!editable}
-                      onClick={() => editable && onEditField(capability, field)}
-                    >
-                      <span className="advanced-settings-field-label">{label}</span>
-                      <span className="advanced-settings-field-value">
-                        {isColor && typeof value === 'string' ? (
-                          <>
-                            <i style={{ '--light-color': value } as React.CSSProperties} />
-                            <span>{valueText}</span>
-                          </>
-                        ) : valueText || i18n.t('common.notReported')}
-                      </span>
-                    </button>
-                  </li>
-                );
-              })}
+      <div className="as-search">
+        <div className="as-search-input-wrap">
+          <MagnifyingGlass weight="regular" />
+          <input
+            type="text"
+            className="as-search-input"
+            placeholder={i18n.t('advancedSettings.searchPlaceholder')}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+        </div>
+      </div>
+      <div ref={bodyRef} className={`as-body${canScrollUp ? ' scroll-fade-top' : ''}${canScrollDown ? ' scroll-fade-bottom' : ''}`}>
+        {filteredGroups.length === 0 ? (
+          <p className="as-empty">{i18n.t('advancedSettings.searchNoResults')}</p>
+        ) : filteredGroups.map((group) => (
+          <section key={group.section} className="advanced-settings-section" data-section={group.section}>
+            <div className="as-section-header">
+              <span className="as-section-icon">{sectionIcon(group.section)}</span>
+              <span className="as-section-title">{sectionLabel(group.section)}</span>
+            </div>
+            {group.section === 'device' && (
+              <div className="as-device-info">
+                <div className="as-device-info-icon"><Mouse weight="regular" /></div>
+                <div className="as-device-info-text">
+                  <div className="as-device-info-name">{device.name}</div>
+                  <div className="as-device-info-meta">
+                    {[
+                      typeof device.state.firmwareVersion === 'string' ? `${i18n.t('mock.firmware')} ${device.state.firmwareVersion}` : '',
+                      typeof device.state.serialNumber === 'string' ? `SN ${device.state.serialNumber}` : '',
+                    ].filter(Boolean).join(' · ')}
+                  </div>
+                </div>
+              </div>
+            )}
+            <ul className={`advanced-settings-list${group.section === 'device' ? ' as-device-list' : ''}`}>
+              {group.entries.map((entry, index) => renderEntry(entry, index))}
             </ul>
           </section>
         ))}
+      </div>
+      <div className="as-footer">
+        <span className="as-footer-hint">{i18n.t('advancedSettings.changesImmediate')}</span>
+        <button type="button" className="as-footer-btn secondary" disabled>
+          {i18n.t('advancedSettings.reset')}
+        </button>
       </div>
     </Modal>
   );
@@ -2452,7 +2667,7 @@ function SharedControlMetricLayer({
         text={metric?.text ?? ''}
         unit={metric?.unit ?? ''}
         variant={metric?.variant ?? 'hertz'}
-        contextTransitionDelay={sync === 'surface' ? 320 : 300}
+        contextTransitionDelay={sync === 'surface' ? 47 : 50}
       />
     </div>
   );

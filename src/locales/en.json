@@ -240,7 +240,9 @@
         "profile": "Profile",
         "firmware": "Firmware",
         "serial": "Serial number",
-        "lighting": "Lighting"
+        "lighting": "Lighting",
+        "sensor": "Sensor",
+        "device-settings": "Device"
       }
     }
   },
@@ -250,7 +252,9 @@
       "option": "Color mode",
       "speed": "Speed",
       "brightness": "Brightness",
-      "color": "Color"
+      "color": "Color",
+      "color2": "Secondary color",
+      "ratio": "Color ratio"
     },
     "effect": {
       "off": "Off",
@@ -621,7 +625,42 @@
     "angleSnap": "Angle snap",
     "liftCutOff": "Lift-off",
     "bluetoothSleep": "Bluetooth sleep",
-    "wirelessSleep": "2.4G sleep"
+    "wirelessSleep": "2.4G sleep",
+    "liftDistance": "Lift-off LOD",
+    "wheelLabel": "Wheel",
+    "logoLabel": "Logo",
+    "rippleControl": "Ripple Control",
+    "wheelBrightness": "Brightness",
+    "wheelColor": "Color",
+    "wheelEffect": "Effect",
+    "logoBrightness": "Brightness",
+    "logoColor": "Color",
+    "logoEffect": "Effect",
+    "currentProfile": "Current Profile",
+    "profileSlots": "Profile Slots",
+    "sideButtonForward": "Side · Forward",
+    "sideButtonBack": "Side · Back",
+    "wheelClick": "Wheel Click",
+    "sleepMode": "Sleep Mode",
+    "deepSleep": "Deep Sleep",
+    "calibrationStatus": "Calibration",
+    "calibrated": "Calibrated",
+    "maxTrackingSpeed": "Max Tracking Speed",
+    "maxAcceleration": "Max Acceleration",
+    "connectionMethod": "Connection",
+    "pollingRateLabel": "Polling Rate",
+    "firmware": "Firmware",
+    "serialNumber": "Serial",
+    "effectOff": "Off",
+    "effectSteady": "Steady",
+    "effectBreathing": "Breathing",
+    "effectNeon": "Neon",
+    "effectWave": "Wave",
+    "actionDpiCycle": "DPI Cycle",
+    "actionDashboard": "Dashboard",
+    "actionDefaultClick": "Default Click",
+    "seconds": "sec",
+    "minutes": "min"
   },
   "batteryUsage": {
     "title": "Battery Usage",
@@ -933,6 +972,11 @@
   "advancedSettings": {
     "title": "Advanced Settings",
     "open": "Advanced Settings",
+    "searchPlaceholder": "Search settings…",
+    "searchNoResults": "No matching settings found",
+    "itemCount": "{{count}} configurable",
+    "changesImmediate": "Changes apply instantly",
+    "reset": "Reset to default",
     "section": {
       "performance": "Performance",
       "lighting-details": "Lighting Details",
