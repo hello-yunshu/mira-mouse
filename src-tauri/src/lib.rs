@@ -4915,11 +4915,8 @@ mod macos_launch_agent_tests {
     #[test]
     fn iteration009_classify_missing_hidden_arg_is_stale() {
         // plist 存在但缺少 --hidden → Stale
-        let xml = build_launch_agent_plist_xml(
-            "Mira",
-            "/Applications/Mira.app/Contents/MacOS/Mira",
-            &[],
-        );
+        let xml =
+            build_launch_agent_plist_xml("Mira", "/Applications/Mira.app/Contents/MacOS/Mira", &[]);
         assert_eq!(
             classify_launch_agent_state(
                 &xml,
@@ -10935,7 +10932,7 @@ fn classify_launch_agent_state(
 
     // Label 检查
     let expected_label_xml = xml_escape(expected_label);
-    if !plist_contents.contains(&format!("<key>Label</key>")) {
+    if !plist_contents.contains("<key>Label</key>") {
         return LaunchAgentState::Invalid;
     }
     if !plist_contents.contains(&format!("<string>{}</string>", expected_label_xml)) {
@@ -10985,14 +10982,9 @@ fn macos_launch_agent_state(app: &AppHandle) -> Result<LaunchAgentState, String>
         .map_err(|err| format!("failed to read launch agent plist: {err}"))?;
     // 如果 canonical exe 解析失败（例如 DMG 环境），仍尝试分类：
     // exe 路径不匹配 → Stale，触发修复。
-    let exe = match macos_canonical_executable_path() {
-        Ok(path) => path,
-        Err(_) => {
-            // DMG 或无法解析：如果 plist 内容包含 /Volumes 路径，标记为 Stale。
-            // 否则用空字符串比较，确保不误判为 Valid。
-            String::new()
-        }
-    };
+    // DMG 或无法解析：如果 plist 内容包含 /Volumes 路径，标记为 Stale。
+    // 否则用空字符串比较，确保不误判为 Valid。
+    let exe = macos_canonical_executable_path().unwrap_or_default();
     let args = autostart_args();
     let label = app.package_info().name.as_ref();
     Ok(classify_launch_agent_state(&contents, label, &exe, &args))
@@ -11033,7 +11025,9 @@ fn macos_write_launch_agent(app: &AppHandle) -> Result<(), String> {
     let state = classify_launch_agent_state(&readback, label, &exe, &args);
     if state != LaunchAgentState::Valid {
         let _ = fs::remove_file(&tmp);
-        return Err(format!("launch agent plist validation failed: state={state:?}"));
+        return Err(format!(
+            "launch agent plist validation failed: state={state:?}"
+        ));
     }
     // §8.3 步骤 5：原子替换
     fs::rename(&tmp, &plist_path)
@@ -11045,9 +11039,7 @@ fn macos_write_launch_agent(app: &AppHandle) -> Result<(), String> {
             .args(["unload", path_str])
             .output();
         // load 必须成功
-        let load_result = Command::new("launchctl")
-            .args(["load", path_str])
-            .output();
+        let load_result = Command::new("launchctl").args(["load", path_str]).output();
         match load_result {
             Ok(output) => {
                 if !output.status.success() {
@@ -11986,7 +11978,10 @@ mod notification_action_tests {
 
     #[test]
     fn about_update_routes_to_navigate_event() {
-        assert_eq!(notification_action_to_event("about-update"), Some("navigate-about-update"));
+        assert_eq!(
+            notification_action_to_event("about-update"),
+            Some("navigate-about-update")
+        );
     }
 
     #[test]
@@ -12007,7 +12002,10 @@ mod notification_action_tests {
 
     #[test]
     fn battery_usage_routes_to_open_battery_usage_event() {
-        assert_eq!(notification_action_to_event("battery-usage"), Some("open-battery-usage"));
+        assert_eq!(
+            notification_action_to_event("battery-usage"),
+            Some("open-battery-usage")
+        );
     }
 
     #[test]
