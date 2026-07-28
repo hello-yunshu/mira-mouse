@@ -332,7 +332,16 @@ fn mouse_shape_bounds(size: u32) -> (i32, i32, i32, i32) {
 /// - 未连接：不调用此函数（调用方显示 app 图标）
 /// - 未知电量：仅轮廓 + 中键，底部灰色短线
 /// - 已知电量：轮廓 + 中键 + 电量填充（分级颜色）+ 充电闪电
-pub fn draw_mouse_icon(canvas: &mut IconCanvas, state: &TrayStatusState, style: &TrayVisualStyle) {
+///
+/// `half_pixel_top_compensation`：为 true 时，满电（100%）顶部使用
+/// 0.5px alpha 混合补偿，使 100% 视觉高度严格大于 99%。仅 macOS 原生
+/// 渲染路径启用，PNG fallback 和其他平台保持原始 -1px 整数补偿。
+pub fn draw_mouse_icon(
+    canvas: &mut IconCanvas,
+    state: &TrayStatusState,
+    style: &TrayVisualStyle,
+    half_pixel_top_compensation: bool,
+) {
     let size = ICON_SIZE;
     let outer = mouse_shape_bounds(size);
 
@@ -376,18 +385,15 @@ pub fn draw_mouse_icon(canvas: &mut IconCanvas, state: &TrayStatusState, style: 
             state.low_battery_threshold,
         );
         let inner_height = fill_area.3 - fill_area.1;
-        let fill_height = if percentage >= 100 {
-            // 视觉补偿：满电时圆角与轮廓同心，径向间隙处处 3px，
-            // 但圆角对角方向的间隙在视觉上比水平/垂直方向显宽，
-            // 导致顶部直线段间隙反衬显窄。少填 1px 使顶部间隙为 4px，
-            // 补偿视差，与侧面 3px 视觉一致（同 99% 整数截断效果）。
-            inner_height - 1
-        } else {
-            inner_height * percentage as i32 / 100
-        };
-        if fill_height > 0 {
+
+        if half_pixel_top_compensation && percentage >= 100 {
+            // macOS 路径：100% 满电时顶部 0.5px 补偿。
+            // 主体填充 inner_height - 1 行（不透明），顶部行 alpha=128 半透明，
+            // 总加权高度 = inner_height - 0.5，顶部空隙比底部多 0.5px。
+            // 比 99% (inner_height * 99/100) 严格高，避免 100% 与 99%
+            // 整数截断后同高。圆角由 is_inside_rounded_rect 约束。
+            let fill_height = inner_height - 1;
             let fill_y0 = fill_area.3 - fill_height;
-            // 填充圆角矩形
             canvas.fill_rounded_rect(
                 fill_area.0,
                 fill_y0,
@@ -396,7 +402,7 @@ pub fn draw_mouse_icon(canvas: &mut IconCanvas, state: &TrayStatusState, style: 
                 FILL_RADIUS,
                 fill_color,
             );
-            // 电量填充绕开中键区域（四周留 WHEEL_GAP 透明边缘）
+            // 中键透明清除（主体区域）
             if wheel_bottom + WHEEL_GAP >= fill_y0 {
                 let clear_top = fill_y0.max(wheel_top - WHEEL_GAP);
                 canvas.clear_rounded_rect(
@@ -406,6 +412,61 @@ pub fn draw_mouse_icon(canvas: &mut IconCanvas, state: &TrayStatusState, style: 
                     wheel_bottom + WHEEL_GAP,
                     WHEEL_GAP,
                 );
+            }
+            // 顶部半透明行（0.5px 补偿）
+            let top_y = fill_y0 - 1;
+            if top_y >= fill_area.1 {
+                let top_color =
+                    RgbaColor::rgba(fill_color.r, fill_color.g, fill_color.b, 128);
+                for x in fill_area.0..fill_area.2 {
+                    if is_inside_rounded_rect(
+                        x,
+                        top_y,
+                        fill_area.0,
+                        fill_area.1,
+                        fill_area.2,
+                        fill_area.3,
+                        FILL_RADIUS,
+                    ) {
+                        canvas.blend_pixel(x, top_y, top_color);
+                    }
+                }
+                // 顶部行绕开中键透明区
+                if wheel_bottom + WHEEL_GAP >= top_y && wheel_top - WHEEL_GAP <= top_y {
+                    canvas.clear_rounded_rect(
+                        wheel_left - WHEEL_GAP,
+                        top_y,
+                        wheel_right + WHEEL_GAP,
+                        top_y + 1,
+                        WHEEL_GAP,
+                    );
+                }
+            }
+        } else {
+            // 默认路径（其他平台 / PNG fallback）：100% 直接填满，无补偿
+            let fill_height = inner_height
+                .min((inner_height as u32 * percentage.min(100) as u32 / 100) as i32);
+            if fill_height > 0 {
+                let fill_y0 = fill_area.3 - fill_height;
+                canvas.fill_rounded_rect(
+                    fill_area.0,
+                    fill_y0,
+                    fill_area.2,
+                    fill_area.3,
+                    FILL_RADIUS,
+                    fill_color,
+                );
+                // 电量填充绕开中键区域（四周留 WHEEL_GAP 透明边缘）
+                if wheel_bottom + WHEEL_GAP >= fill_y0 {
+                    let clear_top = fill_y0.max(wheel_top - WHEEL_GAP);
+                    canvas.clear_rounded_rect(
+                        wheel_left - WHEEL_GAP,
+                        clear_top,
+                        wheel_right + WHEEL_GAP,
+                        wheel_bottom + WHEEL_GAP,
+                        WHEEL_GAP,
+                    );
+                }
             }
         }
     } else {
@@ -465,7 +526,17 @@ pub fn draw_mouse_icon(canvas: &mut IconCanvas, state: &TrayStatusState, style: 
 /// 调用方负责将返回的 RGBA 字节转换为平台图标（Tauri Image / NSImage）。
 pub fn render_mouse_icon_rgba(state: &TrayStatusState, style: &TrayVisualStyle) -> Vec<u8> {
     let mut canvas = IconCanvas::new(ICON_SIZE, ICON_SIZE);
-    draw_mouse_icon(&mut canvas, state, style);
+    draw_mouse_icon(&mut canvas, state, style, false);
+    canvas.into_rgba_bytes()
+}
+
+/// macOS 原生渲染专用：启用 0.5px 顶部补偿的 100% 满电图标。
+pub fn render_mouse_icon_rgba_macos(
+    state: &TrayStatusState,
+    style: &TrayVisualStyle,
+) -> Vec<u8> {
+    let mut canvas = IconCanvas::new(ICON_SIZE, ICON_SIZE);
+    draw_mouse_icon(&mut canvas, state, style, true);
     canvas.into_rgba_bytes()
 }
 
@@ -680,13 +751,12 @@ mod tests {
         let center_x = (fill_area.0 + fill_area.2) / 2;
         let center_y = (fill_area.1 + fill_area.3) / 2;
 
-        // 满电时顶部视觉补偿少填 1px，所以顶部采样点在 fill_area.1 + 1。
-        // x 偏离中心以避开中键透明清除区（wheel clearing x≈27..38）
+        // 100% 填满 fill_area。x 偏离中心以避开中键透明清除区（wheel clearing x≈27..38）
         let sample_points = [
-            (fill_area.0, center_y),
-            (fill_area.2 - 1, center_y),
-            (center_x - 7, fill_area.1 + 1),
-            (center_x, fill_area.3 - 1),
+            (fill_area.0 + 3, center_y),
+            (fill_area.2 - 4, center_y),
+            (center_x - 7, fill_area.1 + 3),
+            (center_x - 7, fill_area.3 - 1),
         ];
         for (x, y) in sample_points {
             let idx = ((y * ICON_SIZE as i32 + x) * 4) as usize;
@@ -696,10 +766,10 @@ mod tests {
             );
         }
 
+        // fill_area 之外的侧面和底部边距仍应完全透明
         let gap_points = [
             (fill_area.0 - 1, center_y),
             (fill_area.2, center_y),
-            (center_x, fill_area.1),
             (center_x, fill_area.3),
         ];
         for (x, y) in gap_points {
@@ -945,5 +1015,323 @@ mod tests {
         // 中心点应在三角形内
         let idx = ((12 * 32 + 15) * 4) as usize;
         assert_eq!(bytes[idx + 3], 255);
+    }
+
+    // ─── macOS 0.5px 顶部补偿测试 ─────────────────────────────────────────
+
+    /// 辅助：计算 fill_area 内某一列的 alpha 加权高度。
+    fn column_weighted_height(bytes: &[u8], x: i32, fill_area: (i32, i32, i32, i32)) -> f64 {
+        let mut weighted = 0.0;
+        for y in fill_area.1..fill_area.3 {
+            let idx = ((y * ICON_SIZE as i32 + x) * 4) as usize;
+            let alpha = bytes[idx + 3];
+            if alpha > 0 {
+                weighted += alpha as f64 / 255.0;
+            }
+        }
+        weighted
+    }
+
+    /// 辅助：计算 fill_area 内多列的平均 alpha 加权高度（避开中键和圆角）。
+    fn average_weighted_height(bytes: &[u8], fill_area: (i32, i32, i32, i32)) -> f64 {
+        let mut total = 0.0;
+        let mut count = 0;
+        for x in (fill_area.0 + 3)..(fill_area.2 - 3) {
+            if (27..38).contains(&x) {
+                continue;
+            }
+            total += column_weighted_height(bytes, x, fill_area);
+            count += 1;
+        }
+        if count == 0 {
+            0.0
+        } else {
+            total / count as f64
+        }
+    }
+
+    fn fill_area_for_test() -> (i32, i32, i32, i32) {
+        let outer = mouse_shape_bounds(ICON_SIZE);
+        let inset = OUTLINE_WIDTH + OUTLINE_GAP;
+        let inner = (
+            outer.0 + inset,
+            outer.1 + inset,
+            outer.2 - inset,
+            outer.3 - inset,
+        );
+        (
+            inner.0 + FILL_INSET,
+            inner.1 + FILL_INSET,
+            inner.2 - FILL_INSET,
+            inner.3 - FILL_INSET,
+        )
+    }
+
+    #[test]
+    fn macos_full_battery_has_half_pixel_top_compensation() {
+        // macOS 路径：100% 顶部行应有 ~50% alpha 的半透明补偿
+        let style = make_style();
+        let state = make_state(Some(100), false);
+        let bytes = render_mouse_icon_rgba_macos(&state, &style);
+        let fill_area = fill_area_for_test();
+        // 用中键范围外、圆角内的 x 坐标（避开 wheel gap 和圆角）
+        let sample_x = fill_area.0 + 9 + 2; // inner_x0 + offset
+
+        // 顶部边界行 y = fill_area.1：半透明（alpha > 0 && alpha < 255）
+        let top_idx = ((fill_area.1 * ICON_SIZE as i32 + sample_x) * 4) as usize;
+        let top_alpha = bytes[top_idx + 3];
+        assert!(
+            top_alpha > 0 && top_alpha < 255,
+            "macOS full battery top row should be semi-transparent (0.5px), got alpha {top_alpha}"
+        );
+        assert!(
+            (top_alpha as i32 - 128).abs() <= 16,
+            "macOS full battery top alpha should be ~128, got {top_alpha}"
+        );
+
+        // 下一行 y = fill_area.1 + 1：完全不透明（主体填充）
+        let body_idx = (((fill_area.1 + 1) * ICON_SIZE as i32 + sample_x) * 4) as usize;
+        assert_eq!(
+            bytes[body_idx + 3],
+            255,
+            "macOS full battery body row should be fully opaque"
+        );
+    }
+
+    #[test]
+    fn default_full_battery_has_no_half_pixel_compensation() {
+        // 默认路径（PNG fallback / 其他平台）：100% 顶部行完全不透明（不是半透明）
+        let style = make_style();
+        let state = make_state(Some(100), false);
+        let bytes = render_mouse_icon_rgba(&state, &style);
+        let fill_area = fill_area_for_test();
+        // 用中键范围外的 x 坐标
+        let sample_x = fill_area.0 + 9 + 2;
+
+        // 顶部边界行 y = fill_area.1：完全不透明（alpha=255，不是 128）
+        let top_idx = ((fill_area.1 * ICON_SIZE as i32 + sample_x) * 4) as usize;
+        let top_alpha = bytes[top_idx + 3];
+        assert_eq!(
+            top_alpha, 255,
+            "default full battery top row should be fully opaque (alpha=255, not 128)"
+        );
+    }
+
+    #[test]
+    fn macos_full_battery_weighted_height_strictly_higher_than_99() {
+        let style = make_style();
+        let fill_area = fill_area_for_test();
+
+        let full_state = make_state(Some(100), false);
+        let full_bytes = render_mouse_icon_rgba_macos(&full_state, &style);
+        let full_weighted = average_weighted_height(&full_bytes, fill_area);
+
+        let state_99 = make_state(Some(99), false);
+        let bytes_99 = render_mouse_icon_rgba_macos(&state_99, &style);
+        let weighted_99 = average_weighted_height(&bytes_99, fill_area);
+
+        let state_98 = make_state(Some(98), false);
+        let bytes_98 = render_mouse_icon_rgba_macos(&state_98, &style);
+        let weighted_98 = average_weighted_height(&bytes_98, fill_area);
+
+        assert!(
+            full_weighted > weighted_99,
+            "macOS 100% weighted height {full_weighted:.4} must be > 99% {weighted_99:.4}"
+        );
+        assert!(
+            weighted_99 >= weighted_98,
+            "macOS 99% weighted height {weighted_99:.4} must be >= 98% {weighted_98:.4}"
+        );
+    }
+
+    #[test]
+    fn macos_half_pixel_compensation_respects_wheel_gap() {
+        // 电量填充应绕开中键透明 gap（中键周围的透明间隙）
+        let style = make_style();
+        let state = make_state(Some(100), false);
+        let bytes = render_mouse_icon_rgba_macos(&state, &style);
+        let center_x = ICON_SIZE as i32 / 2;
+
+        // 中键 gap 左边缘：x 在 wheel_left-WHEEL_GAP 到 wheel_left 之间
+        // 即 x=27..29，y 在中键范围内，填充应被清除（绿色=0）
+        let mid_y = 20;
+        for x in (center_x - 5)..(center_x - 3) {
+            let idx = ((mid_y * ICON_SIZE as i32 + x) * 4) as usize;
+            assert_eq!(
+                bytes[idx + 1], 0, // G 分量
+                "macOS fill at y={mid_y} x={x} should be cleared in wheel gap (no green)"
+            );
+        }
+        // 中键 gap 右边缘：x 在 wheel_right 到 wheel_right+WHEEL_GAP 之间
+        // 即 x=36..38
+        for x in (center_x + 4)..(center_x + 6) {
+            let idx = ((mid_y * ICON_SIZE as i32 + x) * 4) as usize;
+            assert_eq!(
+                bytes[idx + 1], 0, // G 分量
+                "macOS fill at y={mid_y} x={x} should be cleared in wheel gap (no green)"
+            );
+        }
+        // 顶部行 y=fill_area.1 在中键 gap 上方（y < 10），中心处应有填充
+        let fill_area = fill_area_for_test();
+        let top_y = fill_area.1;
+        let top_idx = ((top_y * ICON_SIZE as i32 + center_x) * 4) as usize;
+        let top_green = bytes[top_idx + 1];
+        assert!(
+            top_green > 0,
+            "macOS top compensation row at center should have fill (above wheel gap)"
+        );
+    }
+
+    #[test]
+    fn macos_compensation_only_at_100_percent() {
+        // 非 100% 电量时，macOS 路径与默认路径顶部行为一致（无半透明补偿行）
+        let style = make_style();
+        let fill_area = fill_area_for_test();
+        let center_x = (fill_area.0 + fill_area.2) / 2;
+
+        for pct in [99u8, 50, 10] {
+            let state = make_state(Some(pct), false);
+            let macos_bytes = render_mouse_icon_rgba_macos(&state, &style);
+            let default_bytes = render_mouse_icon_rgba(&state, &style);
+
+            // 填充顶部行附近几行应完全一致
+            for dy in 0..3 {
+                let y = fill_area.1 + dy;
+                let idx = ((y * ICON_SIZE as i32 + center_x) * 4) as usize;
+                assert_eq!(
+                    &macos_bytes[idx..idx + 4],
+                    &default_bytes[idx..idx + 4],
+                    "macOS and default should match at {pct}% y={y}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn macos_compensation_does_not_change_sides_and_bottom() {
+        // 0.5px 补偿只影响顶部，侧面和底部应与默认路径完全一致
+        let style = make_style();
+        let state = make_state(Some(100), false);
+        let macos_bytes = render_mouse_icon_rgba_macos(&state, &style);
+        let default_bytes = render_mouse_icon_rgba(&state, &style);
+        let fill_area = fill_area_for_test();
+
+        // 侧面 x = fill_area.0 处，y 在中间区域（远离顶部）
+        let mid_y = (fill_area.1 + fill_area.3) / 2;
+        let side_idx = ((mid_y * ICON_SIZE as i32 + fill_area.0) * 4) as usize;
+        assert_eq!(
+            &macos_bytes[side_idx..side_idx + 4],
+            &default_bytes[side_idx..side_idx + 4],
+            "side pixels should be identical between macOS and default"
+        );
+
+        // 底部 y = fill_area.3 - 1
+        let bottom_idx = (((fill_area.3 - 1) * ICON_SIZE as i32 + (fill_area.0 + 3)) * 4) as usize;
+        assert_eq!(
+            &macos_bytes[bottom_idx..bottom_idx + 4],
+            &default_bytes[bottom_idx..bottom_idx + 4],
+            "bottom pixels should be identical between macOS and default"
+        );
+    }
+
+    #[test]
+    fn macos_compensation_respects_rounded_corners() {
+        // 顶部补偿行应受圆角约束：圆角外区域无绿色填充
+        let style = make_style();
+        let state = make_state(Some(100), false);
+        let bytes = render_mouse_icon_rgba_macos(&state, &style);
+        let fill_area = fill_area_for_test();
+
+        let top_y = fill_area.1;
+        let fill_radius = 9; // FILL_RADIUS
+        let inner_x0 = fill_area.0 + fill_radius;
+
+        // 圆角外区域（x < inner_x0 且在 fill_area 内）：绿色分量应为 0
+        // （注意：此处可能有白色轮廓的 alpha，但填充色为 0）
+        for x in (fill_area.0 + 2)..inner_x0 {
+            let idx = ((top_y * ICON_SIZE as i32 + x) * 4) as usize;
+            assert_eq!(
+                bytes[idx + 1], 0, // G 分量
+                "fill area outside corner at x={x} should have no green fill"
+            );
+        }
+
+        // 内矩形区域（x >= inner_x0）：应有绿色半透明补偿
+        let mid_x = inner_x0 + 2; // 避开中键左边界
+        let mid_idx = ((top_y * ICON_SIZE as i32 + mid_x) * 4) as usize;
+        assert!(
+            bytes[mid_idx + 1] > 0,
+            "inner area at x={mid_x} should have 0.5px compensation (green fill)"
+        );
+        assert!(
+            bytes[mid_idx + 3] > 0 && bytes[mid_idx + 3] < 255,
+            "inner area at x={mid_x} should be semi-transparent"
+        );
+    }
+
+    #[test]
+    fn receiver_marker_does_not_affect_macos_fill() {
+        // 接收器标记不应改变 macOS 路径的填充几何
+        let mut settings = test_settings();
+        let snapshot = DeviceSnapshot {
+            display_name: "Test".into(),
+            connection: Connection::Usb,
+            selection_priority: 0,
+            battery_percent: Some(100),
+            charging: false,
+            batteries: vec![
+                mira_core::DeviceBattery {
+                    id: "mouse".into(),
+                    label: "鼠标".into(),
+                    percentage: 100,
+                    charging: false,
+                },
+                mira_core::DeviceBattery {
+                    id: "receiver".into(),
+                    label: "接收器".into(),
+                    percentage: 10,
+                    charging: false,
+                },
+            ],
+            dpi: None,
+            dpi_stages: None,
+            polling_rate_hz: None,
+            supported_polling_rates_hz: None,
+            profile: None,
+            confirmed_light_color: None,
+            capabilities: Default::default(),
+            plugin_capabilities: Vec::new(),
+            writable_mutations: Vec::new(),
+            evidence: "hardware-verified".into(),
+            readonly: false,
+            plugin_id: None,
+            history_identity: None,
+            read_statuses: Default::default(),
+            mouse_ready: None,
+            family: None,
+        };
+
+        settings.show_receiver = false;
+        let no_receiver = TrayStatusState::from_snapshot(Some(&snapshot), &settings);
+        settings.show_receiver = true;
+        let with_receiver = TrayStatusState::from_snapshot(Some(&snapshot), &settings);
+        let style = make_style();
+
+        let bytes_no = render_mouse_icon_rgba_macos(&no_receiver, &style);
+        let bytes_with = render_mouse_icon_rgba_macos(&with_receiver, &style);
+
+        let fill_area = fill_area_for_test();
+        // 左半部分（x < 41，不受右下角 marker 影响）应完全相同
+        let marker_x_start = 41;
+        for y in fill_area.1..fill_area.3 {
+            for x in fill_area.0..marker_x_start.min(fill_area.2) {
+                let idx = ((y * ICON_SIZE as i32 + x) * 4) as usize;
+                assert_eq!(
+                    &bytes_no[idx..idx + 4],
+                    &bytes_with[idx..idx + 4],
+                    "receiver marker should not change macOS fill pixel at ({x},{y})"
+                );
+            }
+        }
     }
 }
