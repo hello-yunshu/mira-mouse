@@ -6,7 +6,7 @@ import { ExternalLink } from './ExternalLink';
 import type { AboutInfo } from './types';
 import { notifyError } from './notify';
 import { friendlyUpdateError } from './update-errors';
-import { useScrollOverflow } from './useScrollOverflow';
+import { useScrollFadeState } from './useScrollOverflow';
 import { extractChannel } from './plugin-utils';
 import {
   appUpdateState,
@@ -20,7 +20,8 @@ import {
 export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0 }: { onBack: () => void; previewMode?: boolean; focusUpdateToken?: number }) {
   const { t } = useTranslation();
   const scrollRef = useRef<HTMLDivElement>(null);
-  const canScroll = useScrollOverflow(scrollRef);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const { canScrollUp, canScrollDown } = useScrollFadeState(scrollRef, contentRef);
   const PREVIEW_INFO: AboutInfo = {
     name: 'Mira Mouse',
     version: '0.1.0-preview',
@@ -118,7 +119,8 @@ export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0 }:
         <button className="secondary" onClick={onBack}>{t('common.back')}</button>
       </header>
 
-      <div ref={scrollRef} className={`settings-scroll-area${canScroll ? ' scroll-overflow' : ''}`}>
+      <div ref={scrollRef} className={`settings-scroll-area${canScrollUp ? ' scroll-fade-top' : ''}${canScrollDown ? ' scroll-fade-bottom' : ''}`}>
+      <div ref={contentRef} className="settings-scroll-content">
       <section className="card about-section about-intro-card">
         <span className="about-logo-frame" aria-hidden="true">
           <img className="about-logo about-logo-light" src="/app-icon.png" alt="" />
@@ -302,6 +304,7 @@ export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0 }:
           </div>
         </div>
       </section>
+      </div>
       </div>
     </main>
   );

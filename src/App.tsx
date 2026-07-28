@@ -58,7 +58,7 @@ import {
   simulateDemoMutation,
 } from './pluginAdapter';
 import { onAppNotification, notifyError, notifySuccess, type AppNotification } from './notify';
-import { useScrollOverflow } from './useScrollOverflow';
+import { useScrollFadeState } from './useScrollOverflow';
 import { relaunchAfterUpdate, startAutomaticAppUpdateCheck } from './updater';
 import { startAutomaticPluginUpdateCheck } from './plugin-updater';
 import { startAutomaticLocalAiUpdateCheck } from './local-ai-updater';
@@ -358,7 +358,7 @@ function MorphingMetricValue({
   unit,
   variant,
   duration = 320,
-  contextTransitionDelay = 340,
+  contextTransitionDelay = 300,
 }: MetricFlipValue & { active: boolean; duration?: number; contextTransitionDelay?: number }) {
   const [currentValue, setCurrentValue] = useState<MetricFlipValue>(() => ({
     contextKey,
@@ -2067,7 +2067,9 @@ function DeviceDetails({ device, deviceKey, onClose }: { device: DeviceState; de
   const [diagFormat, setDiagFormat] = useState<'markdown' | 'json'>('markdown');
   const [logSessionId, setLogSessionId] = useState<string | null>(null);
   const capScrollRef = useRef<HTMLDivElement>(null);
-  const capCanScroll = useScrollOverflow(capScrollRef);
+  // capability-groups 使用 CSS columns 布局，添加内容包装层会破坏列流动，
+  // 因此只观察容器本身；MutationObserver 仍会捕获子节点变化触发重新测量。
+  const { canScrollUp: capCanScrollUp, canScrollDown: capCanScrollDown } = useScrollFadeState(capScrollRef);
   const pluginId = device.pluginId;
 
   // Sync protocol diagnostic state with backend on mount: the session may
@@ -2245,7 +2247,7 @@ function DeviceDetails({ device, deviceKey, onClose }: { device: DeviceState; de
           </button>
         </div>
       </div>
-      <div ref={capScrollRef} className={`capability-groups${capCanScroll ? ' scroll-overflow' : ''}`}>
+      <div ref={capScrollRef} className={`capability-groups${capCanScrollUp ? ' scroll-fade-top' : ''}${capCanScrollDown ? ' scroll-fade-bottom' : ''}`}>
         {groups.length ? groups.map(([group, fields]) => (
           <section className="capability-group" key={group}>
             <h3>
@@ -2450,7 +2452,7 @@ function SharedControlMetricLayer({
         text={metric?.text ?? ''}
         unit={metric?.unit ?? ''}
         variant={metric?.variant ?? 'hertz'}
-        contextTransitionDelay={sync === 'surface' ? 320 : 340}
+        contextTransitionDelay={sync === 'surface' ? 320 : 300}
       />
     </div>
   );
