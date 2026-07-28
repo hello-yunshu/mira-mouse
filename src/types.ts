@@ -18,7 +18,7 @@ export interface RangeSpec {
 // ─── 声明式插件 UI 类型 ─────────────────────────────────────────────────────
 
 /** 字段编辑器类型，决定 UI 渲染方式。 */
-export type PluginEditor = 'inline-toggle' | 'inline-segmented' | 'inline-value' | 'inline-action' | 'modal-select' | 'modal-color' | 'modal-range' | 'modal-number' | 'modal-dpi-stage' | 'modal-gradient' | 'static-readonly';
+export type PluginEditor = 'inline-toggle' | 'inline-segmented' | 'inline-range' | 'inline-value' | 'inline-action' | 'modal-select' | 'modal-color' | 'modal-range' | 'modal-number' | 'modal-dpi-stage' | 'modal-gradient' | 'static-readonly';
 
 /** 字段值格式化方式。 */
 export type PluginFieldFormat = 'sleep' | 'percent' | 'hertz' | 'connection' | 'color' | 'default';

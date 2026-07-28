@@ -2260,54 +2260,131 @@ body:has(.platform-fallback:not(.web-preview)) {
   backdrop-filter: var(--modal-backdrop-blur);
 }
 .advanced-settings-modal {
-  width: min(468px, calc(100vw - 32px));
-  max-height: 100%;
+  width: min(520px, calc(100vw - 32px));
+  max-height: calc(100vh - 66px);
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
   border: 1px solid var(--floating-glass-border);
   border-radius: var(--modal-radius-lg);
-  padding: var(--modal-padding);
+  padding: 0;
   background: var(--floating-glass-bg);
   -webkit-backdrop-filter: var(--floating-glass-blur);
   backdrop-filter: var(--floating-glass-blur);
   box-shadow: var(--floating-glass-shadow);
 }
-.advanced-settings-modal .modal-header {
+
+/* Header */
+.as-header {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 12px;
-  margin-bottom: 10px;
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid var(--surface-group-border);
 }
-.advanced-settings-modal .modal-header h2 {
-  margin: 0;
-  font-size: 18px;
-  letter-spacing: -.01em;
-}
-.advanced-settings-modal .modal-close {
+.as-header-icon {
   display: grid;
   place-items: center;
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  color: var(--muted);
-  background: transparent;
-}
-.advanced-settings-modal .modal-close:hover {
+  width: 36px;
+  height: 36px;
+  flex: 0 0 auto;
+  border-radius: 10px;
+  background: var(--surface-group-bg);
   color: var(--text);
-  background: var(--control-hover-bg);
 }
-.advanced-settings-modal .modal-close svg {
-  width: var(--modal-close-icon);
-  height: var(--modal-close-icon);
+.as-header-icon svg { width: 18px; height: 18px; }
+.as-header-text { flex: 1 1 auto; min-width: 0; }
+.as-header-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
 }
-.advanced-settings-modal .modal-body {
+.as-header-sub {
+  margin: 1px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+/* 关闭按钮复用全局 .icon-button 样式，与全部读数弹窗保持一致（28×28px 圆形 + 1px 边框 + 15px X 图标）。
+   补充 grid 居中，与 .device-details .icon-button 一致。 */
+.advanced-settings-modal .icon-button { display: grid; place-items: center; flex: 0 0 auto; }
+.advanced-settings-modal .icon-button svg { width: var(--modal-close-icon); height: var(--modal-close-icon); }
+
+/* Search */
+.as-search {
+  flex: 0 0 auto;
+  padding: 10px 20px 12px;
+  border-bottom: 1px solid var(--surface-group-border);
+}
+.as-search-input-wrap { position: relative; display: flex; align-items: center; }
+.as-search-input-wrap > svg {
+  position: absolute;
+  left: 10px;
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
+  pointer-events: none;
+}
+.as-search-input {
+  width: 100%;
+  padding: 7px 10px 7px 30px;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--text);
+  background: var(--surface-group-bg);
+  border: 1px solid transparent;
+  border-radius: 12px;
+  outline: none;
+  transition: border-color var(--motion-fast) var(--motion-ease-out), background var(--motion-fast) var(--motion-ease-out);
+}
+.as-search-input::placeholder { color: var(--muted); }
+.as-search-input:focus { border-color: var(--accent); background: var(--surface-highlight); }
+
+/* Body */
+.as-body {
+  flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
+  padding: 14px 20px 20px;
 }
-.advanced-settings-section + .advanced-settings-section { margin-top: 10px; }
-.advanced-settings-section h3 { margin: 0 0 6px; font-size: 12px; }
+.as-body::-webkit-scrollbar { width: 5px; }
+.as-body::-webkit-scrollbar-track { background: transparent; }
+.as-body::-webkit-scrollbar-thumb { background: var(--surface-group-border); border-radius: 3px; }
+
+/* Section */
+.advanced-settings-section + .advanced-settings-section { margin-top: 18px; }
+.as-section-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 0 2px;
+}
+.as-section-icon {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  border-radius: 6px;
+  background: var(--surface-group-bg);
+  color: var(--muted);
+}
+.as-section-icon svg { width: 13px; height: 13px; }
+.as-section-title {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+/* Item group card */
 .advanced-settings-list {
   margin: 0;
   padding: 0;
@@ -2317,48 +2394,246 @@ body:has(.platform-fallback:not(.web-preview)) {
   background: var(--surface-group-bg);
   overflow: hidden;
 }
-.advanced-settings-item {
-  min-height: 38px;
-  padding: 6px 10px;
+
+/* Item — 设计稿 .as-item。统一采用 .as-item-label + .as-item-right 结构，
+   不再依赖首页子块样式（plugin-toggle / lighting-row / inline-slider-*）。 */
+.as-item {
   display: flex;
   align-items: center;
-}
-.advanced-settings-item + .advanced-settings-item {
-  border-top: 1px solid rgb(127 120 140 / 9%);
-}
-.advanced-settings-field {
-  width: 100%;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
   gap: 12px;
+  min-height: 42px;
+  padding: 8px 12px;
   color: var(--text);
-  background: transparent;
-  text-align: left;
+  transition: background var(--motion-fast) var(--motion-ease-out);
 }
-.advanced-settings-field-label { min-width: 0; font-size: 10px; }
-.advanced-settings-field-value {
+.as-item + .as-item {
+  border-top: 1px solid var(--surface-group-border);
+}
+.as-item.editable { padding: 0; cursor: pointer; }
+.as-item.editable:hover { background: var(--control-hover-bg); }
+
+/* 可点击 item 的内层按钮：撑满 li，承担 padding 与 flex 布局。
+   覆盖全局 button 的 border-radius:999px / hover 背景 / active 缩放，
+   避免悬停时出现椭圆形图案。 */
+.as-item-btn {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 42px;
+  padding: 8px 12px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.as-item-btn:hover { background: inherit; }
+.as-item-btn:active { transform: none; }
+.as-item-btn:disabled { cursor: not-allowed; opacity: 0.5; }
+
+/* 标签（含可选 zone 前缀） */
+.as-item-label {
   flex: 0 1 auto;
   min-width: 0;
+  font-size: 13px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.as-item-label-zone {
+  font-size: 10px;
+  color: var(--muted);
+  margin-right: 4px;
+}
+
+/* 右侧容器：value / color-dot / slider / toggle / chevron 都放在这里，
+   margin-left:auto 把它推到 li 右端，与设计稿一致。 */
+.as-item-right {
+  flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
+  margin-left: auto;
+}
+
+/* 值文本 */
+.as-item-value {
+  font-size: 13px;
   color: var(--muted);
-  font-size: 10px;
   text-align: right;
   overflow-wrap: anywhere;
 }
-.advanced-settings-field-value i {
-  width: 10px;
-  height: 10px;
+.as-item-value.readonly { font-variant-numeric: tabular-nums; }
+
+/* 颜色圆点（modal-color editor） */
+.as-color-dot {
+  width: 14px;
+  height: 14px;
   flex: 0 0 auto;
   border-radius: 50%;
-  background: var(--light-color);
+  border: 1px solid var(--surface-group-border);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 20%);
 }
-.advanced-settings-inline { justify-content: space-between; gap: 12px; }
-.advanced-settings-inline > .lighting-row { width: 100%; }
-.advanced-settings-stage-layout { display: block; }
+
+/* 右箭头已移除：可点击 item 通过整行 hover 高亮提示，点击直接弹出编辑窗 */
+
+/* Toggle switch — 复用设置页 .toggle/.toggle-knob 样式，不再单独定义 .as-toggle */
+
+/* Badge — 设计稿 .as-badge。accent 状态用主题色半透明背景，与开关/滑块统一。 */
+.as-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  font-size: 10px;
+  font-weight: 500;
+  border-radius: 6px;
+  background: var(--surface-group-bg);
+  color: var(--muted);
+}
+.as-badge.accent {
+  background: color-mix(in oklch, var(--accent), transparent 82%);
+  color: var(--accent);
+}
+
+/* Inline slider — 设计稿 .as-slider-wrap / .as-slider / .as-slider-value
+   track 已填充部分用 --accent 主题色，thumb 也用 --accent，与开关主题色统一。
+   --slider-percent 由 React 根据当前值动态设置 (0%..100%)。 */
+.as-slider-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 1 120px;
+}
+input.as-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 80px;
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(to right,
+    var(--accent) 0%,
+    var(--accent) var(--slider-percent, 0%),
+    var(--surface-group-border) var(--slider-percent, 0%),
+    var(--surface-group-border) 100%);
+  outline: none;
+  cursor: pointer;
+}
+input.as-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 20%);
+}
+input.as-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border: none;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 20%);
+}
+input.as-slider::-moz-range-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--surface-group-border);
+}
+input.as-slider::-moz-range-progress {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+input.as-slider:disabled { opacity: 0.5; cursor: not-allowed; }
+.as-slider-value {
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  min-width: 30px;
+  text-align: right;
+}
+
+/* 兼容 FieldRenderer 在首页内联使用 inline-range 的旧样式名（已统一为 as-slider-*）。
+   保留 inline-slider-* 作为兼容钩子，避免遗漏其他插件字段声明。 */
+.inline-slider-wrap { display: flex; align-items: center; gap: 8px; }
+.inline-slider { width: 80px; height: 4px; }
+.inline-slider-value { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+/* Empty state */
+.as-empty {
+  margin: 24px 0;
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+}
+
+/* Footer */
+.as-footer {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--surface-group-border);
+}
+.as-footer-hint { font-size: 11px; color: var(--muted); }
+.as-footer-btn {
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  font-family: inherit;
+  border-radius: 8px;
+  border: none;
+  cursor: pointer;
+  transition: background var(--motion-fast) var(--motion-ease-out);
+}
+.as-footer-btn.secondary {
+  background: var(--surface-group-bg);
+  color: var(--text);
+}
+.as-footer-btn.secondary:hover { background: var(--control-hover-bg); }
+.as-footer-btn:disabled { cursor: not-allowed; opacity: 0.5; }
+
+/* Device info card (device section header) */
+.as-device-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--surface-group-border);
+  border-radius: var(--modal-radius-sm, 12px);
+  background: var(--surface-group-bg);
+}
+.as-device-info-icon {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  border-radius: 8px;
+  background: var(--surface-group-bg);
+  color: var(--text);
+}
+.as-device-info-icon svg { width: 16px; height: 16px; }
+.as-device-info-text { flex: 1 1 auto; min-width: 0; }
+.as-device-info-name { font-size: 13px; font-weight: 500; }
+.as-device-info-meta { font-size: 11px; color: var(--muted); margin-top: 1px; }
+.as-device-list { margin-top: 8px; }
+
+/* 特殊 item 类型：stage layout / zone / inline-editor 复用 FieldRenderer 的容器。
+   这些场景下 FieldRenderer 返回 fragment，由 .as-item 提供基础布局，
+   子元素自行处理内部对齐。 */
+.as-item-stage-layout { display: block; padding: 12px; }
+.as-item-zone { display: block; padding: 12px; }
+.as-item-inline { justify-content: space-between; gap: 12px; }
+.as-item-inline > .lighting-row { width: 100%; }
+.as-item-inline > .plugin-segmented { margin-left: auto; }
 
 /* Details page actions */
 .details-actions { display: flex; gap: 6px; margin-bottom: 10px; }
@@ -2727,7 +3002,7 @@ h2 { margin: 2px 0 0; letter-spacing: -.02em; font-size: 16px; }
   padding-right: 4px;
 }
 .setting-control { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; }
-input[type="range"] { width: 130px; accent-color: var(--accent); height: 4px; }
+input[type="range"]:not(.as-slider) { width: 130px; accent-color: var(--accent); height: 4px; }
 input[type="time"] { border: 1px solid var(--control-secondary-border); border-radius: 8px; padding: 5px 8px; background: var(--control-secondary-bg); color: inherit; font: inherit; font-size: 12px; }
 
 /* Toggle switch — 紧凑 */

@@ -1539,7 +1539,7 @@ describe('real device snapshot mapping', () => {
     const dialog = screen.getByRole('dialog', { name: '高级设置' });
     expect(dialog).toHaveClass('advanced-settings-modal');
     expect(dialog.parentElement).toHaveClass('advanced-settings-backdrop');
-    expect(dialog.querySelector('.modal-body')).toHaveClass('modal-body');
+    expect(dialog.querySelector('.as-body')).toBeInTheDocument();
     // 传感器分组应包含两个 fallback 字段。
     const advancedList = document.querySelector('.advanced-settings-list');
     expect(advancedList).toBeInTheDocument();
