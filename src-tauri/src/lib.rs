@@ -32,7 +32,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     fs,
-    io::{Cursor, Read},
+    io::{Cursor, Read, Write},
     path::PathBuf,
     process::Command,
     sync::{Arc, Condvar, Mutex},
@@ -3077,11 +3077,12 @@ const RILL_HANDLER_KEY_ID: &str = "mira-handler-2026-001";
 const RILL_HANDLER_PUBLIC_KEY_HEX: &str =
     "cefbe96db58196e4b3a8455f427ca75efaedacb68792ae82d7d06dd8c86f193e";
 
-// Test packages are accepted only by debug/test builds. Release builds trust only
-// the production publisher key above.
-#[cfg(debug_assertions)]
+// Test packages are accepted only by debug builds or the explicit
+// `test-plugin-trust` feature used by the isolated Latest Test App builder.
+// Normal release builds trust only the production publisher key above.
+#[cfg(any(debug_assertions, feature = "test-plugin-trust"))]
 const TEST_KEY_ID: &str = "TEST-ONLY-mira-plugins";
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, feature = "test-plugin-trust"))]
 const TEST_PUBLIC_KEY_HEX: &str =
     "00d34dac6e039baada3d3d9aa65390f2887d09d73b396af8434ecb29c233d666";
 
@@ -3097,11 +3098,29 @@ fn production_trust_store() -> TrustStore {
         PRODUCTION_KEY_ID.to_string(),
         decode_key(PRODUCTION_PUBLIC_KEY_HEX),
     );
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "test-plugin-trust"))]
     trust
         .0
         .insert(TEST_KEY_ID.to_string(), decode_key(TEST_PUBLIC_KEY_HEX));
     trust
+}
+
+#[cfg(test)]
+mod test_plugin_trust_tests {
+    use super::*;
+
+    #[test]
+    fn committed_test_seed_matches_the_debug_test_trust_root() {
+        let seed_hex = include_str!("../../tests/keys/TEST-ONLY-mira-plugins.seed").trim();
+        let seed: [u8; 32] = hex::decode(seed_hex)
+            .expect("test seed must be hexadecimal")
+            .try_into()
+            .expect("test seed must be exactly 32 bytes");
+        let public = ed25519_dalek::SigningKey::from_bytes(&seed)
+            .verifying_key()
+            .to_bytes();
+        assert_eq!(hex::encode(public), TEST_PUBLIC_KEY_HEX);
+    }
 }
 
 #[derive(Serialize)]
@@ -4926,6 +4945,97 @@ mod macos_launch_agent_tests {
             ),
             LaunchAgentState::Stale,
         );
+    }
+
+    #[test]
+    fn iteration009_classify_extra_program_argument_is_stale() {
+        let xml = build_launch_agent_plist_xml(
+            "Mira",
+            "/Applications/Mira.app/Contents/MacOS/Mira",
+            &["--hidden", "--unexpected"],
+        );
+        assert_eq!(
+            classify_launch_agent_state(
+                &xml,
+                "Mira",
+                "/Applications/Mira.app/Contents/MacOS/Mira",
+                &["--hidden"],
+            ),
+            LaunchAgentState::Stale,
+        );
+    }
+
+    #[test]
+    fn iteration009_classify_malformed_xml_with_decoy_strings_is_invalid() {
+        let malformed = r#"<?xml version="1.0"?>
+<plist version="1.0"><dict>
+<key>Label</key><string>Mira</string>
+<key>ProgramArguments</key><array>
+<string>/Applications/Mira.app/Contents/MacOS/Mira</string>
+<string>--hidden</string>
+</dict></plist>"#;
+        assert_eq!(
+            classify_launch_agent_state(
+                malformed,
+                "Mira",
+                "/Applications/Mira.app/Contents/MacOS/Mira",
+                &["--hidden"],
+            ),
+            LaunchAgentState::Invalid,
+        );
+    }
+
+    #[test]
+    fn iteration009_stale_and_invalid_entries_are_repaired() {
+        assert_eq!(
+            launch_agent_repair_action(LaunchAgentState::Stale, false, false),
+            LaunchAgentRepairAction::Repair
+        );
+        assert_eq!(
+            launch_agent_repair_action(LaunchAgentState::Invalid, false, false),
+            LaunchAgentRepairAction::Repair
+        );
+    }
+
+    #[test]
+    fn iteration009_dmg_never_disables_or_migrates_existing_autostart() {
+        for state in [
+            LaunchAgentState::Valid,
+            LaunchAgentState::Stale,
+            LaunchAgentState::Invalid,
+        ] {
+            assert_eq!(
+                launch_agent_repair_action(state, false, true),
+                LaunchAgentRepairAction::BlockedFromDiskImage
+            );
+        }
+        assert_eq!(
+            launch_agent_repair_action(LaunchAgentState::Missing, true, true),
+            LaunchAgentRepairAction::BlockedFromDiskImage
+        );
+        assert_eq!(
+            launch_agent_repair_action(LaunchAgentState::Missing, false, true),
+            LaunchAgentRepairAction::Disabled
+        );
+    }
+
+    #[test]
+    fn iteration009_launchctl_missing_job_is_the_only_ignorable_unload_failure() {
+        for detail in [
+            "Could not find service \"Mira\" in domain for user gui: 501",
+            "Could not find specified service",
+            "Unload failed: 3: No such process",
+            "service is not loaded",
+        ] {
+            assert!(launchctl_error_text_is_missing(detail), "{detail}");
+        }
+        for detail in [
+            "Boot-out failed: 1: Operation not permitted",
+            "Unload failed: 5: Input/output error",
+            "invalid property list",
+        ] {
+            assert!(!launchctl_error_text_is_missing(detail), "{detail}");
+        }
     }
 
     #[test]
@@ -7167,6 +7277,86 @@ fn bundled_plugins_dir(app: &AppHandle) -> Option<PathBuf> {
                 None
             }
         })
+}
+
+#[cfg(feature = "test-plugin-trust")]
+fn packaged_plugins_dir_from_executable() -> Result<PathBuf, String> {
+    let executable =
+        std::env::current_exe().map_err(|error| format!("resolve current executable: {error}"))?;
+    let executable_dir = executable.parent().ok_or_else(|| {
+        format!(
+            "executable has no parent directory: {}",
+            executable.display()
+        )
+    })?;
+    let mut candidates = vec![executable_dir.join("resources").join("plugins")];
+    if executable_dir.file_name().and_then(|name| name.to_str()) == Some("MacOS") {
+        let contents_dir = executable_dir.parent().ok_or_else(|| {
+            format!(
+                "macOS executable has no Contents directory: {}",
+                executable.display()
+            )
+        })?;
+        candidates.insert(
+            0,
+            contents_dir
+                .join("Resources")
+                .join("resources")
+                .join("plugins"),
+        );
+    }
+    candidates
+        .into_iter()
+        .find(|path| path.is_dir())
+        .ok_or_else(|| "packaged resources/plugins directory not found".to_string())
+}
+
+#[cfg(feature = "test-plugin-trust")]
+fn verify_packaged_bundled_plugins() -> Result<Vec<String>, String> {
+    let lock = read_lock_file()
+        .ok_or_else(|| "embedded bundled-plugins.lock.json is invalid".to_string())?;
+    let plugins_dir = packaged_plugins_dir_from_executable()?;
+    let trust = production_trust_store();
+    let mut verified = Vec::new();
+    for plugin in lock
+        .plugins
+        .into_iter()
+        .filter(|plugin| plugin.bundle_by_default)
+    {
+        let asset_path = plugins_dir.join(&plugin.asset);
+        let bytes = fs::read(&asset_path)
+            .map_err(|error| format!("read {}: {error}", asset_path.display()))?;
+        let actual_sha = hex::encode(Sha256::digest(&bytes));
+        if actual_sha != plugin.sha256 {
+            return Err(format!(
+                "SHA-256 mismatch for {}: expected {}, got {actual_sha}",
+                plugin.asset, plugin.sha256
+            ));
+        }
+        let (inspection, files) = extract_package(Cursor::new(&bytes), &trust, true)
+            .map_err(|error| format!("verify {}: {error}", plugin.asset))?;
+        if inspection.plugin_id != plugin.plugin_id || inspection.version != plugin.version {
+            return Err(format!(
+                "identity mismatch for {}: lock has {} {}, package has {} {}",
+                plugin.asset,
+                plugin.plugin_id,
+                plugin.version,
+                inspection.plugin_id,
+                inspection.version
+            ));
+        }
+        let devices = files
+            .get("devices.json")
+            .ok_or_else(|| format!("{} has no devices.json", plugin.asset))?;
+        hid::parse_devices_json(devices)
+            .map_err(|error| format!("parse devices.json in {}: {error}", plugin.asset))?;
+        verified.push(plugin.plugin_id);
+    }
+    if verified.is_empty() {
+        return Err("embedded lock has no default bundled plugins".to_string());
+    }
+    verified.sort();
+    Ok(verified)
 }
 
 fn inspect_bundled_plugins(app: &AppHandle, trust: &TrustStore) -> Vec<BundledPluginInfo> {
@@ -10914,6 +11104,34 @@ enum LaunchAgentState {
     Invalid,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LaunchAgentRepairAction {
+    Disabled,
+    KeepValid,
+    Repair,
+    BlockedFromDiskImage,
+}
+
+fn launch_agent_repair_action(
+    state: LaunchAgentState,
+    legacy_enabled: bool,
+    running_from_disk_image: bool,
+) -> LaunchAgentRepairAction {
+    if running_from_disk_image {
+        return if legacy_enabled || state != LaunchAgentState::Missing {
+            LaunchAgentRepairAction::BlockedFromDiskImage
+        } else {
+            LaunchAgentRepairAction::Disabled
+        };
+    }
+    match state {
+        LaunchAgentState::Valid => LaunchAgentRepairAction::KeepValid,
+        LaunchAgentState::Stale | LaunchAgentState::Invalid => LaunchAgentRepairAction::Repair,
+        LaunchAgentState::Missing if legacy_enabled => LaunchAgentRepairAction::Repair,
+        LaunchAgentState::Missing => LaunchAgentRepairAction::Disabled,
+    }
+}
+
 /// ITERATION-009 §8.1：分类 plist 内容的状态。
 /// 纯函数：输入 plist 文件内容和期望值，返回状态。
 fn classify_launch_agent_state(
@@ -10922,50 +11140,43 @@ fn classify_launch_agent_state(
     expected_exe: &str,
     expected_args: &[&str],
 ) -> LaunchAgentState {
-    // 基本 XML 结构检查 → Invalid
-    if !plist_contents.contains("<?xml") || !plist_contents.contains("<plist") {
+    let Ok(value) = plist::Value::from_reader_xml(Cursor::new(plist_contents.as_bytes())) else {
         return LaunchAgentState::Invalid;
-    }
-    if !plist_contents.contains("<dict>") || !plist_contents.contains("</dict>") {
+    };
+    let Some(dict) = value.as_dictionary() else {
         return LaunchAgentState::Invalid;
-    }
+    };
+    let Some(label) = dict.get("Label").and_then(plist::Value::as_string) else {
+        return LaunchAgentState::Invalid;
+    };
+    let Some(program_arguments) = dict
+        .get("ProgramArguments")
+        .and_then(plist::Value::as_array)
+    else {
+        return LaunchAgentState::Invalid;
+    };
+    let Some(actual_args) = program_arguments
+        .iter()
+        .map(plist::Value::as_string)
+        .collect::<Option<Vec<_>>>()
+    else {
+        return LaunchAgentState::Invalid;
+    };
 
-    // Label 检查
-    let expected_label_xml = xml_escape(expected_label);
-    if !plist_contents.contains("<key>Label</key>") {
-        return LaunchAgentState::Invalid;
-    }
-    if !plist_contents.contains(&format!("<string>{}</string>", expected_label_xml)) {
+    let expected_program_arguments = std::iter::once(expected_exe)
+        .chain(expected_args.iter().copied())
+        .collect::<Vec<_>>();
+    if label != expected_label
+        || expected_exe.is_empty()
+        || actual_args
+            .first()
+            .is_some_and(|arg| arg.starts_with("/Volumes/"))
+        || actual_args != expected_program_arguments
+    {
         return LaunchAgentState::Stale;
-    }
-
-    // ProgramArguments 检查
-    if !plist_contents.contains("<key>ProgramArguments</key>") {
-        return LaunchAgentState::Invalid;
-    }
-
-    // exe 路径检查 → Stale if mismatch
-    let expected_exe_xml = xml_escape(expected_exe);
-    if !plist_contents.contains(&format!("<string>{}</string>", expected_exe_xml)) {
-        return LaunchAgentState::Stale;
-    }
-
-    // --hidden arg 检查 → Stale if missing
-    for arg in expected_args {
-        let arg_xml = xml_escape(arg);
-        if !plist_contents.contains(&format!("<string>{}</string>", arg_xml)) {
-            return LaunchAgentState::Stale;
-        }
     }
 
     LaunchAgentState::Valid
-}
-
-/// Returns true if the LaunchAgent plist exists and is Valid (contains both
-/// the canonical executable path and `--hidden` in ProgramArguments).
-#[cfg(target_os = "macos")]
-fn macos_launch_agent_is_enabled(app: &AppHandle) -> Result<bool, String> {
-    Ok(macos_launch_agent_state(app)? == LaunchAgentState::Valid)
 }
 
 /// ITERATION-009 §8.1：返回 LaunchAgent plist 的详细状态。
@@ -10988,6 +11199,201 @@ fn macos_launch_agent_state(app: &AppHandle) -> Result<LaunchAgentState, String>
     let args = autostart_args();
     let label = app.package_info().name.as_ref();
     Ok(classify_launch_agent_state(&contents, label, &exe, &args))
+}
+
+#[cfg(target_os = "macos")]
+fn macos_launchctl_domain() -> Result<String, String> {
+    let output = Command::new("id")
+        .arg("-u")
+        .output()
+        .map_err(|err| format!("failed to resolve current uid: {err}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "failed to resolve current uid: exit={:?} stderr={}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let uid = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if uid.is_empty() || !uid.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(format!("invalid current uid returned by id: {uid:?}"));
+    }
+    Ok(format!("gui/{uid}"))
+}
+
+#[cfg(target_os = "macos")]
+fn log_launchctl_result(app: &AppHandle, operation: &'static str, output: &std::process::Output) {
+    if output.status.success() {
+        return;
+    }
+    app.state::<SessionState>().log_warn(
+        operation,
+        format!(
+            "launchctl exit={:?} stdout={} stderr={}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout).trim(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ),
+    );
+}
+
+/// Stop the currently loaded job before replacing its plist. A missing job is
+/// expected on first install, but every command result is inspected and logged.
+#[cfg(any(target_os = "macos", test))]
+fn launchctl_error_text_is_missing(detail: &str) -> bool {
+    let detail = detail.to_ascii_lowercase();
+    [
+        "could not find service",
+        "could not find specified service",
+        "no such process",
+        "service is not loaded",
+    ]
+    .iter()
+    .any(|marker| detail.contains(marker))
+}
+
+#[cfg(target_os = "macos")]
+fn launchctl_job_is_missing(output: &std::process::Output) -> bool {
+    let detail = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    launchctl_error_text_is_missing(&detail)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_launchctl_unload(app: &AppHandle, plist_path: &std::path::Path) -> Result<(), String> {
+    let domain = macos_launchctl_domain();
+    let path = plist_path.to_string_lossy().to_string();
+    let mut bootout_failure = None;
+    if let Ok(domain) = domain {
+        match Command::new("launchctl")
+            .args(["bootout", &domain, &path])
+            .output()
+        {
+            Ok(output) if output.status.success() => return Ok(()),
+            Ok(output) => {
+                log_launchctl_result(app, "launchctl::bootout", &output);
+                bootout_failure = Some(format!(
+                    "bootout exit={:?} stderr={}",
+                    output.status.code(),
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ));
+            }
+            Err(err) => {
+                app.state::<SessionState>().log_warn(
+                    "launchctl::bootout",
+                    format!("failed to execute launchctl bootout: {err}"),
+                );
+                bootout_failure = Some(format!("bootout execution failed: {err}"));
+            }
+        }
+    }
+    match Command::new("launchctl").args(["unload", &path]).output() {
+        Ok(output) if output.status.success() || launchctl_job_is_missing(&output) => Ok(()),
+        Ok(output) => {
+            log_launchctl_result(app, "launchctl::unload", &output);
+            Err(format!(
+                "launchctl could not unload job: {}; unload exit={:?} stderr={}",
+                bootout_failure.unwrap_or_else(|| "bootout unavailable".to_string()),
+                output.status.code(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            ))
+        }
+        Err(err) => Err(format!(
+            "launchctl unload execution failed after {}: {err}",
+            bootout_failure.unwrap_or_else(|| "bootout unavailable".to_string())
+        )),
+    }
+}
+
+/// Load the installed plist and verify that launchd exposes the requested job.
+/// Modern bootstrap/print is preferred; legacy load/list remains a compatibility
+/// fallback for older macOS versions.
+#[cfg(target_os = "macos")]
+fn macos_launchctl_load_and_verify(
+    app: &AppHandle,
+    plist_path: &std::path::Path,
+    label: &str,
+) -> Result<(), String> {
+    let domain = macos_launchctl_domain()?;
+    let path = plist_path.to_string_lossy().to_string();
+    let bootstrap = Command::new("launchctl")
+        .args(["bootstrap", &domain, &path])
+        .output()
+        .map_err(|err| format!("failed to execute launchctl bootstrap: {err}"))?;
+    if !bootstrap.status.success() {
+        log_launchctl_result(app, "launchctl::bootstrap", &bootstrap);
+        let load = Command::new("launchctl")
+            .args(["load", &path])
+            .output()
+            .map_err(|err| format!("failed to execute launchctl load fallback: {err}"))?;
+        if !load.status.success() {
+            return Err(format!(
+                "launchctl bootstrap/load failed: bootstrap exit={:?} stderr={}; load exit={:?} stderr={}",
+                bootstrap.status.code(),
+                String::from_utf8_lossy(&bootstrap.stderr).trim(),
+                load.status.code(),
+                String::from_utf8_lossy(&load.stderr).trim()
+            ));
+        }
+    }
+
+    let service = format!("{domain}/{label}");
+    let print = Command::new("launchctl")
+        .args(["print", &service])
+        .output()
+        .map_err(|err| format!("failed to execute launchctl print: {err}"))?;
+    if print.status.success() {
+        return Ok(());
+    }
+    log_launchctl_result(app, "launchctl::print", &print);
+    let list = Command::new("launchctl")
+        .args(["list", label])
+        .output()
+        .map_err(|err| format!("failed to execute launchctl list fallback: {err}"))?;
+    if list.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "launchctl could not verify loaded job {label}: print exit={:?} stderr={}; list exit={:?} stderr={}",
+            print.status.code(),
+            String::from_utf8_lossy(&print.stderr).trim(),
+            list.status.code(),
+            String::from_utf8_lossy(&list.stderr).trim()
+        ))
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn restore_launch_agent_after_failure(
+    app: &AppHandle,
+    plist_path: &std::path::Path,
+    previous_contents: Option<&[u8]>,
+    label: &str,
+) {
+    let _ = macos_launchctl_unload(app, plist_path);
+    match previous_contents {
+        Some(contents) => {
+            if let Err(err) = fs::write(plist_path, contents) {
+                app.state::<SessionState>().log_error(
+                    "launch_agent::rollback",
+                    format!("failed to restore previous launch agent plist: {err}"),
+                );
+                return;
+            }
+            if let Err(err) = macos_launchctl_load_and_verify(app, plist_path, label) {
+                app.state::<SessionState>().log_error(
+                    "launch_agent::rollback",
+                    format!("failed to reload previous launch agent: {err}"),
+                );
+            }
+        }
+        None => {
+            let _ = fs::remove_file(plist_path);
+        }
+    }
 }
 
 /// ITERATION-009 §8.3/§8.4：Write the canonical LaunchAgent plist atomically
@@ -11015,10 +11421,17 @@ fn macos_write_launch_agent(app: &AppHandle) -> Result<(), String> {
         fs::create_dir_all(parent)
             .map_err(|err| format!("failed to create LaunchAgents directory: {err}"))?;
     }
-    // §8.3 步骤 3：写入临时文件
+    let previous_contents = fs::read(&plist_path).ok();
+    // §8.3 步骤 3：写入临时文件并同步到磁盘
     let tmp = plist_path.with_extension("plist.tmp");
-    fs::write(&tmp, &plist_xml)
+    let mut tmp_file = fs::File::create(&tmp)
+        .map_err(|err| format!("failed to create launch agent plist: {err}"))?;
+    tmp_file
+        .write_all(plist_xml.as_bytes())
         .map_err(|err| format!("failed to write launch agent plist: {err}"))?;
+    tmp_file
+        .sync_all()
+        .map_err(|err| format!("failed to sync launch agent plist: {err}"))?;
     // §8.3 步骤 4：验证 plist（读回并分类）
     let readback = fs::read_to_string(&tmp)
         .map_err(|err| format!("failed to read back launch agent plist: {err}"))?;
@@ -11032,52 +11445,22 @@ fn macos_write_launch_agent(app: &AppHandle) -> Result<(), String> {
     // §8.3 步骤 5：原子替换
     fs::rename(&tmp, &plist_path)
         .map_err(|err| format!("failed to install launch agent plist: {err}"))?;
-    // §8.3 步骤 6：launchctl unload + load（§8.4：捕获结果）
-    if let Some(path_str) = plist_path.to_str() {
-        // unload 非致命（首次安装时没有已加载的 agent）
-        let _ = Command::new("launchctl")
-            .args(["unload", path_str])
-            .output();
-        // load 必须成功
-        let load_result = Command::new("launchctl").args(["load", path_str]).output();
-        match load_result {
-            Ok(output) => {
-                if !output.status.success() {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    app.state::<SessionState>().log_warn(
-                        "launchctl::load",
-                        format!(
-                            "launchctl load exit={:?} stdout={stdout} stderr={stderr}",
-                            output.status.code()
-                        ),
-                    );
-                    // 不返回 Err：plist 是 source of truth，launchd 在下次登录时加载。
-                }
-            }
-            Err(err) => {
-                app.state::<SessionState>().log_warn(
-                    "launchctl::load",
-                    format!("failed to execute launchctl load: {err}"),
-                );
-            }
-        }
+    // §8.3 步骤 6：检查每个 launchctl 结果；失败时恢复旧条目。
+    if let Err(err) = macos_launchctl_unload(app, &plist_path) {
+        restore_launch_agent_after_failure(app, &plist_path, previous_contents.as_deref(), label);
+        return Err(err);
     }
-    // §8.3 步骤 7：检查状态（非致命，仅日志）
-    match macos_launch_agent_state(app) {
-        Ok(LaunchAgentState::Valid) => {}
-        Ok(state) => {
-            app.state::<SessionState>().log_warn(
-                "launch_agent::write",
-                format!("plist installed but state={state:?}, will repair on next refresh"),
-            );
-        }
-        Err(err) => {
-            app.state::<SessionState>().log_warn(
-                "launch_agent::write",
-                format!("failed to verify launch agent state after write: {err}"),
-            );
-        }
+    if let Err(err) = macos_launchctl_load_and_verify(app, &plist_path, label) {
+        restore_launch_agent_after_failure(app, &plist_path, previous_contents.as_deref(), label);
+        return Err(err);
+    }
+    // §8.3 步骤 7：重新读取真实 plist 状态，非 Valid 必须回滚并报错。
+    let installed_state = macos_launch_agent_state(app)?;
+    if installed_state != LaunchAgentState::Valid {
+        restore_launch_agent_after_failure(app, &plist_path, previous_contents.as_deref(), label);
+        return Err(format!(
+            "launch agent state verification failed after load: {installed_state:?}"
+        ));
     }
     // §8.3 步骤 8：成功后删除 legacy AppleScript 条目
     macos_disable_legacy_applescript_item(app)?;
@@ -11091,11 +11474,7 @@ fn macos_remove_launch_agent(app: &AppHandle) -> Result<(), String> {
         return Ok(());
     };
     if plist_path.exists() {
-        if let Some(path_str) = plist_path.to_str() {
-            let _ = Command::new("launchctl")
-                .args(["unload", path_str])
-                .status();
-        }
+        macos_launchctl_unload(app, &plist_path)?;
         fs::remove_file(&plist_path)
             .map_err(|err| format!("failed to remove launch agent plist: {err}"))?;
     }
@@ -11107,7 +11486,14 @@ fn macos_remove_launch_agent(app: &AppHandle) -> Result<(), String> {
 #[cfg(target_os = "macos")]
 fn macos_disable_legacy_applescript_item(app: &AppHandle) -> Result<(), String> {
     if let Ok(autolaunch) = autostart_entry(app) {
-        let _ = autolaunch.disable();
+        let enabled = autolaunch
+            .is_enabled()
+            .map_err(|err| format!("failed to inspect legacy autostart entry: {err}"))?;
+        if enabled {
+            autolaunch
+                .disable()
+                .map_err(|err| format!("failed to disable legacy autostart entry: {err}"))?;
+        }
     }
     Ok(())
 }
@@ -11121,17 +11507,32 @@ fn migrate_legacy_applescript_to_launch_agent(app: &AppHandle) -> Result<bool, S
     let legacy_enabled = autostart_entry(app)
         .ok()
         .is_some_and(|entry| entry.is_enabled().unwrap_or(false));
-    let launch_agent_enabled = macos_launch_agent_is_enabled(app)?;
-    if !legacy_enabled {
-        return Ok(launch_agent_enabled);
+    let launch_agent_state = macos_launch_agent_state(app)?;
+    match launch_agent_repair_action(
+        launch_agent_state,
+        legacy_enabled,
+        running_from_disk_image(),
+    ) {
+        LaunchAgentRepairAction::BlockedFromDiskImage => {
+            Err(
+                "Mira is running from a mounted DMG; drag Mira to Applications before changing launch at login"
+                    .to_string(),
+            )
+        }
+        LaunchAgentRepairAction::KeepValid => {
+            if legacy_enabled {
+                macos_disable_legacy_applescript_item(app)?;
+            }
+            Ok(true)
+        }
+        LaunchAgentRepairAction::Repair => {
+            // The plist's presence records that the user enabled autostart.
+            // Repair it even though the stale entry itself is not "enabled".
+            macos_write_launch_agent(app)?;
+            Ok(true)
+        }
+        LaunchAgentRepairAction::Disabled => Ok(false),
     }
-    // Legacy AppleScript item exists — migrate to LaunchAgent.
-    if !launch_agent_enabled && !running_from_disk_image() {
-        macos_write_launch_agent(app)?;
-    } else {
-        macos_disable_legacy_applescript_item(app)?;
-    }
-    Ok(true)
 }
 
 #[tauri::command]
@@ -11193,15 +11594,19 @@ fn refresh_autostart_entry_if_enabled(app: &AppHandle) {
         if running_from_disk_image() {
             return;
         }
-        // Re-write the canonical LaunchAgent plist to repair any stale entry
-        // (old path, missing --hidden, or corrupted plist).
-        if matches!(macos_launch_agent_is_enabled(app), Ok(true)) {
-            if let Err(err) = macos_write_launch_agent(app) {
-                eprintln!("[mira] refresh launch agent plist failed: {err}");
+        match macos_launch_agent_state(app) {
+            Ok(LaunchAgentState::Stale | LaunchAgentState::Invalid) => {
+                if let Err(err) = macos_write_launch_agent(app) {
+                    eprintln!("[mira] refresh launch agent plist failed: {err}");
+                }
             }
-        } else {
-            // Migrate legacy AppleScript item if present.
-            let _ = migrate_legacy_applescript_to_launch_agent(app);
+            Ok(LaunchAgentState::Valid) => {}
+            Ok(LaunchAgentState::Missing) => {
+                if let Err(err) = migrate_legacy_applescript_to_launch_agent(app) {
+                    eprintln!("[mira] legacy autostart migration failed: {err}");
+                }
+            }
+            Err(err) => eprintln!("[mira] inspect launch agent plist failed: {err}"),
         }
     }
     #[cfg(not(target_os = "macos"))]
@@ -13204,6 +13609,26 @@ fn build_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 pub fn run() {
+    #[cfg(feature = "test-plugin-trust")]
+    if std::env::args().any(|arg| arg == "--test-bundled-plugins") {
+        match verify_packaged_bundled_plugins() {
+            Ok(plugin_ids) => {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "verified": true,
+                        "pluginCount": plugin_ids.len(),
+                        "pluginIds": plugin_ids,
+                    })
+                );
+                return;
+            }
+            Err(error) => {
+                eprintln!("packaged bundled plugin self-check failed: {error}");
+                std::process::exit(1);
+            }
+        }
+    }
     tauri::Builder::default()
         .manage(SessionState::default())
         .manage(production_trust_store())
