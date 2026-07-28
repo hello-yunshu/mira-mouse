@@ -153,23 +153,25 @@ Stale plist 当作"用户未启用"。
 npm run build:test-app
 ```
 
-全新 clone 后只需这一条命令即可完成：
+全新 clone（与 sibling `mira-mouse-plugins` 同级）后只需这一条命令即可完成：
 
-1. 自动准备 mira-plugin CLI（若不存在则 `cargo build --release -p mira-plugin-cli`）；
+1. 从当前 Host 源码构建 release mira-plugin CLI；
 2. 动态发现 `plugins/*/plugin.json`；
 3. 对每个插件运行 `validate / test / pack / inspect / verify`；
-4. 用 TEST-ONLY-mira-plugins 密钥签名；
-5. 把最新测试包安装到 `src-tauri/resources/plugins/`；
-6. 更新 `bundled-plugins.lock.json`（`releaseReady=false`）；
-7. 同步 `tauri.conf.json` 的 resources 列表；
-8. 调用 `tauri build` 构建 `.app / .dmg`；
-9. 输出版本清单和 sha256（含 CLI SHA-256）。
+4. 用仓库内公开 TEST-ONLY seed 签名并验证固定测试信任根；
+5. 把 Host 源码复制到临时 staging；
+6. 仅在 staging 中安装测试包、生成 `releaseReady=false` lock，并启用
+   `test-plugin-trust` Cargo feature；
+7. 调用 `tauri build` 构建测试 App；
+8. 删除 staging，源 checkout 的 lock/resources/Tauri config 保持不变；
+9. 输出 `target/test-app/manifest.json`，包含 commit、dirty/source-state hash、
+   CLI、App 和 plugin SHA-256。
 
 ### CLI 路径解析优先级
 
-1. `MIRA_PLUGIN_CLI` 环境变量；
-2. `target/release/mira-plugin`（Windows 自动追加 `.exe`）；
-3. 不存在则自动 `cargo build --release -p mira-plugin-cli`。
+1. 若显式设置 `MIRA_PLUGIN_CLI`，使用该已存在的外部二进制；
+2. 否则总是从当前 Host 源码构建 `target/release/mira-plugin`
+   （Windows 自动追加 `.exe`），不复用可能过期的旧 CLI。
 
 ### TEST-ONLY 签名隔离
 
@@ -181,7 +183,7 @@ npm run build:test-app
 - Release build 必须拒绝 TEST-ONLY；
 - 构建前验证生产 `trusted-keys.json` 不得包含 TEST-ONLY 密钥；
 - 文件名、注释、文档明确"公开测试密钥，不是秘密"；
-- 只用于 debug/test bundle；
+- 只用于显式 `test-plugin-trust` feature 的 Test App；
 - 不复制进正式 App resources。
 
 ### 环境变量
@@ -189,10 +191,9 @@ npm run build:test-app
 | 变量                | 默认值                                          | 说明                          |
 |---------------------|-------------------------------------------------|-------------------------------|
 | `MIRA_PLUGIN_REPO`  | `../mira-mouse-plugins`                         | sibling 插件仓库路径          |
-| `MIRA_PLUGIN_CLI`   | `target/release/mira-plugin[.exe]`              | 已编译的 mira-plugin 二进制   |
-| `PLUGIN_SIGNING_KEY`| 读取 `TEST-ONLY-mira-plugins.key.pem`           | PEM 私钥                      |
+| `MIRA_PLUGIN_CLI`   | 未设置；默认从当前源码重建                      | 显式外部 mira-plugin 二进制    |
 | `PLUGIN_KEY_ID`     | `TEST-ONLY-mira-plugins`                        | publisherKeyId                |
-| `TAURI_BUNDLE`      | macOS=`app,dmg`，其他=`app`                     | tauri bundle 类型             |
+| `TAURI_BUNDLE`      | `app`                                            | tauri bundle 类型             |
 
 ### Smoke 测试
 
@@ -201,12 +202,12 @@ npm run smoke:test-app
 ```
 
 自动探测刚构建的 App 路径（macOS `.app`、Linux AppImage、Windows `.exe`），
-执行 5 个进程级测试场景：
+执行 12 个可观察断言：
 
 1. 手动启动（无参数）→ 主窗口显示、可聚焦、托盘存在；
 2. 关闭窗口 → 不退出、隐藏到托盘、托盘可重新打开；
 3. hidden 启动（`--hidden`）→ 进程存在、主窗口不显示、不抢焦点、托盘存在；
-4. 第二实例（已有 hidden 实例 + 再无参数启动）→ 唤起现有实例、主窗口显示并聚焦；
+4. 第二实例（已有 hidden 实例 + 再无参数启动）→ 复用现有进程、主窗口显示；
 5. 重复 hidden（已有实例 + 再 `--hidden`）→ 不抢焦点、不强制显示。
 
 生成详细测试报告。当前平台必须真实 smoke，不得伪造 PASS。其他平台标记
@@ -229,7 +230,7 @@ npm run smoke:test-app
 2. **repository variable**：`MIRA_HOST_REF` 仓库变量；
 3. **PR matching branch**：如果插件 PR head branch name 在 Host 仓库存在，
    使用同名分支（保持 iteration 分支跨仓配对）；
-4. **default main**：必须显式声明，不得静默使用未知默认 main。
+4. **fixed compatible Host SHA**：已确认兼容的固定 SHA，不跟随浮动 `main`。
 
 ### 环境变量
 
@@ -246,7 +247,7 @@ CI summary 必须输出：
 Plugin SHA
 Host SHA
 CLI SHA
-Host ref source (input / variable / matching branch / default main)
+Host ref source (input / variable / matching branch / fixed compatible Host SHA)
 ```
 
 用于审计和故障排查。
