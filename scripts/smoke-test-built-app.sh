@@ -63,9 +63,9 @@ record_result() {
   local scenario="$1" status="$2" detail="$3"
   RESULTS+=("| $scenario | $status | $detail |")
   case "$status" in
-    PASS) ((PASS_COUNT++)) ;;
-    FAIL) ((FAIL_COUNT++)) ;;
-    SKIP) ((SKIP_COUNT++)) ;;
+    PASS) PASS_COUNT=$((PASS_COUNT + 1)) ;;
+    FAIL) FAIL_COUNT=$((FAIL_COUNT + 1)) ;;
+    SKIP) SKIP_COUNT=$((SKIP_COUNT + 1)) ;;
   esac
 }
 
@@ -86,7 +86,7 @@ wait_for_process() {
       return 0
     fi
     sleep 1
-    ((elapsed++))
+    elapsed=$((elapsed + 1))
   done
   echo ""
   return 1
@@ -101,11 +101,19 @@ cleanup_mira() {
 }
 
 # 检查窗口是否可见（macOS）
+# 返回值：
+#   数字字符串（0/1/2...）：成功查询到窗口数量
+#   "PERMISSION_DENIED"：osascript 无 Accessibility 权限（沙盒/未授权）
 is_window_visible_macos() {
-  if [ "$(uname)" != "Darwin" ]; then return 1; fi
+  if [ "$(uname)" != "Darwin" ]; then echo "0"; return; fi
   local app_pid="$1"
+  local result
   # 通过 osascript 检查 Mira 窗口是否存在且可见
-  osascript -e "tell application \"System Events\" to count windows of (every process whose name is \"${PRODUCT_NAME}\")" 2>/dev/null || echo "0"
+  if ! result="$(osascript -e "tell application \"System Events\" to count windows of (every process whose name is \"${PRODUCT_NAME}\")" 2>/dev/null)"; then
+    echo "PERMISSION_DENIED"
+    return
+  fi
+  echo "${result:-0}"
 }
 
 echo "=== ITERATION-009 Smoke Test ==="
@@ -184,7 +192,9 @@ fi
 if [ "$(uname)" = "Darwin" ]; then
   sleep 2
   WIN_COUNT="$(is_window_visible_macos "$DETECTED_PID")"
-  if [ "$WIN_COUNT" -gt 0 ] 2>/dev/null; then
+  if [ "$WIN_COUNT" = "PERMISSION_DENIED" ]; then
+    record_result "manual-launch-window" "SKIP" "osascript Accessibility permission denied (sandbox/unauthorized)"
+  elif [ "$WIN_COUNT" -gt 0 ] 2>/dev/null; then
     record_result "manual-launch-window" "PASS" "Window visible (count=$WIN_COUNT)"
   else
     record_result "manual-launch-window" "FAIL" "No visible window detected"
@@ -229,7 +239,9 @@ fi
 if [ "$(uname)" = "Darwin" ] && [ -n "$DETECTED_PID_HIDDEN" ]; then
   sleep 1
   WIN_COUNT_HIDDEN="$(is_window_visible_macos "$DETECTED_PID_HIDDEN")"
-  if [ "$WIN_COUNT_HIDDEN" -eq 0 ] 2>/dev/null; then
+  if [ "$WIN_COUNT_HIDDEN" = "PERMISSION_DENIED" ]; then
+    record_result "hidden-launch-no-window" "SKIP" "osascript Accessibility permission denied (sandbox/unauthorized)"
+  elif [ "$WIN_COUNT_HIDDEN" -eq 0 ] 2>/dev/null; then
     record_result "hidden-launch-no-window" "PASS" "No visible window (hidden mode correct)"
   else
     record_result "hidden-launch-no-window" "FAIL" "Window visible in hidden mode (count=$WIN_COUNT_HIDDEN)"
@@ -256,7 +268,9 @@ if [ -n "$DETECTED_PID_HIDDEN" ]; then
   if [ "$(uname)" = "Darwin" ]; then
     sleep 2
     WIN_COUNT_2ND="$(is_window_visible_macos "$DETECTED_PID_HIDDEN")"
-    if [ "$WIN_COUNT_2ND" -gt 0 ] 2>/dev/null; then
+    if [ "$WIN_COUNT_2ND" = "PERMISSION_DENIED" ]; then
+      record_result "second-instance-window" "SKIP" "osascript Accessibility permission denied (sandbox/unauthorized)"
+    elif [ "$WIN_COUNT_2ND" -gt 0 ] 2>/dev/null; then
       record_result "second-instance-window" "PASS" "Window shown after second launch"
     else
       record_result "second-instance-window" "FAIL" "Window not shown after second launch"
@@ -286,7 +300,9 @@ fi
 
 if [ "$(uname)" = "Darwin" ]; then
   WIN_COUNT_REPHIDDEN="$(is_window_visible_macos "")"
-  if [ "$WIN_COUNT_REPHIDDEN" -eq 0 ] 2>/dev/null; then
+  if [ "$WIN_COUNT_REPHIDDEN" = "PERMISSION_DENIED" ]; then
+    record_result "repeat-hidden-no-window" "SKIP" "osascript Accessibility permission denied (sandbox/unauthorized)"
+  elif [ "$WIN_COUNT_REPHIDDEN" -eq 0 ] 2>/dev/null; then
     record_result "repeat-hidden-no-window" "PASS" "No window shown in repeated hidden mode"
   else
     record_result "repeat-hidden-no-window" "FAIL" "Window shown in repeated hidden mode"
