@@ -3605,18 +3605,18 @@ dependencies = [
 
 [[package]]
 name = "rill-ml"
-version = "0.8.1"
+version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6825da52fd2e01bc1754bc619e5c26c9ffb71ab3f13a98cdb0df7b6e7bccfeef"
+checksum = "f5bcb553e19f57d493bfd0218286ae64b9f7d3b0a0de21fb9bad09863630a04f"
 dependencies = [
  "thiserror 1.0.69",
 ]
 
 [[package]]
 name = "rill-runtime-protocol"
-version = "0.8.1"
+version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c29c8ea8678f343781a20857ac17d7e70f09a1442fb2727ee0a607910e5eaa5a"
+checksum = "7524c0d554bec02cf03b5d3e36288f5b3c64c2d320c36aa5840e3d28eef4d3d0"
 dependencies = [
  "serde",
  "serde_json",

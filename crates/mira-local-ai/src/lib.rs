@@ -138,25 +138,21 @@ fn validated_model_prediction(
     current_context: Option<&DeviceContextSnapshot>,
     config: &BatteryModelConfig,
 ) -> Result<BatteryPredictionOutput, BatteryPredictionError> {
-    let optimizer = Optimizer::sgd(
-        config.feature_count,
-        SgdConfig {
-            learning_rate: config.learning_rate,
-            l2: config.l2,
-        },
-    )
-    .map_err(|_| BatteryPredictionError::InvalidModel)?;
-    let mut model = LinearRegression::new(
-        config.feature_count,
-        LinearRegressionConfig {
-            optimizer,
-            loss: RegressionLoss::Huber(
-                HuberLoss::new(config.huber_delta)
-                    .map_err(|_| BatteryPredictionError::InvalidModel)?,
-            ),
-        },
-    )
-    .map_err(|_| BatteryPredictionError::InvalidModel)?;
+    // RillML 1.0 将 SgdConfig/LinearRegressionConfig 标记为 #[non_exhaustive]，
+    // 必须通过 Default + 字段赋值构造，不能用结构体表达式。
+    let mut sgd = SgdConfig::default();
+    sgd.learning_rate = config.learning_rate;
+    sgd.l2 = config.l2;
+    let optimizer = Optimizer::sgd(config.feature_count, sgd)
+        .map_err(|_| BatteryPredictionError::InvalidModel)?;
+    let mut lr_config = LinearRegressionConfig::default();
+    lr_config.optimizer = optimizer;
+    lr_config.loss = RegressionLoss::Huber(
+        HuberLoss::new(config.huber_delta)
+            .map_err(|_| BatteryPredictionError::InvalidModel)?,
+    );
+    let mut model = LinearRegression::new(config.feature_count, lr_config)
+        .map_err(|_| BatteryPredictionError::InvalidModel)?;
     let mut comparator = BaselineComparator::new(
         &["deterministic-baseline", "rill-local-ai"],
         config.quality_window,
@@ -569,31 +565,35 @@ mod tests {
         config: &BatteryModelConfig,
     ) -> Result<BatteryPredictionOutput, BatteryPredictionError> {
         let optimizer = Optimizer::sgd(
-            config.feature_count,
-            SgdConfig {
-                learning_rate: config.learning_rate,
-                l2: config.l2,
-            },
-        )
-        .map_err(|_| BatteryPredictionError::InvalidModel)?;
-        let mut model = LinearRegression::new(
-            config.feature_count,
-            LinearRegressionConfig {
-                optimizer,
-                loss: RegressionLoss::Huber(
-                    HuberLoss::new(config.huber_delta)
-                        .map_err(|_| BatteryPredictionError::InvalidModel)?,
-                ),
-            },
-        )
-        .map_err(|_| BatteryPredictionError::InvalidModel)?;
-        let mut comparator = BaselineComparator::new(
-            &["deterministic-baseline", "rill-local-ai"],
-            config.quality_window,
-        )
-        .map_err(|_| BatteryPredictionError::InvalidModel)?;
+        config.feature_count,
+        {
+            let mut sgd = SgdConfig::default();
+            sgd.learning_rate = config.learning_rate;
+            sgd.l2 = config.l2;
+            sgd
+        },
+    )
+    .map_err(|_| BatteryPredictionError::InvalidModel)?;
+    let mut model = LinearRegression::new(
+        config.feature_count,
+        {
+            let mut lr_config = LinearRegressionConfig::default();
+            lr_config.optimizer = optimizer;
+            lr_config.loss = RegressionLoss::Huber(
+                HuberLoss::new(config.huber_delta)
+                    .map_err(|_| BatteryPredictionError::InvalidModel)?,
+            );
+            lr_config
+        },
+    )
+    .map_err(|_| BatteryPredictionError::InvalidModel)?;
+    let mut comparator = BaselineComparator::new(
+        &["deterministic-baseline", "rill-local-ai"],
+        config.quality_window,
+    )
+    .map_err(|_| BatteryPredictionError::InvalidModel)?;
 
-        for (index, observation) in observations.iter().enumerate() {
+    for (index, observation) in observations.iter().enumerate() {
             let recent_rate = weighted_baseline_rate_reference(
                 &observations[..index],
                 observation.at,

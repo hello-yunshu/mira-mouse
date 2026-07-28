@@ -1,8 +1,14 @@
 package rill:handler@1.0.0;
 
-// Vendored snapshot of Rill handler ABI v1. Keep byte-for-byte compatible
-// with rill-handler-api 0.7.x.
-world invoke-handler {
+/// A handler component exports three functions: `metadata`, `configure` and
+/// `invoke`. The runtime calls `metadata` once during loading to verify
+/// consistency with the signed manifest, `configure` once per process with the
+/// canonical model JSON, and `invoke` for every IPC `Invoke` request.
+
+/// Shared types for the handler ABI, declared at the package level (outside the
+/// `invoke-handler` world) so they are reusable independently of the world.
+interface types {
+    /// Metadata returned by the handler. Must match the signed handler manifest.
     record handler-metadata {
         id: string,
         version: string,
@@ -10,12 +16,18 @@ world invoke-handler {
         capabilities: list<string>,
     }
 
+    /// Typed errors returned by the handler. The runtime maps these to stable
+    /// IPC error codes and does not forward arbitrary strings to untrusted callers.
     variant handler-error {
         invalid-model(string),
         invalid-input(string),
         unsupported-capability(string),
         execution-failed(string),
     }
+}
+
+world invoke-handler {
+    use types.{handler-metadata, handler-error};
 
     export metadata: func() -> handler-metadata;
     export configure: func(model-json: list<u8>) -> result<_, handler-error>;
