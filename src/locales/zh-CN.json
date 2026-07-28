@@ -240,7 +240,9 @@
         "profile": "配置文件",
         "firmware": "固件",
         "serial": "序列号",
-        "lighting": "灯光"
+        "lighting": "灯光",
+        "sensor": "传感器",
+        "device-settings": "设备"
       }
     }
   },
@@ -250,7 +252,9 @@
       "option": "颜色模式",
       "speed": "速度",
       "brightness": "亮度",
-      "color": "颜色"
+      "color": "颜色",
+      "color2": "辅助颜色",
+      "ratio": "混色比例"
     },
     "effect": {
       "off": "关闭",
@@ -621,7 +625,42 @@
     "angleSnap": "角度吸附",
     "liftCutOff": "抬升高度",
     "bluetoothSleep": "蓝牙休眠",
-    "wirelessSleep": "2.4G 休眠"
+    "wirelessSleep": "2.4G 休眠",
+    "liftDistance": "抬升距离 LOD",
+    "wheelLabel": "滚轮",
+    "logoLabel": "Logo",
+    "rippleControl": "波纹控制",
+    "wheelBrightness": "亮度",
+    "wheelColor": "颜色",
+    "wheelEffect": "灯效",
+    "logoBrightness": "亮度",
+    "logoColor": "颜色",
+    "logoEffect": "灯效",
+    "currentProfile": "当前配置文件",
+    "profileSlots": "配置文件槽位",
+    "sideButtonForward": "侧键 · 前进",
+    "sideButtonBack": "侧键 · 后退",
+    "wheelClick": "滚轮点击",
+    "sleepMode": "休眠模式",
+    "deepSleep": "深度休眠",
+    "calibrationStatus": "校准状态",
+    "calibrated": "已校准",
+    "maxTrackingSpeed": "最大追踪速度",
+    "maxAcceleration": "最大加速度",
+    "connectionMethod": "连接方式",
+    "pollingRateLabel": "轮询率",
+    "firmware": "固件",
+    "serialNumber": "序列号",
+    "effectOff": "关闭",
+    "effectSteady": "常亮",
+    "effectBreathing": "呼吸",
+    "effectNeon": "霓虹",
+    "effectWave": "波浪",
+    "actionDpiCycle": "DPI 循环",
+    "actionDashboard": "仪表盘",
+    "actionDefaultClick": "默认点击",
+    "seconds": "秒",
+    "minutes": "分钟"
   },
   "batteryUsage": {
     "title": "电量使用情况",
@@ -933,6 +972,11 @@
   "advancedSettings": {
     "title": "高级设置",
     "open": "高级设置",
+    "searchPlaceholder": "搜索设置项…",
+    "searchNoResults": "未找到匹配的设置项",
+    "itemCount": "{{count}} 项可配置",
+    "changesImmediate": "更改即时生效",
+    "reset": "恢复默认",
     "section": {
       "performance": "性能",
       "lighting-details": "灯光详情",

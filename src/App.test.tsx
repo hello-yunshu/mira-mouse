@@ -349,7 +349,9 @@ describe('Mira shell', () => {
 });
 
 // P0-B: DPI/回报率数字翻牌时序测试
-// contextTransitionDelay 从 340ms 提前到 300ms（metric-to-metric 上下文切换）
+// 上下文切换时翻牌在缩放早期（contextTransitionDelay=50ms）启动。
+// 缓动曲线 cubic-bezier(.32, .72, 0, 1) 极激进，50ms 时缩放已推进约
+// 60% 视觉距离，翻牌与缩放剩余部分并行，入场自然融入缩放过程。
 describe('MorphingMetricValue context flip timing (P0-B)', () => {
   beforeEach(() => {
     invokeMock.mockRejectedValue(new Error('not mocked'));
@@ -359,7 +361,7 @@ describe('MorphingMetricValue context flip timing (P0-B)', () => {
     vi.useRealTimers();
   });
 
-  it('does not start context flip before 300ms (299ms still idle)', async () => {
+  it('does not start flip before 50ms (49ms still idle)', async () => {
     render(<App />);
     fireEvent.click(screen.getByText('查看演示'));
 
@@ -370,12 +372,12 @@ describe('MorphingMetricValue context flip timing (P0-B)', () => {
     vi.useFakeTimers();
     fireEvent.click(screen.getByRole('tab', { name: '回报率' }));
 
-    // 299ms 时：尚未开始翻牌，next face 不存在
-    await vi.advanceTimersByTimeAsync(299);
+    // 49ms 时：尚未开始翻牌，next face 不存在
+    await vi.advanceTimersByTimeAsync(49);
     expect(metricValue.querySelector('.shared-control-metric-face.is-next')).not.toBeInTheDocument();
   });
 
-  it('starts context flip at ~300ms (not 340ms)', async () => {
+  it('starts flip at ~50ms during zoom (is-transitioning appears)', async () => {
     render(<App />);
     fireEvent.click(screen.getByText('查看演示'));
 
@@ -384,14 +386,17 @@ describe('MorphingMetricValue context flip timing (P0-B)', () => {
     vi.useFakeTimers();
     fireEvent.click(screen.getByRole('tab', { name: '回报率' }));
 
-    // 300ms 时：setTimeout 触发 prepareTransition，rAF 注册
-    await vi.advanceTimersByTimeAsync(300);
-    // 推进 rAF 队列让 next face 出现（rAF 嵌套 2 帧 + 渲染）
+    // 50ms 时：setTimeout 触发 prepareTransition，rAF 注册
+    await vi.advanceTimersByTimeAsync(50);
+    // 推进 rAF 队列让 next face 和 is-transitioning 生效（rAF 嵌套 2 帧 + 渲染）
     await vi.advanceTimersByTimeAsync(60);
     expect(metricValue.querySelector('.shared-control-metric-face.is-next')).toBeInTheDocument();
+    expect(metricValue).toHaveClass('is-transitioning');
   });
 
-  it('does not wait until 340ms for context flip', async () => {
+  it('starts flip well before zoom completes (50ms << 340ms geometry)', async () => {
+    // 缩放几何变形时长 340ms，翻牌在 50ms（缩放早期）启动，
+    // 与缩放大部分时段重叠，而不是等缩放完全结束。
     render(<App />);
     fireEvent.click(screen.getByText('查看演示'));
 
@@ -400,15 +405,15 @@ describe('MorphingMetricValue context flip timing (P0-B)', () => {
     vi.useFakeTimers();
     fireEvent.click(screen.getByRole('tab', { name: '回报率' }));
 
-    // 推进到 320ms：新实现（300ms）已开始翻牌；旧实现（340ms）不会开始
-    await vi.advanceTimersByTimeAsync(320);
+    // 推进到 120ms：翻牌已开始；缩放（340ms）仍在进行
+    await vi.advanceTimersByTimeAsync(120);
     await vi.advanceTimersByTimeAsync(60); // 推进 rAF
-    expect(metricValue.querySelector('.shared-control-metric-face.is-next')).toBeInTheDocument();
+    expect(metricValue).toHaveClass('is-transitioning');
   });
 
-  it('completes flip roughly 40ms earlier than the old 340ms baseline', async () => {
-    // 旧实现 contextTransitionDelay=340ms，新实现=300ms，差值 40ms。
-    // 验证 300ms 时新实现已开始翻牌（旧实现此时还需等 40ms）。
+  it('overlaps flip with most of the zoom (~290ms shared)', async () => {
+    // 翻牌在 50ms 启动，缩放在 340ms 结束，重叠约 290ms。
+    // 验证 50ms 时翻牌已开始（缩放还有大量视觉距离）。
     render(<App />);
     fireEvent.click(screen.getByText('查看演示'));
 
@@ -417,12 +422,10 @@ describe('MorphingMetricValue context flip timing (P0-B)', () => {
     vi.useFakeTimers();
     fireEvent.click(screen.getByRole('tab', { name: '回报率' }));
 
-    // 推进 300ms + rAF：新实现已开始
-    await vi.advanceTimersByTimeAsync(300);
+    // 推进 50ms + rAF：翻牌已开始（此时缩放还有 ~290ms 才结束）
+    await vi.advanceTimersByTimeAsync(50);
     await vi.advanceTimersByTimeAsync(60);
-    expect(metricValue.querySelector('.shared-control-metric-face.is-next')).toBeInTheDocument();
-
-    // 在旧实现中，300ms 时还未开始（需等 340ms），所以这是 ~40ms 的提前
+    expect(metricValue).toHaveClass('is-transitioning');
   });
 
   it('cancels old animation on rapid reverse DPI -> polling -> DPI', async () => {
@@ -433,10 +436,10 @@ describe('MorphingMetricValue context flip timing (P0-B)', () => {
     expect(metricValue.querySelector('.shared-control-metric-face.is-current')).toHaveTextContent('1000DPI');
 
     vi.useFakeTimers();
-    // DPI -> 回报率（contextKey 改变，触发 300ms 延迟翻牌）
+    // DPI -> 回报率（contextKey 改变，触发 50ms 延迟翻牌）
     fireEvent.click(screen.getByRole('tab', { name: '回报率' }));
-    // 100ms 后（< 300ms，翻牌尚未开始）快速切回 DPI
-    await vi.advanceTimersByTimeAsync(100);
+    // 25ms 后（< 50ms，翻牌尚未开始）快速切回 DPI
+    await vi.advanceTimersByTimeAsync(25);
     fireEvent.click(screen.getByRole('tab', { name: 'DPI' }));
 
     // 推进所有 timers，确保旧动画被取消，无残留 nextValue
@@ -450,7 +453,7 @@ describe('MorphingMetricValue context flip timing (P0-B)', () => {
 
   it('preserves flip behavior under prefers-reduced-motion without crashing', async () => {
     // prefers-reduced-motion 由 CSS 媒体查询处理（styles.css 把动画时长压到 0.01ms），
-    // JS 端 contextTransitionDelay 仍为 300ms。验证翻牌时序不受影响且不崩溃。
+    // JS 端 contextTransitionDelay 仍为 50ms。验证翻牌时序不受影响且不崩溃。
     // jsdom 不实现 matchMedia，App.tsx 也不依赖它，所以无需 polyfill。
     render(<App />);
     fireEvent.click(screen.getByText('查看演示'));
@@ -460,11 +463,12 @@ describe('MorphingMetricValue context flip timing (P0-B)', () => {
     vi.useFakeTimers();
     fireEvent.click(screen.getByRole('tab', { name: '回报率' }));
 
-    // 299ms 时未开始（与正常模式相同）
-    await vi.advanceTimersByTimeAsync(299);
+    // 49ms 时未开始（与正常模式相同）
+    await vi.advanceTimersByTimeAsync(49);
     expect(metricValue.querySelector('.shared-control-metric-face.is-next')).not.toBeInTheDocument();
 
-    // 300ms 后开始（CSS 动画时长不影响 JS 时序）
+    // 50ms 后开始（CSS 动画时长不影响 JS 时序）
+    await vi.advanceTimersByTimeAsync(1);
     await vi.advanceTimersByTimeAsync(60);
     expect(metricValue.querySelector('.shared-control-metric-face.is-next')).toBeInTheDocument();
   });
