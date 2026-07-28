@@ -1,81 +1,127 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// ITERATION-008 §13.3 / ITERATION-009 §6：Latest Test App 单命令构建入口。
+// Reproducible Latest Test App builder.
 //
-// 自动完成：
-//   1. 定位 sibling 插件仓库（mira-mouse-plugins）；
-//   2. 自动准备 mira-plugin CLI（若不存在则 cargo build --release）；
-//   3. 动态发现 plugins/*/plugin.json；
-//   4. 对每个插件运行 mira-plugin CLI: validate / test / pack / inspect / verify；
-//   5. 用 TEST-ONLY-mira-plugins 密钥签名（本地测试，不污染生产 registry）；
-//   6. 把最新测试包安装到 src-tauri/resources/plugins/；
-//   7. 更新 bundled-plugins.lock.json（releaseReady=false，TEST-ONLY）；
-//   8. 同步 tauri.conf.json 的 resources 列表；
-//   9. 调用 tauri build 构建 .app / .dmg；
-//  10. 输出版本清单和 sha256（含 CLI SHA-256）。
-//
-// 用法：
-//   npm run build:test-app
-//
-// 环境变量：
-//   MIRA_PLUGIN_REPO    — sibling 插件仓库路径（默认 ../mira-mouse-plugins）
-//   MIRA_PLUGIN_CLI     — 已编译的 mira-plugin 二进制路径（默认 target/release/mira-plugin[.exe]）
-//   PLUGIN_SIGNING_KEY  — PEM 私钥（默认读取 sibling 仓库的 TEST-ONLY-mira-plugins.key.pem）
-//   PLUGIN_KEY_ID       — publisherKeyId（默认 TEST-ONLY-mira-plugins）
-//   TAURI_BUNDLE        — tauri bundle 类型（默认 app,dmg on macOS）
+// The build runs from an isolated staging copy, never mutates the source
+// checkout, and enables the explicit `test-plugin-trust` Cargo feature only in
+// that staging config. The public TEST-ONLY seed is committed under tests/keys.
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, readdirSync, rmSync, statSync } from 'node:fs';
-import { join, resolve, basename, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import {
+  copyFileSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { createHash } from 'node:crypto';
+import { tmpdir } from 'node:os';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const root = fileURLToPath(new URL('..', import.meta.url));
-const hostRoot = root;
-const defaultPluginRepo = resolve(hostRoot, '..', 'mira-mouse-plugins');
-const pluginRepo = process.env.MIRA_PLUGIN_REPO || defaultPluginRepo;
+const sourceRoot = fileURLToPath(new URL('..', import.meta.url));
+const defaultPluginRepo = resolve(sourceRoot, '..', 'mira-mouse-plugins');
+const pluginRepo = resolve(process.env.MIRA_PLUGIN_REPO || defaultPluginRepo);
 const keyId = process.env.PLUGIN_KEY_ID || 'TEST-ONLY-mira-plugins';
-const testPemPath = join(pluginRepo, 'TEST-ONLY-mira-plugins.key.pem');
+const testSeedPath = join(sourceRoot, 'tests', 'keys', 'TEST-ONLY-mira-plugins.seed');
 const testTrustedKeysPath = join(pluginRepo, 'registry', 'test-trusted-keys.json');
+const outputRoot = join(sourceRoot, 'target', 'test-app');
+const cargoTargetDir = join(outputRoot, 'cargo');
+const manifestPath = join(outputRoot, 'manifest.json');
+const stagingParent = mkdtempSync(join(tmpdir(), 'mira-test-app-'));
+const hostRoot = join(stagingParent, 'mira-mouse');
 const resourcesDir = join(hostRoot, 'src-tauri', 'resources', 'plugins');
 const lockPath = join(hostRoot, 'bundled-plugins.lock.json');
 const tauriConfPath = join(hostRoot, 'src-tauri', 'tauri.conf.json');
 
-/// ITERATION-009 §6.1：解析 mira-plugin CLI 路径。
-/// 优先级：MIRA_PLUGIN_CLI env > target/release/mira-plugin[.exe]
-/// Windows 上自动追加 .exe 后缀。
-function resolveCliPath() {
-  if (process.env.MIRA_PLUGIN_CLI) {
-    return process.env.MIRA_PLUGIN_CLI;
-  }
-  const base = resolve(hostRoot, 'target', 'release', 'mira-plugin');
-  if (process.platform === 'win32') {
-    return base + '.exe';
-  }
-  return base;
-}
-
-function fail(msg) {
-  console.error(`build:test-app: ${msg}`);
-  process.exit(1);
+function fail(message) {
+  throw new Error(`build:test-app: ${message}`);
 }
 
 function sha256File(path) {
-  const buf = readFileSync(path);
-  return createHash('sha256').update(buf).digest('hex');
+  return createHash('sha256').update(readFileSync(path)).digest('hex');
 }
 
-function run(cmd, args, opts = {}) {
-  console.log(`> ${cmd} ${args.join(' ')}`);
-  execFileSync(cmd, args, { stdio: 'inherit', cwd: hostRoot, ...opts });
+function gitSourceState(repo, excludedBuildInputs = []) {
+  const commitSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo })
+    .toString()
+    .trim();
+  const changed = execFileSync(
+    'git',
+    ['ls-files', '-m', '-d', '-o', '--exclude-standard', '-z'],
+    { cwd: repo },
+  )
+    .toString()
+    .split('\0')
+    .filter(Boolean)
+    .sort();
+  const buildInputFiles = changed.filter(
+    (rel) => !excludedBuildInputs.some((excluded) => rel === excluded || rel.startsWith(`${excluded}/`)),
+  );
+  const hash = createHash('sha256');
+  hash.update(`base:${commitSha}\0`);
+  for (const rel of buildInputFiles) {
+    const path = join(repo, rel);
+    hash.update(`path:${rel}\0`);
+    hash.update(existsSync(path) ? readFileSync(path) : Buffer.from('<deleted>'));
+    hash.update('\0');
+  }
+  return {
+    commitSha,
+    workingTreeDirty: changed.length > 0,
+    sourceStateSha256: hash.digest('hex'),
+    changedFiles: changed,
+    buildInputFiles,
+  };
 }
 
-/// ITERATION-009 §6.1：确保 CLI 存在，不存在则自动 cargo build。
+function run(command, args, options = {}) {
+  const cwd = options.cwd || hostRoot;
+  console.log(`> ${command} ${args.join(' ')}`);
+  execFileSync(command, args, { stdio: 'inherit', ...options, cwd });
+}
+
+function resolveCliPath() {
+  if (process.env.MIRA_PLUGIN_CLI) return resolve(process.env.MIRA_PLUGIN_CLI);
+  const base = join(sourceRoot, 'target', 'release', 'mira-plugin');
+  return process.platform === 'win32' ? `${base}.exe` : base;
+}
+
 function ensureCliBuilt(cliPath) {
-  if (existsSync(cliPath)) return;
-  console.log(`mira-plugin CLI not found at ${cliPath}, building automatically...`);
-  run('cargo', ['build', '--release', '-p', 'mira-plugin-cli']);
-  if (!existsSync(cliPath)) {
-    fail(`cargo build completed but CLI still not found at ${cliPath}`);
+  if (process.env.MIRA_PLUGIN_CLI) {
+    if (!existsSync(cliPath)) fail(`explicit MIRA_PLUGIN_CLI does not exist: ${cliPath}`);
+    return;
+  }
+  console.log(`building mira-plugin CLI from current Host source`);
+  run('cargo', ['build', '--release', '-p', 'mira-plugin-cli'], { cwd: sourceRoot });
+  if (!existsSync(cliPath)) fail(`CLI build completed but binary is missing: ${cliPath}`);
+}
+
+function shouldCopySource(path) {
+  if (path === sourceRoot) return true;
+  const rel = relative(sourceRoot, path);
+  if (rel.startsWith('..')) return true;
+  const first = rel.split(sep)[0];
+  return !new Set(['.git', 'target', 'node_modules', 'dist']).has(first);
+}
+
+function prepareStagingTree() {
+  console.log(`staging source at ${hostRoot}`);
+  cpSync(sourceRoot, hostRoot, {
+    recursive: true,
+    filter: shouldCopySource,
+    preserveTimestamps: true,
+  });
+  const sourceModules = join(sourceRoot, 'node_modules');
+  const stagedModules = join(hostRoot, 'node_modules');
+  if (existsSync(sourceModules)) {
+    symlinkSync(sourceModules, stagedModules, 'dir');
+  } else {
+    run('npm', ['ci']);
   }
 }
 
@@ -83,182 +129,258 @@ function discoverPlugins() {
   const pluginsDir = join(pluginRepo, 'plugins');
   if (!existsSync(pluginsDir)) fail(`plugins directory not found: ${pluginsDir}`);
   return readdirSync(pluginsDir, { withFileTypes: true })
-    .filter((d) => d.isDirectory())
-    .map((d) => join(pluginsDir, d.name))
-    .filter((p) => existsSync(join(p, 'plugin.json')));
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => join(pluginsDir, entry.name))
+    .filter((path) => existsSync(join(path, 'plugin.json')))
+    .sort();
 }
 
 function readManifest(pluginDir) {
   return JSON.parse(readFileSync(join(pluginDir, 'plugin.json'), 'utf8'));
 }
 
-function packPlugin(pluginDir, outPath) {
-  // 使用 sibling 仓库的 pack-sign.mjs（thin wrapper 调用 CLI）
-  // 注入 PLUGIN_SIGNING_KEY 和 PLUGIN_KEY_ID 环境变量
+function readTestSeed() {
+  const seed = readFileSync(testSeedPath, 'utf8').trim();
+  if (!/^[0-9a-f]{64}$/i.test(seed)) {
+    fail(`TEST-ONLY seed must contain exactly 32 hexadecimal bytes: ${testSeedPath}`);
+  }
+  return seed;
+}
+
+function packPlugin(cliPath, seed, pluginDir, outputPath) {
   const env = {
     ...process.env,
     MIRA_PLUGIN_CLI: cliPath,
     PLUGIN_KEY_ID: keyId,
+    PLUGIN_SIGNING_KEY_HEX: seed,
   };
-  if (existsSync(testPemPath)) {
-    env.PLUGIN_SIGNING_KEY = readFileSync(testPemPath, 'utf8');
+  run('node', [join(pluginRepo, 'scripts', 'pack-sign.mjs'), pluginDir, outputPath], {
+    env,
+  });
+  run(cliPath, [
+    'verify',
+    outputPath,
+    '--trusted-keys',
+    testTrustedKeysPath,
+    '--require-signature',
+  ]);
+}
+
+function writeTestLock(plugins) {
+  const requiredStringFields = [
+    'pluginId',
+    'repository',
+    'releaseTag',
+    'version',
+    'asset',
+    'sha256',
+    'publisherKeyId',
+    'pluginApi',
+  ];
+  for (const plugin of plugins) {
+    for (const field of requiredStringFields) {
+      if (typeof plugin[field] !== 'string' || plugin[field].length === 0) {
+        fail(`generated lock entry ${plugin.pluginId || '<unknown>'} is missing ${field}`);
+      }
+    }
+    if (typeof plugin.bundleByDefault !== 'boolean') {
+      fail(`generated lock entry ${plugin.pluginId} is missing bundleByDefault`);
+    }
   }
-  const packSign = join(pluginRepo, 'scripts', 'pack-sign.mjs');
-  run('node', [packSign, pluginDir, outPath], { env });
-}
-
-function verifyPackage(pkgPath) {
-  // 用 test-trusted-keys.json 验证签名
-  if (!existsSync(testTrustedKeysPath)) {
-    fail(`test-trusted-keys.json not found: ${testTrustedKeysPath}`);
-  }
-  run(cliPath, ['verify', pkgPath, '--trusted-keys', testTrustedKeysPath, '--require-signature']);
-}
-
-function syncTauriConfResources(assets) {
-  const conf = JSON.parse(readFileSync(tauriConfPath, 'utf8'));
-  const bundleByDefault = new Set(assets.filter((a) => a.bundleByDefault).map((a) => a.asset));
-  const existing = conf.bundle.resources.filter((r) => !r.startsWith('resources/plugins/mira-'));
-  const newResources = [...existing, ...assets.filter((a) => a.bundleByDefault).map((a) => `resources/plugins/${a.asset}`)];
-  newResources.sort();
-  conf.bundle.resources = newResources;
-  writeFileSync(tauriConfPath, JSON.stringify(conf, null, 2) + '\n');
-  console.log(`tauri.conf.json resources updated: ${newResources.length} entries`);
-}
-
-function writeLock(plugins) {
   const lock = {
     schemaVersion: 1,
     releaseReady: false,
-    _comment: 'Local test-signed bundle (TEST-ONLY-mira-plugins). Production release must re-pack with mira-plugins-2026-001 key and set releaseReady=true. Generated by build:test-app.',
+    _comment:
+      'Isolated Latest Test App bundle. TEST-ONLY public key; never use for production releases.',
     plugins,
   };
-  writeFileSync(lockPath, JSON.stringify(lock, null, 2) + '\n');
-  console.log(`bundled-plugins.lock.json updated: ${plugins.length} plugins`);
+  writeFileSync(lockPath, `${JSON.stringify(lock, null, 2)}\n`);
 }
 
-const cliPath = resolveCliPath();
+function writeTestTauriConfig(assets) {
+  const config = JSON.parse(readFileSync(tauriConfPath, 'utf8'));
+  const nonPluginResources = config.bundle.resources.filter(
+    (resource) => !resource.startsWith('resources/plugins/mira-'),
+  );
+  config.bundle.resources = [
+    ...nonPluginResources,
+    ...assets
+      .filter((asset) => asset.bundleByDefault)
+      .map((asset) => `resources/plugins/${asset.asset}`),
+  ].sort();
+  const features = new Set(config.build.features || []);
+  features.add('test-plugin-trust');
+  config.build.features = [...features].sort();
+  writeFileSync(tauriConfPath, `${JSON.stringify(config, null, 2)}\n`);
+}
+
+function findFile(root, predicate) {
+  if (!existsSync(root)) return undefined;
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    const path = join(root, entry.name);
+    if (entry.isDirectory()) {
+      const nested = findFile(path, predicate);
+      if (nested) return nested;
+    } else if (entry.isFile() && predicate(path)) {
+      return path;
+    }
+  }
+  return undefined;
+}
+
+function findBuiltExecutable() {
+  const bundleRoot = join(cargoTargetDir, 'release', 'bundle');
+  if (process.platform === 'darwin') {
+    return findFile(
+      bundleRoot,
+      (path) => path.includes(`${sep}Contents${sep}MacOS${sep}`) && basename(path).toLowerCase() === 'mira',
+    );
+  }
+  if (process.platform === 'win32') {
+    return findFile(bundleRoot, (path) => basename(path).toLowerCase() === 'mira.exe');
+  }
+  return findFile(bundleRoot, (path) => path.endsWith('.AppImage'));
+}
+
+function verifyMacBundle(executablePath) {
+  if (process.platform !== 'darwin') return;
+  const bundleRoot = dirname(dirname(dirname(executablePath)));
+  // Rebuilding over an app that Finder has opened can preserve FinderInfo or
+  // resource-fork xattrs on the bundle root. They are not product content and
+  // make strict code-signature validation reject an otherwise valid bundle.
+  run('xattr', ['-cr', bundleRoot], { cwd: sourceRoot });
+  run(
+    'codesign',
+    ['--verify', '--deep', '--strict', '--verbose=2', bundleRoot],
+    { cwd: sourceRoot },
+  );
+}
+
+function writeBuildManifest(cliPath, cliSha256, installedAssets, executablePath) {
+  const appSha256 = sha256File(executablePath);
+  const hostState = gitSourceState(sourceRoot, [
+    'docs',
+    'scripts/smoke-test-built-app.sh',
+  ]);
+  const pluginState = gitSourceState(pluginRepo);
+  const data = {
+    schemaVersion: 1,
+    testOnly: true,
+    releaseReady: false,
+    sourceRoot,
+    pluginRepo,
+    hostSha: hostState.commitSha,
+    hostWorkingTreeDirty: hostState.workingTreeDirty,
+    hostSourceStateSha256: hostState.sourceStateSha256,
+    hostChangedFiles: hostState.changedFiles,
+    hostBuildInputFiles: hostState.buildInputFiles,
+    pluginSha: pluginState.commitSha,
+    pluginWorkingTreeDirty: pluginState.workingTreeDirty,
+    pluginSourceStateSha256: pluginState.sourceStateSha256,
+    pluginChangedFiles: pluginState.changedFiles,
+    pluginBuildInputFiles: pluginState.buildInputFiles,
+    cliPath,
+    cliSha256,
+    executablePath,
+    executableSha256: appSha256,
+    bundleRoot: dirname(dirname(dirname(executablePath))),
+    plugins: installedAssets,
+  };
+  mkdirSync(outputRoot, { recursive: true });
+  writeFileSync(manifestPath, `${JSON.stringify(data, null, 2)}\n`);
+  return data;
+}
 
 function main() {
   console.log('=== build:test-app start ===');
-  console.log(`host repo:    ${hostRoot}`);
-  console.log(`plugin repo:  ${pluginRepo}`);
-  console.log(`cli:          ${cliPath}`);
+  if (!existsSync(pluginRepo)) fail(`plugin repository not found: ${pluginRepo}`);
+  if (!existsSync(testTrustedKeysPath)) {
+    fail(`test trust store not found: ${testTrustedKeysPath}`);
+  }
 
-  if (!existsSync(pluginRepo)) fail(`plugin repo not found: ${pluginRepo}`);
-
-  // ITERATION-009 §6.1：自动准备 CLI（全新 clone 一条命令可运行）
-  console.log('--- step 0: ensure CLI ---');
+  const cliPath = resolveCliPath();
   ensureCliBuilt(cliPath);
   const cliSha256 = sha256File(cliPath);
-  console.log(`cli SHA-256:  ${cliSha256}`);
+  const seed = readTestSeed();
+  prepareStagingTree();
 
-  // 1. 构建前端（vite build）
-  console.log('--- step 1: build frontend ---');
-  run('npm', ['run', 'build']);
-
-  // 2. 动态发现插件
-  console.log('--- step 2: discover plugins ---');
   const pluginDirs = discoverPlugins();
   if (pluginDirs.length === 0) fail('no plugins discovered');
-  console.log(`discovered ${pluginDirs.length} plugins:`);
-  const manifests = pluginDirs.map((d) => ({ dir: d, manifest: readManifest(d) }));
-  manifests.forEach(({ dir, manifest }) => {
-    console.log(`  - ${manifest.pluginId} v${manifest.version} (${dir})`);
-  });
+  const manifests = pluginDirs.map((dir) => ({ dir, manifest: readManifest(dir) }));
+  console.log(`discovered ${manifests.length} plugin(s)`);
 
-  // 3. 对每个插件 validate / test
-  console.log('--- step 3: validate & test plugins ---');
+  run('npm', ['run', 'build']);
   for (const { dir, manifest } of manifests) {
-    console.log(`> validate ${manifest.pluginId}`);
+    console.log(`validating ${manifest.pluginId} v${manifest.version}`);
     run(cliPath, ['validate', dir]);
-    console.log(`> test ${manifest.pluginId}`);
     run(cliPath, ['test', dir]);
   }
 
-  // 4. pack / inspect / verify
-  console.log('--- step 4: pack, inspect, verify ---');
-  const distDir = join(pluginRepo, 'dist');
-  mkdirSync(distDir, { recursive: true });
-  // 清理旧 dist 包
-  for (const f of readdirSync(distDir)) {
-    if (f.endsWith('.mira-plugin')) rmSync(join(distDir, f));
-  }
-
-  const bundleByDefaultMap = new Map();
-  const oldLock = existsSync(lockPath) ? JSON.parse(readFileSync(lockPath, 'utf8')) : { plugins: [] };
-  for (const p of oldLock.plugins) bundleByDefaultMap.set(p.pluginId, p.bundleByDefault);
-
+  rmSync(resourcesDir, { recursive: true, force: true });
+  mkdirSync(resourcesDir, { recursive: true });
+  const packageDir = join(stagingParent, 'packages');
+  mkdirSync(packageDir, { recursive: true });
+  const originalLock = JSON.parse(
+    readFileSync(join(sourceRoot, 'bundled-plugins.lock.json'), 'utf8'),
+  );
+  const lockedPlugins = new Map(
+    originalLock.plugins.map((plugin) => [plugin.pluginId, plugin]),
+  );
   const installedAssets = [];
-  for (const { dir, manifest } of manifests) {
-    const asset = `${manifest.pluginId.replace(/\./g, '-')}-${manifest.version}.mira-plugin`;
-    const distPath = join(distDir, asset);
-    packPlugin(dir, distPath);
-    verifyPackage(distPath);
 
-    // 复制到 src-tauri/resources/plugins/
-    const dest = join(resourcesDir, asset);
-    if (!existsSync(resourcesDir)) mkdirSync(resourcesDir, { recursive: true });
-    copyFileSync(distPath, dest);
-    const sha256 = sha256File(dest);
-    const bundleByDefault = bundleByDefaultMap.has(manifest.pluginId)
-      ? bundleByDefaultMap.get(manifest.pluginId)
-      : manifest.pluginId !== 'mira.example-mock'; // 默认 bundle，example-mock 除外
+  for (const { dir, manifest } of manifests) {
+    const lockedPlugin = lockedPlugins.get(manifest.pluginId);
+    if (!lockedPlugin) {
+      fail(`plugin ${manifest.pluginId} has no entry in bundled-plugins.lock.json`);
+    }
+    const asset = `${manifest.pluginId.replace(/\./g, '-')}-${manifest.version}.mira-plugin`;
+    const packagePath = join(packageDir, asset);
+    packPlugin(cliPath, seed, dir, packagePath);
+    const destination = join(resourcesDir, asset);
+    copyFileSync(packagePath, destination);
     installedAssets.push({
       pluginId: manifest.pluginId,
-      repository: 'hello-yunshu/mira-mouse-plugins',
-      releaseTag: `plugin/${manifest.pluginId.replace(/^mira\./, '')}/v${manifest.version}`,
+      repository: lockedPlugin.repository,
       version: manifest.version,
       asset,
-      sha256,
+      sha256: sha256File(destination),
       publisherKeyId: keyId,
       pluginApi: manifest.pluginApi || '>=1.1.0, <2.0.0',
-      cachePath: `src-tauri/resources/plugins/${asset}`,
-      bundleByDefault,
+      releaseTag: `plugin/${manifest.pluginId.replace(/^mira\./, '')}/v${manifest.version}`,
+      bundleByDefault: lockedPlugin.bundleByDefault,
     });
-    console.log(`installed: ${asset} (sha256=${sha256.slice(0, 12)}…, bundle=${bundleByDefault})`);
   }
 
-  // 5. 清理 resources 中不在新 lock 内的旧包
-  console.log('--- step 5: prune stale resources ---');
-  const keepAssets = new Set(installedAssets.map((a) => a.asset));
-  for (const f of readdirSync(resourcesDir)) {
-    if (f.endsWith('.mira-plugin') && !keepAssets.has(f)) {
-      rmSync(join(resourcesDir, f));
-      console.log(`pruned: ${f}`);
-    }
+  writeTestLock(installedAssets);
+  writeTestTauriConfig(installedAssets);
+
+  const bundle = process.env.TAURI_BUNDLE || (process.platform === 'darwin' ? 'app' : 'app');
+  const env = {
+    ...process.env,
+    CARGO_TARGET_DIR: cargoTargetDir,
+  };
+  run('npm', ['exec', 'tauri', '--', 'build', '--bundles', bundle], { env });
+  const executablePath = findBuiltExecutable();
+  if (!executablePath) {
+    fail(`built executable not found below ${join(cargoTargetDir, 'release', 'bundle')}`);
   }
+  verifyMacBundle(executablePath);
+  const result = writeBuildManifest(
+    cliPath,
+    cliSha256,
+    installedAssets,
+    executablePath,
+  );
 
-  // 6. 更新 lock 和 tauri.conf.json
-  console.log('--- step 6: update lock & tauri.conf ---');
-  writeLock(installedAssets);
-  syncTauriConfResources(installedAssets);
-
-  // ITERATION-009 §6.2：验证 TEST-ONLY 隔离——生产 trusted-keys.json 不得包含测试密钥
-  const prodTrustedKeysPath = join(pluginRepo, 'registry', 'trusted-keys.json');
-  if (existsSync(prodTrustedKeysPath)) {
-    const prodKeys = JSON.parse(readFileSync(prodTrustedKeysPath, 'utf8'));
-    const hasTestKey = prodKeys.keys.some((k) => k.keyId === keyId || k.publicKey === '00d34dac6e039baada3d3d9aa65390f2887d09d73b396af8434ecb29c233d666');
-    if (hasTestKey) {
-      fail(`TEST-ONLY key leaked into production trusted-keys.json — aborting before tauri build`);
-    }
-  }
-
-  // 7. 构建 Tauri app
-  console.log('--- step 7: tauri build ---');
-  const bundle = process.env.TAURI_BUNDLE || (process.platform === 'darwin' ? 'app,dmg' : 'app');
-  run('npm', ['exec', 'tauri', '--', 'build', '--bundles', bundle]);
-
-  // 8. 输出版本清单
   console.log('=== build:test-app summary ===');
-  console.log(`host HEAD: ${execFileSync('git', ['rev-parse', 'HEAD'], { cwd: hostRoot }).toString().trim()}`);
-  console.log(`plugin HEAD: ${execFileSync('git', ['rev-parse', 'HEAD'], { cwd: pluginRepo }).toString().trim()}`);
-  console.log(`cli path:     ${cliPath}`);
-  console.log(`cli SHA-256:  ${cliSha256}`);
-  for (const a of installedAssets) {
-    console.log(`  ${a.pluginId} v${a.version}  ${a.asset}  sha256=${a.sha256}`);
-  }
-  console.log('=== build:test-app done ===');
+  console.log(`CLI SHA-256: ${result.cliSha256}`);
+  console.log(`App: ${result.executablePath}`);
+  console.log(`App SHA-256: ${result.executableSha256}`);
+  console.log(`Manifest: ${manifestPath}`);
 }
 
-main();
+try {
+  main();
+} finally {
+  rmSync(stagingParent, { recursive: true, force: true });
+}
