@@ -416,8 +416,7 @@ pub fn draw_mouse_icon(
             // 顶部半透明行（0.5px 补偿）
             let top_y = fill_y0 - 1;
             if top_y >= fill_area.1 {
-                let top_color =
-                    RgbaColor::rgba(fill_color.r, fill_color.g, fill_color.b, 128);
+                let top_color = RgbaColor::rgba(fill_color.r, fill_color.g, fill_color.b, 128);
                 for x in fill_area.0..fill_area.2 {
                     if is_inside_rounded_rect(
                         x,
@@ -444,8 +443,8 @@ pub fn draw_mouse_icon(
             }
         } else {
             // 默认路径（其他平台 / PNG fallback）：100% 直接填满，无补偿
-            let fill_height = inner_height
-                .min((inner_height as u32 * percentage.min(100) as u32 / 100) as i32);
+            let fill_height =
+                inner_height.min((inner_height as u32 * percentage.min(100) as u32 / 100) as i32);
             if fill_height > 0 {
                 let fill_y0 = fill_area.3 - fill_height;
                 canvas.fill_rounded_rect(
@@ -531,10 +530,7 @@ pub fn render_mouse_icon_rgba(state: &TrayStatusState, style: &TrayVisualStyle) 
 }
 
 /// macOS 原生渲染专用：启用 0.5px 顶部补偿的 100% 满电图标。
-pub fn render_mouse_icon_rgba_macos(
-    state: &TrayStatusState,
-    style: &TrayVisualStyle,
-) -> Vec<u8> {
+pub fn render_mouse_icon_rgba_macos(state: &TrayStatusState, style: &TrayVisualStyle) -> Vec<u8> {
     let mut canvas = IconCanvas::new(ICON_SIZE, ICON_SIZE);
     draw_mouse_icon(&mut canvas, state, style, true);
     canvas.into_rgba_bytes()
@@ -1158,7 +1154,8 @@ mod tests {
         for x in (center_x - 5)..(center_x - 3) {
             let idx = ((mid_y * ICON_SIZE as i32 + x) * 4) as usize;
             assert_eq!(
-                bytes[idx + 1], 0, // G 分量
+                bytes[idx + 1],
+                0, // G 分量
                 "macOS fill at y={mid_y} x={x} should be cleared in wheel gap (no green)"
             );
         }
@@ -1167,7 +1164,8 @@ mod tests {
         for x in (center_x + 4)..(center_x + 6) {
             let idx = ((mid_y * ICON_SIZE as i32 + x) * 4) as usize;
             assert_eq!(
-                bytes[idx + 1], 0, // G 分量
+                bytes[idx + 1],
+                0, // G 分量
                 "macOS fill at y={mid_y} x={x} should be cleared in wheel gap (no green)"
             );
         }
@@ -1251,7 +1249,8 @@ mod tests {
         for x in (fill_area.0 + 2)..inner_x0 {
             let idx = ((top_y * ICON_SIZE as i32 + x) * 4) as usize;
             assert_eq!(
-                bytes[idx + 1], 0, // G 分量
+                bytes[idx + 1],
+                0, // G 分量
                 "fill area outside corner at x={x} should have no green fill"
             );
         }
