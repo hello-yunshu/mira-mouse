@@ -148,8 +148,7 @@ fn validated_model_prediction(
     let mut lr_config = LinearRegressionConfig::default();
     lr_config.optimizer = optimizer;
     lr_config.loss = RegressionLoss::Huber(
-        HuberLoss::new(config.huber_delta)
-            .map_err(|_| BatteryPredictionError::InvalidModel)?,
+        HuberLoss::new(config.huber_delta).map_err(|_| BatteryPredictionError::InvalidModel)?,
     );
     let mut model = LinearRegression::new(config.feature_count, lr_config)
         .map_err(|_| BatteryPredictionError::InvalidModel)?;
@@ -564,19 +563,14 @@ mod tests {
         current_context: Option<&DeviceContextSnapshot>,
         config: &BatteryModelConfig,
     ) -> Result<BatteryPredictionOutput, BatteryPredictionError> {
-        let optimizer = Optimizer::sgd(
-        config.feature_count,
-        {
+        let optimizer = Optimizer::sgd(config.feature_count, {
             let mut sgd = SgdConfig::default();
             sgd.learning_rate = config.learning_rate;
             sgd.l2 = config.l2;
             sgd
-        },
-    )
-    .map_err(|_| BatteryPredictionError::InvalidModel)?;
-    let mut model = LinearRegression::new(
-        config.feature_count,
-        {
+        })
+        .map_err(|_| BatteryPredictionError::InvalidModel)?;
+        let mut model = LinearRegression::new(config.feature_count, {
             let mut lr_config = LinearRegressionConfig::default();
             lr_config.optimizer = optimizer;
             lr_config.loss = RegressionLoss::Huber(
@@ -584,16 +578,15 @@ mod tests {
                     .map_err(|_| BatteryPredictionError::InvalidModel)?,
             );
             lr_config
-        },
-    )
-    .map_err(|_| BatteryPredictionError::InvalidModel)?;
-    let mut comparator = BaselineComparator::new(
-        &["deterministic-baseline", "rill-local-ai"],
-        config.quality_window,
-    )
-    .map_err(|_| BatteryPredictionError::InvalidModel)?;
+        })
+        .map_err(|_| BatteryPredictionError::InvalidModel)?;
+        let mut comparator = BaselineComparator::new(
+            &["deterministic-baseline", "rill-local-ai"],
+            config.quality_window,
+        )
+        .map_err(|_| BatteryPredictionError::InvalidModel)?;
 
-    for (index, observation) in observations.iter().enumerate() {
+        for (index, observation) in observations.iter().enumerate() {
             let recent_rate = weighted_baseline_rate_reference(
                 &observations[..index],
                 observation.at,
