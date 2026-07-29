@@ -81,6 +81,19 @@ const EMPTY_LOCAL_AI_STATUS: LocalAiStatus = {
   rollbackAvailable: false,
 };
 
+// 演示模式下模拟内置 AI 引擎状态：runtime 为最新版 1.0.0，未更新过（无 rollback）。
+const PREVIEW_LOCAL_AI_STATUS: LocalAiStatus = {
+  ready: true,
+  runtimeVersion: '1.0.0',
+  bundleVersion: '1.0.0',
+  modelPackId: 'mira-battery-model',
+  modelPackVersion: '0.8.3',
+  handlerId: 'mira.battery.handler',
+  handlerVersion: '0.8.5',
+  handlerApiVersion: 1,
+  rollbackAvailable: false,
+};
+
 export type SettingsTab = 'general' | 'device' | 'plugins' | 'privacy' | 'about';
 
 type PendingSettingsSave = {
@@ -154,7 +167,7 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
   const autostartTouched = useRef(false);
   const [plugins, setPlugins] = useState<BundledPluginInfo[]>([]);
   const [pluginUpdate, setPluginUpdate] = useState<PluginUpdateState>(pluginUpdateState());
-  const [localAiStatus, setLocalAiStatus] = useState<LocalAiStatus>(EMPTY_LOCAL_AI_STATUS);
+  const [localAiStatus, setLocalAiStatus] = useState<LocalAiStatus>(previewMode ? PREVIEW_LOCAL_AI_STATUS : EMPTY_LOCAL_AI_STATUS);
   const [localAiUpdate, setLocalAiUpdate] = useState<LocalAiUpdateState>(localAiUpdateState());
   const [diagnostics, setDiagnostics] = useState<string>('');
   const [discovered, setDiscovered] = useState<DiscoveredDevice[]>([]);
@@ -349,6 +362,7 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
     invoke<AboutInfo>('about_info')
       .then((info) => setPlugins(info.bundledPlugins ?? []))
       .catch(() => setPlugins([]));
+    if (previewMode) return;
     invoke<LocalAiStatus>('local_ai_status')
       .then((status) => status && setLocalAiStatus(status))
       .catch(() => setLocalAiStatus(EMPTY_LOCAL_AI_STATUS));
@@ -900,6 +914,11 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
                   </span>
                 </div>
               )}
+              {localAiUpdate.phase === 'installed' && (
+                <div className="plugin-update-row">
+                  <span className="badge badge-ok">{t('settings.localAi.updated', { version: localAiUpdate.updates.find((item) => item.component === 'bundle')?.currentVersion ?? localAiStatus.runtimeVersion })}</span>
+                </div>
+              )}
               {localAiStatus.rollbackAvailable && (
                 <div className="plugin-item-actions">
                   <button className="secondary" disabled={localAiUpdate.phase === 'downloading'} onClick={() => void handleLocalAiRollback()}>
@@ -974,6 +993,11 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
                               ? t('about.downloadedPercent', { percent: Math.min(100, Math.round((pluginUpdate.downloadedBytes / pluginUpdate.totalBytes) * 100)) })
                               : t('about.downloadedMib', { mib: (pluginUpdate.downloadedBytes / 1024 / 1024).toFixed(1) })}
                         </span>
+                      </div>
+                    )}
+                    {pluginUpdate.phase === 'installed' && pluginUpdate.lastInstalledPluginId === plugin.pluginId && (
+                      <div className="plugin-update-row">
+                        <span className="badge badge-ok">{t('settings.pluginUpdate.updated', { version: pluginUpdate.lastInstalledVersion })}</span>
                       </div>
                     )}
                   </div>

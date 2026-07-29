@@ -17,6 +17,8 @@ export interface PluginUpdateState {
   phase: PluginUpdatePhase;
   updates: PluginUpdateInfo[];
   installingPluginId?: string;
+  lastInstalledPluginId?: string;
+  lastInstalledVersion?: string;
   downloadedBytes: number;
   totalBytes?: number;
   stage?: PluginInstallStage;
@@ -137,6 +139,8 @@ export async function installPluginUpdate(pluginId: string): Promise<PluginInsta
       phase: 'installed',
       updates,
       installingPluginId: undefined,
+      lastInstalledPluginId: result.pluginId,
+      lastInstalledVersion: result.version,
       downloadedBytes: state.totalBytes ?? state.downloadedBytes,
       totalBytes: state.totalBytes,
       stage: 'activating',
@@ -146,7 +150,10 @@ export async function installPluginUpdate(pluginId: string): Promise<PluginInsta
       pluginId: result.pluginId,
       version: result.version,
     });
-    notifyInfo(title, body, 'settings-plugin-update');
+    // 应用内 toast 不带 action：用户已在设置页看到更新完成，带 action 会让 toast 可点击，
+    // 点击后触发 openSettingsPluginUpdate → section focus，出现莫名的 focus outline。
+    // 系统级通知保留 action，供不在应用内的用户点击跳转。
+    notifyInfo(title, body);
     if (!isComponentUpdateNotificationSuppressed()) {
       void invoke('show_update_notification', { title, body, action: 'settings-plugin-update' }).catch(() => {});
     }
