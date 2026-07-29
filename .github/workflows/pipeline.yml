@@ -504,18 +504,22 @@ jobs:
         run: |
           set -euo pipefail
           cat > release-notes.md <<EOF
-          Mira $VERSION
+          Mira $VERSION 已可下载。
 
-          ## 下载说明
+          ## 普通用户下载
 
-          - **macOS**: 下载 \`Mira_macOS_*.dmg\` 安装包
-          - **Windows**: 下载 \`Mira_Windows_*-setup.exe\` 安装包
-          - **Linux**: 下载 \`Mira_Linux_*.AppImage\` 安装包
+          | 平台 | 下载 |
+          |---|---|
+          | macOS（Apple Silicon） | [Mira_macOS_${VERSION}_aarch64.dmg](https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/Mira_macOS_${VERSION}_aarch64.dmg) |
+          | Windows（x64） | [Mira_Windows_${VERSION}_x64-setup.exe](https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/Mira_Windows_${VERSION}_x64-setup.exe) |
+          | Linux（x86_64） | [Mira_Linux_${VERSION}_amd64.AppImage](https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/Mira_Linux_${VERSION}_amd64.AppImage) |
 
-          ## 自动更新
+          普通用户只需下载上表对应的平台文件。
 
-          带 \`.sig\` 和 \`.app.tar.gz\` 的文件是 Tauri 自动更新用的签名产物，普通用户无需下载。
-          \`latest.json\` 是自动更新元数据文件。
+          ## 其他资产
+
+          \`.sig\`、\`.app.tar.gz\`、\`latest.json\`、\`latest-cn.json\` 用于应用内自动更新；
+          \`.rillpack\`、\`.rillhandler\` 和本地 AI 索引由 Mira 自动管理，均无需手动下载。
           EOF
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "Release $TAG exists; uploading assets."
