@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
 import { notifyError } from './notify';
@@ -471,5 +471,72 @@ describe('MorphingMetricValue context flip timing (P0-B)', () => {
     await vi.advanceTimersByTimeAsync(1);
     await vi.advanceTimersByTimeAsync(60);
     expect(metricValue.querySelector('.shared-control-metric-face.is-next')).toBeInTheDocument();
+  });
+
+  it('DPI → 回报率 → DPI → 回报率 最终状态正确', async () => {
+    render(<App />);
+    fireEvent.click(screen.getByText('查看演示'));
+    const metricValue = document.querySelector('.shared-control-metric-value')!;
+
+    vi.useFakeTimers();
+    // DPI → 回报率
+    fireEvent.click(screen.getByRole('tab', { name: '回报率' }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(600); });
+
+    // 回报率 → DPI
+    fireEvent.click(screen.getByRole('tab', { name: 'DPI' }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(600); });
+
+    // DPI → 回报率（最终状态）
+    fireEvent.click(screen.getByRole('tab', { name: '回报率' }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(600); });
+
+    // 最终应为回报率值（非 DPI 残留）
+    const currentFace = metricValue.querySelector('.shared-control-metric-face.is-current');
+    expect(currentFace).toBeInTheDocument();
+    expect(currentFace?.textContent).not.toContain('DPI');
+    expect(currentFace?.textContent).toMatch(/Hz/);
+    expect(metricValue.querySelector('.shared-control-metric-face.is-next')).not.toBeInTheDocument();
+  });
+
+  it('翻牌后最终数字和单位正确', async () => {
+    render(<App />);
+    fireEvent.click(screen.getByText('查看演示'));
+    const metricValue = document.querySelector('.shared-control-metric-value')!;
+
+    vi.useFakeTimers();
+    // 切换到回报率
+    fireEvent.click(screen.getByRole('tab', { name: '回报率' }));
+    // 完成翻牌（50ms 延迟 + 动画 + fallback timeout）
+    await act(async () => { await vi.advanceTimersByTimeAsync(600); });
+
+    // 最终值应包含 Hz 单位（回报率），不包含 DPI
+    const currentFace = metricValue.querySelector('.shared-control-metric-face.is-current');
+    expect(currentFace).toBeInTheDocument();
+    expect(currentFace?.textContent).toMatch(/\d+\s*Hz/);
+    expect(currentFace?.textContent).not.toContain('DPI');
+  });
+
+  it('旧 fallback timeout 不得提交过期值', async () => {
+    render(<App />);
+    fireEvent.click(screen.getByText('查看演示'));
+    const metricValue = document.querySelector('.shared-control-metric-value')!;
+
+    vi.useFakeTimers();
+    // DPI → 回报率（触发 50ms 延迟翻牌）
+    fireEvent.click(screen.getByRole('tab', { name: '回报率' }));
+    // 推进到 50ms 后翻牌开始，fallback timeout 已调度
+    await act(async () => { await vi.advanceTimersByTimeAsync(50); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(60); }); // rAF 推进
+
+    // 快速切回 DPI（应在 fallback timeout 触发前）
+    fireEvent.click(screen.getByRole('tab', { name: 'DPI' }));
+    // 推进足够时间让旧 fallback timeout 本应触发（如果未被取消）
+    await act(async () => { await vi.advanceTimersByTimeAsync(600); });
+
+    // current face 应为 DPI（旧 timeout 未提交回报率的过期值）
+    expect(metricValue.querySelector('.shared-control-metric-face.is-current')).toHaveTextContent('1000DPI');
+    // 不应有残留的回报率 next face
+    expect(metricValue.querySelector('.shared-control-metric-face.is-next')).not.toBeInTheDocument();
   });
 });
