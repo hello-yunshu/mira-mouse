@@ -1,9 +1,9 @@
 <!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
 # 插件包格式 (Plugin Package Format)
 
-`.mira-plugin` 是一个确定性的 ZIP 容器，包含声明式 JSON、文档、测试夹具 (fixtures)、校验和 (checksums) 以及一个可选的 Ed25519 签名 (signature)。路径必须是规范化的相对 UTF-8 路径；绝对路径、`..`、反斜杠、重复条目、符号链接、可执行/脚本/Web 扩展、远程资源以及不在白名单内的文件，在解压前都会被拒绝。
+`.mira-plugin` 是一个确定性的 ZIP 容器，包含声明式 JSON、测试夹具 (fixtures)、校验和 (checksums) 以及一个可选的 Ed25519 签名 (signature)。路径必须是规范化的相对 UTF-8 路径；绝对路径、`..`、反斜杠、重复条目、符号链接、文档、可执行/脚本/Web 扩展、远程资源以及不在白名单内的文件，在解压前都会被拒绝。
 
-白名单允许顶层的 `plugin.json`、`checksums.json`、`devices.json`、`capabilities.json`、`README.md`、`LICENSE` 和 `META-INF/signature.ed25519`，以及 `protocol/`、`locales/`、`tests/fixtures/` 和 `models/` 前缀下的 `.json` 文件。`models/` 目录是为按模型适配器覆盖 (per-model adapter overrides) 预留的父文件夹：未来的插件可以发布针对特定模型的 JSON（例如 `models/<model>/capabilities.json`），而无需更改包格式。
+白名单允许顶层的 `plugin.json`、`checksums.json`、`devices.json`、`capabilities.json` 和 `META-INF/signature.ed25519`，以及 `protocol/`、`locales/`、`tests/fixtures/` 和 `models/` 前缀下的 `.json` 文件。README、许可证和开发文档保留在插件源码仓库中，不进入生产包。`models/` 目录是为按模型适配器覆盖 (per-model adapter overrides) 预留的父文件夹：未来的插件可以发布针对特定模型的 JSON（例如 `models/<model>/capabilities.json`），而无需更改包格式。
 
 `devices.json` 的设备描述可通过 `selectionPriority` 声明静态默认选择优先级，也可通过 `selectionPriorityByConnection` 按运行时解析出的 `usb`、`wireless`、`bluetooth` 或 `virtual` 连接类型覆盖；数值越大越优先。例如，同时发现直连鼠标和接收器时，插件可让直连路径成为主设备，而宿主不需要识别品牌或 VID/PID。
 

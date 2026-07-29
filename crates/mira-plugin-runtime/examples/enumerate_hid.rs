@@ -34,8 +34,11 @@ use std::{
     time::Instant,
 };
 
-const PRODUCTION_KEY_ID: &str = "mira-plugins-2026-001";
-const PRODUCTION_PUBLIC_KEY_HEX: &str =
+const PRODUCTION_KEY_001_ID: &str = "mira-plugins-2026-001";
+const PRODUCTION_KEY_001_PUBLIC_KEY_HEX: &str =
+    "9f08f376f0d35b878aa9f59ce683fee1a038ddbc060a94fab3f0d01634331fad";
+const PRODUCTION_KEY_002_ID: &str = "mira-plugins-2026-002";
+const PRODUCTION_KEY_002_PUBLIC_KEY_HEX: &str =
     "eb80fdde2dc7ba507b6c8afbbf5a7de82e6219967edf1914ddb979d5601d39b3";
 
 const TEST_KEY_ID: &str = "TEST-ONLY-mira-plugins";
@@ -45,7 +48,8 @@ const TEST_PUBLIC_KEY_HEX: &str =
 fn trust_store() -> TrustStore {
     let mut trust = TrustStore::default();
     for (key_id, hex_str) in [
-        (PRODUCTION_KEY_ID, PRODUCTION_PUBLIC_KEY_HEX),
+        (PRODUCTION_KEY_001_ID, PRODUCTION_KEY_001_PUBLIC_KEY_HEX),
+        (PRODUCTION_KEY_002_ID, PRODUCTION_KEY_002_PUBLIC_KEY_HEX),
         (TEST_KEY_ID, TEST_PUBLIC_KEY_HEX),
     ] {
         let bytes = hex::decode(hex_str).expect("valid public key hex");

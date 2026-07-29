@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/hello-yunshu/mira-mouse/releases"><img alt="Release" src="https://img.shields.io/github/v/release/hello-yunshu/mira-mouse?style=flat-square&color=7C3AED"></a>
+  <a href="https://github.com/hello-yunshu/mira-mouse/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/hello-yunshu/mira-mouse?style=flat-square&color=7C3AED"></a>
   <img alt="Platform" src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-24C8DB?style=flat-square">
   <img alt="Tauri" src="https://img.shields.io/badge/Tauri-2.x-24C8DB?style=flat-square">
   <img alt="React" src="https://img.shields.io/badge/React-19-61DAFB?style=flat-square">
@@ -35,6 +35,16 @@
 </p>
 
 ---
+
+## Download the latest version
+
+| Platform | Recommended download |
+|---|---|
+| macOS (Apple Silicon) | [Download DMG](https://github.com/hello-yunshu/mira-mouse/releases/latest/download/Mira_macOS_1.0.0_aarch64.dmg) |
+| Windows (x64) | [Download installer](https://github.com/hello-yunshu/mira-mouse/releases/latest/download/Mira_Windows_1.0.0_x64-setup.exe) |
+| Linux (x86_64) | [Download AppImage](https://github.com/hello-yunshu/mira-mouse/releases/latest/download/Mira_Linux_1.0.0_amd64.AppImage) |
+
+Most users only need the file for their platform above. For release notes and other assets, open the [latest release](https://github.com/hello-yunshu/mira-mouse/releases/latest).
 
 ## Overview
 
@@ -115,9 +125,7 @@ chmod +x Mira_Linux_*_amd64.AppImage
 ./Mira_Linux_*_amd64.AppImage
 ```
 
-All platform artifacts are published on [GitHub Releases](https://github.com/hello-yunshu/mira-mouse/releases).
-
-> Unsigned community packages trigger Gatekeeper or SmartScreen warnings on first launch — this is expected. Releases ship with SHA-256 checksums. See [security notes](docs/unsigned-release-security.md).
+All platform artifacts are published on the [latest release](https://github.com/hello-yunshu/mira-mouse/releases/latest).
 
 ## Supported Devices
 
@@ -250,7 +258,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full contribution guide.
 
 ## Project Status
 
-Mira is under active development. Current version: **1.0.0-rc.1** (2026-07-29). This release candidate validates the three platform packages, production-signed plugins, and the upgrade path before the final 1.0 release.
+Mira is under active development. Current stable version: **1.0.0** (2026-07-29). It ships cross-platform packages, independently signed device plugins, local-AI battery prediction, and automatic updates.
 
 - macOS, Windows, and Linux installers released
 - AMaster (Protocol A) and Logitech (HID++ 2.0) protocols supported
