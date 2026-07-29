@@ -370,6 +370,17 @@ impl PluginManifest {
                                         .get("source")
                                         .and_then(serde_json::Value::as_str)
                                         .is_some_and(|source| !source.is_empty())
+                                    && item.get("sourceFallbacks").is_none_or(|fallbacks| {
+                                        fallbacks.as_array().is_some_and(|sources| {
+                                            !sources.is_empty()
+                                                && sources.len() <= 8
+                                                && sources.iter().all(|source| {
+                                                    source
+                                                        .as_str()
+                                                        .is_some_and(|source| !source.is_empty())
+                                                })
+                                        })
+                                    })
                                     && item.get("options").is_none_or(|options| {
                                         valid_options(options, 32)
                                             || valid_declarative_options(options)
@@ -1210,6 +1221,9 @@ pub struct CapabilityPlacement {
     /// leading：核心序列之前；trailing：核心序列之后。未声明时默认 trailing。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub optional_position: Option<OptionalPosition>,
+    /// 首页控制切换块使用的短标签；完整 capability label 仍用于内容和无障碍名称。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact_label_key: Option<String>,
 }
 
 /// ITERATION-006 §P0-A：Dashboard 角色 enum（跨仓统一）。
@@ -1370,6 +1384,13 @@ fn validate_placement_contract(placement: &CapabilityPlacement) -> Result<(), St
                 role
             ));
         }
+    }
+    if placement
+        .compact_label_key
+        .as_deref()
+        .is_some_and(|key| key.trim().is_empty() || key.len() > 96)
+    {
+        return Err("compactLabelKey must be non-empty and at most 96 chars".into());
     }
     Ok(())
 }
@@ -2199,6 +2220,7 @@ mod tests {
                     dedupe_key: Some(format!("control.{index}")),
                     fallback_region: Some(FallbackRegion::Advanced),
                     optional_position: None,
+                    compact_label_key: None,
                 }],
                 metadata: BTreeMap::new(),
                 probe: None,

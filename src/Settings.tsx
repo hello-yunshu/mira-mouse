@@ -6,6 +6,7 @@ import { ChartBar } from '@phosphor-icons/react';
 import type { AppSettings, BundledPluginInfo, AboutInfo, DiscoveredDevice, LocalAiStatus, PluginCapability, ThemeMode } from './types';
 import { Tooltip } from './Tooltip';
 import { notifyError, notifyInfo } from './notify';
+import { useScrollFadeState } from './useScrollOverflow';
 import { extractChannel, exportDiagnostics } from './plugin-utils';
 import { resolveLightingMutations, resolveLightingRoles } from './pluginAdapter';
 import { applyLanguage, type AppLanguage } from './i18n';
@@ -136,6 +137,9 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
   const windowsPlatform = isWindowsPlatform();
   const macPlatform = isMacPlatform();
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const { canScrollUp, canScrollDown } = useScrollFadeState(scrollRef, contentRef);
   // Settings writes are full-object replacements. Keep one authoritative
   // optimistic snapshot and coalesce serialized saves so rapid UI changes
   // cannot race, overwrite a newer response, contend for settings.json.tmp,
@@ -556,6 +560,8 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
         ))}
       </nav>
 
+      <div ref={scrollRef} className={`settings-scroll-area${canScrollUp ? ' scroll-fade-top' : ''}${canScrollDown ? ' scroll-fade-bottom' : ''}`}>
+      <div ref={contentRef} className="settings-scroll-content">
       {tab === 'general' && (
         <>
           <section className="card settings-section">
@@ -1052,6 +1058,8 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
           </section>
         </>
       )}
+      </div>
+      </div>
     </main>
   );
 }

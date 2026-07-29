@@ -26,10 +26,10 @@ pub use package::{
     TrustStore, PACKAGE_FORMAT_VERSION,
 };
 pub use protocol::{
-    execute_plugin_workflow, map_semantic_to_outputs, mutate_device, mutate_device_with_package,
-    normalize_device_outputs_with_package, read_device, read_device_with_package,
-    read_device_with_projection, writable_mutations, writable_mutations_with_package,
-    ConnectionKind, DeviceReading, FeatureIndexCache, HidEventSink, HidHandleCache, HidIoStats,
-    NullHidEventSink, OnboardMemoryCache, ProjectedReading, ProtocolContext, ReadStatus,
-    SemanticField,
+    classify_contract_fault, execute_plugin_workflow, map_semantic_to_outputs, mutate_device,
+    mutate_device_with_package, normalize_device_outputs_with_package, read_device,
+    read_device_with_package, read_device_with_projection, writable_mutations,
+    writable_mutations_with_package, ConnectionKind, DeviceReading, FeatureIndexCache,
+    HidEventSink, HidHandleCache, HidIoStats, NullHidEventSink, OnboardMemoryCache,
+    ProjectedReading, ProtocolContext, ReadStatus, SemanticField,
 };

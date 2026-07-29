@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
 import { notifyError } from './notify';
@@ -86,20 +86,19 @@ describe('Mira shell', () => {
     fireEvent.click(screen.getByRole('button', { name: '关闭读数详情' }));
     expect(screen.queryByRole('dialog', { name: '全部读数' })).not.toBeInTheDocument();
   });
-  it('does not crossfade color codes when switching lighting zones', () => {
+  it('updates the lighting swatch color when switching lighting zones', () => {
     render(<App />);
     fireEvent.click(screen.getByText('查看演示'));
     fireEvent.click(screen.getByRole('tab', { name: '灯光' }));
 
-    const mouseColorValue = document.querySelector<HTMLElement>('.lighting-group-mouse .color-value')!;
-    expect(mouseColorValue.querySelector('.live-value-current')).toHaveTextContent('#ffb3b3');
+    // 灯带位于 lighting-group 上方，通过 --light-color CSS 变量承载当前区域颜色。
+    const swatch = document.querySelector<HTMLElement>('.lighting-swatch')!;
+    expect(swatch.style.getPropertyValue('--light-color')).toBe('#ffb3b3');
 
     fireEvent.click(screen.getByRole('tab', { name: '接收器灯光' }));
 
-    const receiverColorValue = document.querySelector<HTMLElement>('.lighting-group-receiver .color-value')!;
-    expect(document.body.contains(mouseColorValue)).toBe(false);
-    expect(receiverColorValue.querySelector('.live-value-current')).toHaveTextContent('#4BBFB1');
-    expect(receiverColorValue.querySelector('.live-value-next')).not.toBeInTheDocument();
+    // 切换区域后同一 swatch 元素的 CSS 变量更新为接收器灯光色，无残留旧值。
+    expect(swatch.style.getPropertyValue('--light-color')).toBe('#4BBFB1');
   });
   it('opens the active lighting color editor from the color indicator', () => {
     render(<App />);
@@ -139,13 +138,20 @@ describe('Mira shell', () => {
     expect(metricLayer?.querySelector('.shared-control-metric-text')).toBe(metricText);
     expect(metricLayer).toHaveAttribute('data-variant', 'hertz');
     expect(metricLayer).toHaveAttribute('data-positioned', 'true');
+    const metricValue = metricLayer?.querySelector('.shared-control-metric-value');
+    expect(metricValue?.querySelector('.shared-control-metric-face.is-current')).toHaveTextContent('1000DPI');
+    expect(metricValue?.querySelector('.shared-control-metric-face.is-next')).not.toBeInTheDocument();
     let incomingMetricFace: Element | null = null;
     await waitFor(() => {
-      const metricValue = metricLayer?.querySelector('.shared-control-metric-value');
-      expect(metricValue).toHaveAttribute('data-transition', 'crossfade');
+      expect(metricValue).toHaveAttribute('data-transition', 'flip');
       incomingMetricFace = metricValue?.querySelector('.shared-control-metric-face.is-next') ?? null;
       expect(incomingMetricFace).toBeInTheDocument();
     });
+    const pollingTerminalDigit = metricValue?.querySelector(
+      '.shared-control-metric-face.is-next [data-flip-last="true"]',
+    );
+    expect(pollingTerminalDigit).toBeInTheDocument();
+    fireEvent.animationEnd(pollingTerminalDigit!, { animationName: 'metric-digit-settle' });
     await waitFor(() => {
       expect(metricLayer?.querySelector('.shared-control-metric-face.is-next')).not.toBeInTheDocument();
     });
@@ -165,6 +171,13 @@ describe('Mira shell', () => {
     expect(summaryDelays.every((delay) => delay >= 165 && delay < 210)).toBe(true);
     expect(new Set(summaryDelays).size).toBeGreaterThan(1);
 
+    fireEvent.click(screen.getByRole('tab', { name: 'DPI' }));
+    expect(metricValue?.querySelector('.shared-control-metric-face.is-current')).toHaveTextContent('1000Hz');
+    expect(metricValue?.querySelector('.shared-control-metric-face.is-next')).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(metricValue?.querySelector('.shared-control-metric-face.is-current')).toHaveTextContent('1000DPI');
+    });
+
     fireEvent.click(screen.getByRole('tab', { name: '灯光' }));
     expect(document.querySelector('.shared-control-metric')).toBe(metricLayer);
     expect(metricLayer).toHaveAttribute('data-visible', 'false');
@@ -175,6 +188,8 @@ describe('Mira shell', () => {
     expect(document.querySelector('.shared-control-surface')).toBe(surfaceLayer);
     expect(surfaceLayer).toHaveAttribute('data-kind', 'lighting');
     expect(surfaceLayer).toHaveAttribute('data-positioned', 'true');
+    // mouse zone 仅 status 一个子块（color 由灯带渲染），切换到接收器灯光验证多子块错落延迟。
+    fireEvent.click(screen.getByRole('tab', { name: '接收器灯光' }));
     const lightingDelays = [...document.querySelectorAll<HTMLElement>('.lighting-row-slot.secondary-control-item')]
       .map((item) => Number.parseInt(item.style.getPropertyValue('--control-detail-delay'), 10));
     expect(lightingDelays.length).toBeGreaterThan(1);
@@ -272,12 +287,15 @@ describe('Mira shell', () => {
     fireEvent.click(screen.getByRole('button', { name: '切换鼠标' }));
     fireEvent.click(screen.getByText('Mira Example USB Mouse').closest('button')!);
     expect(screen.getByRole('heading', { name: 'Mira Example USB Mouse' })).toBeInTheDocument();
-    // ITERATION-004 §2.1：fixedSlot 1/2/3 (DPI/回报率/灯光) 排在前 3 位，
-    // 第 4 槽位为 priority>=90 且 fourthSlotEligible 的候选（配置控制 priority=95）。
+    // 配置控制通过 candidate + optionalPosition=leading 放在核心三项之前；
+    // 可见短标签不超过 3 个中文字符，完整名称保留为 tab 的无障碍名称。
     expect(screen.getAllByRole('tab').map((tab) => tab.textContent))
-      .toEqual(['DPI', '回报率', '灯光', '配置控制']);
-    expect(screen.getByRole('tab', { name: 'DPI' })).toHaveAttribute('aria-selected', 'true');
-    expect(screen.getByLabelText('当前 DPI：1600，点击编辑')).toBeInTheDocument();
+      .toEqual(['配置', 'DPI', '回报率', '灯光']);
+    expect(screen.getAllByRole('tab').every((tab) => Array.from(tab.textContent ?? '').length <= 3))
+      .toBe(true);
+    expect(screen.getByRole('tab', { name: '配置控制' })).toHaveTextContent('配置');
+    expect(screen.getByRole('tab', { name: '配置控制' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('group', { name: '配置控制' })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('tab', { name: '灯光' }));
     fireEvent.click(screen.getByRole('tab', { name: '配置控制' }));
@@ -327,5 +345,198 @@ describe('Mira shell', () => {
     expect(await screen.findByText('搞定啦')).toBeInTheDocument();
     // UI 反映新的回报率
     expect(screen.getByRole('button', { name: '当前回报率：500 Hz，点击编辑' })).toBeInTheDocument();
+  });
+});
+
+// P0-B: DPI/回报率数字翻牌时序测试
+// 上下文切换时翻牌在缩放早期（contextTransitionDelay=50ms）启动。
+// 缓动曲线 cubic-bezier(.32, .72, 0, 1) 极激进，50ms 时缩放已推进约
+// 60% 视觉距离，翻牌与缩放剩余部分并行，入场自然融入缩放过程。
+describe('MorphingMetricValue context flip timing (P0-B)', () => {
+  beforeEach(() => {
+    invokeMock.mockRejectedValue(new Error('not mocked'));
+  });
+  afterEach(() => {
+    invokeMock.mockReset();
+    vi.useRealTimers();
+  });
+
+  it('does not start flip before 50ms (49ms still idle)', async () => {
+    render(<App />);
+    fireEvent.click(screen.getByText('查看演示'));
+
+    const metricValue = document.querySelector('.shared-control-metric-value')!;
+    expect(metricValue.querySelector('.shared-control-metric-face.is-current')).toHaveTextContent('1000DPI');
+
+    // 切换到回报率（metric-to-metric context change）
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByRole('tab', { name: '回报率' }));
+
+    // 49ms 时：尚未开始翻牌，next face 不存在
+    await vi.advanceTimersByTimeAsync(49);
+    expect(metricValue.querySelector('.shared-control-metric-face.is-next')).not.toBeInTheDocument();
+  });
+
+  it('starts flip at ~50ms during zoom (is-transitioning appears)', async () => {
+    render(<App />);
+    fireEvent.click(screen.getByText('查看演示'));
+
+    const metricValue = document.querySelector('.shared-control-metric-value')!;
+
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByRole('tab', { name: '回报率' }));
+
+    // 50ms 时：setTimeout 触发 prepareTransition，rAF 注册
+    await vi.advanceTimersByTimeAsync(50);
+    // 推进 rAF 队列让 next face 和 is-transitioning 生效（rAF 嵌套 2 帧 + 渲染）
+    await vi.advanceTimersByTimeAsync(60);
+    expect(metricValue.querySelector('.shared-control-metric-face.is-next')).toBeInTheDocument();
+    expect(metricValue).toHaveClass('is-transitioning');
+  });
+
+  it('starts flip well before zoom completes (50ms << 340ms geometry)', async () => {
+    // 缩放几何变形时长 340ms，翻牌在 50ms（缩放早期）启动，
+    // 与缩放大部分时段重叠，而不是等缩放完全结束。
+    render(<App />);
+    fireEvent.click(screen.getByText('查看演示'));
+
+    const metricValue = document.querySelector('.shared-control-metric-value')!;
+
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByRole('tab', { name: '回报率' }));
+
+    // 推进到 120ms：翻牌已开始；缩放（340ms）仍在进行
+    await vi.advanceTimersByTimeAsync(120);
+    await vi.advanceTimersByTimeAsync(60); // 推进 rAF
+    expect(metricValue).toHaveClass('is-transitioning');
+  });
+
+  it('overlaps flip with most of the zoom (~290ms shared)', async () => {
+    // 翻牌在 50ms 启动，缩放在 340ms 结束，重叠约 290ms。
+    // 验证 50ms 时翻牌已开始（缩放还有大量视觉距离）。
+    render(<App />);
+    fireEvent.click(screen.getByText('查看演示'));
+
+    const metricValue = document.querySelector('.shared-control-metric-value')!;
+
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByRole('tab', { name: '回报率' }));
+
+    // 推进 50ms + rAF：翻牌已开始（此时缩放还有 ~290ms 才结束）
+    await vi.advanceTimersByTimeAsync(50);
+    await vi.advanceTimersByTimeAsync(60);
+    expect(metricValue).toHaveClass('is-transitioning');
+  });
+
+  it('cancels old animation on rapid reverse DPI -> polling -> DPI', async () => {
+    render(<App />);
+    fireEvent.click(screen.getByText('查看演示'));
+
+    const metricValue = document.querySelector('.shared-control-metric-value')!;
+    expect(metricValue.querySelector('.shared-control-metric-face.is-current')).toHaveTextContent('1000DPI');
+
+    vi.useFakeTimers();
+    // DPI -> 回报率（contextKey 改变，触发 50ms 延迟翻牌）
+    fireEvent.click(screen.getByRole('tab', { name: '回报率' }));
+    // 25ms 后（< 50ms，翻牌尚未开始）快速切回 DPI
+    await vi.advanceTimersByTimeAsync(25);
+    fireEvent.click(screen.getByRole('tab', { name: 'DPI' }));
+
+    // 推进所有 timers，确保旧动画被取消，无残留 nextValue
+    await vi.advanceTimersByTimeAsync(600);
+
+    // 不应有残留的 next face（旧动画已取消）
+    expect(metricValue.querySelector('.shared-control-metric-face.is-next')).not.toBeInTheDocument();
+    // current face 应仍然是 DPI（未因旧 timeout 提交错误值）
+    expect(metricValue.querySelector('.shared-control-metric-face.is-current')).toHaveTextContent('1000DPI');
+  });
+
+  it('preserves flip behavior under prefers-reduced-motion without crashing', async () => {
+    // prefers-reduced-motion 由 CSS 媒体查询处理（styles.css 把动画时长压到 0.01ms），
+    // JS 端 contextTransitionDelay 仍为 50ms。验证翻牌时序不受影响且不崩溃。
+    // jsdom 不实现 matchMedia，App.tsx 也不依赖它，所以无需 polyfill。
+    render(<App />);
+    fireEvent.click(screen.getByText('查看演示'));
+
+    const metricValue = document.querySelector('.shared-control-metric-value')!;
+
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByRole('tab', { name: '回报率' }));
+
+    // 49ms 时未开始（与正常模式相同）
+    await vi.advanceTimersByTimeAsync(49);
+    expect(metricValue.querySelector('.shared-control-metric-face.is-next')).not.toBeInTheDocument();
+
+    // 50ms 后开始（CSS 动画时长不影响 JS 时序）
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(60);
+    expect(metricValue.querySelector('.shared-control-metric-face.is-next')).toBeInTheDocument();
+  });
+
+  it('DPI → 回报率 → DPI → 回报率 最终状态正确', async () => {
+    render(<App />);
+    fireEvent.click(screen.getByText('查看演示'));
+    const metricValue = document.querySelector('.shared-control-metric-value')!;
+
+    vi.useFakeTimers();
+    // DPI → 回报率
+    fireEvent.click(screen.getByRole('tab', { name: '回报率' }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(600); });
+
+    // 回报率 → DPI
+    fireEvent.click(screen.getByRole('tab', { name: 'DPI' }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(600); });
+
+    // DPI → 回报率（最终状态）
+    fireEvent.click(screen.getByRole('tab', { name: '回报率' }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(600); });
+
+    // 最终应为回报率值（非 DPI 残留）
+    const currentFace = metricValue.querySelector('.shared-control-metric-face.is-current');
+    expect(currentFace).toBeInTheDocument();
+    expect(currentFace?.textContent).not.toContain('DPI');
+    expect(currentFace?.textContent).toMatch(/Hz/);
+    expect(metricValue.querySelector('.shared-control-metric-face.is-next')).not.toBeInTheDocument();
+  });
+
+  it('翻牌后最终数字和单位正确', async () => {
+    render(<App />);
+    fireEvent.click(screen.getByText('查看演示'));
+    const metricValue = document.querySelector('.shared-control-metric-value')!;
+
+    vi.useFakeTimers();
+    // 切换到回报率
+    fireEvent.click(screen.getByRole('tab', { name: '回报率' }));
+    // 完成翻牌（50ms 延迟 + 动画 + fallback timeout）
+    await act(async () => { await vi.advanceTimersByTimeAsync(600); });
+
+    // 最终值应包含 Hz 单位（回报率），不包含 DPI
+    const currentFace = metricValue.querySelector('.shared-control-metric-face.is-current');
+    expect(currentFace).toBeInTheDocument();
+    expect(currentFace?.textContent).toMatch(/\d+\s*Hz/);
+    expect(currentFace?.textContent).not.toContain('DPI');
+  });
+
+  it('旧 fallback timeout 不得提交过期值', async () => {
+    render(<App />);
+    fireEvent.click(screen.getByText('查看演示'));
+    const metricValue = document.querySelector('.shared-control-metric-value')!;
+
+    vi.useFakeTimers();
+    // DPI → 回报率（触发 50ms 延迟翻牌）
+    fireEvent.click(screen.getByRole('tab', { name: '回报率' }));
+    // 推进到 50ms 后翻牌开始，fallback timeout 已调度
+    await act(async () => { await vi.advanceTimersByTimeAsync(50); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(60); }); // rAF 推进
+
+    // 快速切回 DPI（应在 fallback timeout 触发前）
+    fireEvent.click(screen.getByRole('tab', { name: 'DPI' }));
+    // 推进足够时间让旧 fallback timeout 本应触发（如果未被取消）
+    await act(async () => { await vi.advanceTimersByTimeAsync(600); });
+
+    // current face 应为 DPI（旧 timeout 未提交回报率的过期值）
+    expect(metricValue.querySelector('.shared-control-metric-face.is-current')).toHaveTextContent('1000DPI');
+    // 不应有残留的回报率 next face
+    expect(metricValue.querySelector('.shared-control-metric-face.is-next')).not.toBeInTheDocument();
   });
 });

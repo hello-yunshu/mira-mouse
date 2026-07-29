@@ -16,6 +16,7 @@ import {
   selectDashboardStatus,
   selectSummarySubblocks,
   selectLightingSubblocks,
+  summaryMaxForCapability,
   validatePlacement,
 } from './pluginAdapter';
 import type { DeviceState, PluginCapability, PluginCapabilityPlacement, PluginField, PluginSummaryItem } from './types';
@@ -737,6 +738,33 @@ describe('P0-F: selectSummarySubblocks', () => {
     expect(selected).toHaveLength(0);
     expect(fallback).toHaveLength(0);
   });
+
+  it('caps any plugin polling summary at three by placement semantics and priority', () => {
+    const thirdPartyPolling = makeCapability('vendor-neutral-rate', [
+      controlPlacement({
+        group: 'polling',
+        priority: 40,
+        dedupeKey: 'third-party.polling',
+      }),
+    ]);
+    const items = [
+      makeSummary('state.low', 10),
+      makeSummary('state.high', 100),
+      makeSummary('state.midHigh', 80),
+      makeSummary('state.mid', 60),
+    ];
+    const { selected, fallback } = selectSummarySubblocks(
+      items,
+      summaryMaxForCapability(thirdPartyPolling),
+    );
+
+    expect(selected.map((item) => item.source)).toEqual([
+      'state.high',
+      'state.midHigh',
+      'state.mid',
+    ]);
+    expect(fallback.map((item) => item.source)).toEqual(['state.low']);
+  });
 });
 
 // ─── P0-G：selectLightingSubblocks 覆盖率 ───────────────────────────────
@@ -970,6 +998,12 @@ describe('P1-B: validatePlacement enhanced checks', () => {
     const p = validPlacement();
     p.optionalPosition = 'leading';
     expect(validatePlacement(p)).toBeNull();
+  });
+
+  it('rejects an empty compactLabelKey', () => {
+    const p = validPlacement();
+    p.compactLabelKey = '   ';
+    expect(validatePlacement(p)).toContain('compactLabelKey must be a non-empty string');
   });
 
   it('rejects fixedSlot on status region', () => {

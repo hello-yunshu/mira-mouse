@@ -18,7 +18,7 @@ export interface RangeSpec {
 // ─── 声明式插件 UI 类型 ─────────────────────────────────────────────────────
 
 /** 字段编辑器类型，决定 UI 渲染方式。 */
-export type PluginEditor = 'inline-toggle' | 'inline-segmented' | 'inline-value' | 'inline-action' | 'modal-select' | 'modal-color' | 'modal-range' | 'modal-number' | 'modal-dpi-stage' | 'modal-gradient' | 'static-readonly';
+export type PluginEditor = 'inline-toggle' | 'inline-segmented' | 'inline-range' | 'inline-value' | 'inline-action' | 'modal-select' | 'modal-color' | 'modal-range' | 'modal-number' | 'modal-dpi-stage' | 'modal-gradient' | 'static-readonly';
 
 /** 字段值格式化方式。 */
 export type PluginFieldFormat = 'sleep' | 'percent' | 'hertz' | 'connection' | 'color' | 'default';
@@ -136,6 +136,8 @@ export interface PluginSummaryItem {
   /** 兼容旧插件的直接标签；新插件应优先使用 labelKey。 */
   label?: string;
   source: string;
+  /** 同一语义在不同协议族使用不同 snapshot 路径时，按顺序尝试的备用来源。 */
+  sourceFallbacks?: string[];
   unit?: string;
   format?: PluginFieldFormat;
   options?: PluginFieldOption[];
@@ -203,6 +205,8 @@ export interface PluginCapabilityPlacement {
    *  未声明时默认 trailing。
    *  不得用 fixedSlot=4 表达候选；核心三项相对顺序不可被打断。 */
   optionalPosition?: 'leading' | 'trailing';
+  /** 首页切换块的短标签；完整 capability label 仍用于页面内容与无障碍名称。 */
+  compactLabelKey?: string;
 }
 export interface DeviceState {
   name: string;
