@@ -39,6 +39,36 @@ const RECEIVER_COLOR_MODE_OPTIONS: PluginFieldOption[] = [
   { value: 8, labelKey: 'receiverLighting.colorMode.colorful' },
 ];
 
+// Advanced Settings 演示选项：滚轮 / Logo 灯效与按键动作。
+const ZONE_LIGHTING_EFFECT_OPTIONS: PluginFieldOption[] = [
+  { value: 0, labelKey: 'mock.effectOff' },
+  { value: 1, labelKey: 'mock.effectSteady' },
+  { value: 2, labelKey: 'mock.effectBreathing' },
+  { value: 3, labelKey: 'mock.effectNeon' },
+  { value: 4, labelKey: 'mock.effectWave' },
+];
+const BUTTON_ACTION_OPTIONS: PluginFieldOption[] = [
+  { value: 'dpi-cycle', labelKey: 'mock.actionDpiCycle' },
+  { value: 'dashboard', labelKey: 'mock.actionDashboard' },
+  { value: 'default-click', labelKey: 'mock.actionDefaultClick' },
+];
+const LIFT_DISTANCE_OPTIONS: PluginFieldOption[] = [
+  { value: 1, labelKey: '1mm' },
+  { value: 2, labelKey: '2mm' },
+];
+const SLEEP_MODE_OPTIONS: PluginFieldOption[] = [
+  { value: 60, labelKey: '60s' },
+  { value: 180, labelKey: '180s' },
+  { value: 300, labelKey: '300s' },
+  { value: 600, labelKey: '600s' },
+];
+const DEEP_SLEEP_OPTIONS: PluginFieldOption[] = [
+  { value: 300, labelKey: '300s' },
+  { value: 600, labelKey: '600s' },
+  { value: 1800, labelKey: '1800s' },
+  { value: 3600, labelKey: '3600s' },
+];
+
 export const MOCK_DEVICE: DeviceState = {
   name: 'Mira Example Wireless Mouse', connection: 'virtual', battery: 82, charging: false,
   batteries: [
@@ -66,16 +96,46 @@ export const MOCK_DEVICE: DeviceState = {
     receiverLightSpeed: 2,
     receiverLightBrightness: 70,
     receiverLightColor: MOCK_RECEIVER_LIGHT_COLOR,
+    receiverLightColor2: '#FF6B6B',
+    receiverLightRatio: 50,
     // 休眠时间
     wirelessSleepValue: 300,
     bluetoothSleepValue: 600,
+    // Advanced Settings 演示数据 — 性能
+    liftDistance: 1,
+    motionSync: true,
+    rippleCorrection: false,
+    // Advanced Settings 演示数据 — 灯光详情（滚轮 / Logo 子区域）
+    wheelLightBrightness: 80,
+    wheelLightColor: '#ffb3b3',
+    wheelLightEffect: 2,
+    logoLightBrightness: 60,
+    logoLightColor: '#b87ab0',
+    logoLightEffect: 1,
+    // Advanced Settings 演示数据 — 配置文件
+    currentProfile: 'Profile 1',
+    profileSlotUsed: '1 / 5',
+    // Advanced Settings 演示数据 — 按键映射
+    sideButtonForward: 'dpi-cycle',
+    sideButtonBack: 'dashboard',
+    wheelClickAction: 'default-click',
+    // Advanced Settings 演示数据 — 电源
+    deepSleepValue: 300,
+    // Advanced Settings 演示数据 — 传感器（只读）
+    sensorCalibrated: true,
+    maxTrackingSpeed: 650,
+    maxAcceleration: 50,
+    // Advanced Settings 演示数据 — 设备（只读）
+    firmwareVersion: '1.2.3',
+    serialNumber: '****-****-7A2B',
+    connectionMethod: '2.4G',
   },
   capabilities: {
     battery: { percentage: 82, charging: false, valid: true },
     dpi: { profile: 0, currentStage: 3, stageCount: 8, dpiX: [400, 800, 1000, 1600, 2400, 3200, 6400, 12800], dpiY: [400, 800, 1000, 1600, 2400, 3200, 6400, 12800], stageColors: ['#7ea7d8', '#9a8bd0', '#bf7fa8', '#d39378', '#7eb2a0', '#a8c46a', '#c9a86c', '#c77a9a'] },
     settings: { profile: 0, pollingRaw: 1, pollingRate: 1000, usbDebounce: 4, wirelessDebounce: 4, bluetoothDebounce: 4, rippleCorrection: true, angleSnap: false, motionSync: true, liftCutOff: 1, buttonChangeTime: 12, wheelToButton: 0, buttonToWheel: 0, bluetoothSleepValue: 600, wirelessSleepValue: 300, mouseLightStartColor: DEFAULT_THEME_ACCENT, mouseLightEndColor: DEFAULT_THEME_ACCENT, mouseLightEnabled: true },
     mouseLighting: { effect: 2, effectName: '呼吸', speed: 2, brightness: 70, color: DEFAULT_THEME_ACCENT, extraColor: DEFAULT_THEME_ACCENT, enabled: true },
-    receiverLighting: { effect: 3, effectName: '霓虹', speed: 2, brightness: 70, option: 7, optionName: '模式 7', color: MOCK_RECEIVER_LIGHT_COLOR, enabled: true },
+    receiverLighting: { effect: 3, effectName: '霓虹', speed: 2, brightness: 70, option: 7, optionName: '模式 7', color: MOCK_RECEIVER_LIGHT_COLOR, color2: '#FF6B6B', ratio: 50, enabled: true },
     fps: { enabled: true },
     dpiButton: { enabled: true },
     firmwareUsb: { versionRaw: 258 },
@@ -192,6 +252,8 @@ export const MOCK_DEVICE: DeviceState = {
               { id: 'speed', source: 'state.receiverLightSpeed', mutation: 'set-receiver-lighting', param: 'speed', editor: 'modal-range', labelKey: 'receiverLighting.field.speed', editTitleKey: 'dashboard.editReceiverLightingTitle', range: { min: 0, max: 10, step: 1 }, visibleWhen: { path: 'state.receiverLightEffect', ne: null }, lightingRole: 'candidate', priority: 80 },
               { id: 'brightness', source: 'state.receiverLightBrightness', mutation: 'set-receiver-lighting', param: 'brightness', editor: 'modal-range', labelKey: 'receiverLighting.field.brightness', editTitleKey: 'dashboard.editReceiverLightingTitle', format: 'percent', range: { min: 0, max: 100, step: 1 }, visibleWhen: { path: 'state.receiverLightEffect', ne: null }, lightingRole: 'candidate', priority: 70 },
               { id: 'color', source: 'state.receiverLightColor', mutation: 'set-receiver-lighting', param: 'color', editor: 'modal-color', labelKey: 'receiverLighting.field.color', editTitleKey: 'dashboard.editReceiverLightingTitle', visibleWhen: { path: 'state.receiverLightEffect', ne: null }, lightingRole: 'primary-color', priority: 100 },
+              { id: 'color2', source: 'state.receiverLightColor2', mutation: 'set-receiver-lighting', param: 'color2', editor: 'modal-color', labelKey: 'receiverLighting.field.color2', editTitleKey: 'dashboard.editReceiverLightingTitle', visibleWhen: { path: 'state.receiverLightEffect', ne: null }, presentation: 'details', advancedSection: 'lighting-details', advancedOrder: 10 },
+              { id: 'ratio', source: 'state.receiverLightRatio', mutation: 'set-receiver-lighting', param: 'ratio', editor: 'modal-range', labelKey: 'receiverLighting.field.ratio', editTitleKey: 'dashboard.editReceiverLightingTitle', format: 'percent', range: { min: 0, max: 100, step: 5 }, visibleWhen: { path: 'state.receiverLightEffect', ne: null }, presentation: 'details', advancedSection: 'lighting-details', advancedOrder: 20 },
             ],
           },
         ],
@@ -208,6 +270,8 @@ export const MOCK_DEVICE: DeviceState = {
           receiverLightSpeed: 'capabilities.receiverLighting.speed',
           receiverLightBrightness: 'capabilities.receiverLighting.brightness',
           receiverLightColor: 'capabilities.receiverLighting.color',
+          receiverLightColor2: 'capabilities.receiverLighting.color2',
+          receiverLightRatio: 'capabilities.receiverLighting.ratio',
         },
         statusDisplay: {
           labelKey: 'plugin.label.capability.lighting',
@@ -224,8 +288,147 @@ export const MOCK_DEVICE: DeviceState = {
     },
     // 固件：只读展示（多值聚合，无旧 metadata 字段）。
     { id: 'firmware', control: 'ReadOnlyValue', labelKey: 'plugin.label.capability.firmware', readOnly: true, placements: [{ region: 'details', order: 10, span: 1, icon: 'info', priority: 0, dashboardRole: 'candidate', fallbackRegion: 'hidden' }], metadata: {} },
+    // ── Advanced Settings 演示能力 ────────────────────────────────────────
+    // 性能：抬升距离 LOD / Motion Sync / 波纹控制
+    {
+      id: 'lift-distance', control: 'Select', labelKey: 'mock.liftDistance', readOnly: false,
+      placements: [{ region: 'details', order: 5, span: 1, icon: 'ruler', priority: 50, dashboardRole: 'candidate', fallbackRegion: 'advanced' }],
+      metadata: {
+        fields: [{
+          id: 'value', source: 'state.liftDistance', mutation: 'set-lift-distance', param: 'value',
+          editor: 'modal-select', labelKey: 'mock.liftDistance', advancedSection: 'performance', advancedOrder: 10,
+          options: LIFT_DISTANCE_OPTIONS,
+        }],
+        stateMapping: { liftDistance: 'capabilities.settings.liftCutOff' },
+      },
+    },
+    {
+      id: 'motion-sync-adv', control: 'Toggle', labelKey: 'mock.motionSync', readOnly: false,
+      placements: [{ region: 'details', order: 10, span: 1, icon: 'sync', priority: 50, dashboardRole: 'candidate', fallbackRegion: 'advanced' }],
+      metadata: {
+        fields: [{
+          id: 'value', source: 'state.motionSync', mutation: 'set-motion-sync', param: 'value',
+          editor: 'inline-toggle', switch: { source: 'state.motionSync', offValue: false },
+          labelKey: 'mock.motionSync', advancedSection: 'performance', advancedOrder: 20,
+        }],
+        stateMapping: { motionSync: 'capabilities.settings.motionSync' },
+      },
+    },
+    {
+      id: 'ripple-control', control: 'Toggle', labelKey: 'mock.rippleControl', readOnly: false,
+      placements: [{ region: 'details', order: 15, span: 1, icon: 'wave', priority: 50, dashboardRole: 'candidate', fallbackRegion: 'advanced' }],
+      metadata: {
+        fields: [{
+          id: 'value', source: 'state.rippleCorrection', mutation: 'set-ripple-control', param: 'value',
+          editor: 'inline-toggle', switch: { source: 'state.rippleCorrection', offValue: false },
+          labelKey: 'mock.rippleControl', advancedSection: 'performance', advancedOrder: 30,
+        }],
+        stateMapping: { rippleCorrection: 'capabilities.settings.rippleCorrection' },
+      },
+    },
+    // 灯光详情：滚轮 / Logo 子区域（brightness/color/effect）
+    {
+      id: 'lighting-details', control: 'LightingZone', labelKey: 'mock.lighting', readOnly: false,
+      placements: [{ region: 'details', order: 20, span: 1, icon: 'lightbulb', priority: 50, dashboardRole: 'candidate', fallbackRegion: 'advanced' }],
+      metadata: {
+        zones: [
+          {
+            id: 'wheel', labelKey: 'mock.wheelLabel',
+            fields: [
+              { id: 'brightness', source: 'state.wheelLightBrightness', mutation: 'set-wheel-lighting', param: 'brightness', editor: 'inline-range', labelKey: 'mock.wheelBrightness', format: 'percent', range: { min: 0, max: 100, step: 1 }, advancedSection: 'lighting-details', advancedOrder: 10 },
+              { id: 'color', source: 'state.wheelLightColor', mutation: 'set-wheel-lighting', param: 'color', editor: 'modal-color', labelKey: 'mock.wheelColor', format: 'color', advancedSection: 'lighting-details', advancedOrder: 20 },
+              { id: 'effect', source: 'state.wheelLightEffect', mutation: 'set-wheel-lighting', param: 'effect', editor: 'modal-select', labelKey: 'mock.wheelEffect', advancedSection: 'lighting-details', advancedOrder: 30, options: ZONE_LIGHTING_EFFECT_OPTIONS },
+            ],
+          },
+          {
+            id: 'logo', labelKey: 'mock.logoLabel',
+            fields: [
+              { id: 'brightness', source: 'state.logoLightBrightness', mutation: 'set-logo-lighting', param: 'brightness', editor: 'inline-range', labelKey: 'mock.logoBrightness', format: 'percent', range: { min: 0, max: 100, step: 1 }, advancedSection: 'lighting-details', advancedOrder: 40 },
+              { id: 'color', source: 'state.logoLightColor', mutation: 'set-logo-lighting', param: 'color', editor: 'modal-color', labelKey: 'mock.logoColor', format: 'color', advancedSection: 'lighting-details', advancedOrder: 50 },
+              { id: 'effect', source: 'state.logoLightEffect', mutation: 'set-logo-lighting', param: 'effect', editor: 'modal-select', labelKey: 'mock.logoEffect', advancedSection: 'lighting-details', advancedOrder: 60, options: ZONE_LIGHTING_EFFECT_OPTIONS },
+            ],
+          },
+        ],
+        stateMapping: {
+          wheelLightBrightness: 'capabilities.wheelLighting.brightness',
+          wheelLightColor: 'capabilities.wheelLighting.color',
+          wheelLightEffect: 'capabilities.wheelLighting.effect',
+          logoLightBrightness: 'capabilities.logoLighting.brightness',
+          logoLightColor: 'capabilities.logoLighting.color',
+          logoLightEffect: 'capabilities.logoLighting.effect',
+        },
+      },
+    },
+    // 配置文件：当前配置文件 / 槽位
+    {
+      id: 'profile-mgmt', control: 'Select', labelKey: 'mock.profileLabel', readOnly: false,
+      placements: [{ region: 'details', order: 25, span: 1, icon: 'profile', priority: 50, dashboardRole: 'candidate', fallbackRegion: 'advanced' }],
+      metadata: {
+        fields: [
+          { id: 'current', source: 'state.currentProfile', mutation: 'set-current-profile', param: 'value', editor: 'modal-select', labelKey: 'mock.currentProfile', advancedSection: 'profiles', advancedOrder: 10, options: [{ value: 'Profile 1', labelKey: 'Profile 1' }, { value: 'Profile 2', labelKey: 'Profile 2' }, { value: 'Profile 3', labelKey: 'Profile 3' }] },
+          { id: 'slots', source: 'state.profileSlotUsed', editor: 'static-readonly', labelKey: 'mock.profileSlots', advancedSection: 'profiles', advancedOrder: 20, presentation: 'details' },
+        ],
+        stateMapping: { currentProfile: 'state.profile' },
+      },
+    },
+    // 按键：侧键前进 / 后退 / 滚轮点击
+    {
+      id: 'button-mapping', control: 'Select', labelKey: 'mock.wheelClick', readOnly: false,
+      placements: [{ region: 'details', order: 30, span: 1, icon: 'cursor', priority: 50, dashboardRole: 'candidate', fallbackRegion: 'advanced' }],
+      metadata: {
+        fields: [
+          { id: 'forward', source: 'state.sideButtonForward', mutation: 'set-button-mapping', param: 'forward', editor: 'modal-select', labelKey: 'mock.sideButtonForward', advancedSection: 'buttons', advancedOrder: 10, options: BUTTON_ACTION_OPTIONS },
+          { id: 'back', source: 'state.sideButtonBack', mutation: 'set-button-mapping', param: 'back', editor: 'modal-select', labelKey: 'mock.sideButtonBack', advancedSection: 'buttons', advancedOrder: 20, options: BUTTON_ACTION_OPTIONS },
+          { id: 'wheel', source: 'state.wheelClickAction', mutation: 'set-button-mapping', param: 'wheel', editor: 'modal-select', labelKey: 'mock.wheelClick', advancedSection: 'buttons', advancedOrder: 30, options: BUTTON_ACTION_OPTIONS },
+        ],
+        stateMapping: { sideButtonForward: 'capabilities.buttonMappings.forward', sideButtonBack: 'capabilities.buttonMappings.back', wheelClickAction: 'capabilities.buttonMappings.wheel' },
+      },
+    },
+    // 电源：休眠模式 + 深度休眠
+    {
+      id: 'power-management', control: 'Select', labelKey: 'mock.deepSleep', readOnly: false,
+      placements: [{ region: 'details', order: 35, span: 1, icon: 'battery', priority: 50, dashboardRole: 'candidate', fallbackRegion: 'advanced' }],
+      metadata: {
+        fields: [
+          { id: 'sleep-mode', source: 'state.wirelessSleepValue', mutation: 'set-sleep', param: 'value', editor: 'modal-select', labelKey: 'mock.sleepMode', advancedSection: 'power', advancedOrder: 5, options: SLEEP_MODE_OPTIONS, format: 'sleep' },
+          { id: 'deep-sleep', source: 'state.deepSleepValue', mutation: 'set-deep-sleep', param: 'value', editor: 'modal-select', labelKey: 'mock.deepSleep', advancedSection: 'power', advancedOrder: 10, options: DEEP_SLEEP_OPTIONS, format: 'sleep' },
+        ],
+        stateMapping: { deepSleepValue: 'capabilities.settings.deepSleepValue' },
+      },
+    },
+    // 传感器：校准状态 / 最大追踪速度 / 最大加速度（只读）
+    {
+      id: 'sensor-info', control: 'ReadOnlyValue', labelKey: 'plugin.label.capability.sensor', readOnly: true,
+      placements: [{ region: 'details', order: 40, span: 1, icon: 'crosshair', priority: 50, dashboardRole: 'candidate', fallbackRegion: 'advanced' }],
+      metadata: {
+        fields: [
+          { id: 'calibrated', source: 'state.sensorCalibrated', editor: 'static-readonly', labelKey: 'mock.calibrationStatus', advancedSection: 'sensor', advancedOrder: 10, presentation: 'details' },
+          { id: 'max-speed', source: 'state.maxTrackingSpeed', editor: 'static-readonly', labelKey: 'mock.maxTrackingSpeed', advancedSection: 'sensor', advancedOrder: 20, presentation: 'details' },
+          { id: 'max-accel', source: 'state.maxAcceleration', editor: 'static-readonly', labelKey: 'mock.maxAcceleration', advancedSection: 'sensor', advancedOrder: 30, presentation: 'details' },
+        ],
+      },
+    },
+    // 设备：连接方式 / 轮询率（只读，展示在设备分组底部）
+    {
+      id: 'device-info', control: 'ReadOnlyValue', labelKey: 'plugin.label.capability.device-settings', readOnly: true,
+      placements: [{ region: 'details', order: 50, span: 1, icon: 'cpu', priority: 50, dashboardRole: 'candidate', fallbackRegion: 'advanced' }],
+      metadata: {
+        fields: [
+          { id: 'connection', source: 'state.connectionMethod', editor: 'static-readonly', labelKey: 'mock.connectionMethod', advancedSection: 'device', advancedOrder: 10, presentation: 'details' },
+          { id: 'polling', source: 'state.pollingRate', editor: 'static-readonly', labelKey: 'mock.pollingRateLabel', advancedSection: 'device', advancedOrder: 20, presentation: 'details', format: 'hertz' },
+          { id: 'firmware', source: 'state.firmwareVersion', editor: 'static-readonly', labelKey: 'mock.firmware', advancedSection: 'device', advancedOrder: 30, presentation: 'details' },
+          { id: 'serial', source: 'state.serialNumber', editor: 'static-readonly', labelKey: 'mock.serialNumber', advancedSection: 'device', advancedOrder: 40, presentation: 'details' },
+        ],
+      },
+    },
   ],
-  writableMutations: ['set-active-dpi-stage', 'set-dpi-stage-value', 'set-polling-rate', 'set-mouse-lighting', 'set-receiver-lighting', 'set-sleep'],
+  writableMutations: [
+    'set-active-dpi-stage', 'set-dpi-stage-value', 'set-polling-rate',
+    'set-mouse-lighting', 'set-receiver-lighting', 'set-sleep',
+    'set-lift-distance', 'set-motion-sync', 'set-ripple-control',
+    'set-wheel-lighting', 'set-logo-lighting',
+    'set-current-profile', 'set-button-mapping', 'set-deep-sleep',
+  ],
   evidence: 'fixture-verified', updatedAt: '00:00',
   readonly: false,
 };
@@ -258,7 +461,20 @@ const MOCK_CONTROL_MODE_CAPABILITY: PluginCapability = {
   control: 'Segmented',
   labelKey: '配置控制',
   readOnly: false,
-  placements: [{ region: 'control', group: 'configuration', order: 5, span: 1, icon: 'settings', priority: 95, dashboardRole: 'candidate', fourthSlotEligible: true, dedupeKey: 'dashboard.control-mode', fallbackRegion: 'advanced' }],
+  placements: [{
+    region: 'control',
+    group: 'configuration',
+    order: 5,
+    span: 1,
+    icon: 'settings',
+    priority: 95,
+    dashboardRole: 'candidate',
+    fourthSlotEligible: true,
+    dedupeKey: 'dashboard.control-mode',
+    fallbackRegion: 'advanced',
+    optionalPosition: 'leading',
+    compactLabelKey: 'dashboard.configurationTab',
+  }],
   metadata: {
     fields: [{
       id: 'mode',

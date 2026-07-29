@@ -69,8 +69,8 @@ export async function checkForLocalAiUpdates(automatic = false): Promise<LocalAi
     const available = (updates ?? []).filter((item) => item.updateAvailable);
     if (automatic && available.length > 0) {
       // 应用内 Toast 始终发出；系统级通知受主程序优先级协调层控制。
-      const title = i18n.t('notification.localAiUpdateFound');
-      const body = i18n.t('notification.localAiUpdateFoundBody', {
+      const title = i18n.t('notification.localAiUpdateFound.title');
+      const body = i18n.t('notification.localAiUpdateFound.body', {
         version: available[0].availableVersion,
       });
       notifyInfo(title, body, 'settings-local-ai-update');
@@ -148,8 +148,8 @@ export async function installLocalAiUpdate(): Promise<LocalAiInstallResult> {
       totalBytes: state.totalBytes,
       stage: 'activating',
     });
-    const title = i18n.t('notification.localAiUpdateInstalled');
-    const body = i18n.t('notification.localAiUpdateInstalledBody', { version: result.version });
+    const title = i18n.t('notification.localAiUpdateInstalled.title');
+    const body = i18n.t('notification.localAiUpdateInstalled.body', { version: result.version });
     notifyInfo(title, body, 'settings-local-ai-update');
     if (!isComponentUpdateNotificationSuppressed()) {
       void invoke('show_update_notification', { title, body, action: 'settings-local-ai-update' }).catch(() => {});

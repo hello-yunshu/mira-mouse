@@ -523,7 +523,7 @@ describe('LogPage toolbar and dialogs', () => {
     await screen.findByText('scroll-msg-1');
     await waitFor(() => expect(batchListener).not.toBeNull());
 
-    const scrollEl = container.querySelector('.log-page') as HTMLElement;
+    const scrollEl = container.querySelector('.log-list-wrapper') as HTMLElement;
     expect(scrollEl).toBeTruthy();
     // 模拟用户向下滚动查看旧日志：scrollTop=400 > 24 → atTop=false
     Object.defineProperties(scrollEl, {
@@ -646,7 +646,7 @@ describe('LogPage toolbar and dialogs', () => {
     await screen.findByText('scroll-msg-1');
     await waitFor(() => expect(batchListener).not.toBeNull());
 
-    const scrollEl = container.querySelector('.log-page') as HTMLElement;
+    const scrollEl = container.querySelector('.log-list-wrapper') as HTMLElement;
     expect(scrollEl).toBeTruthy();
     // 模拟用户向下滚动查看旧日志：scrollTop=400 > 24 → atTop=false
     Object.defineProperties(scrollEl, {

@@ -79,7 +79,11 @@ const snapshot: DeviceSnapshot = {
         }],
         stateMapping: { pollingRate: 'pollingRateHz', supportedPollingRates: 'supportedPollingRatesHz' },
         summary: [
-          { labelKey: 'mock.motionSync', source: 'capabilities.settings.motionSync' },
+          {
+            labelKey: 'mock.motionSync',
+            source: 'capabilities.motionSync.motionSync',
+            sourceFallbacks: ['capabilities.settings.motionSync'],
+          },
           { labelKey: 'mock.angleSnap', source: 'capabilities.settings.angleSnap' },
           { labelKey: 'mock.liftCutOff', source: 'capabilities.settings.liftCutOff' },
         ],
@@ -120,8 +124,8 @@ const snapshot: DeviceSnapshot = {
             id: 'mouse', labelKey: 'dashboard.mouseLighting',
             fields: [
               { id: 'status', source: 'state.mouseLightEffect', mutation: 'set-mouse-lighting', param: 'effect', editor: 'inline-toggle', switch: { source: 'state.mouseLightEffect', offValue: 0, restoreField: 'effect' }, labelKey: 'dashboard.status' },
-              { id: 'effect', source: 'state.mouseLightEffect', mutation: 'set-mouse-lighting', param: 'effect', editor: 'modal-select', labelKey: 'receiverLighting.field.effect', labelSource: 'capabilities.mouseLighting.effectName', options: LIGHTING_EFFECT_OPTIONS, visibleWhen: { path: 'state.mouseLightEffect', ne: 0 } },
-              { id: 'color', source: 'state.mouseLightColor', mutation: 'set-mouse-lighting', param: 'color', editor: 'modal-color', labelKey: 'dashboard.mouseLightColor', visibleWhen: { path: 'state.mouseLightEffect', ne: 0 } },
+              { id: 'effect', source: 'state.mouseLightEffect', mutation: 'set-mouse-lighting', param: 'effect', editor: 'modal-select', labelKey: 'receiverLighting.field.effect', labelSource: 'capabilities.mouseLighting.effectName', options: LIGHTING_EFFECT_OPTIONS, visibleWhen: { path: 'state.mouseLightEffect', ne: 0 }, lightingRole: 'effect', priority: 100 },
+              { id: 'color', source: 'state.mouseLightColor', mutation: 'set-mouse-lighting', param: 'color', editor: 'modal-color', labelKey: 'dashboard.mouseLightColor', visibleWhen: { path: 'state.mouseLightEffect', ne: 0 }, lightingRole: 'primary-color', priority: 100 },
             ],
           },
           {
@@ -129,8 +133,8 @@ const snapshot: DeviceSnapshot = {
             visibleWhen: { path: 'capabilities.receiverLighting', ne: null },
             fields: [
               { id: 'status', source: 'state.receiverLightEffect', mutation: 'set-receiver-lighting', param: 'effect', editor: 'inline-toggle', switch: { source: 'state.receiverLightEffect', offValue: 0, restoreField: 'effect' }, labelKey: 'dashboard.status' },
-              { id: 'effect', source: 'state.receiverLightEffect', mutation: 'set-receiver-lighting', param: 'effect', editor: 'modal-select', labelKey: 'receiverLighting.field.effect', labelSource: 'capabilities.receiverLighting.effectName', options: LIGHTING_EFFECT_OPTIONS, visibleWhen: { path: 'state.receiverLightEffect', ne: 0 } },
-              { id: 'color', source: 'state.receiverLightColor', mutation: 'set-receiver-lighting', param: 'color', editor: 'modal-color', labelKey: 'receiverLighting.field.color', visibleWhen: { path: 'state.receiverLightEffect', ne: 0 } },
+              { id: 'effect', source: 'state.receiverLightEffect', mutation: 'set-receiver-lighting', param: 'effect', editor: 'modal-select', labelKey: 'receiverLighting.field.effect', labelSource: 'capabilities.receiverLighting.effectName', options: LIGHTING_EFFECT_OPTIONS, visibleWhen: { path: 'state.receiverLightEffect', ne: 0 }, lightingRole: 'effect', priority: 100 },
+              { id: 'color', source: 'state.receiverLightColor', mutation: 'set-receiver-lighting', param: 'color', editor: 'modal-color', labelKey: 'receiverLighting.field.color', visibleWhen: { path: 'state.receiverLightEffect', ne: 0 }, lightingRole: 'primary-color', priority: 100 },
             ],
           },
         ],
@@ -286,8 +290,8 @@ describe('real device snapshot mapping', () => {
     render(<App />);
     await screen.findByRole('heading', { name: 'First Color Mouse' });
     fireEvent.click(screen.getByRole('tab', { name: '灯光' }));
-    // P0-M：颜色字段已从 visibleFields 移除，由 lighting-swatch 统一渲染。
-    // swatch 使用 --light-color CSS 变量，不在 .lighting-group-mouse 内部。
+    // 灯带（lighting-swatch）位于 lighting-group 上方独立渲染，使用 --light-color
+    // CSS 变量承载当前区域颜色，不在 .lighting-group-mouse 内部。
     const swatch = document.querySelector<HTMLElement>('.lighting-swatch')!;
     expect(swatch).toBeInTheDocument();
     expect(swatch.style.getPropertyValue('--light-color')).toBe('#112233');
@@ -597,7 +601,7 @@ describe('real device snapshot mapping', () => {
                 id: 'mouse', labelKey: 'dashboard.mouseLighting',
                 fields: [
                   { id: 'status', source: 'state.mouseLightEffect', mutation: 'set-mouse-lighting', param: 'effect', editor: 'inline-toggle', switch: { source: 'state.mouseLightEffect', offValue: 0, restoreField: 'effect' }, labelKey: 'dashboard.status' },
-                  { id: 'color', source: 'state.mouseLightColor', mutation: 'set-mouse-lighting', param: 'color', editor: 'modal-color', format: 'color', labelKey: 'dashboard.mouseLightColor' },
+                  { id: 'color', source: 'state.mouseLightColor', mutation: 'set-mouse-lighting', param: 'color', editor: 'modal-color', format: 'color', labelKey: 'dashboard.mouseLightColor', lightingRole: 'primary-color', priority: 100 },
                 ],
               },
               {
@@ -605,7 +609,7 @@ describe('real device snapshot mapping', () => {
                 visibleWhen: { path: 'capabilities.receiverLighting', ne: null },
                 fields: [
                   { id: 'status', source: 'state.receiverLightEffect', mutation: 'set-receiver-lighting', param: 'effect', editor: 'inline-toggle', switch: { source: 'state.receiverLightEffect', offValue: 0, restoreField: 'effect' }, labelKey: 'dashboard.status' },
-                  { id: 'color', source: 'state.receiverLightColor', mutation: 'set-receiver-lighting', param: 'color', editor: 'modal-color', labelKey: 'receiverLighting.field.color', visibleWhen: { path: 'state.receiverLightEffect', ne: 0 } },
+                  { id: 'color', source: 'state.receiverLightColor', mutation: 'set-receiver-lighting', param: 'color', editor: 'modal-color', labelKey: 'receiverLighting.field.color', visibleWhen: { path: 'state.receiverLightEffect', ne: 0 }, lightingRole: 'primary-color', priority: 100 },
                 ],
               },
             ],
@@ -1023,7 +1027,7 @@ describe('real device snapshot mapping', () => {
     expect(document.querySelector('.lighting-group-title')).toHaveTextContent('鼠标灯光');
   });
 
-  it('keeps a five-field secondary lighting zone in the legacy compact grid', async () => {
+  it('keeps a secondary lighting zone in the compact grid when subblock count reaches threshold', async () => {
     const compactLightingSnapshot: DeviceSnapshot = {
       ...snapshot,
       displayName: 'Compact Receiver Mouse',
@@ -1047,6 +1051,7 @@ describe('real device snapshot mapping', () => {
                     { id: 'option', source: 'capabilities.receiverLighting.option', mutation: 'set-receiver-lighting', param: 'option', editor: 'modal-select', labelKey: 'receiverLighting.field.option', options: LIGHTING_EFFECT_OPTIONS },
                     { id: 'speed', source: 'capabilities.receiverLighting.speed', mutation: 'set-receiver-lighting', param: 'speed', editor: 'modal-select', labelKey: 'receiverLighting.field.speed', options: LIGHTING_EFFECT_OPTIONS },
                     { id: 'brightness', source: 'capabilities.receiverLighting.brightness', mutation: 'set-receiver-lighting', param: 'brightness', editor: 'modal-select', labelKey: 'receiverLighting.field.brightness', options: LIGHTING_EFFECT_OPTIONS },
+                    { id: 'extra', source: 'capabilities.receiverLighting.option', mutation: 'set-receiver-lighting', param: 'option', editor: 'modal-select', labelKey: 'receiverLighting.field.option', options: LIGHTING_EFFECT_OPTIONS },
                     { id: 'color', source: 'capabilities.receiverLighting.color', mutation: 'set-receiver-lighting', param: 'color', editor: 'modal-color', format: 'color', labelKey: 'receiverLighting.field.color', lightingRole: 'primary-color' },
                   ],
                 },
@@ -1067,11 +1072,12 @@ describe('real device snapshot mapping', () => {
     fireEvent.click(screen.getByRole('tab', { name: '灯光' }));
     fireEvent.click(screen.getByRole('tab', { name: '接收器灯光' }));
     const receiverGroup = document.querySelector('.lighting-group-receiver');
-    // P0-M：color 字段已从 visibleFields 移除（由 lighting-swatch 渲染），
-    // visibleFields = [effect, option, speed, brightness] = 4 行。
-    // 但 totalVisualCount = 4 + 1 (swatch) = 5 >= 5，仍启用 compact 密度。
+    // ITERATION-009 §P0-A：顶部灯带与最右普通颜色子块并存。
+    // 灯带（lighting-swatch）在 lighting-group 上方独立渲染，不计入子块数量。
+    // visibleFields = [effect, option, speed, brightness, extra, color] = 6 行（达 compact 阈值）。
+    // color 同时作为顶部灯带和 grid 内最右普通子块（FieldRenderer + modal-color）。
     expect(receiverGroup).toHaveClass('is-compact');
-    expect(receiverGroup?.querySelectorAll('.lighting-row')).toHaveLength(4);
+    expect(receiverGroup?.querySelectorAll('.lighting-row')).toHaveLength(6);
   });
 
   it('hides polling control when rate not reported', async () => {
@@ -1169,7 +1175,7 @@ describe('real device snapshot mapping', () => {
                   { id: 'effect', source: 'state.mouseLightEffect', mutation: 'set-mouse-lighting', param: 'effect', editor: 'modal-select', labelKey: 'receiverLighting.field.effect', labelSource: 'capabilities.mouseLighting.effectName', options: LIGHTING_EFFECT_OPTIONS, visibleWhen: { path: 'state.mouseLightEffect', ne: 0 } },
                   { id: 'speed', source: 'state.mouseLightSpeed', mutation: 'set-mouse-lighting', param: 'speed', editor: 'modal-range', labelKey: 'receiverLighting.field.speed', range: { min: 0, max: 10, step: 1 }, visibleWhen: { path: 'state.mouseLightEffect', ne: 0 } },
                   { id: 'brightness', source: 'state.mouseLightBrightness', mutation: 'set-mouse-lighting', param: 'brightness', editor: 'modal-range', labelKey: 'receiverLighting.field.brightness', range: { min: 0, max: 100, step: 1 }, visibleWhen: { path: 'state.mouseLightEffect', ne: 0 } },
-                  { id: 'color', source: 'state.mouseLightColor', mutation: 'set-mouse-lighting', param: 'color', editor: 'modal-color', labelKey: 'dashboard.mouseLightColor', visibleWhen: { path: 'state.mouseLightEffect', ne: 0 } },
+                  { id: 'color', source: 'state.mouseLightColor', mutation: 'set-mouse-lighting', param: 'color', editor: 'modal-color', labelKey: 'dashboard.mouseLightColor', visibleWhen: { path: 'state.mouseLightEffect', ne: 0 }, lightingRole: 'primary-color' },
                 ],
               },
             ],
@@ -1222,7 +1228,7 @@ describe('real device snapshot mapping', () => {
                 fields: [
                   { id: 'status', source: 'state.mouseLightEffect', mutation: 'set-mouse-lighting', param: 'effect', editor: 'inline-toggle', switch: { source: 'state.mouseLightEffect', offValue: 0, restoreField: 'effect' }, labelKey: 'dashboard.status' },
                   { id: 'effect', source: 'state.mouseLightEffect', mutation: 'set-mouse-lighting', param: 'effect', editor: 'modal-select', labelKey: 'receiverLighting.field.effect', labelSource: 'capabilities.mouseLighting.effectName', options: LIGHTING_EFFECT_OPTIONS, visibleWhen: { path: 'state.mouseLightEffect', ne: 0 } },
-                  { id: 'color', source: 'state.mouseLightColor', mutation: 'set-mouse-lighting', param: 'color', editor: 'modal-color', labelKey: 'dashboard.mouseLightColor', visibleWhen: { path: 'state.mouseLightEffect', ne: 0 } },
+                  { id: 'color', source: 'state.mouseLightColor', mutation: 'set-mouse-lighting', param: 'color', editor: 'modal-color', labelKey: 'dashboard.mouseLightColor', visibleWhen: { path: 'state.mouseLightEffect', ne: 0 }, lightingRole: 'primary-color' },
                 ],
               },
             ],
@@ -1241,8 +1247,9 @@ describe('real device snapshot mapping', () => {
     render(<App />);
     await screen.findByRole('heading', { name: 'Row Sizing Mouse' });
     fireEvent.click(screen.getByRole('tab', { name: '灯光' }));
-    // P0-M：color 字段已从 visibleFields 移除，但作为 lighting-swatch 仍在 grid 末尾。
-    // visibleFields = [status, effect] = 2 行 + 1 swatch = 3 列。
+    // ITERATION-009 §P0-A：顶部灯带不计入 grid 列数，但 primaryColor 在 grid 内。
+    // visibleFields = [effect, status, color] = 3 行，grid 为 3 列。
+    // color 同时作为顶部灯带和 grid 内最右普通子块。
     const rows = screen.getByLabelText('灯光分组').querySelector('.lighting-rows');
     expect(rows).toHaveStyle({ gridTemplateColumns: 'repeat(3, minmax(0, 1fr))' });
   });
@@ -1322,7 +1329,7 @@ describe('real device snapshot mapping', () => {
                 fields: [
                   { id: 'status', source: 'state.mouseLightEffect', mutation: 'set-mouse-lighting', param: 'effect', editor: 'inline-toggle', switch: { source: 'state.mouseLightEffect', offValue: 0, restoreField: 'effect' }, labelKey: 'dashboard.status' },
                   { id: 'effect', source: 'state.mouseLightEffect', mutation: 'set-mouse-lighting', param: 'effect', editor: 'modal-select', labelKey: 'receiverLighting.field.effect', labelSource: 'capabilities.mouseLighting.effectName', options: LIGHTING_EFFECT_OPTIONS, visibleWhen: { path: 'state.mouseLightEffect', ne: 0 } },
-                  { id: 'color', source: 'state.mouseLightColor', mutation: 'set-mouse-lighting', param: 'color', editor: 'modal-color', labelKey: 'dashboard.mouseLightColor', visibleWhen: { path: 'state.mouseLightEffect', ne: 0 } },
+                  { id: 'color', source: 'state.mouseLightColor', mutation: 'set-mouse-lighting', param: 'color', editor: 'modal-color', labelKey: 'dashboard.mouseLightColor', visibleWhen: { path: 'state.mouseLightEffect', ne: 0 }, lightingRole: 'primary-color' },
                 ],
               },
             ],
@@ -1529,10 +1536,356 @@ describe('real device snapshot mapping', () => {
     // 模态窗口标题为"高级设置"。
     const modal = await screen.findByRole('heading', { name: '高级设置' });
     expect(modal).toBeInTheDocument();
+    const dialog = screen.getByRole('dialog', { name: '高级设置' });
+    expect(dialog).toHaveClass('advanced-settings-modal');
+    expect(dialog.parentElement).toHaveClass('advanced-settings-backdrop');
+    expect(dialog.querySelector('.as-body')).toBeInTheDocument();
     // 传感器分组应包含两个 fallback 字段。
     const advancedList = document.querySelector('.advanced-settings-list');
     expect(advancedList).toBeInTheDocument();
     expect(advancedList?.textContent).toContain('Angle Snap Field');
     expect(advancedList?.textContent).toContain('Lift Cutoff Field');
+  });
+
+  // ─── ITERATION-009 §P0-A §3.6：灯带 + 最右普通颜色子块双入口回归 ──────
+
+  function buildDualEntrySnapshot(overrides: {
+    fields?: typeof dualEntryFields;
+    stateMapping?: Record<string, string>;
+    capabilities?: Record<string, unknown>;
+    visibleWhenOverride?: Record<string, unknown>;
+  } = {}): DeviceSnapshot {
+    const fields = overrides.fields ?? dualEntryFields;
+    return {
+      displayName: 'Dual Entry Mouse', connection: 'wireless', batteryPercent: 80,
+      charging: false, batteries: [], dpi: 1600,
+      dpiStages: [{ value: 1600, color: '#9a8bd0', active: true, enabled: true }],
+      confirmedLightColor: '#FF8800',
+      capabilities: {
+        mouseLighting: { effect: 1, effectName: '常亮', speed: 5, brightness: 80, color: '#FF8800', enabled: true, c1: 10, c2: 20, c3: 30, c4: 40, ...overrides.capabilities },
+        ...(overrides.visibleWhenOverride ?? {}),
+      },
+      pluginCapabilities: [
+        {
+          id: 'dpi', control: 'DpiStages', labelKey: 'DPI', readOnly: false,
+          placements: [{ region: 'control', group: 'performance', order: 10, span: 1, icon: 'gauge', priority: 100, dashboardRole: 'fixed-core' as const, fixedSlot: 1 as const, fourthSlotEligible: false, dedupeKey: 'dashboard.dpi', fallbackRegion: 'advanced' as const }],
+          metadata: {
+            stageLayout: { dotsSource: 'state.dpiStages', selectMutation: 'set-dpi-stage', setMutation: 'set-dpi-value', valueSource: 'state.dpiStages', range: { min: 100, max: 32000, step: 50 } },
+            stateMapping: { dpiStages: 'dpiStages' },
+          },
+        },
+        {
+          id: 'lighting', control: 'LightingZone', labelKey: 'plugin.label.capability.lighting', readOnly: false,
+          placements: [{ region: 'control', group: 'lighting', order: 30, span: 1, icon: 'lightbulb', priority: 100, dashboardRole: 'fixed-core' as const, fixedSlot: 3 as const, fourthSlotEligible: false, dedupeKey: 'dashboard.lighting', fallbackRegion: 'advanced' as const }],
+          metadata: {
+            zones: [{ id: 'mouse', labelKey: 'dashboard.mouseLighting', fields }],
+            stateMapping: {
+              mouseLightEffect: 'capabilities.mouseLighting.effect',
+              mouseLightColor: 'confirmedLightColor',
+              mouseLightSpeed: 'capabilities.mouseLighting.speed',
+              mouseLightBrightness: 'capabilities.mouseLighting.brightness',
+              mouseLightC1: 'capabilities.mouseLighting.c1',
+              mouseLightC2: 'capabilities.mouseLighting.c2',
+              mouseLightC3: 'capabilities.mouseLighting.c3',
+              mouseLightC4: 'capabilities.mouseLighting.c4',
+              ...overrides.stateMapping,
+            },
+          },
+        },
+      ],
+      writableMutations: ['set-mouse-lighting'],
+      evidence: 'hardware-verified',
+    };
+  }
+
+  const dualEntryFields = [
+    { id: 'effect', source: 'state.mouseLightEffect', mutation: 'set-mouse-lighting', param: 'effect', editor: 'modal-select' as const, labelKey: 'Test Effect', lightingRole: 'effect' as const, priority: 100, options: [{ value: 1, labelKey: 'On' }, { value: 2, labelKey: 'Breath' }] },
+    { id: 'c1', source: 'state.mouseLightC1', mutation: 'set-mouse-lighting', param: 'c1', editor: 'modal-range' as const, labelKey: 'C1', lightingRole: 'candidate' as const, priority: 90, range: { min: 0, max: 100, step: 1 } },
+    { id: 'c2', source: 'state.mouseLightC2', mutation: 'set-mouse-lighting', param: 'c2', editor: 'modal-range' as const, labelKey: 'C2', lightingRole: 'candidate' as const, priority: 80, range: { min: 0, max: 100, step: 1 } },
+    { id: 'c3', source: 'state.mouseLightC3', mutation: 'set-mouse-lighting', param: 'c3', editor: 'modal-range' as const, labelKey: 'C3', lightingRole: 'candidate' as const, priority: 70, range: { min: 0, max: 100, step: 1 } },
+    { id: 'c4', source: 'state.mouseLightC4', mutation: 'set-mouse-lighting', param: 'c4', editor: 'modal-range' as const, labelKey: 'C4', lightingRole: 'candidate' as const, priority: 60, range: { min: 0, max: 100, step: 1 } },
+    { id: 'color', source: 'state.mouseLightColor', mutation: 'set-mouse-lighting', param: 'color', editor: 'modal-color' as const, labelKey: 'Test Color', lightingRole: 'primary-color' as const, priority: 100 },
+  ];
+
+  it('ITERATION-009: renders effect + 4 candidates + primaryColor = 6 subblocks with dual entry', async () => {
+    const snap = buildDualEntrySnapshot();
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'settings_get') return Promise.resolve(settings);
+      if (command === 'device_snapshots') return Promise.resolve(entries(snap));
+      if (command === 'device_refresh_quick') return Promise.resolve();
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Dual Entry Mouse' });
+    fireEvent.click(screen.getByRole('tab', { name: '灯光' }));
+    // 1: 顶部灯带存在
+    const swatch = document.querySelector<HTMLElement>('.lighting-swatch');
+    expect(swatch).toBeInTheDocument();
+    // 2: 普通颜色子块也在 grid 内（FieldRenderer 渲染的 lighting-row）
+    const rows = document.querySelectorAll('.lighting-rows .lighting-row');
+    // 3: 总共 6 个普通子块：effect + c1 + c2 + c3 + c4 + color
+    expect(rows).toHaveLength(6);
+    // 4: primaryColor 是最后一个普通子块
+    const lastRow = rows[rows.length - 1];
+    expect(lastRow.querySelector('span')?.textContent).toBe('Test Color');
+    // 5: 灯带不影响 grid column 数（grid 为 6 列，灯带在 grid 外）
+    const grid = document.querySelector('.lighting-rows') as HTMLElement;
+    expect(grid.style.gridTemplateColumns).toBe('repeat(6, minmax(0, 1fr))');
+    // 6: 灯效固定最左
+    expect(rows[0].querySelector('span')?.textContent).toBe('Test Effect');
+  });
+
+  it('ITERATION-009: lighting strip and rightmost color subblock share same color', async () => {
+    const snap = buildDualEntrySnapshot();
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'settings_get') return Promise.resolve(settings);
+      if (command === 'device_snapshots') return Promise.resolve(entries(snap));
+      if (command === 'device_refresh_quick') return Promise.resolve();
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Dual Entry Mouse' });
+    fireEvent.click(screen.getByRole('tab', { name: '灯光' }));
+    // 灯带颜色
+    const swatch = document.querySelector<HTMLElement>('.lighting-swatch');
+    expect(swatch?.style.getPropertyValue('--light-color')).toBe('#FF8800');
+    // grid 内颜色子块也通过 FieldRenderer 显示相同颜色值
+    const colorRow = Array.from(document.querySelectorAll('.lighting-rows .lighting-row'))
+      .find((row) => row.querySelector('span')?.textContent === 'Test Color');
+    expect(colorRow).toBeInTheDocument();
+    // colorRow 内的 FormattedValue 应显示颜色值
+    expect(colorRow?.textContent).toContain('#FF8800');
+  });
+
+  it('ITERATION-009: does not select hidden Protocol A color when AM35 color is visible', async () => {
+    // 两个 primary-color 字段：Protocol A color 隐藏（visibleWhen 不匹配），AM35 color 可见。
+    const fields = [
+      { id: 'effect', source: 'state.mouseLightEffect', mutation: 'set-mouse-lighting', param: 'effect', editor: 'modal-select' as const, labelKey: 'Effect', lightingRole: 'effect' as const, priority: 100, options: [{ value: 1, labelKey: 'On' }] },
+      { id: 'protocol-a-color', source: 'state.protocolAColor', mutation: 'set-mouse-lighting', param: 'color', editor: 'modal-color' as const, labelKey: 'Protocol A Color', lightingRole: 'primary-color' as const, priority: 200, visibleWhen: { path: 'connection', eq: 'usb' } },
+      { id: 'am35-color', source: 'state.mouseLightColor', mutation: 'set-mouse-lighting', param: 'color', editor: 'modal-color' as const, labelKey: 'AM35 Color', lightingRole: 'primary-color' as const, priority: 100 },
+    ];
+    const snap = buildDualEntrySnapshot({
+      fields,
+      stateMapping: { protocolAColor: 'confirmedLightColor', mouseLightColor: 'confirmedLightColor' },
+    });
+    // connection=wireless → Protocol A color 不可见
+    snap.connection = 'wireless';
+
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'settings_get') return Promise.resolve(settings);
+      if (command === 'device_snapshots') return Promise.resolve(entries(snap));
+      if (command === 'device_refresh_quick') return Promise.resolve();
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Dual Entry Mouse' });
+    fireEvent.click(screen.getByRole('tab', { name: '灯光' }));
+    // 灯带和颜色子块都应使用 AM35 Color，而非 Protocol A Color
+    const swatch = document.querySelector<HTMLElement>('.lighting-swatch');
+    expect(swatch?.getAttribute('aria-label')).toBe('AM35 Color');
+    // Protocol A Color 不在 grid 内
+    const rows = document.querySelectorAll('.lighting-rows .lighting-row');
+    const labels = Array.from(rows).map((row) => row.querySelector('span')?.textContent);
+    expect(labels).not.toContain('Protocol A Color');
+    expect(labels).toContain('AM35 Color');
+  });
+
+  it('ITERATION-009: updates both strip and color subblock after device switch', async () => {
+    const firstSnap = buildDualEntrySnapshot();
+    firstSnap.displayName = 'First Color Mouse';
+    firstSnap.confirmedLightColor = '#FF8800';
+    const secondSnap = buildDualEntrySnapshot();
+    secondSnap.displayName = 'Second Color Mouse';
+    secondSnap.confirmedLightColor = '#00FF00';
+
+    invokeMock.mockImplementation((command: string, args?: { deviceKey?: string }) => {
+      if (command === 'settings_get') return Promise.resolve(settings);
+      if (command === 'device_snapshots') return Promise.resolve(entries(firstSnap, secondSnap));
+      if (command === 'device_select' && args?.deviceKey === 'device-1') return Promise.resolve(secondSnap);
+      if (command === 'device_refresh_quick') return Promise.resolve();
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+
+    render(<App />);
+    await screen.findByRole('heading', { name: 'First Color Mouse' });
+    fireEvent.click(screen.getByRole('tab', { name: '灯光' }));
+    const swatch = document.querySelector<HTMLElement>('.lighting-swatch')!;
+    expect(swatch.style.getPropertyValue('--light-color')).toBe('#FF8800');
+
+    fireEvent.click(screen.getByRole('button', { name: '切换鼠标' }));
+    fireEvent.click(screen.getByText('Second Color Mouse').closest('button')!);
+
+    // 切换设备后灯带颜色更新
+    await waitFor(() => expect(swatch.style.getPropertyValue('--light-color')).toBe('#00FF00'));
+    // grid 内颜色子块也更新（重新查询以获取新渲染的 DOM）
+    await waitFor(() => {
+      const colorRow = Array.from(document.querySelectorAll('.lighting-rows .lighting-row'))
+        .find((row) => row.querySelector('span')?.textContent === 'Test Color');
+      expect(colorRow?.textContent).toContain('#00FF00');
+    });
+  });
+
+  it('ITERATION-009: clicking strip opens the same mutation as clicking color subblock', async () => {
+    const snap = buildDualEntrySnapshot();
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'settings_get') return Promise.resolve(settings);
+      if (command === 'device_snapshots') return Promise.resolve(entries(snap));
+      if (command === 'device_refresh_quick') return Promise.resolve();
+      if (command === 'device_mutate') return Promise.resolve({ ok: true });
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Dual Entry Mouse' });
+    fireEvent.click(screen.getByRole('tab', { name: '灯光' }));
+    // 点击灯带打开编辑 modal
+    const swatch = document.querySelector<HTMLButtonElement>('.lighting-swatch')!;
+    expect(swatch).not.toBeDisabled();
+    fireEvent.click(swatch);
+    // modal 打开
+    const modal = await screen.findByRole('heading', { name: 'Test Color' });
+    expect(modal).toBeInTheDocument();
+  });
+
+  it('ITERATION-009: clicking rightmost color subblock opens edit modal', async () => {
+    const snap = buildDualEntrySnapshot();
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'settings_get') return Promise.resolve(settings);
+      if (command === 'device_snapshots') return Promise.resolve(entries(snap));
+      if (command === 'device_refresh_quick') return Promise.resolve();
+      if (command === 'device_mutate') return Promise.resolve({ ok: true });
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Dual Entry Mouse' });
+    fireEvent.click(screen.getByRole('tab', { name: '灯光' }));
+    // 点击 grid 内最右颜色子块
+    const colorRow = Array.from(document.querySelectorAll('.lighting-rows .lighting-row'))
+      .find((row) => row.querySelector('span')?.textContent === 'Test Color') as HTMLButtonElement;
+    expect(colorRow).toBeInTheDocument();
+    expect(colorRow.disabled).toBe(false);
+    fireEvent.click(colorRow);
+    // modal 打开
+    const modal = await screen.findByRole('heading', { name: 'Test Color' });
+    expect(modal).toBeInTheDocument();
+  });
+
+  it('ITERATION-009: over 6 ordinary fields overflow into Advanced Settings', async () => {
+    // 7 个普通字段：effect + 5 candidates + primaryColor = 7，超过 6 上限
+    const fields = [
+      { id: 'effect', source: 'state.mouseLightEffect', mutation: 'set-mouse-lighting', param: 'effect', editor: 'modal-select' as const, labelKey: 'Effect', lightingRole: 'effect' as const, priority: 100, options: [{ value: 1, labelKey: 'On' }] },
+      { id: 'c1', source: 'state.mouseLightC1', mutation: 'set-mouse-lighting', param: 'c1', editor: 'modal-range' as const, labelKey: 'C1', lightingRole: 'candidate' as const, priority: 90, range: { min: 0, max: 100, step: 1 } },
+      { id: 'c2', source: 'state.mouseLightC2', mutation: 'set-mouse-lighting', param: 'c2', editor: 'modal-range' as const, labelKey: 'C2', lightingRole: 'candidate' as const, priority: 80, range: { min: 0, max: 100, step: 1 } },
+      { id: 'c3', source: 'state.mouseLightC3', mutation: 'set-mouse-lighting', param: 'c3', editor: 'modal-range' as const, labelKey: 'C3', lightingRole: 'candidate' as const, priority: 70, range: { min: 0, max: 100, step: 1 } },
+      { id: 'c4', source: 'state.mouseLightC4', mutation: 'set-mouse-lighting', param: 'c4', editor: 'modal-range' as const, labelKey: 'C4', lightingRole: 'candidate' as const, priority: 60, range: { min: 0, max: 100, step: 1 } },
+      { id: 'c5', source: 'state.mouseLightC5', mutation: 'set-mouse-lighting', param: 'c5', editor: 'modal-range' as const, labelKey: 'C5', lightingRole: 'candidate' as const, priority: 50, range: { min: 0, max: 100, step: 1 } },
+      { id: 'color', source: 'state.mouseLightColor', mutation: 'set-mouse-lighting', param: 'color', editor: 'modal-color' as const, labelKey: 'Color', lightingRole: 'primary-color' as const, priority: 100 },
+    ];
+    const snap = buildDualEntrySnapshot({
+      fields,
+      stateMapping: { mouseLightC5: 'capabilities.mouseLighting.c5' },
+      capabilities: { c5: 50 },
+    });
+
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'settings_get') return Promise.resolve(settings);
+      if (command === 'device_snapshots') return Promise.resolve(entries(snap));
+      if (command === 'device_refresh_quick') return Promise.resolve();
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Dual Entry Mouse' });
+    fireEvent.click(screen.getByRole('tab', { name: '灯光' }));
+    // grid 内最多 6 个普通子块
+    const rows = document.querySelectorAll('.lighting-rows .lighting-row');
+    expect(rows).toHaveLength(6);
+    // 第 7 个（c5）不在 grid 内
+    const labels = Array.from(rows).map((row) => row.querySelector('span')?.textContent);
+    expect(labels).not.toContain('C5');
+    // primaryColor 仍是最右
+    expect(labels[labels.length - 1]).toBe('Color');
+  });
+
+  it('ITERATION-009: presentation=details does not enter ordinary rows', async () => {
+    const fields = [
+      { id: 'effect', source: 'state.mouseLightEffect', mutation: 'set-mouse-lighting', param: 'effect', editor: 'modal-select' as const, labelKey: 'Effect', lightingRole: 'effect' as const, priority: 100, options: [{ value: 1, labelKey: 'On' }] },
+      { id: 'detail-field', source: 'state.mouseLightDetail', mutation: 'set-mouse-lighting', param: 'detail', editor: 'modal-range' as const, labelKey: 'Detail Field', lightingRole: 'candidate' as const, priority: 90, presentation: 'details' as const, range: { min: 0, max: 100, step: 1 } },
+      { id: 'color', source: 'state.mouseLightColor', mutation: 'set-mouse-lighting', param: 'color', editor: 'modal-color' as const, labelKey: 'Color', lightingRole: 'primary-color' as const, priority: 100 },
+    ];
+    const snap = buildDualEntrySnapshot({
+      fields,
+      stateMapping: { mouseLightDetail: 'capabilities.mouseLighting.detail' },
+      capabilities: { detail: 42 },
+    });
+
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'settings_get') return Promise.resolve(settings);
+      if (command === 'device_snapshots') return Promise.resolve(entries(snap));
+      if (command === 'device_refresh_quick') return Promise.resolve();
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Dual Entry Mouse' });
+    fireEvent.click(screen.getByRole('tab', { name: '灯光' }));
+    const rows = document.querySelectorAll('.lighting-rows .lighting-row');
+    const labels = Array.from(rows).map((row) => row.querySelector('span')?.textContent);
+    expect(labels).not.toContain('Detail Field');
+    // 只有效果和颜色
+    expect(labels).toEqual(['Effect', 'Color']);
+  });
+
+  it('ITERATION-009: no empty strip or color subblock when primaryColor absent', async () => {
+    // 没有 primary-color 字段
+    const fields = [
+      { id: 'effect', source: 'state.mouseLightEffect', mutation: 'set-mouse-lighting', param: 'effect', editor: 'modal-select' as const, labelKey: 'Effect', lightingRole: 'effect' as const, priority: 100, options: [{ value: 1, labelKey: 'On' }] },
+      { id: 'speed', source: 'state.mouseLightSpeed', mutation: 'set-mouse-lighting', param: 'speed', editor: 'modal-range' as const, labelKey: 'Speed', lightingRole: 'candidate' as const, priority: 80, range: { min: 0, max: 10, step: 1 } },
+    ];
+    const snap = buildDualEntrySnapshot({ fields });
+
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'settings_get') return Promise.resolve(settings);
+      if (command === 'device_snapshots') return Promise.resolve(entries(snap));
+      if (command === 'device_refresh_quick') return Promise.resolve();
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Dual Entry Mouse' });
+    fireEvent.click(screen.getByRole('tab', { name: '灯光' }));
+    // 没有灯带
+    expect(document.querySelector('.lighting-swatch')).toBeNull();
+    // 没有颜色子块
+    const rows = document.querySelectorAll('.lighting-rows .lighting-row');
+    const labels = Array.from(rows).map((row) => row.querySelector('span')?.textContent);
+    expect(labels).not.toContain('Test Color');
+    expect(labels).toEqual(['Effect', 'Speed']);
+  });
+
+  it('ITERATION-009: no React duplicate key across strip and color subblock', async () => {
+    const snap = buildDualEntrySnapshot();
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'settings_get') return Promise.resolve(settings);
+      if (command === 'device_snapshots') return Promise.resolve(entries(snap));
+      if (command === 'device_refresh_quick') return Promise.resolve();
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Dual Entry Mouse' });
+    fireEvent.click(screen.getByRole('tab', { name: '灯光' }));
+    // React key 由 `${activeZone.id}:${field.id}` 构成，不反映在 DOM 属性上。
+    // 验证 grid 内所有子块的 field id（通过 span 标签文本）唯一即可保证 key 唯一。
+    const gridSlots = document.querySelectorAll('.lighting-rows .lighting-row-slot');
+    const labels = Array.from(gridSlots).map((slot) => slot.querySelector('span')?.textContent ?? '');
+    const uniqueLabels = new Set(labels);
+    expect(uniqueLabels.size).toBe(labels.length);
+    // 6 个子块
+    expect(gridSlots).toHaveLength(6);
   });
 });

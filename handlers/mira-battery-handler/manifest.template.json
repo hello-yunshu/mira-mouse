@@ -3,7 +3,7 @@
   "id": "mira.battery.handler",
   "version": "0.8.5",
   "handlerApiVersion": 1,
-  "minRuntimeVersion": "0.8.1",
+  "minRuntimeVersion": "1.0.0",
   "publisherKeyId": "mira-handler-2026-001",
   "capabilities": [
     "batteryUsage"
