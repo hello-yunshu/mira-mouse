@@ -5,7 +5,8 @@
 // App 版本号或受其传导影响的位置：
 //   1. CITATION.cff（GitHub 学术引用元数据，YAML）
 //   2. ROADMAP.md（文档中的「当前版本」标注）
-//   3. handlers/mira-battery-handler/Cargo.lock（独立 workspace 的 path 依赖锁）
+//   3. mira-local-ai 对 mira-protocol 的显式 path 依赖版本
+//   4. handlers/mira-battery-handler/Cargo.lock（独立 workspace 的 path 依赖锁）
 //
 // Mira 本地 AI handler 与模型有独立发布周期，不能在 App 版本同步时改动
 // handler 自身的版本号；但 handler 通过 path 依赖 workspace crate，升 workspace
@@ -118,7 +119,18 @@ changed |= await syncFile(
   version,
 );
 
-// 3. handler Cargo.lock —— 同步 path 依赖到当前 workspace 版本
+// 3. publish=false 的 mira-local-ai 仍被独立 handler workspace 作为 path
+// 依赖使用。Cargo 对 prerelease 不做隐式 caret 匹配，因此这里必须与 workspace
+// 版本精确同步。
+changed |= await syncFile(
+  'crates/mira-local-ai/Cargo.toml',
+  /^(mira-protocol\s*=\s*\{\s*version\s*=\s*")\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?("\s*,\s*path\s*=\s*"\.\.\/mira-protocol"\s*\})/m,
+  `$1${version}$2`,
+  'mira-local-ai -> mira-protocol',
+  version,
+);
+
+// 4. handler Cargo.lock —— 同步 path 依赖到当前 workspace 版本
 changed |= await syncHandlerLock(version);
 
 if (changed) {
