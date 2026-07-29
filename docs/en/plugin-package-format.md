@@ -1,9 +1,9 @@
 <!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
 # Plugin Package Format
 
-`.mira-plugin` is a deterministic ZIP container of declarative JSON, documentation, fixtures, checksums, and one optional Ed25519 signature. Paths must be normalized relative UTF-8 paths; absolute paths, `..`, backslashes, duplicate entries, symbolic links, executable/script/web extensions, remote resources, and files outside the whitelist are rejected before extraction.
+`.mira-plugin` is a deterministic ZIP container of declarative JSON, fixtures, checksums, and one optional Ed25519 signature. Paths must be normalized relative UTF-8 paths; absolute paths, `..`, backslashes, duplicate entries, symbolic links, documentation, executable/script/web extensions, remote resources, and files outside the whitelist are rejected before extraction.
 
-The whitelist permits top-level `plugin.json`, `checksums.json`, `devices.json`, `capabilities.json`, `README.md`, `LICENSE`, and `META-INF/signature.ed25519`, plus `.json` files under the `protocol/`, `locales/`, `tests/fixtures/`, and `models/` prefixes. The `models/` directory is the reserved parent folder for per-model adapter overrides: future plugins may ship model-specific JSON (for example `models/<model>/capabilities.json`) without changing the package format.
+The whitelist permits top-level `plugin.json`, `checksums.json`, `devices.json`, `capabilities.json`, and `META-INF/signature.ed25519`, plus `.json` files under the `protocol/`, `locales/`, `tests/fixtures/`, and `models/` prefixes. README, license, and development documentation remain in the plugin source repository and are not included in production packages. The `models/` directory is the reserved parent folder for per-model adapter overrides: future plugins may ship model-specific JSON (for example `models/<model>/capabilities.json`) without changing the package format.
 
 A device descriptor in `devices.json` can declare a static default with `selectionPriority`, or override it by the runtime-resolved `usb`, `wireless`, `bluetooth`, or `virtual` connection through `selectionPriorityByConnection`; higher values win. For example, a plugin can prefer a directly connected mouse over its receiver without requiring the host to recognize a brand or VID/PID.
 

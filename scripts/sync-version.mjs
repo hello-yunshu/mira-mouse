@@ -7,6 +7,7 @@
 //   2. ROADMAP.md（文档中的「当前版本」标注）
 //   3. mira-local-ai 对 mira-protocol 的显式 path 依赖版本
 //   4. handlers/mira-battery-handler/Cargo.lock（独立 workspace 的 path 依赖锁）
+//   5. README.md / README.en.md（最新版三平台直链）
 //
 // Mira 本地 AI handler 与模型有独立发布周期，不能在 App 版本同步时改动
 // handler 自身的版本号；但 handler 通过 path 依赖 workspace crate，升 workspace
@@ -132,6 +133,24 @@ changed |= await syncFile(
 
 // 4. handler Cargo.lock —— 同步 path 依赖到当前 workspace 版本
 changed |= await syncHandlerLock(version);
+
+// 5. README 直链 —— `releases/latest` 保持标签动态，文件名中的版本号仍需
+// 与构建产物一致。中英文各同步三种平台资产。
+for (const path of ['README.md', 'README.en.md']) {
+  for (const [label, prefix, suffix] of [
+    ['macOS download', 'Mira_macOS_', '_aarch64.dmg'],
+    ['Windows download', 'Mira_Windows_', '_x64-setup.exe'],
+    ['Linux download', 'Mira_Linux_', '_amd64.AppImage'],
+  ]) {
+    changed |= await syncFile(
+      path,
+      new RegExp(`(releases/latest/download/${prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})\\d+\\.\\d+\\.\\d+(?:[-+][0-9A-Za-z.-]+)?(${suffix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`),
+      `$1${version}$2`,
+      `${label} link`,
+      version,
+    );
+  }
+}
 
 if (changed) {
   console.log('sync complete: some files updated');
