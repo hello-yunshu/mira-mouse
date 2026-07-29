@@ -29,10 +29,12 @@ use mira_plugin_runtime::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+#[cfg(target_os = "macos")]
+use std::io::Write;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     fs,
-    io::{Cursor, Read, Write},
+    io::{Cursor, Read},
     path::PathBuf,
     process::Command,
     sync::{Arc, Condvar, Mutex},
@@ -11065,6 +11067,7 @@ fn macos_canonical_executable_path() -> Result<String, String> {
     Ok(path)
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn xml_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -11075,6 +11078,7 @@ fn xml_escape(s: &str) -> String {
 /// Build a LaunchAgent plist XML whose ProgramArguments contains the canonical
 /// executable path followed by `--hidden`. Pure function for testability —
 /// available on all platforms so CI can verify the plist structure.
+#[cfg(any(target_os = "macos", test))]
 fn build_launch_agent_plist_xml(label: &str, exe_path: &str, args: &[&str]) -> String {
     let mut args_xml = String::new();
     for arg in args {
@@ -11091,6 +11095,7 @@ fn build_launch_agent_plist_xml(label: &str, exe_path: &str, args: &[&str]) -> S
 /// ITERATION-009 §8.1：LaunchAgent plist 状态分类。
 /// 区分 Missing / Valid / Stale / Invalid，用于决定是否自动修复。
 /// 纯函数，在所有平台上可用（测试不依赖 macOS 运行时）。
+#[cfg(any(target_os = "macos", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LaunchAgentState {
     /// plist 文件不存在。
@@ -11104,6 +11109,7 @@ enum LaunchAgentState {
     Invalid,
 }
 
+#[cfg(any(target_os = "macos", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LaunchAgentRepairAction {
     Disabled,
@@ -11112,6 +11118,7 @@ enum LaunchAgentRepairAction {
     BlockedFromDiskImage,
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn launch_agent_repair_action(
     state: LaunchAgentState,
     legacy_enabled: bool,
@@ -11134,6 +11141,7 @@ fn launch_agent_repair_action(
 
 /// ITERATION-009 §8.1：分类 plist 内容的状态。
 /// 纯函数：输入 plist 文件内容和期望值，返回状态。
+#[cfg(any(target_os = "macos", test))]
 fn classify_launch_agent_state(
     plist_contents: &str,
     expected_label: &str,
