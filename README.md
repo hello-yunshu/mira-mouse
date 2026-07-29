@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/hello-yunshu/mira-mouse/releases"><img alt="Release" src="https://img.shields.io/github/v/release/hello-yunshu/mira-mouse?style=flat-square&color=7C3AED"></a>
+  <a href="https://github.com/hello-yunshu/mira-mouse/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/hello-yunshu/mira-mouse?style=flat-square&color=7C3AED"></a>
   <img alt="Platform" src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-24C8DB?style=flat-square">
   <img alt="Tauri" src="https://img.shields.io/badge/Tauri-2.x-24C8DB?style=flat-square">
   <img alt="React" src="https://img.shields.io/badge/React-19-61DAFB?style=flat-square">
@@ -35,6 +35,16 @@
 </p>
 
 ---
+
+## 下载最新版
+
+| 平台 | 推荐下载 |
+|---|---|
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/hello-yunshu/mira-mouse/releases/latest/download/Mira_macOS_1.0.0_aarch64.dmg) |
+| Windows（x64） | [下载安装程序](https://github.com/hello-yunshu/mira-mouse/releases/latest/download/Mira_Windows_1.0.0_x64-setup.exe) |
+| Linux（x86_64） | [下载 AppImage](https://github.com/hello-yunshu/mira-mouse/releases/latest/download/Mira_Linux_1.0.0_amd64.AppImage) |
+
+普通用户只需下载上表对应的平台文件。查看版本说明或其他资产，请打开 [最新版发布页](https://github.com/hello-yunshu/mira-mouse/releases/latest)。
 
 ## 简介
 
@@ -115,9 +125,7 @@ chmod +x Mira_Linux_*_amd64.AppImage
 ./Mira_Linux_*_amd64.AppImage
 ```
 
-所有产物发布在 [GitHub Releases](https://github.com/hello-yunshu/mira-mouse/releases)。
-
-> 未签名社区包首次启动会触发 Gatekeeper 或 SmartScreen 提示，属正常现象。各发布均附带 SHA-256 校验值，详见 [安全说明](docs/unsigned-release-security.md)。
+所有产物发布在 [最新版发布页](https://github.com/hello-yunshu/mira-mouse/releases/latest)。
 
 ## 支持设备
 
