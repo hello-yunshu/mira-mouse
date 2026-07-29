@@ -1325,4 +1325,82 @@ mod tests {
         let result = parse_prediction(&response, "some-other-request-id");
         assert!(matches!(result, Err(PredictionError::Fatal(_))));
     }
+
+    // ── RillML 1.0 fallback smoke ──────────────────────────────────────────
+
+    /// handler 返回 execution-failed → 归类为 HandlerBug（runtime 本身健康），
+    /// 上层优雅回退到 deterministic baseline，应用不崩溃。
+    ///
+    /// handler `invoke()` 中 `ExecutionFailed` 映射到 rill-runtime 的非 retryable
+    /// 错误码，`parse_prediction` 将其归类为 `HandlerBug`：不 kill runtime、
+    /// 不进入 fatal 冷却，但投递 `CrashEvent::Failed` 让 supervisor 在阈值时回滚。
+    #[test]
+    fn parse_prediction_maps_execution_failed_to_handler_bug() {
+        let response = error_response("executionFailed", "battery prediction failed", false);
+        let result = parse_prediction(&response, REQUEST_ID);
+        match result {
+            Err(PredictionError::HandlerBug(reason)) => {
+                assert!(
+                    reason.contains("executionFailed"),
+                    "execution-failed must carry stable code, got: {reason}"
+                );
+            }
+            other => panic!("expected HandlerBug for execution-failed, got {other:?}"),
+        }
+    }
+
+    /// 验证 host 侧各 fallback reason 都是稳定前缀码，不包含底层异常文本，
+    /// 保证 UI 不直接暴露内部错误。
+    #[test]
+    fn parse_prediction_host_fallback_reasons_are_stable_codes() {
+        // 训练数据不足
+        let mut output = prediction_output(PredictionSource::LocalAi, Some(24.4));
+        output.training_samples = 0;
+        output.validation_samples = 0;
+        let decision = parse_prediction(&result_response(output), REQUEST_ID).unwrap();
+        assert!(matches!(
+            decision,
+            PredictionDecision::BaselineRecommended { reason }
+                if reason.starts_with("hostInsufficientTrainingData")
+        ));
+
+        // 验证数据不足
+        let mut output = prediction_output(PredictionSource::LocalAi, Some(24.4));
+        output.validation_samples = 0;
+        let decision = parse_prediction(&result_response(output), REQUEST_ID).unwrap();
+        assert!(matches!(
+            decision,
+            PredictionDecision::BaselineRecommended { reason }
+                if reason.starts_with("hostInsufficientValidationData")
+        ));
+
+        // 质量指标缺失
+        let mut output = prediction_output(PredictionSource::LocalAi, Some(24.4));
+        output.candidate_mae = None;
+        let decision = parse_prediction(&result_response(output), REQUEST_ID).unwrap();
+        assert!(matches!(
+            decision,
+            PredictionDecision::BaselineRecommended { reason }
+                if reason == "hostQualityMetricsUnavailable"
+        ));
+
+        // 所有 host reason 都必须以 "host" 前缀开头，不能包含原始异常文本
+        let host_reasons = [
+            "hostInsufficientTrainingData(0/12)",
+            "hostInsufficientValidationData(0/8)",
+            "hostQualityMetricsUnavailable",
+            "hostCandidateMaeTooHigh(3.000>2.000)",
+            "hostCandidateImprovementTooSmall(1.500/1.000)",
+        ];
+        for reason in host_reasons {
+            assert!(
+                reason.starts_with("host"),
+                "host fallback reason must be a stable code starting with 'host', got: {reason}"
+            );
+            assert!(
+                !reason.contains("panicked") && !reason.contains("unwrap"),
+                "host reason must not leak raw exception text: {reason}"
+            );
+        }
+    }
 }
