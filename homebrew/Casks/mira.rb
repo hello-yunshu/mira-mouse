@@ -20,9 +20,4 @@ cask "mira" do
 
   app "Mira.app"
 
-  caveats <<~EOS
-    Mira is ad-hoc signed and not notarized. The first launch is blocked by
-    Gatekeeper. Right-click Mira.app and select Open, or run:
-      xattr -dr com.apple.quarantine /Applications/Mira.app
-  EOS
 end
