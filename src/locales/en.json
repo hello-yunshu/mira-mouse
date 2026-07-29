@@ -339,6 +339,7 @@
       "updatable": "Update available: v{{version}}",
       "updating": "Updating…",
       "updateBundle": "Update",
+      "updated": "Updated to v{{version}}",
       "rollbackBundle": "Roll back",
       "automaticCheckLabel": "Automatically check for AI engine updates",
       "automaticCheckHint": "Checks the local AI engine on launch, every 6 hours, and after returning online or to the foreground",
@@ -452,6 +453,7 @@
       "defaultBundled": "Bundled by default",
       "updatable": "Updatable to v{{version}}",
       "updating": "Updating…",
+      "updated": "Updated to v{{version}}",
       "update": "Update plugin",
       "stage": {
         "downloading": "Downloading plugin bundle",

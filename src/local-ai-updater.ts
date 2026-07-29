@@ -150,7 +150,10 @@ export async function installLocalAiUpdate(): Promise<LocalAiInstallResult> {
     });
     const title = i18n.t('notification.localAiUpdateInstalled.title');
     const body = i18n.t('notification.localAiUpdateInstalled.body', { version: result.version });
-    notifyInfo(title, body, 'settings-local-ai-update');
+    // 应用内 toast 不带 action：用户已在设置页看到更新完成，带 action 会让 toast 可点击，
+    // 点击后触发 openSettingsLocalAiUpdate → section focus，出现莫名的 focus outline。
+    // 系统级通知保留 action，供不在应用内的用户点击跳转。
+    notifyInfo(title, body);
     if (!isComponentUpdateNotificationSuppressed()) {
       void invoke('show_update_notification', { title, body, action: 'settings-local-ai-update' }).catch(() => {});
     }
