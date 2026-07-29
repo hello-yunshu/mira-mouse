@@ -4,9 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+publish = false
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["std"] }
-mira-protocol = { path = "../mira-protocol" }
+mira-protocol = { version = "1.0.0-rc.1", path = "../mira-protocol" }
 rill-ml = { workspace = true }
 thiserror.workspace = true

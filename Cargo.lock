@@ -2454,7 +2454,7 @@ dependencies = [
 
 [[package]]
 name = "mira-app"
-version = "0.9.17"
+version = "1.0.0-rc.1"
 dependencies = [
  "auto-launch",
  "chrono",
@@ -2471,6 +2471,7 @@ dependencies = [
  "objc2-app-kit",
  "objc2-core-graphics",
  "objc2-foundation",
+ "plist",
  "png 0.18.1",
  "reqwest",
  "rill-runtime-protocol",
@@ -2497,7 +2498,7 @@ dependencies = [
 
 [[package]]
 name = "mira-core"
-version = "0.9.17"
+version = "1.0.0-rc.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2506,7 +2507,7 @@ dependencies = [
 
 [[package]]
 name = "mira-local-ai"
-version = "0.9.17"
+version = "1.0.0-rc.1"
 dependencies = [
  "chrono",
  "mira-protocol",
@@ -2516,7 +2517,7 @@ dependencies = [
 
 [[package]]
 name = "mira-plugin-api"
-version = "0.9.17"
+version = "1.0.0-rc.1"
 dependencies = [
  "semver",
  "serde",
@@ -2546,7 +2547,7 @@ dependencies = [
 
 [[package]]
 name = "mira-plugin-runtime"
-version = "0.9.17"
+version = "1.0.0-rc.1"
 dependencies = [
  "ed25519-dalek",
  "hex",
@@ -2564,7 +2565,7 @@ dependencies = [
 
 [[package]]
 name = "mira-protocol"
-version = "0.9.17"
+version = "1.0.0-rc.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2572,7 +2573,7 @@ dependencies = [
 
 [[package]]
 name = "mira-testkit"
-version = "0.9.17"
+version = "1.0.0-rc.1"
 dependencies = [
  "mira-plugin-runtime",
 ]
@@ -3604,18 +3605,18 @@ dependencies = [
 
 [[package]]
 name = "rill-ml"
-version = "0.8.1"
+version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6825da52fd2e01bc1754bc619e5c26c9ffb71ab3f13a98cdb0df7b6e7bccfeef"
+checksum = "f5bcb553e19f57d493bfd0218286ae64b9f7d3b0a0de21fb9bad09863630a04f"
 dependencies = [
  "thiserror 1.0.69",
 ]
 
 [[package]]
 name = "rill-runtime-protocol"
-version = "0.8.1"
+version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c29c8ea8678f343781a20857ac17d7e70f09a1442fb2727ee0a607910e5eaa5a"
+checksum = "7524c0d554bec02cf03b5d3e36288f5b3c64c2d320c36aa5840e3d28eef4d3d0"
 dependencies = [
  "serde",
  "serde_json",
@@ -6170,7 +6171,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.9.17"
+version = "1.0.0-rc.1"
 dependencies = [
  "anyhow",
  "clap",

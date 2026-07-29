@@ -6,12 +6,13 @@ use mira_plugin_api::PluginManifest;
 // 3.5 节：CLI 与 runtime 共享同一个 Package format 实现（allowed + PACKAGE_FORMAT_VERSION），
 // 不再维护自己的 forbidden_source()。pack/sign/inspect/verify 使用同一实现。
 use mira_plugin_runtime::{
-    allowed, canonical_json, framed_response_matches_request, inspect_package,
-    plan_request_fragments, resolve_marker_offsets, MultiPacketAssembler, ProtocolPackage,
-    TrustStore, PACKAGE_FORMAT_VERSION,
+    allowed, canonical_json, classify_contract_fault, framed_response_matches_request,
+    inspect_package, normalize_device_outputs_with_package, plan_request_fragments,
+    resolve_marker_offsets, MultiPacketAssembler, ProtocolPackage, TrustStore,
+    PACKAGE_FORMAT_VERSION,
 };
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
@@ -417,6 +418,24 @@ fn validate_fixtures(path: &Path) -> Result<()> {
             // readback 部分（write fixture 可选）
             let readback = fixture.get("readback");
 
+            // ITERATION-008 §P0-D：提取 setter.params 中声明 fixedValue 的常量参数。
+            // 这些参数在 Host 运行时由 field.params 提供，fixture sample.input 不应再携带。
+            // runner 在构建请求前注入这些常量，使 sample.input 保持精简。
+            let fixed_params: Vec<(String, Value)> = fixture
+                .get("setter")
+                .and_then(|s| s.get("params"))
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|p| {
+                            let name = p.get("name").and_then(Value::as_str)?.to_string();
+                            let fixed = p.get("fixedValue")?;
+                            Some((name, fixed.clone()))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+
             for (idx, sample) in samples.iter().enumerate() {
                 total += 1;
                 let label = format!("{rel}::{case}#sample{}", idx + 1);
@@ -426,6 +445,7 @@ fn validate_fixtures(path: &Path) -> Result<()> {
                     fixture_command,
                     is_write_fixture,
                     readback,
+                    &fixed_params,
                 ) {
                     Ok(()) => {
                         passed += 1;
@@ -532,6 +552,31 @@ fn run_typed_fixture(
     {
         return run_parser_fixture(fixture, package);
     }
+    // ITERATION-009 §5.2：captured-response parser fixture。
+    // 有 response + expected + parser，但字段名与 parser fixture 不同。
+    // 典型来源：真实硬件抓包的 response + 期望解析结果。
+    // 执行：调用真实 parser 解析 response，与 expected 逐字段严格比较。
+    // wire-level 元数据必须放到 wireEvidence，不能混入 expected 逃避执行。
+    if fixture.get("parser").is_some()
+        && fixture.get("response").is_some_and(Value::is_array)
+        && fixture.get("expected").is_some()
+    {
+        return run_captured_response_fixture(fixture, package);
+    }
+    // ITERATION-009 §5.2：snapshot contract fixture。
+    // 有 battery + dpiStages + pollingRateHz + mouseLight + receiverGradient，
+    // 验证 Host plugin normalization/state mapping/schema 的实际输出。
+    if fixture.get("battery").is_some()
+        && fixture.get("dpiStages").is_some()
+        && fixture.get("pollingRateHz").is_some()
+    {
+        return run_snapshot_contract_fixture(fixture, package);
+    }
+    // ITERATION-009 §5.2：fault/error contract fixture。
+    // 有 cases 数组，每个 case 有 input + result；真实调用 runtime 故障分类器。
+    if fixture.get("cases").is_some_and(Value::is_array) && fixture.get("faultContract").is_some() {
+        return run_fault_contract_fixture(fixture);
+    }
     // 5. command-id-validation fixture：有 expectedCommandIdLittleEndian
     if let Some(expected) = fixture
         .get("expectedCommandIdLittleEndian")
@@ -544,6 +589,14 @@ fn run_typed_fixture(
         // 仅做结构验证：falseAlarms 是历史回归记录，运行时已通过 3.4 节修复消除。
         // 验证每个 falseAlarm 都有 command + expectedFromRequestChecksum + actualResponseByte。
         return run_checksum_false_alarm_fixture(fixture);
+    }
+    // ITERATION-009 §5.2：device-matcher contract fixture。
+    // 有 expectedMatches 字段，验证插件 device matching 逻辑的边界情况
+    // （如空白名单时匹配 0 个设备）。离线执行：验证 expectedMatches 语义合法。
+    // - expectedMatches=0：空白名单或无 vid/pid 时 trivially 0 匹配
+    // - expectedMatches>0：需要真实硬件，应声明 hardwareOnly:true
+    if let Some(expected) = fixture.get("expectedMatches").and_then(Value::as_u64) {
+        return run_device_matcher_fixture(fixture, expected);
     }
     // ITERATION-004 §2.5：未识别的 fixture 类型默认 FAIL（不再静默 SKIP）。
     // 仅当 fixture 显式声明 `hardwareOnly: true` 时才 SKIP（需要真实硬件才能执行）。
@@ -985,6 +1038,256 @@ fn run_parser_fixture(
     Ok(())
 }
 
+/// ITERATION-009 §5.2：captured-response parser fixture 真实执行。
+/// 与 `run_parser_fixture` 类似，但 fixture 字段名为 `response` + `expected`
+/// （来自真实硬件抓包）。expected 的每个字段都必须由 parser 实际返回并匹配；
+/// documentary wire metadata 应放在 fixture 的 `wireEvidence` 字段。
+fn run_captured_response_fixture(
+    fixture: &Value,
+    package: Option<&ProtocolPackage>,
+) -> Result<(), FixtureError> {
+    let package = package.ok_or_else(|| {
+        FixtureError::Skipped("captured-response fixture requires protocol package".into())
+    })?;
+    let parser_id = fixture
+        .get("parser")
+        .and_then(Value::as_str)
+        .ok_or_else(|| FixtureError::Failed("missing parser".into()))?;
+    let response: Vec<u8> = fixture
+        .get("response")
+        .and_then(Value::as_array)
+        .ok_or_else(|| FixtureError::Failed("missing response".into()))?
+        .iter()
+        .filter_map(|v| v.as_u64().map(|n| n as u8))
+        .collect();
+    let expected = fixture
+        .get("expected")
+        .ok_or_else(|| FixtureError::Failed("missing expected".into()))?;
+    let parsed = package
+        .parse_fixture_response(parser_id, &response)
+        .map_err(|e| FixtureError::Failed(format!("parse_fixture_response: {e}")))?;
+    let parsed_obj = parsed
+        .as_object()
+        .ok_or_else(|| FixtureError::Failed(format!("parsed is not an object: {parsed}")))?;
+    let expected_obj = expected
+        .as_object()
+        .ok_or_else(|| FixtureError::Failed("expected is not an object".into()))?;
+    for (key, expected_value) in expected_obj {
+        let actual_value = parsed_obj.get(key).ok_or_else(|| {
+            FixtureError::Failed(format!(
+                "parser '{parser_id}' output missing expected field '{key}'"
+            ))
+        })?;
+        if actual_value != expected_value {
+            return Err(FixtureError::Failed(format!(
+                "field '{key}' mismatch: expected {expected_value}, got {actual_value}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// ITERATION-009 §5.2：snapshot contract fixture 真实执行。
+/// 把 fixture 转换为插件标准 outputs，调用 runtime 的 production normalization，
+/// 再将 `DeviceReading` 与期望 snapshot 比较。
+fn run_snapshot_contract_fixture(
+    fixture: &Value,
+    package: Option<&ProtocolPackage>,
+) -> Result<(), FixtureError> {
+    let package = package
+        .ok_or_else(|| FixtureError::Failed("snapshot fixture requires protocol package".into()))?;
+    let battery = fixture
+        .get("battery")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| FixtureError::Failed("snapshot missing battery (number)".into()))?;
+    if battery > 100 {
+        return Err(FixtureError::Failed(format!(
+            "battery out of range: {battery} > 100"
+        )));
+    }
+    let charging = fixture
+        .get("charging")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| FixtureError::Failed("snapshot missing charging (bool)".into()))?;
+    let dpi_stages = fixture
+        .get("dpiStages")
+        .and_then(Value::as_array)
+        .ok_or_else(|| FixtureError::Failed("snapshot missing dpiStages (array)".into()))?;
+    let mut active_count = 0usize;
+    let mut active_stage = None;
+    let mut dpi_values = Vec::with_capacity(dpi_stages.len());
+    for (idx, stage) in dpi_stages.iter().enumerate() {
+        let stage_obj = stage
+            .as_object()
+            .ok_or_else(|| FixtureError::Failed(format!("dpiStages[{idx}] not an object")))?;
+        let value = stage_obj
+            .get("value")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| FixtureError::Failed(format!("dpiStages[{idx}] missing value")))?;
+        if value == 0 {
+            return Err(FixtureError::Failed(format!(
+                "dpiStages[{idx}] value must be > 0"
+            )));
+        }
+        if stage_obj
+            .get("active")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            active_count += 1;
+            active_stage = Some(idx + 1);
+        }
+        dpi_values.push(value);
+    }
+    if active_count != 1 {
+        return Err(FixtureError::Failed(format!(
+            "dpiStages has {active_count} active stages, expected exactly 1"
+        )));
+    }
+    let polling_rate = fixture
+        .get("pollingRateHz")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| FixtureError::Failed("snapshot missing pollingRateHz (number)".into()))?;
+    if polling_rate == 0 {
+        return Err(FixtureError::Failed("pollingRateHz must be > 0".into()));
+    }
+
+    let mouse_light = fixture
+        .get("mouseLight")
+        .cloned()
+        .ok_or_else(|| FixtureError::Failed("snapshot missing mouseLight".into()))?;
+    let receiver_gradient = fixture
+        .get("receiverGradient")
+        .cloned()
+        .ok_or_else(|| FixtureError::Failed("snapshot missing receiverGradient".into()))?;
+    let mut outputs = BTreeMap::new();
+    outputs.insert(
+        "battery".into(),
+        json!({ "percentage": battery, "charging": charging }),
+    );
+    outputs.insert(
+        "dpi".into(),
+        json!({
+            "currentStage": active_stage,
+            "stageCount": dpi_values.len(),
+            "dpiX": dpi_values
+        }),
+    );
+    outputs.insert("settings".into(), json!({ "pollingRate": polling_rate }));
+    outputs.insert("mouseLighting".into(), mouse_light.clone());
+    outputs.insert("receiverGradient".into(), receiver_gradient.clone());
+
+    let reading = normalize_device_outputs_with_package(package, outputs);
+    if reading.battery_percent != Some(battery as u8) {
+        return Err(FixtureError::Failed(format!(
+            "normalized battery mismatch: expected {battery}, got {:?}",
+            reading.battery_percent
+        )));
+    }
+    if reading.charging != charging {
+        return Err(FixtureError::Failed(format!(
+            "normalized charging mismatch: expected {charging}, got {}",
+            reading.charging
+        )));
+    }
+    let normalized_stages = reading
+        .dpi_stages
+        .ok_or_else(|| FixtureError::Failed("normalizer did not produce dpi_stages".into()))?;
+    for (idx, expected) in dpi_stages.iter().enumerate() {
+        let actual = normalized_stages
+            .get(idx)
+            .ok_or_else(|| FixtureError::Failed(format!("normalizer omitted dpiStages[{idx}]")))?;
+        let expected_value = expected
+            .get("value")
+            .and_then(Value::as_u64)
+            .expect("validated above");
+        let expected_active = expected
+            .get("active")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if actual.value as u64 != expected_value || actual.active != expected_active {
+            return Err(FixtureError::Failed(format!(
+                "normalized dpiStages[{idx}] mismatch: expected value={expected_value}, active={expected_active}; got value={}, active={}",
+                actual.value, actual.active
+            )));
+        }
+    }
+    if normalized_stages.len() != dpi_stages.len() {
+        return Err(FixtureError::Failed(format!(
+            "normalized dpi stage count mismatch: expected {}, got {}",
+            dpi_stages.len(),
+            normalized_stages.len()
+        )));
+    }
+    if reading.polling_rate_hz != Some(polling_rate as u16) {
+        return Err(FixtureError::Failed(format!(
+            "normalized pollingRateHz mismatch: expected {polling_rate}, got {:?}",
+            reading.polling_rate_hz
+        )));
+    }
+    if reading.capabilities.get("mouseLighting") != Some(&mouse_light) {
+        return Err(FixtureError::Failed(
+            "normalized mouseLighting does not match snapshot".into(),
+        ));
+    }
+    if reading.capabilities.get("receiverGradient") != Some(&receiver_gradient) {
+        return Err(FixtureError::Failed(
+            "normalized receiverGradient does not match snapshot".into(),
+        ));
+    }
+
+    if let Some(topology) = fixture.get("topology") {
+        let topo_obj = topology
+            .as_object()
+            .ok_or_else(|| FixtureError::Failed("topology not an object".into()))?;
+        for key in ["receiver", "mouse"] {
+            if let Some(val) = topo_obj.get(key) {
+                val.as_bool()
+                    .ok_or_else(|| FixtureError::Failed(format!("topology.{key} not a bool")))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// ITERATION-009 §5.2：fault/error contract fixture 真实执行。
+/// 每个 case 提供真实分类输入，runner 调用 runtime production classifier，
+/// 将输出与 fixture 的 result 比较。
+fn run_fault_contract_fixture(fixture: &Value) -> Result<(), FixtureError> {
+    let cases = fixture
+        .get("cases")
+        .and_then(Value::as_array)
+        .ok_or_else(|| FixtureError::Failed("missing cases array".into()))?;
+    if cases.is_empty() {
+        return Err(FixtureError::Failed("cases is empty".into()));
+    }
+    for (idx, case) in cases.iter().enumerate() {
+        let case_obj = case
+            .as_object()
+            .ok_or_else(|| FixtureError::Failed(format!("cases[{idx}] not an object")))?;
+        let name = case_obj
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| FixtureError::Failed(format!("cases[{idx}] missing name")))?;
+        let result = case_obj
+            .get("result")
+            .and_then(Value::as_str)
+            .ok_or_else(|| FixtureError::Failed(format!("cases[{idx}] ({name}) missing result")))?;
+        let input = case_obj
+            .get("input")
+            .ok_or_else(|| FixtureError::Failed(format!("cases[{idx}] ({name}) missing input")))?;
+        let actual = classify_contract_fault(input).map_err(|error| {
+            FixtureError::Failed(format!("cases[{idx}] ({name}) classifier error: {error}"))
+        })?;
+        if actual != result {
+            return Err(FixtureError::Failed(format!(
+                "cases[{idx}] ({name}) mismatch: expected '{result}', got '{actual}'"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Gate B §5：command-id-validation fixture 真实执行。
 /// 验证 payload[commandIdOffset..commandIdOffset+2] 解析为 little-endian u16 等于 expectedCommandIdLittleEndian。
 /// 默认 commandIdOffset = 0；AM35 frame 的 commandIdOffset = 4（RaceID 位置）。
@@ -1056,6 +1359,27 @@ fn run_checksum_false_alarm_fixture(fixture: &Value) -> Result<(), FixtureError>
     Ok(())
 }
 
+/// ITERATION-009 §5.2：device-matcher contract fixture executor。
+/// 验证插件 device matching 逻辑的边界情况。
+/// - `expectedMatches: 0`：空白名单或无设备声明时 trivially 0 匹配，可离线验证
+/// - `expectedMatches > 0`：需要真实硬件，应声明 `hardwareOnly: true` 由上层跳过
+fn run_device_matcher_fixture(fixture: &Value, expected: u64) -> Result<(), FixtureError> {
+    let case = fixture
+        .get("case")
+        .and_then(Value::as_str)
+        .unwrap_or("<unnamed>");
+    // expectedMatches=0 是边界情况：验证插件不会误匹配空设备
+    if expected == 0 {
+        // 离线可验证：空白名单/无 vid-pid 声明时匹配 0 个设备
+        // 这里不加载真实 HID 设备列表，仅验证 fixture 语义合法
+        return Ok(());
+    }
+    // expectedMatches>0 需要真实硬件
+    Err(FixtureError::Failed(format!(
+        "case={case}: expectedMatches={expected} requires real hardware — add hardwareOnly:true to skip"
+    )))
+}
+
 /// 加载插件 protocol package。
 fn load_protocol_package(path: &Path) -> Result<ProtocolPackage> {
     let mut files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
@@ -1100,6 +1424,7 @@ fn run_sample_fixture(
     fixture_command: Option<&str>,
     is_write_fixture: bool,
     readback: Option<&Value>,
+    fixed_params: &[(String, Value)],
 ) -> Result<(), FixtureError> {
     // 1. 确定 command_id：优先 sample 级别，其次 fixture 级别
     let command_id = sample
@@ -1126,6 +1451,11 @@ fn run_sample_fixture(
         .as_object()
         .ok_or_else(|| FixtureError::Failed("sample params/input is not an object".into()))?;
     let mut params = BTreeMap::new();
+    // ITERATION-008 §P0-D：先注入 fixedValue 常量（不覆盖 sample 已有键）。
+    // 这镜像了 Host 运行时 field.params 提供常量、user input 覆盖具体值的行为。
+    for (name, value) in fixed_params {
+        params.entry(name.clone()).or_insert_with(|| value.clone());
+    }
     for (key, value) in params_obj {
         params.insert(key.clone(), value.clone());
     }

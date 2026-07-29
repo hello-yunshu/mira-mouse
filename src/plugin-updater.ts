@@ -141,8 +141,8 @@ export async function installPluginUpdate(pluginId: string): Promise<PluginInsta
       totalBytes: state.totalBytes,
       stage: 'activating',
     });
-    const title = i18n.t('notification.pluginUpdateInstalled');
-    const body = i18n.t('notification.pluginUpdateInstalledBody', {
+    const title = i18n.t('notification.pluginUpdateInstalled.title');
+    const body = i18n.t('notification.pluginUpdateInstalled.body', {
       pluginId: result.pluginId,
       version: result.version,
     });

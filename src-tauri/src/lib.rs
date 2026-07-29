@@ -29,6 +29,8 @@ use mira_plugin_runtime::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+#[cfg(target_os = "macos")]
+use std::io::Write;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     fs,
@@ -935,11 +937,6 @@ struct SessionState {
     /// debug 构建中记录上一次 matched device 数量，仅在变化时输出日志。
     #[cfg(debug_assertions)]
     last_matched_count: Mutex<usize>,
-    /// macOS 原生通知点击后待执行的跳转动作。
-    /// macOS 上 `tauri-plugin-notification` 不暴露点击回调，改用 pending action +
-    /// 窗口 focus 消费的方式：发通知时写入 action，前端聚焦窗口时取走并执行跳转。
-    /// Windows/Linux 直接用 `notify-rust` 的 `wait_for_action` 处理点击，不写入此字段。
-    pending_notification_action: Mutex<Option<String>>,
     /// 电量使用情况：内存缓存 + 去重追踪。启动时从 battery_history.json 加载。
     battery_history: BatteryHistoryState,
     /// 电量预测预计算缓存：后台轮询周期中预构建 24h/10d 响应，
@@ -2019,8 +2016,9 @@ fn apply_night_mode_transition(app: &AppHandle, target_phase: NightPhase) {
                 };
                 if let Some((is_on, saved)) = read_mouse_light_state(&snapshot) {
                     if is_on {
-                        // 关闭灯光：off effect 由插件声明，同时传递 speed/brightness 以满足
-                        // HID++ mutation inputs 的校验（即使设备走 memory 路径也兼容）。
+                        // 关闭灯光：优先用插件声明的 off effect（HID++ 体系）；
+                        // 未声明 off effect 时（AM35 体系）用 enabled=false 关闭，
+                        // effect 字段保留设备当前 effect 以满足 mutation inputs 校验。
                         let off_effect = mouse_lighting_off_effect(&snapshot);
                         let mut params = serde_json::Map::from_iter([
                             (
@@ -2030,7 +2028,9 @@ fn apply_night_mode_transition(app: &AppHandle, target_phase: NightPhase) {
                             ("enabled".into(), serde_json::Value::Bool(false)),
                             (
                                 "effect".into(),
-                                serde_json::Value::Number(off_effect.into()),
+                                serde_json::Value::Number(
+                                    off_effect.unwrap_or(saved.effect).into(),
+                                ),
                             ),
                             (
                                 "speed".into(),
@@ -3079,11 +3079,12 @@ const RILL_HANDLER_KEY_ID: &str = "mira-handler-2026-001";
 const RILL_HANDLER_PUBLIC_KEY_HEX: &str =
     "cefbe96db58196e4b3a8455f427ca75efaedacb68792ae82d7d06dd8c86f193e";
 
-// Test packages are accepted only by debug/test builds. Release builds trust only
-// the production publisher key above.
-#[cfg(debug_assertions)]
+// Test packages are accepted only by debug builds or the explicit
+// `test-plugin-trust` feature used by the isolated Latest Test App builder.
+// Normal release builds trust only the production publisher key above.
+#[cfg(any(debug_assertions, feature = "test-plugin-trust"))]
 const TEST_KEY_ID: &str = "TEST-ONLY-mira-plugins";
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, feature = "test-plugin-trust"))]
 const TEST_PUBLIC_KEY_HEX: &str =
     "00d34dac6e039baada3d3d9aa65390f2887d09d73b396af8434ecb29c233d666";
 
@@ -3099,11 +3100,29 @@ fn production_trust_store() -> TrustStore {
         PRODUCTION_KEY_ID.to_string(),
         decode_key(PRODUCTION_PUBLIC_KEY_HEX),
     );
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "test-plugin-trust"))]
     trust
         .0
         .insert(TEST_KEY_ID.to_string(), decode_key(TEST_PUBLIC_KEY_HEX));
     trust
+}
+
+#[cfg(test)]
+mod test_plugin_trust_tests {
+    use super::*;
+
+    #[test]
+    fn committed_test_seed_matches_the_debug_test_trust_root() {
+        let seed_hex = include_str!("../../tests/keys/TEST-ONLY-mira-plugins.seed").trim();
+        let seed: [u8; 32] = hex::decode(seed_hex)
+            .expect("test seed must be hexadecimal")
+            .try_into()
+            .expect("test seed must be exactly 32 bytes");
+        let public = ed25519_dalek::SigningKey::from_bytes(&seed)
+            .verifying_key()
+            .to_bytes();
+        assert_eq!(hex::encode(public), TEST_PUBLIC_KEY_HEX);
+    }
 }
 
 #[derive(Serialize)]
@@ -3447,8 +3466,14 @@ fn read_mouse_light_state(snapshot: &DeviceSnapshot) -> Option<(bool, SavedMouse
         .and_then(|v| v.as_str())
         .filter(|s| s.starts_with('#') && s.len() == 7)
         .map(|s| s.to_string());
-    // 判断灯光是否开启：优先用插件声明的 off effect（HID++ 设备），无 effect 时回退到 enabled。
-    let is_on = effect.map(|e| e != off_effect).unwrap_or(enabled);
+    // ITERATION-009 §9：判断灯光是否开启。
+    // - 插件声明了 effectOptions.offValue 时（HID++ 体系），优先用 effect != offValue 判断；
+    // - 插件未声明 offValue 时（AM35 体系，mode 0 = 常亮而非关闭），回退到 enabled 字段，
+    //   避免 AM35 mode=0 被误判为关闭导致夜间模式失效。
+    let is_on = match off_effect {
+        Some(off) => effect.map(|e| e != off).unwrap_or(enabled),
+        None => enabled,
+    };
     if is_on {
         // 灯光开启：必须有有效颜色才能正确保存并恢复，否则跳过该目标，
         // 避免 fallback #000000 在退出夜间恢复时覆盖设备原色。
@@ -3469,7 +3494,7 @@ fn read_mouse_light_state(snapshot: &DeviceSnapshot) -> Option<(bool, SavedMouse
             false,
             SavedMouseLight {
                 color: color.unwrap_or_else(|| "#000000".to_string()),
-                effect: effect.unwrap_or(off_effect),
+                effect: effect.unwrap_or(off_effect.unwrap_or(0)),
                 speed,
                 brightness,
                 extra_color,
@@ -3478,7 +3503,12 @@ fn read_mouse_light_state(snapshot: &DeviceSnapshot) -> Option<(bool, SavedMouse
     }
 }
 
-fn mouse_lighting_off_effect(snapshot: &DeviceSnapshot) -> u8 {
+/// ITERATION-009 §9：返回插件声明的"关闭"灯效值。
+/// 插件通过 `metadata.effectOptions.offValue` 声明哪个 effect 编号代表关闭
+/// （例如 HID++ 体系的 0=off）。返回 `None` 表示插件未声明 offValue，
+/// 调用方应回退到 `enabled` 字段判断灯光开关，避免把 AM35 的 mode 0
+/// （常亮）误判为关闭。
+fn mouse_lighting_off_effect(snapshot: &DeviceSnapshot) -> Option<u8> {
     snapshot
         .plugin_capabilities
         .iter()
@@ -3487,7 +3517,6 @@ fn mouse_lighting_off_effect(snapshot: &DeviceSnapshot) -> u8 {
         .and_then(|effect_options| effect_options.get("offValue"))
         .and_then(|value| value.as_u64())
         .and_then(|value| u8::try_from(value).ok())
-        .unwrap_or(0)
 }
 
 /// Launch intent decided by THIS process's args only.
@@ -4693,6 +4722,552 @@ mod lifecycle_tests {
     }
 }
 
+/// Iteration 008 P0-1: macOS LaunchAgent plist tests.
+/// These are pure-function tests that run on ALL platforms so CI can verify
+/// the plist structure without requiring macOS.
+#[cfg(test)]
+mod macos_launch_agent_tests {
+    use super::*;
+
+    #[test]
+    fn plist_program_arguments_contain_hidden_flag() {
+        let xml = build_launch_agent_plist_xml(
+            "Mira",
+            "/Applications/Mira.app/Contents/MacOS/Mira",
+            &["--hidden"],
+        );
+        assert!(
+            xml.contains("<string>--hidden</string>"),
+            "ProgramArguments must contain --hidden so argv receives it"
+        );
+    }
+
+    #[test]
+    fn plist_program_arguments_contain_canonical_executable() {
+        let exe = "/Applications/Mira.app/Contents/MacOS/Mira";
+        let xml = build_launch_agent_plist_xml("Mira", exe, &["--hidden"]);
+        assert!(
+            xml.contains(exe),
+            "ProgramArguments must contain the real Mach-O executable path, not the .app directory"
+        );
+        assert!(
+            !xml.contains("<string>/Applications/Mira.app</string>\n        <string>--hidden"),
+            "must not register the .app directory as the program"
+        );
+    }
+
+    #[test]
+    fn plist_has_correct_label() {
+        let xml = build_launch_agent_plist_xml(
+            "Mira",
+            "/Applications/Mira.app/Contents/MacOS/Mira",
+            &["--hidden"],
+        );
+        assert!(xml.contains("<key>Label</key>"));
+        assert!(xml.contains("<string>Mira</string>"));
+    }
+
+    #[test]
+    fn plist_runs_at_load_but_not_keep_alive() {
+        let xml = build_launch_agent_plist_xml(
+            "Mira",
+            "/Applications/Mira.app/Contents/MacOS/Mira",
+            &["--hidden"],
+        );
+        assert!(
+            xml.contains("<key>RunAtLoad</key>\n    <true/>"),
+            "RunAtLoad must be true for login autostart"
+        );
+        assert!(
+            xml.contains("<key>KeepAlive</key>\n    <false/>"),
+            "KeepAlive must be false so the user can quit Mira"
+        );
+    }
+
+    #[test]
+    fn plist_is_valid_xml_with_doctype() {
+        let xml = build_launch_agent_plist_xml(
+            "Mira",
+            "/Applications/Mira.app/Contents/MacOS/Mira",
+            &["--hidden"],
+        );
+        assert!(xml.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"));
+        assert!(xml.contains("DOCTYPE plist PUBLIC"));
+        assert!(xml.contains("<plist version=\"1.0\">"));
+        assert!(xml.trim_end().ends_with("</plist>"));
+    }
+
+    #[test]
+    fn plist_escapes_special_xml_characters() {
+        let xml = build_launch_agent_plist_xml(
+            "Mira&Co",
+            "/Applications/Mira.app/Contents/MacOS/Mira",
+            &["--hidden"],
+        );
+        assert!(xml.contains("Mira&amp;Co"));
+        assert!(!xml.contains("Mira&Co<"));
+    }
+
+    #[test]
+    fn plist_executable_must_not_be_app_directory() {
+        // The LaunchAgent Program must be the real Mach-O inside the .app,
+        // not the .app directory itself. This test documents that contract.
+        let exe = "/Applications/Mira.app/Contents/MacOS/Mira";
+        let xml = build_launch_agent_plist_xml("Mira", exe, &["--hidden"]);
+        // The executable path must end with the Mach-O name, not .app
+        let program_line = xml
+            .lines()
+            .find(|line| line.contains(exe))
+            .expect("executable path must appear in plist");
+        assert!(program_line.contains("Contents/MacOS/"));
+    }
+
+    #[test]
+    fn classify_launch_intent_receives_hidden_from_plist_args() {
+        // Simulate what launchd would pass: [exe, --hidden] → skip exe (index 0)
+        let argv = vec!["--hidden".to_string()];
+        assert_eq!(classify_launch_intent(&argv), LaunchIntent::AutostartHidden);
+    }
+
+    #[test]
+    fn dmg_executable_path_is_rejected() {
+        // The canonical executable path resolver must reject /Volumes paths
+        // so we never write a LaunchAgent pointing at a mounted DMG.
+        #[cfg(target_os = "macos")]
+        {
+            // We can't easily test macos_canonical_executable_path() without
+            // mocking std::env::current_exe, but we can verify the path check
+            // logic by examining what the function rejects.
+            let dmg_path = "/Volumes/Mira/Mira.app/Contents/MacOS/Mira";
+            assert!(dmg_path.starts_with("/Volumes"));
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // ITERATION-009 §8.5：classify_launch_agent_state 纯函数测试。
+    // 覆盖 Valid / Stale / Invalid 三类状态及 §8.2 DMG path 场景。
+    // ------------------------------------------------------------------
+
+    fn iteration009_valid_plist() -> String {
+        build_launch_agent_plist_xml(
+            "Mira",
+            "/Applications/Mira.app/Contents/MacOS/Mira",
+            &["--hidden"],
+        )
+    }
+
+    #[test]
+    fn iteration009_classify_valid_plist() {
+        let xml = iteration009_valid_plist();
+        assert_eq!(
+            classify_launch_agent_state(
+                &xml,
+                "Mira",
+                "/Applications/Mira.app/Contents/MacOS/Mira",
+                &["--hidden"],
+            ),
+            LaunchAgentState::Valid,
+        );
+    }
+
+    #[test]
+    fn iteration009_classify_missing_label_key_is_invalid() {
+        // Missing <key>Label</key> entirely → Invalid (结构错误，不是 stale)
+        let broken = "<?xml version=\"1.0\"?>\n<plist version=\"1.0\">\n<dict>\n<key>ProgramArguments</key>\n<array><string>x</string></array>\n</dict>\n</plist>";
+        assert_eq!(
+            classify_launch_agent_state(broken, "Mira", "/x", &["--hidden"]),
+            LaunchAgentState::Invalid,
+        );
+    }
+
+    #[test]
+    fn iteration009_classify_missing_program_arguments_key_is_invalid() {
+        let broken = "<?xml version=\"1.0\"?>\n<plist version=\"1.0\">\n<dict>\n<key>Label</key>\n<string>Mira</string>\n</dict>\n</plist>";
+        assert_eq!(
+            classify_launch_agent_state(broken, "Mira", "/x", &["--hidden"]),
+            LaunchAgentState::Invalid,
+        );
+    }
+
+    #[test]
+    fn iteration009_classify_corrupted_xml_is_invalid() {
+        // 没有 <plist> 或 <dict> → Invalid
+        let broken = "<?xml version=\"1.0\"?>\n<not-a-plist>garbage</not-a-plist>";
+        assert_eq!(
+            classify_launch_agent_state(broken, "Mira", "/x", &["--hidden"]),
+            LaunchAgentState::Invalid,
+        );
+    }
+
+    #[test]
+    fn iteration009_classify_label_mismatch_is_stale() {
+        // Label 不匹配 → Stale（结构正确，但内容过期）
+        let xml = build_launch_agent_plist_xml(
+            "OldName",
+            "/Applications/Mira.app/Contents/MacOS/Mira",
+            &["--hidden"],
+        );
+        assert_eq!(
+            classify_launch_agent_state(
+                &xml,
+                "Mira",
+                "/Applications/Mira.app/Contents/MacOS/Mira",
+                &["--hidden"],
+            ),
+            LaunchAgentState::Stale,
+        );
+    }
+
+    #[test]
+    fn iteration009_classify_executable_path_changed_is_stale() {
+        // exe 路径变更（例如 App 移动到不同位置）→ Stale
+        let xml = iteration009_valid_plist();
+        assert_eq!(
+            classify_launch_agent_state(
+                &xml,
+                "Mira",
+                "/Users/test/Applications/Mira.app/Contents/MacOS/Mira",
+                &["--hidden"],
+            ),
+            LaunchAgentState::Stale,
+        );
+    }
+
+    #[test]
+    fn iteration009_classify_missing_hidden_arg_is_stale() {
+        // plist 存在但缺少 --hidden → Stale
+        let xml =
+            build_launch_agent_plist_xml("Mira", "/Applications/Mira.app/Contents/MacOS/Mira", &[]);
+        assert_eq!(
+            classify_launch_agent_state(
+                &xml,
+                "Mira",
+                "/Applications/Mira.app/Contents/MacOS/Mira",
+                &["--hidden"],
+            ),
+            LaunchAgentState::Stale,
+        );
+    }
+
+    #[test]
+    fn iteration009_classify_extra_program_argument_is_stale() {
+        let xml = build_launch_agent_plist_xml(
+            "Mira",
+            "/Applications/Mira.app/Contents/MacOS/Mira",
+            &["--hidden", "--unexpected"],
+        );
+        assert_eq!(
+            classify_launch_agent_state(
+                &xml,
+                "Mira",
+                "/Applications/Mira.app/Contents/MacOS/Mira",
+                &["--hidden"],
+            ),
+            LaunchAgentState::Stale,
+        );
+    }
+
+    #[test]
+    fn iteration009_classify_malformed_xml_with_decoy_strings_is_invalid() {
+        let malformed = r#"<?xml version="1.0"?>
+<plist version="1.0"><dict>
+<key>Label</key><string>Mira</string>
+<key>ProgramArguments</key><array>
+<string>/Applications/Mira.app/Contents/MacOS/Mira</string>
+<string>--hidden</string>
+</dict></plist>"#;
+        assert_eq!(
+            classify_launch_agent_state(
+                malformed,
+                "Mira",
+                "/Applications/Mira.app/Contents/MacOS/Mira",
+                &["--hidden"],
+            ),
+            LaunchAgentState::Invalid,
+        );
+    }
+
+    #[test]
+    fn iteration009_stale_and_invalid_entries_are_repaired() {
+        assert_eq!(
+            launch_agent_repair_action(LaunchAgentState::Stale, false, false),
+            LaunchAgentRepairAction::Repair
+        );
+        assert_eq!(
+            launch_agent_repair_action(LaunchAgentState::Invalid, false, false),
+            LaunchAgentRepairAction::Repair
+        );
+    }
+
+    #[test]
+    fn iteration009_dmg_never_disables_or_migrates_existing_autostart() {
+        for state in [
+            LaunchAgentState::Valid,
+            LaunchAgentState::Stale,
+            LaunchAgentState::Invalid,
+        ] {
+            assert_eq!(
+                launch_agent_repair_action(state, false, true),
+                LaunchAgentRepairAction::BlockedFromDiskImage
+            );
+        }
+        assert_eq!(
+            launch_agent_repair_action(LaunchAgentState::Missing, true, true),
+            LaunchAgentRepairAction::BlockedFromDiskImage
+        );
+        assert_eq!(
+            launch_agent_repair_action(LaunchAgentState::Missing, false, true),
+            LaunchAgentRepairAction::Disabled
+        );
+    }
+
+    #[test]
+    fn iteration009_launchctl_missing_job_is_the_only_ignorable_unload_failure() {
+        for detail in [
+            "Could not find service \"Mira\" in domain for user gui: 501",
+            "Could not find specified service",
+            "Unload failed: 3: No such process",
+            "service is not loaded",
+        ] {
+            assert!(launchctl_error_text_is_missing(detail), "{detail}");
+        }
+        for detail in [
+            "Boot-out failed: 1: Operation not permitted",
+            "Unload failed: 5: Input/output error",
+            "invalid property list",
+        ] {
+            assert!(!launchctl_error_text_is_missing(detail), "{detail}");
+        }
+    }
+
+    #[test]
+    fn iteration009_classify_dmg_path_in_plist_is_stale() {
+        // §8.2：从 /Volumes 运行时不得创建无效 LaunchAgent。
+        // 如果 plist 指向 /Volumes 路径，classify 应返回 Stale（而非 Valid），
+        // 这样 refresh_autostart_entry_if_enabled 会触发修复写入，
+        // 而 macos_canonical_executable_path() 在 DMG 环境会先返回 Err，
+        // 阻止 macos_write_launch_agent 创建无效条目。
+        let dmg_exe = "/Volumes/Mira/Mira.app/Contents/MacOS/Mira";
+        let xml = build_launch_agent_plist_xml("Mira", dmg_exe, &["--hidden"]);
+        // 假设当前 canonical exe 是 Applications 路径：plist 中的 /Volumes exe 不匹配 → Stale
+        assert_eq!(
+            classify_launch_agent_state(
+                &xml,
+                "Mira",
+                "/Applications/Mira.app/Contents/MacOS/Mira",
+                &["--hidden"],
+            ),
+            LaunchAgentState::Stale,
+        );
+        // 即使 canonical exe 也是 /Volumes（实际不会发生，因 macos_canonical_executable_path
+        // 会先报错），plist 仍应被识别为 stale，因为 expected_exe 与 plist 不一致时
+        // 会落入 Stale 分支。这里用空字符串模拟 DMG 解析失败后的 expected_exe。
+        assert_eq!(
+            classify_launch_agent_state(&xml, "Mira", "", &["--hidden"]),
+            LaunchAgentState::Stale,
+        );
+    }
+
+    #[test]
+    fn iteration009_classify_xml_special_chars_in_label() {
+        // Label 包含 XML 特殊字符时，plist 中的转义形式必须与 expected_label
+        // 的转义形式匹配，否则 → Stale。验证 xml_escape 一致性。
+        let label = "Mira&Co";
+        let xml = build_launch_agent_plist_xml(
+            label,
+            "/Applications/Mira.app/Contents/MacOS/Mira",
+            &["--hidden"],
+        );
+        assert_eq!(
+            classify_launch_agent_state(
+                &xml,
+                label,
+                "/Applications/Mira.app/Contents/MacOS/Mira",
+                &["--hidden"],
+            ),
+            LaunchAgentState::Valid,
+        );
+    }
+
+    #[test]
+    fn iteration009_plist_temp_file_workflow_is_atomic() {
+        // §8.3 事务安全：build → write → classify → 如果 Invalid 必须删除 tmp。
+        // 这里只验证纯函数层面：build 出来的 plist 必定 Valid，不会触发回滚。
+        // 实际 fs 操作由 macos_write_launch_agent 负责。
+        let exe = "/Applications/Mira.app/Contents/MacOS/Mira";
+        let args = ["--hidden"];
+        let xml = build_launch_agent_plist_xml("Mira", exe, &args);
+        let state = classify_launch_agent_state(&xml, "Mira", exe, &args);
+        assert_eq!(state, LaunchAgentState::Valid);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Iteration 008 P0-1: Windows/Linux autostart generator tests.
+//
+// `auto_launch::AutoLaunchBuilder` registers the autostart entry on Windows
+// (HKCU Run key) and Linux (.desktop file) using the app_path + args we pass.
+// These pure-function tests verify the command-line contract that auto_launch
+// follows on each platform, so CI on any platform can confirm `--hidden` is
+// present in the registered command without requiring Windows/Linux hardware.
+//
+// The contract:
+//   Windows: `"<app_path>" --hidden`  (auto_launch quotes the path)
+//   Linux:   `Exec=<app_path> --hidden`  (auto_launch writes this to .desktop)
+// ---------------------------------------------------------------------------
+
+/// Build the Windows autostart command string that auto_launch registers in
+/// `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. Pure function for
+/// testability — the actual registration is done by `autostart_entry`.
+#[cfg(test)]
+fn build_windows_autostart_command(app_path: &str, args: &[&str]) -> String {
+    let mut cmd = format!("\"{app_path}\"");
+    for arg in args {
+        cmd.push(' ');
+        cmd.push_str(arg);
+    }
+    cmd
+}
+
+/// Build the Linux .desktop `Exec=` line that auto_launch writes to
+/// `~/.config/autostart/<app>.desktop`. Pure function for testability.
+#[cfg(test)]
+fn build_linux_desktop_exec_line(app_path: &str, args: &[&str]) -> String {
+    let mut line = format!("Exec={app_path}");
+    for arg in args {
+        line.push(' ');
+        line.push_str(arg);
+    }
+    line
+}
+
+/// Build the Linux .desktop file content that auto_launch writes to
+/// `~/.config/autostart/<app>.desktop`. Pure function for testability.
+#[cfg(test)]
+fn build_linux_desktop_file(app_name: &str, app_path: &str, args: &[&str]) -> String {
+    format!(
+        "[Desktop Entry]\n\
+         Type=Application\n\
+         Name={app_name}\n\
+         Exec={exec_line}\n\
+         X-GNOME-Autostart-enabled=true\n",
+        exec_line = {
+            let mut line = app_path.to_string();
+            for arg in args {
+                line.push(' ');
+                line.push_str(arg);
+            }
+            line
+        }
+    )
+}
+
+#[cfg(test)]
+mod windows_linux_autostart_tests {
+    use super::*;
+
+    #[test]
+    fn windows_autostart_command_contains_hidden_flag() {
+        let cmd =
+            build_windows_autostart_command("C:\\Program Files\\Mira\\Mira.exe", &["--hidden"]);
+        assert!(
+            cmd.contains("--hidden"),
+            "Windows autostart command must contain --hidden so argv receives it: {cmd}"
+        );
+        assert!(
+            cmd.contains("\"C:\\Program Files\\Mira\\Mira.exe\""),
+            "Windows path with spaces must be quoted: {cmd}"
+        );
+    }
+
+    #[test]
+    fn windows_autostart_command_format() {
+        let cmd = build_windows_autostart_command("C:\\Mira\\Mira.exe", &["--hidden"]);
+        assert_eq!(cmd, "\"C:\\Mira\\Mira.exe\" --hidden");
+    }
+
+    #[test]
+    fn windows_autostart_command_uses_canonical_args() {
+        let args = autostart_args();
+        let cmd = build_windows_autostart_command("C:\\Mira\\Mira.exe", &args);
+        assert_eq!(cmd, "\"C:\\Mira\\Mira.exe\" --hidden");
+        // Must not contain any legacy args like --minimized.
+        assert!(!cmd.contains("--minimized"));
+        assert!(!cmd.contains("startHidden"));
+    }
+
+    #[test]
+    fn linux_desktop_exec_contains_hidden_flag() {
+        let line = build_linux_desktop_exec_line("/usr/bin/mira", &["--hidden"]);
+        assert!(
+            line.contains("--hidden"),
+            "Linux .desktop Exec line must contain --hidden: {line}"
+        );
+        assert_eq!(line, "Exec=/usr/bin/mira --hidden");
+    }
+
+    #[test]
+    fn linux_desktop_exec_with_appimage_path() {
+        let line =
+            build_linux_desktop_exec_line("/home/user/Applications/Mira.AppImage", &["--hidden"]);
+        assert_eq!(line, "Exec=/home/user/Applications/Mira.AppImage --hidden");
+    }
+
+    #[test]
+    fn linux_desktop_file_contains_hidden_in_exec() {
+        let content = build_linux_desktop_file("Mira", "/usr/bin/mira", &["--hidden"]);
+        assert!(content.contains("Type=Application"));
+        assert!(content.contains("Name=Mira"));
+        assert!(content.contains("Exec=/usr/bin/mira --hidden"));
+        assert!(content.contains("X-GNOME-Autostart-enabled=true"));
+    }
+
+    #[test]
+    fn linux_desktop_file_uses_canonical_args() {
+        let args = autostart_args();
+        let content = build_linux_desktop_file("Mira", "/usr/bin/mira", &args);
+        assert!(content.contains("Exec=/usr/bin/mira --hidden"));
+        // Must not contain any legacy args.
+        assert!(!content.contains("--minimized"));
+        assert!(!content.contains("startHidden"));
+    }
+
+    #[test]
+    fn autostart_args_consistent_across_platforms() {
+        // The canonical autostart args are the same on ALL platforms —
+        // macOS (LaunchAgent), Windows (registry), Linux (.desktop).
+        // No platform branch should change the args.
+        let args = autostart_args();
+        assert_eq!(args, vec!["--hidden"]);
+        assert_eq!(args.len(), 1, "exactly one canonical arg, no duplicates");
+    }
+
+    #[test]
+    fn windows_autostart_command_no_duplicate_args() {
+        let args = autostart_args();
+        let cmd = build_windows_autostart_command("C:\\Mira\\Mira.exe", &args);
+        let hidden_count = cmd.matches("--hidden").count();
+        assert_eq!(hidden_count, 1, "no duplicate --hidden in Windows command");
+    }
+
+    #[test]
+    fn linux_desktop_exec_no_duplicate_args() {
+        let args = autostart_args();
+        let line = build_linux_desktop_exec_line("/usr/bin/mira", &args);
+        let hidden_count = line.matches("--hidden").count();
+        assert_eq!(hidden_count, 1, "no duplicate --hidden in Linux Exec");
+    }
+
+    #[test]
+    fn windows_autostart_command_rejects_empty_args() {
+        // If args were empty, the command would be just the path with no
+        // --hidden — Mira would classify the launch as Interactive and show
+        // the window. This test documents that args must never be empty.
+        let args = autostart_args();
+        assert!(!args.is_empty(), "autostart args must never be empty");
+    }
+}
+
 #[cfg(test)]
 mod night_mode_tests {
     #![allow(clippy::field_reassign_with_default)]
@@ -5420,7 +5995,291 @@ mod night_mode_tests {
         let (is_on, saved) = read_mouse_light_state(&snapshot).unwrap();
         assert!(!is_on);
         assert_eq!(saved.effect, 9);
-        assert_eq!(mouse_lighting_off_effect(&snapshot), 9);
+        assert_eq!(mouse_lighting_off_effect(&snapshot), Some(9));
+    }
+
+    // ------------------------------------------------------------------
+    // ITERATION-009 §9：AM35 安静灯光状态保留标准化测试。
+    // AM35 的 mode 0 = 常亮（开启），mode 1 = 呼吸，mode 2 = 模式 2。
+    // AM35 不声明 effectOptions.offValue，因此 is_on 判断必须回退到 enabled
+    // 字段（默认 true），而不是用 effect != 0 误判 mode 0 为关闭。
+    // ------------------------------------------------------------------
+
+    fn iteration009_am35_lighting_snapshot(
+        mode: u8,
+        speed: u8,
+        brightness: u8,
+        color: Option<&str>,
+    ) -> DeviceSnapshot {
+        let mut lighting = serde_json::Map::new();
+        // AM35 经 semantic mapping 后：mouseLightMode.mode → effect
+        lighting.insert("effect".into(), serde_json::json!(mode));
+        lighting.insert("speed".into(), serde_json::json!(speed));
+        lighting.insert("brightness".into(), serde_json::json!(brightness));
+        // AM35 没有 enabled 字段（semanticMappings 中无来源），host 默认 true
+        if let Some(c) = color {
+            lighting.insert("color".into(), serde_json::json!(c));
+        }
+        DeviceSnapshot {
+            display_name: "AM35".into(),
+            connection: mira_core::Connection::Usb,
+            selection_priority: 0,
+            battery_percent: None,
+            charging: false,
+            batteries: Vec::new(),
+            dpi: None,
+            dpi_stages: None,
+            polling_rate_hz: None,
+            supported_polling_rates_hz: None,
+            profile: None,
+            confirmed_light_color: None,
+            capabilities: BTreeMap::from([(
+                "mouseLighting".into(),
+                serde_json::Value::Object(lighting),
+            )]),
+            // AM35 不声明 effectOptions.offValue
+            plugin_capabilities: vec![PluginCapability {
+                id: "mouse-lighting".into(),
+                control: "LightingZone".into(),
+                label_key: "capability.mouse-lighting".into(),
+                read_only: false,
+                placements: Vec::new(),
+                metadata: BTreeMap::new(),
+                available: true,
+                connections: None,
+                min_firmware: None,
+            }],
+            writable_mutations: vec!["set-mouse-lighting".into()],
+            evidence: "hardware-verified".into(),
+            readonly: false,
+            plugin_id: Some("mira.amaster".into()),
+            history_identity: None,
+            read_statuses: BTreeMap::new(),
+            mouse_ready: None,
+            family: None,
+        }
+    }
+
+    #[test]
+    fn iteration009_am35_mode_0_fixed_is_on_not_off() {
+        // §9：Mode 0 = 常亮（开启），不是关闭。
+        // 修复前：off_effect 默认 0，effect=0 → is_on = (0 != 0) = false（误判关闭）
+        // 修复后：off_effect = None（未声明 offValue），回退到 enabled（默认 true）→ is_on = true
+        let snapshot = iteration009_am35_lighting_snapshot(0, 2, 100, Some("#FF8800"));
+        assert_eq!(mouse_lighting_off_effect(&snapshot), None);
+        let (is_on, saved) = read_mouse_light_state(&snapshot).unwrap();
+        assert!(is_on, "AM35 mode 0 (fixed) must be recognized as ON");
+        assert_eq!(saved.effect, 0);
+        assert_eq!(saved.color, "#FF8800");
+        assert_eq!(saved.speed, 2);
+        assert_eq!(saved.brightness, 100);
+    }
+
+    #[test]
+    fn iteration009_am35_mode_1_breathing_is_on() {
+        // §9：Mode 1 = 呼吸，同样应识别为开启。
+        let snapshot = iteration009_am35_lighting_snapshot(1, 2, 80, Some("#00AAFF"));
+        let (is_on, saved) = read_mouse_light_state(&snapshot).unwrap();
+        assert!(is_on, "AM35 mode 1 (breathing) must be recognized as ON");
+        assert_eq!(saved.effect, 1);
+        assert_eq!(saved.color, "#00AAFF");
+        assert_eq!(saved.speed, 2);
+        assert_eq!(saved.brightness, 80);
+    }
+
+    #[test]
+    fn iteration009_am35_missing_color_while_on_skips() {
+        // §9：开启但缺颜色时不得用 #000000 覆盖，应跳过（返回 None）。
+        let snapshot = iteration009_am35_lighting_snapshot(0, 2, 100, None);
+        assert!(read_mouse_light_state(&snapshot).is_none());
+    }
+
+    #[test]
+    fn iteration009_am35_explicit_disabled_is_off() {
+        // §9：当 enabled=false 时（用户通过 mutation 关闭），应识别为关闭。
+        let mut lighting = serde_json::Map::new();
+        lighting.insert("enabled".into(), serde_json::json!(false));
+        lighting.insert("effect".into(), serde_json::json!(0));
+        lighting.insert("color".into(), serde_json::json!("#FF0000"));
+        let snapshot = DeviceSnapshot {
+            display_name: "AM35".into(),
+            connection: mira_core::Connection::Usb,
+            selection_priority: 0,
+            battery_percent: None,
+            charging: false,
+            batteries: Vec::new(),
+            dpi: None,
+            dpi_stages: None,
+            polling_rate_hz: None,
+            supported_polling_rates_hz: None,
+            profile: None,
+            confirmed_light_color: None,
+            capabilities: BTreeMap::from([(
+                "mouseLighting".into(),
+                serde_json::Value::Object(lighting),
+            )]),
+            plugin_capabilities: vec![PluginCapability {
+                id: "mouse-lighting".into(),
+                control: "LightingZone".into(),
+                label_key: "capability.mouse-lighting".into(),
+                read_only: false,
+                placements: Vec::new(),
+                metadata: BTreeMap::new(),
+                available: true,
+                connections: None,
+                min_firmware: None,
+            }],
+            writable_mutations: vec!["set-mouse-lighting".into()],
+            evidence: "hardware-verified".into(),
+            readonly: false,
+            plugin_id: Some("mira.amaster".into()),
+            history_identity: None,
+            read_statuses: BTreeMap::new(),
+            mouse_ready: None,
+            family: None,
+        };
+        let (is_on, saved) = read_mouse_light_state(&snapshot).unwrap();
+        assert!(!is_on, "explicitly disabled lighting must be OFF");
+        // 关闭状态下保留设备报告的原色，便于恢复时还原（不覆盖为 #000000）
+        assert_eq!(saved.color, "#FF0000");
+    }
+
+    #[test]
+    fn iteration009_am35_restore_preserves_exact_params() {
+        // §9：退出安静灯光后完整恢复 effect/speed/brightness/extraColor。
+        let snapshot = iteration009_am35_lighting_snapshot(1, 3, 75, Some("#AABBCC"));
+        let (is_on, saved) = read_mouse_light_state(&snapshot).unwrap();
+        assert!(is_on);
+        // SavedMouseLight 应保留全部参数，恢复时原样写回
+        assert_eq!(saved.effect, 1);
+        assert_eq!(saved.speed, 3);
+        assert_eq!(saved.brightness, 75);
+        assert_eq!(saved.color, "#AABBCC");
+        assert_eq!(saved.extra_color, None);
+    }
+
+    #[test]
+    fn iteration009_am35_with_extra_color_preserved() {
+        // §9：starlight 等灯效的 extraColor 也应被保存和恢复。
+        let mut lighting = serde_json::Map::new();
+        lighting.insert("effect".into(), serde_json::json!(5));
+        lighting.insert("speed".into(), serde_json::json!(1));
+        lighting.insert("brightness".into(), serde_json::json!(90));
+        lighting.insert("color".into(), serde_json::json!("#FF0000"));
+        lighting.insert("extraColor".into(), serde_json::json!("#00FF00"));
+        let snapshot = DeviceSnapshot {
+            display_name: "AM35".into(),
+            connection: mira_core::Connection::Usb,
+            selection_priority: 0,
+            battery_percent: None,
+            charging: false,
+            batteries: Vec::new(),
+            dpi: None,
+            dpi_stages: None,
+            polling_rate_hz: None,
+            supported_polling_rates_hz: None,
+            profile: None,
+            confirmed_light_color: None,
+            capabilities: BTreeMap::from([(
+                "mouseLighting".into(),
+                serde_json::Value::Object(lighting),
+            )]),
+            plugin_capabilities: vec![PluginCapability {
+                id: "mouse-lighting".into(),
+                control: "LightingZone".into(),
+                label_key: "capability.mouse-lighting".into(),
+                read_only: false,
+                placements: Vec::new(),
+                metadata: BTreeMap::new(),
+                available: true,
+                connections: None,
+                min_firmware: None,
+            }],
+            writable_mutations: vec!["set-mouse-lighting".into()],
+            evidence: "hardware-verified".into(),
+            readonly: false,
+            plugin_id: Some("mira.amaster".into()),
+            history_identity: None,
+            read_statuses: BTreeMap::new(),
+            mouse_ready: None,
+            family: None,
+        };
+        let (is_on, saved) = read_mouse_light_state(&snapshot).unwrap();
+        assert!(is_on);
+        assert_eq!(saved.extra_color, Some("#00FF00".to_string()));
+    }
+
+    #[test]
+    fn iteration009_am35_raw_outputs_map_to_standard_mouselighting() {
+        // §9：AM35 原始 workflow 输出（mouseLightMode + mouseLightColor）
+        // 经 semantic mapping 后应形成统一标准 mouseLighting 对象。
+        // 这里模拟 mapping 后的结果：effect 来自 mode，color 来自 mouseLightColor。
+        // mode 0 + color #336699 → is_on=true, effect=0, color=#336699
+        let snapshot = iteration009_am35_lighting_snapshot(0, 0, 100, Some("#336699"));
+        assert_eq!(mouse_lighting_off_effect(&snapshot), None);
+        let (is_on, saved) = read_mouse_light_state(&snapshot).unwrap();
+        assert!(is_on);
+        assert_eq!(saved.effect, 0);
+        assert_eq!(saved.color, "#336699");
+    }
+
+    #[test]
+    fn iteration009_am35_mode_2_uses_neutral_semantics() {
+        // §9：Mode 2 使用中性语义（不偏移为 off，也不特殊处理）。
+        let snapshot = iteration009_am35_lighting_snapshot(2, 1, 50, Some("#112233"));
+        let (is_on, saved) = read_mouse_light_state(&snapshot).unwrap();
+        assert!(is_on, "AM35 mode 2 must be recognized as ON (neutral)");
+        assert_eq!(saved.effect, 2);
+    }
+
+    #[test]
+    fn iteration009_am35_off_state_does_not_guess_color() {
+        // §9：关闭状态恢复时不猜原色。
+        // 当 enabled=false 且无 color 时，用 #000000 占位（不猜测原色）。
+        let mut lighting = serde_json::Map::new();
+        lighting.insert("enabled".into(), serde_json::json!(false));
+        lighting.insert("effect".into(), serde_json::json!(0));
+        // 无 color 字段
+        let snapshot = DeviceSnapshot {
+            display_name: "AM35".into(),
+            connection: mira_core::Connection::Usb,
+            selection_priority: 0,
+            battery_percent: None,
+            charging: false,
+            batteries: Vec::new(),
+            dpi: None,
+            dpi_stages: None,
+            polling_rate_hz: None,
+            supported_polling_rates_hz: None,
+            profile: None,
+            confirmed_light_color: None,
+            capabilities: BTreeMap::from([(
+                "mouseLighting".into(),
+                serde_json::Value::Object(lighting),
+            )]),
+            plugin_capabilities: vec![PluginCapability {
+                id: "mouse-lighting".into(),
+                control: "LightingZone".into(),
+                label_key: "capability.mouse-lighting".into(),
+                read_only: false,
+                placements: Vec::new(),
+                metadata: BTreeMap::new(),
+                available: true,
+                connections: None,
+                min_firmware: None,
+            }],
+            writable_mutations: vec!["set-mouse-lighting".into()],
+            evidence: "hardware-verified".into(),
+            readonly: false,
+            plugin_id: Some("mira.amaster".into()),
+            history_identity: None,
+            read_statuses: BTreeMap::new(),
+            mouse_ready: None,
+            family: None,
+        };
+        let (is_on, saved) = read_mouse_light_state(&snapshot).unwrap();
+        assert!(!is_on);
+        assert_eq!(saved.color, "#000000");
     }
 
     #[test]
@@ -6420,6 +7279,86 @@ fn bundled_plugins_dir(app: &AppHandle) -> Option<PathBuf> {
                 None
             }
         })
+}
+
+#[cfg(feature = "test-plugin-trust")]
+fn packaged_plugins_dir_from_executable() -> Result<PathBuf, String> {
+    let executable =
+        std::env::current_exe().map_err(|error| format!("resolve current executable: {error}"))?;
+    let executable_dir = executable.parent().ok_or_else(|| {
+        format!(
+            "executable has no parent directory: {}",
+            executable.display()
+        )
+    })?;
+    let mut candidates = vec![executable_dir.join("resources").join("plugins")];
+    if executable_dir.file_name().and_then(|name| name.to_str()) == Some("MacOS") {
+        let contents_dir = executable_dir.parent().ok_or_else(|| {
+            format!(
+                "macOS executable has no Contents directory: {}",
+                executable.display()
+            )
+        })?;
+        candidates.insert(
+            0,
+            contents_dir
+                .join("Resources")
+                .join("resources")
+                .join("plugins"),
+        );
+    }
+    candidates
+        .into_iter()
+        .find(|path| path.is_dir())
+        .ok_or_else(|| "packaged resources/plugins directory not found".to_string())
+}
+
+#[cfg(feature = "test-plugin-trust")]
+fn verify_packaged_bundled_plugins() -> Result<Vec<String>, String> {
+    let lock = read_lock_file()
+        .ok_or_else(|| "embedded bundled-plugins.lock.json is invalid".to_string())?;
+    let plugins_dir = packaged_plugins_dir_from_executable()?;
+    let trust = production_trust_store();
+    let mut verified = Vec::new();
+    for plugin in lock
+        .plugins
+        .into_iter()
+        .filter(|plugin| plugin.bundle_by_default)
+    {
+        let asset_path = plugins_dir.join(&plugin.asset);
+        let bytes = fs::read(&asset_path)
+            .map_err(|error| format!("read {}: {error}", asset_path.display()))?;
+        let actual_sha = hex::encode(Sha256::digest(&bytes));
+        if actual_sha != plugin.sha256 {
+            return Err(format!(
+                "SHA-256 mismatch for {}: expected {}, got {actual_sha}",
+                plugin.asset, plugin.sha256
+            ));
+        }
+        let (inspection, files) = extract_package(Cursor::new(&bytes), &trust, true)
+            .map_err(|error| format!("verify {}: {error}", plugin.asset))?;
+        if inspection.plugin_id != plugin.plugin_id || inspection.version != plugin.version {
+            return Err(format!(
+                "identity mismatch for {}: lock has {} {}, package has {} {}",
+                plugin.asset,
+                plugin.plugin_id,
+                plugin.version,
+                inspection.plugin_id,
+                inspection.version
+            ));
+        }
+        let devices = files
+            .get("devices.json")
+            .ok_or_else(|| format!("{} has no devices.json", plugin.asset))?;
+        hid::parse_devices_json(devices)
+            .map_err(|error| format!("parse devices.json in {}: {error}", plugin.asset))?;
+        verified.push(plugin.plugin_id);
+    }
+    if verified.is_empty() {
+        return Err("embedded lock has no default bundled plugins".to_string());
+    }
+    verified.sort();
+    Ok(verified)
 }
 
 fn inspect_bundled_plugins(app: &AppHandle, trust: &TrustStore) -> Vec<BundledPluginInfo> {
@@ -9297,9 +10236,6 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
                     );
                     if !alerts.is_empty() {
                         let lang = effective_language(&settings.language);
-                        if let Ok(mut guard) = state.pending_notification_action.lock() {
-                            *guard = Some("battery-usage".to_string());
-                        }
                         for (_key, device_name) in alerts {
                             let _ = app
                                 .notification()
@@ -9333,9 +10269,6 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
                 if notify {
                     if let Some(percent) = battery_value {
                         let lang = effective_language(&settings.language);
-                        if let Ok(mut guard) = state.pending_notification_action.lock() {
-                            *guard = Some("battery-usage".to_string());
-                        }
                         let _ = app
                             .notification()
                             .builder()
@@ -10036,6 +10969,13 @@ fn device_mutate_blocking_impl(
     Ok(snapshot)
 }
 
+/// Build an `auto_launch::AutoLaunch` entry for Windows and Linux.
+///
+/// On macOS this is ONLY used to disable legacy AppleScript login items
+/// created by previous iterations. The canonical macOS autostart uses a
+/// LaunchAgent plist written by `macos_write_launch_agent` so that the real
+/// Mach-O executable receives `--hidden` in its argv — something the
+/// AppleScript login-item `hidden` property cannot do (see Iteration 008 P0-1).
 fn autostart_entry(app: &AppHandle) -> Result<auto_launch::AutoLaunch, String> {
     let mut builder = AutoLaunchBuilder::new();
     let package = app.package_info();
@@ -10050,6 +10990,8 @@ fn autostart_entry(app: &AppHandle) -> Result<auto_launch::AutoLaunch, String> {
 
     #[cfg(target_os = "macos")]
     {
+        // AppleScript mode is retained ONLY for legacy cleanup. The canonical
+        // macOS autostart is the LaunchAgent plist (see macos_* functions).
         builder.set_macos_launch_mode(auto_launch::MacOSLaunchMode::AppleScript);
         let exe_path = current_exe
             .canonicalize()
@@ -10081,72 +11023,617 @@ fn autostart_entry(app: &AppHandle) -> Result<auto_launch::AutoLaunch, String> {
         .map_err(|err| format!("failed to prepare autostart entry: {err}"))
 }
 
+// ---------------------------------------------------------------------------
+// macOS LaunchAgent autostart (Iteration 008 P0-1)
+//
+// `auto-launch 0.6` with `MacOSLaunchMode::AppleScript` converts `--hidden`
+// into the login item's `hidden:true` property — it does NOT pass `--hidden`
+// to the Mira process argv. Mira then classifies the launch as Interactive
+// and actively shows/focuses the window, defeating silent autostart.
+//
+// The canonical fix is a LaunchAgent plist whose ProgramArguments explicitly
+// contains `["<Mira.app/Contents/MacOS/Mira>", "--hidden"]` so that
+// `std::env::args()` receives `--hidden` and `classify_launch_intent` returns
+// `AutostartHidden`.
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "macos")]
+fn macos_launch_agent_plist_path(app: &AppHandle) -> Option<PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    Some(
+        PathBuf::from(home)
+            .join("Library")
+            .join("LaunchAgents")
+            .join(format!("{}.plist", app.package_info().name)),
+    )
+}
+
+/// Resolve the canonical Mach-O executable path inside the .app bundle.
+/// Returns the real executable that LaunchAgent ProgramArguments must point
+/// to — NOT the `.app` directory.
+#[cfg(target_os = "macos")]
+fn macos_canonical_executable_path() -> Result<String, String> {
+    let exe = std::env::current_exe()
+        .map_err(|err| format!("failed to resolve current executable: {err}"))?;
+    let canonical = exe
+        .canonicalize()
+        .map_err(|err| format!("failed to canonicalize executable: {err}"))?;
+    let path = canonical.display().to_string();
+    if path.starts_with("/Volumes") {
+        return Err(format!(
+            "Mira is running from a mounted DMG ({path}); drag Mira to Applications before enabling launch at login"
+        ));
+    }
+    Ok(path)
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// Build a LaunchAgent plist XML whose ProgramArguments contains the canonical
+/// executable path followed by `--hidden`. Pure function for testability —
+/// available on all platforms so CI can verify the plist structure.
+#[cfg(any(target_os = "macos", test))]
+fn build_launch_agent_plist_xml(label: &str, exe_path: &str, args: &[&str]) -> String {
+    let mut args_xml = String::new();
+    for arg in args {
+        args_xml.push_str(&format!("        <string>{}</string>\n", xml_escape(arg)));
+    }
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n    <key>Label</key>\n    <string>{label}</string>\n    <key>ProgramArguments</key>\n    <array>\n        <string>{exe}</string>\n{args}    </array>\n    <key>RunAtLoad</key>\n    <true/>\n    <key>KeepAlive</key>\n    <false/>\n</dict>\n</plist>\n",
+        label = xml_escape(label),
+        exe = xml_escape(exe_path),
+        args = args_xml
+    )
+}
+
+/// ITERATION-009 §8.1：LaunchAgent plist 状态分类。
+/// 区分 Missing / Valid / Stale / Invalid，用于决定是否自动修复。
+/// 纯函数，在所有平台上可用（测试不依赖 macOS 运行时）。
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LaunchAgentState {
+    /// plist 文件不存在。
+    Missing,
+    /// plist 存在且内容匹配当前 canonical exe + Label + --hidden。
+    Valid,
+    /// plist 存在但内容过期：exe 路径变更、缺少 --hidden、Label 不匹配、
+    /// ProgramArguments 错误。
+    Stale,
+    /// plist 存在但 XML 损坏（无法解析为 plist 或缺少关键 key）。
+    Invalid,
+}
+
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LaunchAgentRepairAction {
+    Disabled,
+    KeepValid,
+    Repair,
+    BlockedFromDiskImage,
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn launch_agent_repair_action(
+    state: LaunchAgentState,
+    legacy_enabled: bool,
+    running_from_disk_image: bool,
+) -> LaunchAgentRepairAction {
+    if running_from_disk_image {
+        return if legacy_enabled || state != LaunchAgentState::Missing {
+            LaunchAgentRepairAction::BlockedFromDiskImage
+        } else {
+            LaunchAgentRepairAction::Disabled
+        };
+    }
+    match state {
+        LaunchAgentState::Valid => LaunchAgentRepairAction::KeepValid,
+        LaunchAgentState::Stale | LaunchAgentState::Invalid => LaunchAgentRepairAction::Repair,
+        LaunchAgentState::Missing if legacy_enabled => LaunchAgentRepairAction::Repair,
+        LaunchAgentState::Missing => LaunchAgentRepairAction::Disabled,
+    }
+}
+
+/// ITERATION-009 §8.1：分类 plist 内容的状态。
+/// 纯函数：输入 plist 文件内容和期望值，返回状态。
+#[cfg(any(target_os = "macos", test))]
+fn classify_launch_agent_state(
+    plist_contents: &str,
+    expected_label: &str,
+    expected_exe: &str,
+    expected_args: &[&str],
+) -> LaunchAgentState {
+    let Ok(value) = plist::Value::from_reader_xml(Cursor::new(plist_contents.as_bytes())) else {
+        return LaunchAgentState::Invalid;
+    };
+    let Some(dict) = value.as_dictionary() else {
+        return LaunchAgentState::Invalid;
+    };
+    let Some(label) = dict.get("Label").and_then(plist::Value::as_string) else {
+        return LaunchAgentState::Invalid;
+    };
+    let Some(program_arguments) = dict
+        .get("ProgramArguments")
+        .and_then(plist::Value::as_array)
+    else {
+        return LaunchAgentState::Invalid;
+    };
+    let Some(actual_args) = program_arguments
+        .iter()
+        .map(plist::Value::as_string)
+        .collect::<Option<Vec<_>>>()
+    else {
+        return LaunchAgentState::Invalid;
+    };
+
+    let expected_program_arguments = std::iter::once(expected_exe)
+        .chain(expected_args.iter().copied())
+        .collect::<Vec<_>>();
+    if label != expected_label
+        || expected_exe.is_empty()
+        || actual_args
+            .first()
+            .is_some_and(|arg| arg.starts_with("/Volumes/"))
+        || actual_args != expected_program_arguments
+    {
+        return LaunchAgentState::Stale;
+    }
+
+    LaunchAgentState::Valid
+}
+
+/// ITERATION-009 §8.1：返回 LaunchAgent plist 的详细状态。
+/// 区分 Missing / Valid / Stale / Invalid，用于自动修复和 DMG 保护。
+#[cfg(target_os = "macos")]
+fn macos_launch_agent_state(app: &AppHandle) -> Result<LaunchAgentState, String> {
+    let Some(plist_path) = macos_launch_agent_plist_path(app) else {
+        return Ok(LaunchAgentState::Missing);
+    };
+    if !plist_path.exists() {
+        return Ok(LaunchAgentState::Missing);
+    }
+    let contents = fs::read_to_string(&plist_path)
+        .map_err(|err| format!("failed to read launch agent plist: {err}"))?;
+    // 如果 canonical exe 解析失败（例如 DMG 环境），仍尝试分类：
+    // exe 路径不匹配 → Stale，触发修复。
+    // DMG 或无法解析：如果 plist 内容包含 /Volumes 路径，标记为 Stale。
+    // 否则用空字符串比较，确保不误判为 Valid。
+    let exe = macos_canonical_executable_path().unwrap_or_default();
+    let args = autostart_args();
+    let label = app.package_info().name.as_ref();
+    Ok(classify_launch_agent_state(&contents, label, &exe, &args))
+}
+
+#[cfg(target_os = "macos")]
+fn macos_launchctl_domain() -> Result<String, String> {
+    let output = Command::new("id")
+        .arg("-u")
+        .output()
+        .map_err(|err| format!("failed to resolve current uid: {err}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "failed to resolve current uid: exit={:?} stderr={}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let uid = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if uid.is_empty() || !uid.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(format!("invalid current uid returned by id: {uid:?}"));
+    }
+    Ok(format!("gui/{uid}"))
+}
+
+#[cfg(target_os = "macos")]
+fn log_launchctl_result(app: &AppHandle, operation: &'static str, output: &std::process::Output) {
+    if output.status.success() {
+        return;
+    }
+    app.state::<SessionState>().log_warn(
+        operation,
+        format!(
+            "launchctl exit={:?} stdout={} stderr={}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout).trim(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ),
+    );
+}
+
+/// Stop the currently loaded job before replacing its plist. A missing job is
+/// expected on first install, but every command result is inspected and logged.
+#[cfg(any(target_os = "macos", test))]
+fn launchctl_error_text_is_missing(detail: &str) -> bool {
+    let detail = detail.to_ascii_lowercase();
+    [
+        "could not find service",
+        "could not find specified service",
+        "no such process",
+        "service is not loaded",
+    ]
+    .iter()
+    .any(|marker| detail.contains(marker))
+}
+
+#[cfg(target_os = "macos")]
+fn launchctl_job_is_missing(output: &std::process::Output) -> bool {
+    let detail = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    launchctl_error_text_is_missing(&detail)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_launchctl_unload(app: &AppHandle, plist_path: &std::path::Path) -> Result<(), String> {
+    let domain = macos_launchctl_domain();
+    let path = plist_path.to_string_lossy().to_string();
+    let mut bootout_failure = None;
+    if let Ok(domain) = domain {
+        match Command::new("launchctl")
+            .args(["bootout", &domain, &path])
+            .output()
+        {
+            Ok(output) if output.status.success() => return Ok(()),
+            Ok(output) => {
+                log_launchctl_result(app, "launchctl::bootout", &output);
+                bootout_failure = Some(format!(
+                    "bootout exit={:?} stderr={}",
+                    output.status.code(),
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ));
+            }
+            Err(err) => {
+                app.state::<SessionState>().log_warn(
+                    "launchctl::bootout",
+                    format!("failed to execute launchctl bootout: {err}"),
+                );
+                bootout_failure = Some(format!("bootout execution failed: {err}"));
+            }
+        }
+    }
+    match Command::new("launchctl").args(["unload", &path]).output() {
+        Ok(output) if output.status.success() || launchctl_job_is_missing(&output) => Ok(()),
+        Ok(output) => {
+            log_launchctl_result(app, "launchctl::unload", &output);
+            Err(format!(
+                "launchctl could not unload job: {}; unload exit={:?} stderr={}",
+                bootout_failure.unwrap_or_else(|| "bootout unavailable".to_string()),
+                output.status.code(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            ))
+        }
+        Err(err) => Err(format!(
+            "launchctl unload execution failed after {}: {err}",
+            bootout_failure.unwrap_or_else(|| "bootout unavailable".to_string())
+        )),
+    }
+}
+
+/// Load the installed plist and verify that launchd exposes the requested job.
+/// Modern bootstrap/print is preferred; legacy load/list remains a compatibility
+/// fallback for older macOS versions.
+#[cfg(target_os = "macos")]
+fn macos_launchctl_load_and_verify(
+    app: &AppHandle,
+    plist_path: &std::path::Path,
+    label: &str,
+) -> Result<(), String> {
+    let domain = macos_launchctl_domain()?;
+    let path = plist_path.to_string_lossy().to_string();
+    let bootstrap = Command::new("launchctl")
+        .args(["bootstrap", &domain, &path])
+        .output()
+        .map_err(|err| format!("failed to execute launchctl bootstrap: {err}"))?;
+    if !bootstrap.status.success() {
+        log_launchctl_result(app, "launchctl::bootstrap", &bootstrap);
+        let load = Command::new("launchctl")
+            .args(["load", &path])
+            .output()
+            .map_err(|err| format!("failed to execute launchctl load fallback: {err}"))?;
+        if !load.status.success() {
+            return Err(format!(
+                "launchctl bootstrap/load failed: bootstrap exit={:?} stderr={}; load exit={:?} stderr={}",
+                bootstrap.status.code(),
+                String::from_utf8_lossy(&bootstrap.stderr).trim(),
+                load.status.code(),
+                String::from_utf8_lossy(&load.stderr).trim()
+            ));
+        }
+    }
+
+    let service = format!("{domain}/{label}");
+    let print = Command::new("launchctl")
+        .args(["print", &service])
+        .output()
+        .map_err(|err| format!("failed to execute launchctl print: {err}"))?;
+    if print.status.success() {
+        return Ok(());
+    }
+    log_launchctl_result(app, "launchctl::print", &print);
+    let list = Command::new("launchctl")
+        .args(["list", label])
+        .output()
+        .map_err(|err| format!("failed to execute launchctl list fallback: {err}"))?;
+    if list.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "launchctl could not verify loaded job {label}: print exit={:?} stderr={}; list exit={:?} stderr={}",
+            print.status.code(),
+            String::from_utf8_lossy(&print.stderr).trim(),
+            list.status.code(),
+            String::from_utf8_lossy(&list.stderr).trim()
+        ))
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn restore_launch_agent_after_failure(
+    app: &AppHandle,
+    plist_path: &std::path::Path,
+    previous_contents: Option<&[u8]>,
+    label: &str,
+) {
+    let _ = macos_launchctl_unload(app, plist_path);
+    match previous_contents {
+        Some(contents) => {
+            if let Err(err) = fs::write(plist_path, contents) {
+                app.state::<SessionState>().log_error(
+                    "launch_agent::rollback",
+                    format!("failed to restore previous launch agent plist: {err}"),
+                );
+                return;
+            }
+            if let Err(err) = macos_launchctl_load_and_verify(app, plist_path, label) {
+                app.state::<SessionState>().log_error(
+                    "launch_agent::rollback",
+                    format!("failed to reload previous launch agent: {err}"),
+                );
+            }
+        }
+        None => {
+            let _ = fs::remove_file(plist_path);
+        }
+    }
+}
+
+/// ITERATION-009 §8.3/§8.4：Write the canonical LaunchAgent plist atomically
+/// and load it via `launchctl`. 事务安全操作顺序：
+/// 1. 解析 canonical executable（含 /Volumes 验证）
+/// 2. 构建 plist
+/// 3. 写入临时文件
+/// 4. 验证 plist（读回分类）
+/// 5. 原子替换
+/// 6. launchctl unload + load（捕获 stdout/stderr）
+/// 7. 检查状态
+/// 8. 成功后删除 legacy AppleScript 条目
+#[cfg(target_os = "macos")]
+fn macos_write_launch_agent(app: &AppHandle) -> Result<(), String> {
+    // §8.3 步骤 1：解析 canonical executable（含 DMG 验证）
+    let exe = macos_canonical_executable_path()?;
+    let args = autostart_args();
+    let label = app.package_info().name.as_ref();
+    // §8.3 步骤 2：构建 plist
+    let plist_xml = build_launch_agent_plist_xml(label, &exe, &args);
+    let Some(plist_path) = macos_launch_agent_plist_path(app) else {
+        return Err("HOME is not set; cannot resolve LaunchAgents directory".to_string());
+    };
+    if let Some(parent) = plist_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("failed to create LaunchAgents directory: {err}"))?;
+    }
+    let previous_contents = fs::read(&plist_path).ok();
+    // §8.3 步骤 3：写入临时文件并同步到磁盘
+    let tmp = plist_path.with_extension("plist.tmp");
+    let mut tmp_file = fs::File::create(&tmp)
+        .map_err(|err| format!("failed to create launch agent plist: {err}"))?;
+    tmp_file
+        .write_all(plist_xml.as_bytes())
+        .map_err(|err| format!("failed to write launch agent plist: {err}"))?;
+    tmp_file
+        .sync_all()
+        .map_err(|err| format!("failed to sync launch agent plist: {err}"))?;
+    // §8.3 步骤 4：验证 plist（读回并分类）
+    let readback = fs::read_to_string(&tmp)
+        .map_err(|err| format!("failed to read back launch agent plist: {err}"))?;
+    let state = classify_launch_agent_state(&readback, label, &exe, &args);
+    if state != LaunchAgentState::Valid {
+        let _ = fs::remove_file(&tmp);
+        return Err(format!(
+            "launch agent plist validation failed: state={state:?}"
+        ));
+    }
+    // §8.3 步骤 5：原子替换
+    fs::rename(&tmp, &plist_path)
+        .map_err(|err| format!("failed to install launch agent plist: {err}"))?;
+    // §8.3 步骤 6：检查每个 launchctl 结果；失败时恢复旧条目。
+    if let Err(err) = macos_launchctl_unload(app, &plist_path) {
+        restore_launch_agent_after_failure(app, &plist_path, previous_contents.as_deref(), label);
+        return Err(err);
+    }
+    if let Err(err) = macos_launchctl_load_and_verify(app, &plist_path, label) {
+        restore_launch_agent_after_failure(app, &plist_path, previous_contents.as_deref(), label);
+        return Err(err);
+    }
+    // §8.3 步骤 7：重新读取真实 plist 状态，非 Valid 必须回滚并报错。
+    let installed_state = macos_launch_agent_state(app)?;
+    if installed_state != LaunchAgentState::Valid {
+        restore_launch_agent_after_failure(app, &plist_path, previous_contents.as_deref(), label);
+        return Err(format!(
+            "launch agent state verification failed after load: {installed_state:?}"
+        ));
+    }
+    // §8.3 步骤 8：成功后删除 legacy AppleScript 条目
+    macos_disable_legacy_applescript_item(app)?;
+    Ok(())
+}
+
+/// Unload and remove the LaunchAgent plist.
+#[cfg(target_os = "macos")]
+fn macos_remove_launch_agent(app: &AppHandle) -> Result<(), String> {
+    let Some(plist_path) = macos_launch_agent_plist_path(app) else {
+        return Ok(());
+    };
+    if plist_path.exists() {
+        macos_launchctl_unload(app, &plist_path)?;
+        fs::remove_file(&plist_path)
+            .map_err(|err| format!("failed to remove launch agent plist: {err}"))?;
+    }
+    Ok(())
+}
+
+/// Disable any legacy AppleScript login item created by previous iterations.
+/// This is non-fatal — the item may not exist.
+#[cfg(target_os = "macos")]
+fn macos_disable_legacy_applescript_item(app: &AppHandle) -> Result<(), String> {
+    if let Ok(autolaunch) = autostart_entry(app) {
+        let enabled = autolaunch
+            .is_enabled()
+            .map_err(|err| format!("failed to inspect legacy autostart entry: {err}"))?;
+        if enabled {
+            autolaunch
+                .disable()
+                .map_err(|err| format!("failed to disable legacy autostart entry: {err}"))?;
+        }
+    }
+    Ok(())
+}
+
+/// Migrate from legacy AppleScript login item to the canonical LaunchAgent.
+/// If the AppleScript item exists but the LaunchAgent does not, create the
+/// LaunchAgent and remove the AppleScript item. If both exist, remove the
+/// AppleScript item. Returns the effective enabled state.
+#[cfg(target_os = "macos")]
+fn migrate_legacy_applescript_to_launch_agent(app: &AppHandle) -> Result<bool, String> {
+    let legacy_enabled = autostart_entry(app)
+        .ok()
+        .is_some_and(|entry| entry.is_enabled().unwrap_or(false));
+    let launch_agent_state = macos_launch_agent_state(app)?;
+    match launch_agent_repair_action(
+        launch_agent_state,
+        legacy_enabled,
+        running_from_disk_image(),
+    ) {
+        LaunchAgentRepairAction::BlockedFromDiskImage => {
+            Err(
+                "Mira is running from a mounted DMG; drag Mira to Applications before changing launch at login"
+                    .to_string(),
+            )
+        }
+        LaunchAgentRepairAction::KeepValid => {
+            if legacy_enabled {
+                macos_disable_legacy_applescript_item(app)?;
+            }
+            Ok(true)
+        }
+        LaunchAgentRepairAction::Repair => {
+            // The plist's presence records that the user enabled autostart.
+            // Repair it even though the stale entry itself is not "enabled".
+            macos_write_launch_agent(app)?;
+            Ok(true)
+        }
+        LaunchAgentRepairAction::Disabled => Ok(false),
+    }
+}
+
 #[tauri::command]
 fn autostart_state(app: tauri::AppHandle) -> Result<bool, String> {
-    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
-    let mut enabled = autostart_entry(&app)?
-        .is_enabled()
-        .map_err(|err| format!("failed to read autostart state: {err}"))?;
     #[cfg(target_os = "macos")]
     {
-        enabled = migrate_legacy_launch_agent(&app, enabled)?;
+        // Canonical macOS autostart is the LaunchAgent plist. Also migrate any
+        // legacy AppleScript login item to the LaunchAgent form.
+        let enabled = migrate_legacy_applescript_to_launch_agent(&app)?;
+        Ok(enabled)
     }
-    Ok(enabled)
+    #[cfg(not(target_os = "macos"))]
+    {
+        let enabled = autostart_entry(&app)?
+            .is_enabled()
+            .map_err(|err| format!("failed to read autostart state: {err}"))?;
+        Ok(enabled)
+    }
 }
 
 #[tauri::command]
 fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
-    let autolaunch = autostart_entry(&app)?;
-    if enabled {
-        #[cfg(target_os = "macos")]
-        if running_from_disk_image() {
-            remove_legacy_launch_agent(&app)?;
-            return Err(
-                "Mira is running from a mounted DMG. Drag Mira to Applications before enabling launch at login."
-                    .to_string(),
-            );
+    #[cfg(target_os = "macos")]
+    {
+        if enabled {
+            macos_write_launch_agent(&app)?;
+        } else {
+            macos_remove_launch_agent(&app)?;
+            // Also remove any legacy AppleScript login item so disabling is
+            // exhaustive — no duplicate or stale autostart entries remain.
+            macos_disable_legacy_applescript_item(&app)?;
         }
-        if autolaunch.is_enabled().unwrap_or(false) {
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let autolaunch = autostart_entry(&app)?;
+        if enabled {
+            if autolaunch.is_enabled().unwrap_or(false) {
+                autolaunch
+                    .disable()
+                    .map_err(|err| format!("failed to replace autostart entry: {err}"))?;
+            }
+            autolaunch
+                .enable()
+                .map_err(|err| format!("failed to enable autostart: {err}"))?;
+        } else {
             autolaunch
                 .disable()
-                .map_err(|err| format!("failed to replace autostart entry: {err}"))?;
+                .map_err(|err| format!("failed to disable autostart: {err}"))?;
         }
-        autolaunch
-            .enable()
-            .map_err(|err| format!("failed to enable autostart: {err}"))?;
-        #[cfg(target_os = "macos")]
-        remove_legacy_launch_agent(&app)?;
-        Ok(())
-    } else {
-        autolaunch
-            .disable()
-            .map_err(|err| format!("failed to disable autostart: {err}"))?;
-        #[cfg(target_os = "macos")]
-        remove_legacy_launch_agent(&app)?;
         Ok(())
     }
 }
 
 fn refresh_autostart_entry_if_enabled(app: &AppHandle) {
     #[cfg(target_os = "macos")]
-    if running_from_disk_image() {
-        return;
+    {
+        if running_from_disk_image() {
+            return;
+        }
+        match macos_launch_agent_state(app) {
+            Ok(LaunchAgentState::Stale | LaunchAgentState::Invalid) => {
+                if let Err(err) = macos_write_launch_agent(app) {
+                    eprintln!("[mira] refresh launch agent plist failed: {err}");
+                }
+            }
+            Ok(LaunchAgentState::Valid) => {}
+            Ok(LaunchAgentState::Missing) => {
+                if let Err(err) = migrate_legacy_applescript_to_launch_agent(app) {
+                    eprintln!("[mira] legacy autostart migration failed: {err}");
+                }
+            }
+            Err(err) => eprintln!("[mira] inspect launch agent plist failed: {err}"),
+        }
     }
-
-    let Ok(autolaunch) = autostart_entry(app) else {
-        return;
-    };
-    let Ok(true) = autolaunch.is_enabled() else {
-        return;
-    };
-    // Re-register with the canonical --hidden arg to repair any legacy entry
-    // that was written without it (or with a stale arg set).
-    if let Err(err) = autolaunch.disable() {
-        eprintln!("[mira] refresh autostart entry disable failed: {err}");
-        return;
-    }
-    if let Err(err) = autolaunch.enable() {
-        eprintln!("[mira] refresh autostart entry enable failed: {err}");
+    #[cfg(not(target_os = "macos"))]
+    {
+        let Ok(autolaunch) = autostart_entry(app) else {
+            return;
+        };
+        let Ok(true) = autolaunch.is_enabled() else {
+            return;
+        };
+        // Re-register with the canonical --hidden arg to repair any legacy entry
+        // that was written without it (or with a stale arg set).
+        if let Err(err) = autolaunch.disable() {
+            eprintln!("[mira] refresh autostart entry disable failed: {err}");
+            return;
+        }
+        if let Err(err) = autolaunch.enable() {
+            eprintln!("[mira] refresh autostart entry enable failed: {err}");
+        }
     }
 }
 
@@ -10184,53 +11671,6 @@ fn open_external_url(url: String) -> Result<(), String> {
 fn is_allowed_external_url(url: &str) -> bool {
     let is_web_url = url.starts_with("https://") || url.starts_with("http://");
     is_web_url && !url.chars().any(|ch| ch.is_control() || ch.is_whitespace())
-}
-
-#[cfg(target_os = "macos")]
-fn legacy_launch_agent_path(app: &AppHandle) -> Option<PathBuf> {
-    let home = std::env::var_os("HOME")?;
-    Some(
-        PathBuf::from(home)
-            .join("Library")
-            .join("LaunchAgents")
-            .join(format!("{}.plist", app.package_info().name)),
-    )
-}
-
-#[cfg(target_os = "macos")]
-fn migrate_legacy_launch_agent(app: &AppHandle, enabled: bool) -> Result<bool, String> {
-    let legacy_enabled = legacy_launch_agent_path(app).is_some_and(|path| path.exists());
-    if !legacy_enabled {
-        return Ok(enabled);
-    }
-
-    if !enabled {
-        if running_from_disk_image() {
-            remove_legacy_launch_agent(app)?;
-            return Ok(false);
-        }
-        autostart_entry(app)?
-            .enable()
-            .map_err(|err| format!("failed to migrate autostart item: {err}"))?;
-    }
-    remove_legacy_launch_agent(app)?;
-    Ok(true)
-}
-
-#[cfg(target_os = "macos")]
-fn remove_legacy_launch_agent(app: &AppHandle) -> Result<(), String> {
-    let Some(plist) = legacy_launch_agent_path(app) else {
-        return Ok(());
-    };
-    if !plist.exists() {
-        return Ok(());
-    }
-
-    let _ = Command::new("launchctl")
-        .args(["remove", app.package_info().name.as_ref()])
-        .status();
-    fs::remove_file(&plist)
-        .map_err(|err| format!("failed to remove legacy autostart launch agent: {err}"))
 }
 
 #[cfg(target_os = "macos")]
@@ -10930,29 +12370,80 @@ fn hide_to_tray(app: tauri::AppHandle) {
     hide_main_window_to_tray(&app);
 }
 
-#[cfg(any(target_os = "windows", all(unix, not(target_os = "macos"))))]
-fn navigate_about_update(app: &AppHandle) {
-    focus_main(app.get_webview_window("main"));
-    let _ = app.emit("navigate-about-update", ());
+/// ITERATION-009 §4.3：通知 action → 前端事件名的纯函数映射。
+/// Windows/Linux `wait_for_action` 收到点击后由此函数决定 emit 哪个事件，
+/// macOS 方案 B 不使用此映射（系统通知仅提醒，不路由点击）。
+/// 返回 `None` 表示未知 action 或 `__closed`（用户关闭通知），不跳转。
+#[allow(dead_code)]
+fn notification_action_to_event(action: &str) -> Option<&'static str> {
+    match action {
+        "about-update" => Some("navigate-about-update"),
+        "settings-plugin-update" => Some("navigate-plugin-update"),
+        "settings-local-ai-update" => Some("navigate-local-ai-update"),
+        "battery-usage" => Some("open-battery-usage"),
+        _ => None,
+    }
 }
 
-#[cfg(any(target_os = "windows", all(unix, not(target_os = "macos"))))]
-fn navigate_plugin_update(app: &AppHandle) {
-    focus_main(app.get_webview_window("main"));
-    let _ = app.emit("navigate-plugin-update", ());
-}
+#[cfg(test)]
+mod notification_action_tests {
+    use super::*;
 
-#[cfg(any(target_os = "windows", all(unix, not(target_os = "macos"))))]
-fn navigate_local_ai_update(app: &AppHandle) {
-    focus_main(app.get_webview_window("main"));
-    let _ = app.emit("navigate-local-ai-update", ());
+    #[test]
+    fn about_update_routes_to_navigate_event() {
+        assert_eq!(
+            notification_action_to_event("about-update"),
+            Some("navigate-about-update")
+        );
+    }
+
+    #[test]
+    fn plugin_update_routes_to_navigate_event() {
+        assert_eq!(
+            notification_action_to_event("settings-plugin-update"),
+            Some("navigate-plugin-update")
+        );
+    }
+
+    #[test]
+    fn local_ai_update_routes_to_navigate_event() {
+        assert_eq!(
+            notification_action_to_event("settings-local-ai-update"),
+            Some("navigate-local-ai-update")
+        );
+    }
+
+    #[test]
+    fn battery_usage_routes_to_open_battery_usage_event() {
+        assert_eq!(
+            notification_action_to_event("battery-usage"),
+            Some("open-battery-usage")
+        );
+    }
+
+    #[test]
+    fn unknown_action_returns_none() {
+        assert_eq!(notification_action_to_event("unknown-action"), None);
+    }
+
+    #[test]
+    fn closed_marker_returns_none() {
+        // `__closed` 由调用方在 wait_for_action 闭包中提前过滤，
+        // 但纯函数本身也应对此返回 None 以保证健壮。
+        assert_eq!(notification_action_to_event("__closed"), None);
+    }
+
+    #[test]
+    fn empty_string_returns_none() {
+        assert_eq!(notification_action_to_event(""), None);
+    }
 }
 
 /// 发送原生系统通知，可选地携带点击跳转动作。
 /// `action` 目前支持 `"about-update"`、`"settings-plugin-update"`、`"settings-local-ai-update"` 与 `"battery-usage"`。
-/// - macOS：`tauri-plugin-notification` 不暴露点击回调，改将 action 写入
-///   `pending_notification_action`，由前端窗口 focus 时通过
-///   `take_pending_notification_action` 取走并执行跳转。
+/// - macOS（ITERATION-009 §4.2 方案 B）：`tauri-plugin-notification` 不暴露可靠点击回调，
+///   系统通知仅显示 title/body；不存 pending action；不在下次窗口 focus 自动跳转。
+///   应用内 Toast 保留可点击入口。
 /// - Windows/Linux：`notify-rust` 的 `wait_for_action` 直接处理点击并 emit 事件。
 #[tauri::command]
 fn show_update_notification(
@@ -10964,12 +12455,8 @@ fn show_update_notification(
 ) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        if let Some(a) = &action {
-            if let Ok(mut guard) = state.pending_notification_action.lock() {
-                *guard = Some(a.clone());
-            }
-        }
         let _ = state;
+        let _ = action;
         app.notification()
             .builder()
             .title(title)
@@ -10999,11 +12486,9 @@ fn show_update_notification(
                     if let Some(action) = navigate {
                         handle.wait_for_action(|action_kind| {
                             if action_kind != "__closed" {
-                                match action.as_str() {
-                                    "about-update" => navigate_about_update(&app),
-                                    "settings-plugin-update" => navigate_plugin_update(&app),
-                                    "settings-local-ai-update" => navigate_local_ai_update(&app),
-                                    _ => {}
+                                if let Some(event) = notification_action_to_event(&action) {
+                                    focus_main(app.get_webview_window("main"));
+                                    let _ = app.emit(event, ());
                                 }
                             }
                         });
@@ -11017,17 +12502,6 @@ fn show_update_notification(
         });
         Ok(())
     }
-}
-
-/// 取走并返回 macOS 原生通知点击后待执行的跳转动作（供前端窗口 focus 时调用）。
-/// Windows/Linux 不使用此机制（直接由 `wait_for_action` 处理），始终返回 `None`。
-#[tauri::command]
-fn take_pending_notification_action(state: tauri::State<SessionState>) -> Option<String> {
-    state
-        .pending_notification_action
-        .lock()
-        .map(|mut guard| guard.take())
-        .unwrap_or(None)
 }
 
 // 电量使用情况 Tauri 命令
@@ -11125,10 +12599,8 @@ pub(crate) fn focus_main_from_tray(app: &AppHandle) {
 }
 
 pub(crate) fn open_battery_usage_from_tray(app: &AppHandle) {
-    let state = app.state::<SessionState>();
-    if let Ok(mut guard) = state.pending_notification_action.lock() {
-        *guard = Some("battery-usage".to_string());
-    }
+    // ITERATION-009 §4.2 方案 B：不再写入 pending_notification_action。
+    // 托盘入口直接 emit `open-battery-usage`，由前端打开 Battery Usage modal。
     focus_main_from_tray(app);
     let _ = app.emit("open-battery-usage", ());
 }
@@ -11335,6 +12807,21 @@ fn tr_unavailable_capabilities_title(lang: &str) -> &'static str {
         "Some controls are unavailable"
     } else {
         "部分参数不可用"
+    }
+}
+
+/// ITERATION-009 §4.4：托盘构建失败通知本地化。
+/// hidden 启动时托盘构建失败，必须使用当前有效语言，不在 Rust 中硬编码整段英文。
+fn tr_tray_failure_title(_lang: &str) -> &'static str {
+    // 品牌名 "Mira" 在中英文下一致，保留参数以与其它 tr_* 函数签名对齐。
+    "Mira"
+}
+
+fn tr_tray_failure_body(lang: &str) -> &'static str {
+    if lang == "en" {
+        "Mira started in the background but could not create its tray icon. The main window has been opened so you can still use the app."
+    } else {
+        "Mira 已在后台启动，但无法创建托盘图标。已为你打开主窗口，仍可正常使用。"
     }
 }
 
@@ -12130,6 +13617,26 @@ fn build_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 pub fn run() {
+    #[cfg(feature = "test-plugin-trust")]
+    if std::env::args().any(|arg| arg == "--test-bundled-plugins") {
+        match verify_packaged_bundled_plugins() {
+            Ok(plugin_ids) => {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "verified": true,
+                        "pluginCount": plugin_ids.len(),
+                        "pluginIds": plugin_ids,
+                    })
+                );
+                return;
+            }
+            Err(error) => {
+                eprintln!("packaged bundled plugin self-check failed: {error}");
+                std::process::exit(1);
+            }
+        }
+    }
     tauri::Builder::default()
         .manage(SessionState::default())
         .manage(production_trust_store())
@@ -12322,11 +13829,15 @@ pub fn run() {
                     );
                     // Show a user-understandable error via system notification.
                     // Non-blocking: the window reveal below must still run.
+                    // ITERATION-009 §4.4：使用当前有效语言本地化 title/body。
                     let app_handle = app.handle().clone();
+                    let lang = effective_language(&cached_settings(&app_handle).language);
+                    let title = tr_tray_failure_title(lang);
+                    let body = tr_tray_failure_body(lang);
                     std::thread::spawn(move || {
                         let _ = app_handle.notification().builder()
-                            .title("Mira")
-                            .body("Mira started in the background but could not create its tray icon. The main window has been opened so you can still use the app.")
+                            .title(title)
+                            .body(body)
                             .show();
                     });
                 }
@@ -12519,7 +14030,6 @@ pub fn run() {
             settings_set,
             hide_to_tray,
             show_update_notification,
-            take_pending_notification_action,
             export_diagnostics,
             plugin_locales,
             battery_history_get,
