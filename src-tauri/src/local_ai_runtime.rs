@@ -373,4 +373,158 @@ mod tests {
         )));
         assert!(!valid_trust_key_argument("dev=abc"));
     }
+
+    // ── RillML 1.0 fallback smoke ──────────────────────────────────────────
+
+    /// 构造一个通过校验的握手响应，供负面测试逐字段修改。
+    fn valid_handshake_response() -> RuntimeResponseV2 {
+        RuntimeResponseV2::Handshake {
+            request_id: "mira-handshake".into(),
+            api_version: RUNTIME_API_VERSION,
+            runtime_version: "0.7.1".into(),
+            model_pack_id: "mira.battery.default".into(),
+            model_pack_version: "0.5.0".into(),
+            capabilities: vec![BATTERY_USAGE_CAPABILITY.into()],
+            handler_id: MIRA_HANDLER_ID.into(),
+            handler_version: "0.8.2".into(),
+            handler_api_version: HANDLER_API_VERSION,
+            effective_capabilities: vec![BATTERY_USAGE_CAPABILITY.into()],
+        }
+    }
+
+    /// runtime 不存在 → `ensure_safe_runtime_file` 拒绝并返回稳定错误信息，
+    /// 上层据此优雅回退，应用不崩溃。
+    #[test]
+    fn ensure_safe_runtime_file_rejects_missing_path() {
+        let result = ensure_safe_runtime_file(Path::new("/mira-nonexistent-runtime-path-12345"));
+        assert!(result.is_err(), "missing path must be rejected");
+        let error = result.unwrap_err();
+        assert!(
+            error.contains("inspect local AI file"),
+            "error must be a stable diagnostic, got: {error}"
+        );
+    }
+
+    /// 模型包损坏（路径指向目录）→ `ensure_safe_runtime_file` 拒绝，
+    /// 上层优雅回退。
+    #[test]
+    fn ensure_safe_runtime_file_rejects_directory() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let result = ensure_safe_runtime_file(dir.path());
+        assert!(
+            result.is_err(),
+            "directory must not be accepted as a runtime file"
+        );
+        let error = result.unwrap_err();
+        assert!(
+            error.contains("not a regular file"),
+            "error must be a stable diagnostic, got: {error}"
+        );
+    }
+
+    /// 模型包损坏（路径指向符号链接）→ `ensure_safe_runtime_file` 使用
+    /// `symlink_metadata` 检测非常规文件并拒绝，防止符号链接注入。
+    #[cfg(unix)]
+    #[test]
+    fn ensure_safe_runtime_file_rejects_symlink() {
+        use std::os::unix::fs::symlink;
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let link_path = file.path().with_extension("symlink");
+        symlink(file.path(), &link_path).unwrap();
+        let result = ensure_safe_runtime_file(&link_path);
+        let cleanup_ok = std::fs::remove_file(&link_path).is_ok();
+        assert!(cleanup_ok, "symlink cleanup failed");
+        assert!(
+            result.is_err(),
+            "symlink must not be accepted as a runtime file"
+        );
+        assert!(
+            result.unwrap_err().contains("not a regular file"),
+            "error must be a stable diagnostic"
+        );
+    }
+
+    /// handler 配置失败 / SHA 不匹配 / 模型包签名错误 → rill-runtime 返回
+    /// Error 响应，`validate_handshake_response` 必须拒绝并返回稳定错误码，
+    /// 上层优雅回退。
+    #[test]
+    fn validate_handshake_rejects_error_response() {
+        // handler 配置失败
+        let response = RuntimeResponseV2::Error {
+            request_id: "mira-handshake".into(),
+            api_version: RUNTIME_API_VERSION,
+            code: "handlerConfigFailed".into(),
+            message: "model JSON invalid".into(),
+            retryable: false,
+        };
+        let result = validate_handshake_response(&response);
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert!(
+            error.contains("handlerConfigFailed"),
+            "error must contain the stable code, got: {error}"
+        );
+
+        // SHA 不匹配 / 签名验证失败
+        let response = RuntimeResponseV2::Error {
+            request_id: "mira-handshake".into(),
+            api_version: RUNTIME_API_VERSION,
+            code: "modelSignatureMismatch".into(),
+            message: "sha256 mismatch".into(),
+            retryable: false,
+        };
+        let result = validate_handshake_response(&response);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("modelSignatureMismatch"));
+    }
+
+    /// stable index 签名错误（handler_id 不匹配）→ `validate_handshake_response`
+    /// 拒绝并返回稳定错误信息，上层优雅回退。
+    #[test]
+    fn validate_handshake_rejects_wrong_handler_id() {
+        let mut response = valid_handshake_response();
+        if let RuntimeResponseV2::Handshake { handler_id, .. } = &mut response {
+            *handler_id = "some.other.handler".into();
+        }
+        let result = validate_handshake_response(&response);
+        assert!(result.is_err(), "wrong handler_id must be rejected");
+    }
+
+    /// handler API 版本不匹配 → 拒绝（RillML 1.0 要求 handlerApiVersion=1）。
+    #[test]
+    fn validate_handshake_rejects_wrong_handler_api_version() {
+        let mut response = valid_handshake_response();
+        if let RuntimeResponseV2::Handshake {
+            handler_api_version,
+            ..
+        } = &mut response
+        {
+            *handler_api_version = HANDLER_API_VERSION + 1;
+        }
+        let result = validate_handshake_response(&response);
+        assert!(
+            result.is_err(),
+            "wrong handler_api_version must be rejected"
+        );
+    }
+
+    /// handler 未声明 batteryUsage 能力 → 拒绝，Battery Usage 回退到 baseline。
+    #[test]
+    fn validate_handshake_rejects_missing_capability() {
+        let mut response = valid_handshake_response();
+        if let RuntimeResponseV2::Handshake {
+            capabilities,
+            effective_capabilities,
+            ..
+        } = &mut response
+        {
+            capabilities.clear();
+            effective_capabilities.clear();
+        }
+        let result = validate_handshake_response(&response);
+        assert!(
+            result.is_err(),
+            "missing batteryUsage capability must be rejected"
+        );
+    }
 }
