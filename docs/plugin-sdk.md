@@ -183,11 +183,15 @@ Host 判定开关状态：`readPath(switch.source) !== switch.offValue` 即为�
 
 声明式 UI 重构后，以下旧 metadata 字段已全部移除，不兼容旧插件。插件必须按新 schema 重写：
 
-`effectOptions`、`receiverLightingOptions`、`lightingRole`、`switchSource`、`bindings`、`mutation`、`mutations`、`section`、`status`、`source`、`param`、`summary`、`options`、`range`、`format`、`unit`、`actionLabel`、`params`、`label`
+`effectOptions`、`receiverLightingOptions`、`switchSource`、`bindings`、`mutation`、`mutations`、`section`、`status`、`source`、`param`、`summary`、`options`、`range`、`format`、`unit`、`actionLabel`、`params`、`label`
 
 这些字段原先直接声明在 capability 顶级或 `metadata` 下的扁平结构中，现已迁移到声明式字段（`fields`/`switch`/`zones`/`stageLayout`/`statusDisplay`/`stateMapping`/`visibleWhen`/`optionSource`/`labelSource`/`format`）。旧插件升级时需将扁平字段改写为 `fields` 数组中的 field 声明。
 
 同时，`Info` control 类型已移除。原 `Info` 控件用于纯信息展示，现由 `ReadOnlyValue` control 配合 `static-readonly` editor 替代。
+
+### `lightingRole` 的结构化回归（ITERATION-008/009）
+
+旧扁平 `metadata.lightingRole` 字段已移除，但 `lightingRole` 以**结构化 field-level 语义**重新启用：在 `LightingZone` capability 的 `zones[].fields[]` 中，单个 field 可声明 `lightingRole: "primary-color"`，用于标识该字段是当前 zone 的主颜色入口。Host 据此构建"顶部灯光带 + 最右普通颜色子块"双入口布局（详见下文「灯光双入口布局契约」）。这与旧扁平字段语义不同：旧字段作用于 capability / zone 级别，新语义作用于 field 级别，并由 `visibleWhen` 控制可见性。
 
 ## 完整示例
 
@@ -437,6 +441,108 @@ DPI 分档编辑，使用 `DpiStages` control + `stageLayout` 声明档位布局
   }
 }
 ```
+
+## 灯光双入口布局契约（ITERATION-009 §0）
+
+灯光页面同时保留两个主颜色入口：顶部横贯灯光带 + 最右普通颜色子块。两者必须绑定同一个插件 field、同一个 mutation 和同一个最新设备状态。
+
+### 布局规则
+
+```text
+[ 顶部横贯灯光带，显示当前主颜色，可选支持点击 ]
+
+[ 灯效 ] [ 候选 1 ] [ 候选 2 ] [ 候选 3 ] [ 候选 4 ] [ 主颜色 ]
+   最左                                                        最右
+```
+
+字段不足时按实际数量展示，不补空子块。
+
+### 计数与位置规则
+
+1. 顶部灯光带必须保留，使用 `lightingRole: "primary-color"` 的 field 渲染。
+2. 顶部灯光带**不计入**普通灯光子块的上限。
+3. 普通灯光子块总数最多 6 个：
+   - 1 个灯效（最左，最高优先级的 effect field）；
+   - 最多 4 个候选（按 priority 排序）；
+   - 1 个主颜色（最右，最高优先级的 `lightingRole: "primary-color"` field）。
+4. 主颜色普通子块固定在最右侧，样式复用既有 `FieldRenderer` / `modal-color` / `lighting-row-slot`，不重新设计。
+5. 灯效普通子块固定在最左侧。
+6. 中间最多 4 个高优先级候选字段。
+7. `presentation=details` 的 field 不进入首页普通 rows，仅出现在 Advanced Settings。
+
+### 双入口一致性
+
+- AM35 只使用 AM35 当前可见颜色字段；
+- Protocol A 只使用 Protocol A 当前可见颜色字段；
+- Logitech 使用 HID++ 主颜色；
+- Razer 若无可写颜色，不显示伪编辑入口；
+- 顶部灯带和最右颜色子块必须显示相同颜色；
+- 两处都遵守 `visibleWhen` 和 writable mutation；
+- 写入中两处都禁用或显示统一 busy 状态；
+- 写入成功由同一 snapshot 更新；
+- 写入失败由同一 refresh 恢复；
+- 不得因为保留两个入口而复制两份设备状态、mutation 或厂商分支。
+
+### Host 声明式依据
+
+Host 仅依据以下声明式字段构建双入口布局，**不允许硬编码** `am35`、`logitech`、`razer`、具体 capability id 或具体 field id：
+
+- `lightingRole=primary-color`
+- `priority`
+- `presentation`
+- `visibleWhen`
+- `mutation`
+- `source`
+
+### Selector 契约
+
+`selectLightingSubblocks()` 返回结构化结果：
+
+```ts
+{
+  effect,         // 最左灯效 field（最高优先级）
+  candidates,     // 最多 4 个候选 field
+  primaryColor,   // 最右主颜色 field（最高优先级 primary-color）
+  selected,       // [effect, ...candidates, primaryColor]
+  fallback        // 未选中的颜色字段进入 fallback/Advanced
+}
+```
+
+约束：
+
+- 多个 `primary-color` field 只选当前可见且最高优先级者；
+- 未选中的颜色字段进入 fallback/Advanced，不重复首页；
+- 字段不足时不补空；
+- 顶部灯带不参与 `selected` 数量上限。
+
+### AM35 安静灯光状态标准化（ITERATION-009 §9）
+
+AM35 原始 workflow 输出 `mouseLightMode` / `mouseLightColor` 等字段，必须通过插件声明式 normalization 转换为统一标准对象：
+
+```json
+{
+  "mouseLighting": {
+    "enabled": true,
+    "effect": 1,
+    "speed": 2,
+    "brightness": 100,
+    "color": "#RRGGBB",
+    "extraColor": null
+  }
+}
+```
+
+要求：
+
+- 不在 Host 写 `if am35`；
+- 通过 plugin normalization/state mapping/schema；
+- Protocol A、AM35、Logitech 使用同一 `SavedMouseLight` 路径；
+- Mode 0 是常亮，不是关闭；
+- Mode 2 使用中性语义；
+- 开启但缺颜色时不得用 `#000000` 覆盖；
+- 关闭状态恢复时不猜原色；
+- 保存 effect/speed/brightness/extraColor；
+- 退出安静灯光后完整恢复。
 
 ### sleep-time 条件可见 capability
 

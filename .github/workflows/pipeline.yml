@@ -290,6 +290,10 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 25
     permissions: { contents: write, id-token: write, attestations: write }
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
     environment: release
     concurrency:
       # Shared with the handler-only workflow so both writers serialize updates
@@ -357,8 +361,14 @@ jobs:
               fi
             fi
           fi
+          if [[ "$version" == *-* ]]; then
+            prerelease=true
+          else
+            prerelease=false
+          fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
       - name: Generate latest.json for Tauri Updater
         env:
           VERSION: ${{ steps.meta.outputs.version }}
@@ -512,12 +522,18 @@ jobs:
             gh release upload "$TAG" publish-assets/* latest.json latest-cn.json local-ai-stable-index.json --repo "$GITHUB_REPOSITORY" --clobber
             gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file release-notes.md --title "Mira $VERSION"
           else
+            release_flags=()
+            if [ '${{ steps.meta.outputs.prerelease }}' = 'true' ]; then
+              release_flags+=(--prerelease)
+            fi
             gh release create "$TAG" publish-assets/* latest.json latest-cn.json local-ai-stable-index.json \
               --target "$TARGET" \
               --title "Mira $VERSION" \
-              --notes-file release-notes.md
+              --notes-file release-notes.md \
+              "${release_flags[@]}"
           fi
       - name: Move dedicated local AI stable pointer
+        if: ${{ steps.meta.outputs.prerelease != 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET: ${{ github.sha }}
@@ -538,7 +554,7 @@ jobs:
 
   homebrew-tap:
     needs: [release-publish]
-    if: ${{ !cancelled() && needs.release-publish.result == 'success' }}
+    if: ${{ !cancelled() && needs.release-publish.result == 'success' && needs.release-publish.outputs.prerelease != 'true' }}
     runs-on: ubuntu-22.04
     timeout-minutes: 5
     steps:

@@ -650,3 +650,299 @@ describe('BatteryUsageModal', () => {
     expect(container.firstChild).toBeNull();
   });
 });
+
+// ─── P0-D 滚动淡出测试 ───────────────────────────────────────────────────────
+// 验证 BatteryUsageModal 的滚动区在内容溢出/缩短/滚动/切换等场景下，
+// 正确应用 scroll-fade-top / scroll-fade-bottom 类，且 scrollHeight ==
+// clientHeight 时不显示任何淡出。
+
+/** 可变滚动度量引用，便于测试中动态修改。 */
+interface ScrollMetrics {
+  scrollHeight: number;
+  clientHeight: number;
+  scrollTop: number;
+}
+
+/** 给 .battery-usage-scroll-region 注入可控的 scrollHeight/clientHeight/scrollTop。 */
+function injectBatteryScrollMetrics(metrics: ScrollMetrics): HTMLElement {
+  const el = document.querySelector('.battery-usage-scroll-region') as HTMLElement;
+  if (!el) throw new Error('battery-usage-scroll-region not found');
+  Object.defineProperty(el, 'scrollHeight', { configurable: true, get: () => metrics.scrollHeight });
+  Object.defineProperty(el, 'clientHeight', { configurable: true, get: () => metrics.clientHeight });
+  Object.defineProperty(el, 'scrollTop', { configurable: true, get: () => metrics.scrollTop, set: (v: number) => { metrics.scrollTop = v; } });
+  return el;
+}
+
+/** 触发 scroll 事件让 hook 重新测量。 */
+function triggerScroll(el: HTMLElement): void {
+  el.dispatchEvent(new Event('scroll', { bubbles: false }));
+}
+
+/** 等待 rAF + React 重渲染完成。 */
+function waitForRaf(): Promise<void> {
+  return new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
+}
+
+describe('BatteryUsageModal scroll fade (P0-D)', () => {
+  beforeEach(async () => {
+    invokeMock.mockReset();
+    await i18n.changeLanguage('zh-CN');
+  });
+
+  it('打开弹窗首帧无溢出，不应用任何 scroll-fade 类', async () => {
+    mockInvoke({ response: MOCK_BATTERY_HISTORY_24H });
+    render(<BatteryUsageModal open onClose={() => {}} hasBattery />);
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('battery_history_get', { range: '24h' }));
+    await waitFor(() => expect(document.querySelector('.battery-chart')).not.toBeNull());
+    const scrollRegion = document.querySelector('.battery-usage-scroll-region') as HTMLElement;
+    expect(scrollRegion).not.toBeNull();
+    // 首帧无溢出（jsdom 默认 scrollHeight=clientHeight=0）
+    expect(scrollRegion.classList.contains('scroll-fade-top')).toBe(false);
+    expect(scrollRegion.classList.contains('scroll-fade-bottom')).toBe(false);
+  });
+
+  it('loading → loaded 后无溢出', async () => {
+    mockInvoke({ response: MOCK_BATTERY_HISTORY_24H });
+    render(<BatteryUsageModal open onClose={() => {}} hasBattery />);
+    await waitFor(() => expect(document.querySelector('.battery-chart')).not.toBeNull());
+    const scrollRegion = document.querySelector('.battery-usage-scroll-region') as HTMLElement;
+    // 等待 rAF 让 hook 测量完成
+    await waitForRaf();
+    expect(scrollRegion.classList.contains('scroll-fade-top')).toBe(false);
+    expect(scrollRegion.classList.contains('scroll-fade-bottom')).toBe(false);
+  });
+
+  it('初始溢出 → insight 高度收缩后不溢出', async () => {
+    mockInvoke({ response: MOCK_BATTERY_HISTORY_24H });
+    render(<BatteryUsageModal open onClose={() => {}} hasBattery />);
+    await waitFor(() => expect(document.querySelector('.battery-chart')).not.toBeNull());
+    const metrics: ScrollMetrics = { scrollHeight: 500, clientHeight: 200, scrollTop: 0 };
+    const el = injectBatteryScrollMetrics(metrics);
+    triggerScroll(el);
+    // 初始溢出，在顶部 → 只有底部淡出
+    await waitFor(() => expect(el.classList.contains('scroll-fade-bottom')).toBe(true));
+    expect(el.classList.contains('scroll-fade-top')).toBe(false);
+    // 内容收缩到不溢出
+    metrics.scrollHeight = 200;
+    triggerScroll(el);
+    await waitFor(() => expect(el.classList.contains('scroll-fade-bottom')).toBe(false));
+    expect(el.classList.contains('scroll-fade-top')).toBe(false);
+  });
+
+  it('到顶部 → 只有底部淡出', async () => {
+    mockInvoke({ response: MOCK_BATTERY_HISTORY_24H });
+    render(<BatteryUsageModal open onClose={() => {}} hasBattery />);
+    await waitFor(() => expect(document.querySelector('.battery-chart')).not.toBeNull());
+    const metrics: ScrollMetrics = { scrollHeight: 500, clientHeight: 200, scrollTop: 0 };
+    const el = injectBatteryScrollMetrics(metrics);
+    triggerScroll(el);
+    await waitFor(() => expect(el.classList.contains('scroll-fade-bottom')).toBe(true));
+    expect(el.classList.contains('scroll-fade-top')).toBe(false);
+  });
+
+  it('滚动中间 → 上下都有淡出', async () => {
+    mockInvoke({ response: MOCK_BATTERY_HISTORY_24H });
+    render(<BatteryUsageModal open onClose={() => {}} hasBattery />);
+    await waitFor(() => expect(document.querySelector('.battery-chart')).not.toBeNull());
+    const metrics: ScrollMetrics = { scrollHeight: 500, clientHeight: 200, scrollTop: 0 };
+    const el = injectBatteryScrollMetrics(metrics);
+    triggerScroll(el);
+    // 先到顶部
+    await waitFor(() => expect(el.classList.contains('scroll-fade-bottom')).toBe(true));
+    // 滚到中间
+    metrics.scrollTop = 150;
+    triggerScroll(el);
+    await waitFor(() => expect(el.classList.contains('scroll-fade-top')).toBe(true));
+    expect(el.classList.contains('scroll-fade-bottom')).toBe(true);
+  });
+
+  it('到底部 → 只有顶部淡出', async () => {
+    mockInvoke({ response: MOCK_BATTERY_HISTORY_24H });
+    render(<BatteryUsageModal open onClose={() => {}} hasBattery />);
+    await waitFor(() => expect(document.querySelector('.battery-chart')).not.toBeNull());
+    const metrics: ScrollMetrics = { scrollHeight: 500, clientHeight: 200, scrollTop: 0 };
+    const el = injectBatteryScrollMetrics(metrics);
+    triggerScroll(el);
+    // 先到顶部
+    await waitFor(() => expect(el.classList.contains('scroll-fade-bottom')).toBe(true));
+    // 滚到底部
+    metrics.scrollTop = 300; // 300 + 200 = 500 = scrollHeight
+    triggerScroll(el);
+    await waitFor(() => expect(el.classList.contains('scroll-fade-top')).toBe(true));
+    expect(el.classList.contains('scroll-fade-bottom')).toBe(false);
+  });
+
+  it('24h → 10d 切换后淡出状态正确更新', async () => {
+    let callCount = 0;
+    invokeMock.mockImplementation((command: string, payload?: { range?: string }) => {
+      if (command === 'settings_get') return Promise.resolve(settingsEnabled);
+      if (command === 'battery_history_get') {
+        callCount += 1;
+        return Promise.resolve(payload?.range === '10d' ? MOCK_BATTERY_HISTORY_10D : MOCK_BATTERY_HISTORY_24H);
+      }
+      return Promise.resolve(undefined);
+    });
+    render(<BatteryUsageModal open onClose={() => {}} hasBattery />);
+    await waitFor(() => expect(callCount).toBe(2));
+    const metrics: ScrollMetrics = { scrollHeight: 500, clientHeight: 200, scrollTop: 0 };
+    const el = injectBatteryScrollMetrics(metrics);
+    triggerScroll(el);
+    await waitFor(() => expect(el.classList.contains('scroll-fade-bottom')).toBe(true));
+    // 切换到 10d
+    fireEvent.click(screen.getByRole('tab', { name: '10 天' }));
+    await waitFor(() => expect(document.querySelectorAll('.battery-chart g[role="button"]')).toHaveLength(30));
+    // 切换后淡出状态仍正确（容器元素不变，度量仍注入）
+    expect(el.classList.contains('scroll-fade-bottom')).toBe(true);
+    expect(el.classList.contains('scroll-fade-top')).toBe(false);
+  });
+
+  it('10d → 24h 切换后淡出状态正确更新', async () => {
+    let callCount = 0;
+    invokeMock.mockImplementation((command: string, payload?: { range?: string }) => {
+      if (command === 'settings_get') return Promise.resolve(settingsEnabled);
+      if (command === 'battery_history_get') {
+        callCount += 1;
+        return Promise.resolve(payload?.range === '10d' ? MOCK_BATTERY_HISTORY_10D : MOCK_BATTERY_HISTORY_24H);
+      }
+      return Promise.resolve(undefined);
+    });
+    render(<BatteryUsageModal open onClose={() => {}} hasBattery />);
+    await waitFor(() => expect(callCount).toBe(2));
+    // 先切到 10d
+    fireEvent.click(screen.getByRole('tab', { name: '10 天' }));
+    await waitFor(() => expect(document.querySelectorAll('.battery-chart g[role="button"]')).toHaveLength(30));
+    const metrics: ScrollMetrics = { scrollHeight: 600, clientHeight: 200, scrollTop: 0 };
+    const el = injectBatteryScrollMetrics(metrics);
+    triggerScroll(el);
+    await waitFor(() => expect(el.classList.contains('scroll-fade-bottom')).toBe(true));
+    // 切回 24h
+    fireEvent.click(screen.getByRole('tab', { name: '24 小时' }));
+    await waitFor(() => expect(document.querySelectorAll('.battery-chart g[role="button"]')).toHaveLength(48));
+    expect(el.classList.contains('scroll-fade-bottom')).toBe(true);
+    expect(el.classList.contains('scroll-fade-top')).toBe(false);
+  });
+
+  it('切换设备后淡出状态正确', async () => {
+    const multiDeviceResponse: BatteryHistoryResponse = {
+      ...MOCK_BATTERY_HISTORY_24H,
+      devices: [
+        ...MOCK_BATTERY_HISTORY_24H.devices,
+        {
+          ...MOCK_BATTERY_HISTORY_24H.devices[0],
+          key: 'mouse:xyz789:mouse',
+          deviceId: 'xyz789',
+          deviceName: 'Another Mouse',
+        },
+      ],
+    };
+    invokeMock.mockImplementation((command: string, payload?: { range?: string }) => {
+      if (command === 'settings_get') return Promise.resolve(settingsEnabled);
+      if (command === 'battery_history_get') {
+        return Promise.resolve(payload?.range === '10d' ? MOCK_BATTERY_HISTORY_10D : multiDeviceResponse);
+      }
+      return Promise.resolve(undefined);
+    });
+    render(<BatteryUsageModal open onClose={() => {}} hasBattery />);
+    await waitFor(() => expect(document.querySelector('.battery-chart')).not.toBeNull());
+    const metrics: ScrollMetrics = { scrollHeight: 500, clientHeight: 200, scrollTop: 0 };
+    const el = injectBatteryScrollMetrics(metrics);
+    triggerScroll(el);
+    await waitFor(() => expect(el.classList.contains('scroll-fade-bottom')).toBe(true));
+    // 切换设备（点击第二个设备 pill）
+    const deviceButtons = document.querySelectorAll('.battery-status-strip-device');
+    if (deviceButtons.length > 1) {
+      fireEvent.click(deviceButtons[1]);
+      await waitForRaf();
+      // 淡出状态仍正确
+      expect(el.classList.contains('scroll-fade-bottom')).toBe(true);
+    }
+  });
+
+  it('清空历史后淡出状态正确', async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'settings_get') return Promise.resolve(settingsEnabled);
+      if (command === 'battery_history_get') return Promise.resolve(MOCK_BATTERY_HISTORY_24H);
+      if (command === 'battery_history_clear') return Promise.resolve(undefined);
+      return Promise.resolve(undefined);
+    });
+    render(<BatteryUsageModal open onClose={() => {}} hasBattery />);
+    await waitFor(() => expect(document.querySelector('.battery-chart')).not.toBeNull());
+    const metrics: ScrollMetrics = { scrollHeight: 500, clientHeight: 200, scrollTop: 0 };
+    const el = injectBatteryScrollMetrics(metrics);
+    triggerScroll(el);
+    await waitFor(() => expect(el.classList.contains('scroll-fade-bottom')).toBe(true));
+    // 点击清除
+    const clearBtn = screen.getByRole('button', { name: '清除电量历史' });
+    fireEvent.click(clearBtn);
+    const confirmBtn = await screen.findByRole('button', { name: '确认清除' });
+    fireEvent.click(confirmBtn);
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('battery_history_clear', expect.anything()));
+    // 清空后度量调整为不溢出
+    metrics.scrollHeight = 200;
+    triggerScroll(el);
+    await waitFor(() => expect(el.classList.contains('scroll-fade-bottom')).toBe(false), { timeout: 2000 });
+    expect(el.classList.contains('scroll-fade-top')).toBe(false);
+  });
+
+  it('AI 开启/关闭造成卡片数量变化后淡出状态正确', async () => {
+    // 先以 AI 关闭模式打开
+    invokeMock.mockImplementation((command: string, payload?: { range?: string }) => {
+      if (command === 'settings_get') return Promise.resolve(settingsEnabled);
+      if (command === 'battery_history_get') {
+        return Promise.resolve(payload?.range === '10d' ? MOCK_BATTERY_HISTORY_10D : MOCK_BATTERY_HISTORY_24H);
+      }
+      return Promise.resolve(undefined);
+    });
+    const { rerender } = render(
+      <BatteryUsageModal open onClose={() => {}} hasBattery batteryHistoryEnabled aiAnalysisEnabled={false} />,
+    );
+    await waitFor(() => expect(document.querySelector('.battery-chart')).not.toBeNull());
+    const metrics: ScrollMetrics = { scrollHeight: 500, clientHeight: 200, scrollTop: 0 };
+    const el = injectBatteryScrollMetrics(metrics);
+    triggerScroll(el);
+    await waitFor(() => expect(el.classList.contains('scroll-fade-bottom')).toBe(true));
+    // AI 开启（卡片数量变化但容器不变，淡出状态保持）
+    rerender(
+      <BatteryUsageModal open onClose={() => {}} hasBattery batteryHistoryEnabled aiAnalysisEnabled />,
+    );
+    await waitForRaf();
+    expect(el.classList.contains('scroll-fade-bottom')).toBe(true);
+    expect(el.classList.contains('scroll-fade-top')).toBe(false);
+  });
+
+  it('窗口高度改变后重新测量', async () => {
+    mockInvoke({ response: MOCK_BATTERY_HISTORY_24H });
+    render(<BatteryUsageModal open onClose={() => {}} hasBattery />);
+    await waitFor(() => expect(document.querySelector('.battery-chart')).not.toBeNull());
+    // 初始不溢出
+    const metrics: ScrollMetrics = { scrollHeight: 200, clientHeight: 200, scrollTop: 0 };
+    const el = injectBatteryScrollMetrics(metrics);
+    triggerScroll(el);
+    await waitForRaf();
+    expect(el.classList.contains('scroll-fade-bottom')).toBe(false);
+    // 窗口缩小（clientHeight 变小）→ 内容溢出
+    metrics.clientHeight = 100;
+    window.dispatchEvent(new Event('resize'));
+    await waitFor(() => expect(el.classList.contains('scroll-fade-bottom')).toBe(true), { timeout: 2000 });
+    expect(el.classList.contains('scroll-fade-top')).toBe(false);
+  });
+
+  it('洞察卡片高度过渡结束后重新测量', async () => {
+    mockInvoke({ response: MOCK_BATTERY_HISTORY_24H });
+    render(<BatteryUsageModal open onClose={() => {}} hasBattery />);
+    await waitFor(() => expect(document.querySelector('.battery-chart')).not.toBeNull());
+    const metrics: ScrollMetrics = { scrollHeight: 200, clientHeight: 200, scrollTop: 0 };
+    const el = injectBatteryScrollMetrics(metrics);
+    triggerScroll(el);
+    await waitForRaf();
+    expect(el.classList.contains('scroll-fade-bottom')).toBe(false);
+    // 模拟 CSS height transition 结束：内容变高
+    metrics.scrollHeight = 500;
+    // 派发 transitionend 事件（target 为容器内子元素）
+    const content = document.querySelector('.battery-usage-scroll-content') as HTMLElement;
+    const transitionEvent = new TransitionEvent('transitionend', { bubbles: true });
+    Object.defineProperty(transitionEvent, 'target', { value: content, configurable: true });
+    el.dispatchEvent(transitionEvent);
+    await waitFor(() => expect(el.classList.contains('scroll-fade-bottom')).toBe(true), { timeout: 2000 });
+  });
+});

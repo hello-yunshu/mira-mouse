@@ -705,6 +705,12 @@ export function validatePlacement(placement: PluginCapabilityPlacement): string 
   if (placement.optionalPosition !== undefined && role !== 'candidate') {
     return `optionalPosition requires dashboardRole='candidate', got '${role}'`;
   }
+  if (
+    placement.compactLabelKey !== undefined
+    && (typeof placement.compactLabelKey !== 'string' || placement.compactLabelKey.trim().length === 0)
+  ) {
+    return `compactLabelKey must be a non-empty string, got ${String(placement.compactLabelKey)}`;
+  }
   return null;
 }
 
@@ -802,10 +808,50 @@ export const LIGHTING_MAX_SUBBLOCKS = 6;
 /** 灯光页面中间候选上限（effect 和 primary-color 之外）。 */
 export const LIGHTING_MAX_CANDIDATES = 4;
 
+/**
+ * P1-1 (Iteration 008)：判断一个 capability 是否是回报率（polling）能力。
+ *
+ * 判定依据（placement 语义，不硬编码 plugin/capability id）：
+ * - fixedSlot === 2（DPI=1、回报率=2、灯光=3 的固定槽位约定）；或
+ * - group === 'polling'。
+ *
+ * 只有 polling capability 的 summary 才应用 POLLING_MAX_SUBBLOCKS=3 上限。
+ * 非 polling capability 的 summary 不被截断。
+ */
+export function isPollingCapability(capability: PluginCapability): boolean {
+  return (capability.placements ?? []).some(
+    (p) => p.fixedSlot === 2 || p.group === 'polling',
+  );
+}
+
+/**
+ * P1-1 (Iteration 008)：返回一个 capability summary 的有效上限。
+ *
+ * - polling capability → POLLING_MAX_SUBBLOCKS (3)
+ * - 非 polling capability → Infinity（不截断）
+ */
+export function summaryMaxForCapability(capability: PluginCapability): number {
+  return isPollingCapability(capability) ? POLLING_MAX_SUBBLOCKS : Infinity;
+}
+
 /** 子块选择结果：selected 为入选项，fallback 为进入 Advanced Settings 的项。 */
 export interface SubblockSelection<T> {
   selected: T[];
   fallback: T[];
+}
+
+/**
+ * P0-G (Iteration 008)：灯光子块选择结果（结构化）。
+ * `primaryColor` 是 selector 选出的最高优先级、当前可见的 primary-color 字段。
+ * `effect` 是 selector 选出的最高优先级灯效字段。
+ * `selected` 仍按 [effect, ...candidates, primary-color] 顺序排列。
+ */
+export interface LightingSubblockSelection {
+  effect: PluginField | undefined;
+  candidates: PluginField[];
+  primaryColor: PluginField | undefined;
+  selected: PluginField[];
+  fallback: PluginField[];
 }
 
 /**
@@ -856,7 +902,7 @@ export function selectSummarySubblocks(
  */
 export function selectLightingSubblocks(
   fields: PluginField[],
-): SubblockSelection<PluginField> {
+): LightingSubblockSelection {
   const effects: PluginField[] = [];
   const primaryColors: PluginField[] = [];
   const candidates: PluginField[] = [];
@@ -895,7 +941,13 @@ export function selectLightingSubblocks(
     fallback.push(field);
   }
 
-  return { selected, fallback };
+  return {
+    effect: selectedEffect,
+    candidates: selectedCandidates,
+    primaryColor: selectedPrimaryColor,
+    selected,
+    fallback,
+  };
 }
 
 /// 演示模式 mutation 模拟器。深拷贝 device，遍历 pluginCapabilities 找到匹配 mutation 的可写字段，
