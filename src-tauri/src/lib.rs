@@ -3053,10 +3053,14 @@ fn device_session_log_input(
     }
 }
 
-// Production plugin signing key for hello-yunshu/mira-mouse-plugins.
-// Replace with the real key id and public key after the first production release.
-const PRODUCTION_KEY_ID: &str = "mira-plugins-2026-001";
-const PRODUCTION_PUBLIC_KEY_HEX: &str =
+// Production plugin signing keys for hello-yunshu/mira-mouse-plugins.
+// Keep previous public keys trusted while bundled or installed plugins signed
+// by them remain supported.
+const PLUGIN_PRODUCTION_KEY_001_ID: &str = "mira-plugins-2026-001";
+const PLUGIN_PRODUCTION_KEY_001_PUBLIC_KEY_HEX: &str =
+    "9f08f376f0d35b878aa9f59ce683fee1a038ddbc060a94fab3f0d01634331fad";
+const PLUGIN_PRODUCTION_KEY_002_ID: &str = "mira-plugins-2026-002";
+const PLUGIN_PRODUCTION_KEY_002_PUBLIC_KEY_HEX: &str =
     "eb80fdde2dc7ba507b6c8afbbf5a7de82e6219967edf1914ddb979d5601d39b3";
 
 // Dedicated production key for Mira's Rill model packs and signed bundle index.
@@ -3096,10 +3100,20 @@ fn decode_key(hex_str: &str) -> VerifyingKey {
 
 fn production_trust_store() -> TrustStore {
     let mut trust = TrustStore::default();
-    trust.0.insert(
-        PRODUCTION_KEY_ID.to_string(),
-        decode_key(PRODUCTION_PUBLIC_KEY_HEX),
-    );
+    for (key_id, public_key_hex) in [
+        (
+            PLUGIN_PRODUCTION_KEY_001_ID,
+            PLUGIN_PRODUCTION_KEY_001_PUBLIC_KEY_HEX,
+        ),
+        (
+            PLUGIN_PRODUCTION_KEY_002_ID,
+            PLUGIN_PRODUCTION_KEY_002_PUBLIC_KEY_HEX,
+        ),
+    ] {
+        trust
+            .0
+            .insert(key_id.to_string(), decode_key(public_key_hex));
+    }
     #[cfg(any(debug_assertions, feature = "test-plugin-trust"))]
     trust
         .0
@@ -3122,6 +3136,48 @@ mod test_plugin_trust_tests {
             .verifying_key()
             .to_bytes();
         assert_eq!(hex::encode(public), TEST_PUBLIC_KEY_HEX);
+    }
+
+    #[test]
+    fn production_trust_store_verifies_every_default_bundled_plugin() {
+        let lock = read_lock_file().expect("embedded bundled plugin lock must be valid");
+        let trust = production_trust_store();
+        let plugins_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/plugins");
+        let mut verified = Vec::new();
+
+        for plugin in lock
+            .plugins
+            .into_iter()
+            .filter(|plugin| plugin.bundle_by_default)
+        {
+            assert!(
+                trust.0.contains_key(&plugin.publisher_key_id),
+                "{} uses untrusted publisher {}",
+                plugin.plugin_id,
+                plugin.publisher_key_id
+            );
+            let asset_path = plugins_dir.join(&plugin.asset);
+            let bytes = fs::read(&asset_path)
+                .unwrap_or_else(|error| panic!("read {}: {error}", asset_path.display()));
+            assert_eq!(
+                hex::encode(Sha256::digest(&bytes)),
+                plugin.sha256,
+                "{} does not match the bundled plugin lock",
+                plugin.asset
+            );
+            let inspection = inspect_package(Cursor::new(&bytes), &trust, true)
+                .unwrap_or_else(|error| panic!("verify {}: {error}", plugin.asset));
+            assert_eq!(inspection.plugin_id, plugin.plugin_id);
+            assert_eq!(inspection.version, plugin.version);
+            assert!(inspection.signature_verified);
+            verified.push(inspection.plugin_id);
+        }
+
+        verified.sort();
+        assert_eq!(
+            verified,
+            ["mira.amaster", "mira.logitech-hidpp", "mira.razer-viper"]
+        );
     }
 }
 
@@ -4146,7 +4202,7 @@ mod settings_tests {
                     release_tag: "plugin/amaster/v1.3.5".into(),
                     url: "https://github.com/hello-yunshu/mira-mouse-plugins/releases/download/test/amaster.mira-plugin".into(),
                     sha256: "0".repeat(64),
-                    publisher_key_id: PRODUCTION_KEY_ID.into(),
+                    publisher_key_id: PLUGIN_PRODUCTION_KEY_002_ID.into(),
                     notes: None,
                 },
                 PluginRegistryEntry {
@@ -4155,7 +4211,7 @@ mod settings_tests {
                     release_tag: "plugin/logitech-hidpp/v0.6.1".into(),
                     url: "https://github.com/hello-yunshu/mira-mouse-plugins/releases/download/test/logitech.mira-plugin".into(),
                     sha256: "1".repeat(64),
-                    publisher_key_id: PRODUCTION_KEY_ID.into(),
+                    publisher_key_id: PLUGIN_PRODUCTION_KEY_002_ID.into(),
                     notes: None,
                 },
             ],
