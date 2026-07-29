@@ -1100,6 +1100,9 @@ mod tests {
         assert!(RELEASE_INDEX_URLS[0].contains("/releases/download/local-ai-stable/"));
         assert!(RELEASE_INDEX_URLS[1].contains("/releases/latest/"));
         assert_eq!(RILL_V2_PRODUCTION_KEY_ID, "mira-rill-2026-002");
-        assert_ne!(RILL_V2_PRODUCTION_KEY_ID, crate::PRODUCTION_KEY_ID);
+        assert_ne!(
+            RILL_V2_PRODUCTION_KEY_ID,
+            crate::PLUGIN_PRODUCTION_KEY_002_ID
+        );
     }
 }
