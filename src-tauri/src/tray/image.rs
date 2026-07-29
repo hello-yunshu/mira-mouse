@@ -531,6 +531,7 @@ pub fn render_mouse_icon_rgba(state: &TrayStatusState, style: &TrayVisualStyle) 
 }
 
 /// macOS 原生渲染专用：启用 0.5px 顶部补偿的 100% 满电图标。
+#[cfg(any(target_os = "macos", test))]
 pub fn render_mouse_icon_rgba_macos(state: &TrayStatusState, style: &TrayVisualStyle) -> Vec<u8> {
     let mut canvas = IconCanvas::new(ICON_SIZE, ICON_SIZE);
     draw_mouse_icon(&mut canvas, state, style, true);
