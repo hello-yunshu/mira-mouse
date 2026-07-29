@@ -250,7 +250,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full contribution guide.
 
 ## Project Status
 
-Mira is under active development. Current version: **0.9.7** (2026-07-20).
+Mira is under active development. Current version: **1.0.0-rc.1** (2026-07-29). This release candidate validates the three platform packages, production-signed plugins, and the upgrade path before the final 1.0 release.
 
 - macOS, Windows, and Linux installers released
 - AMaster (Protocol A) and Logitech (HID++ 2.0) protocols supported
