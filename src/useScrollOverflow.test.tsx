@@ -233,6 +233,55 @@ describe('useScrollFadeState', () => {
     // 在顶部
     expect(states.at(-1)).toEqual({ overflow: true, canScrollUp: false, canScrollDown: true });
   });
+
+  it('transitionend 事件触发重新测量', async () => {
+    const metrics: ScrollMetrics = { scrollHeight: 100, clientHeight: 100, scrollTop: 0 };
+    const states: ScrollFadeState[] = [];
+    const onState = (s: ScrollFadeState) => { states.push(s); };
+    const { container } = render(<ScrollFadeHarness metrics={metrics} onState={onState} />);
+    await waitFor(() => expect(states.at(-1)?.overflow).toBe(false));
+    // 内容增长（模拟 CSS height transition 结束后的新高度）
+    metrics.scrollHeight = 250;
+    const el = container.querySelector('.scroll-container') as HTMLElement;
+    // 触发 transitionend 事件（target 为容器内的子元素）
+    const child = el.querySelector('.scroll-content') as HTMLElement;
+    child.dispatchEvent(new TransitionEvent('transitionend', { bubbles: true }));
+    await waitFor(() => expect(states.at(-1)?.overflow).toBe(true), { timeout: 1500 });
+    expect(states.at(-1)).toEqual({ overflow: true, canScrollUp: false, canScrollDown: true });
+  });
+
+  it('animationend 事件触发重新测量', async () => {
+    const metrics: ScrollMetrics = { scrollHeight: 100, clientHeight: 100, scrollTop: 0 };
+    const states: ScrollFadeState[] = [];
+    const onState = (s: ScrollFadeState) => { states.push(s); };
+    const { container } = render(<ScrollFadeHarness metrics={metrics} onState={onState} />);
+    await waitFor(() => expect(states.at(-1)?.overflow).toBe(false));
+    // 内容增长（模拟 CSS animation 结束后的新高度）
+    metrics.scrollHeight = 250;
+    const el = container.querySelector('.scroll-container') as HTMLElement;
+    const child = el.querySelector('.scroll-content') as HTMLElement;
+    child.dispatchEvent(new Event('animationend', { bubbles: true }));
+    await waitFor(() => expect(states.at(-1)?.overflow).toBe(true), { timeout: 1500 });
+    expect(states.at(-1)).toEqual({ overflow: true, canScrollUp: false, canScrollDown: true });
+  });
+
+  it('卸载后 listener/observer 清理无报错', async () => {
+    const metrics: ScrollMetrics = { scrollHeight: 200, clientHeight: 100, scrollTop: 0 };
+    const { container, unmount } = render(<ScrollFadeHarness metrics={metrics} />);
+    // 等待 hook 初始化（rAF + ResizeObserver + MutationObserver 注册）
+    await waitFor(() => {});
+    await new Promise((r) => setTimeout(r, 50));
+    // 卸载：cleanup 函数应正确断开 observer、移除 listener、取消 rAF
+    expect(() => unmount()).not.toThrow();
+    // 卸载后触发事件不应报错（listener 已移除）
+    const el = container.querySelector('.scroll-container') as HTMLElement;
+    if (el) {
+      expect(() => {
+        el.dispatchEvent(new Event('scroll'));
+        window.dispatchEvent(new Event('resize'));
+      }).not.toThrow();
+    }
+  });
 });
 
 describe('useScrollOverflow (向后兼容)', () => {

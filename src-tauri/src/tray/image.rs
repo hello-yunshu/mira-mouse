@@ -335,7 +335,8 @@ fn mouse_shape_bounds(size: u32) -> (i32, i32, i32, i32) {
 ///
 /// `half_pixel_top_compensation`：为 true 时，满电（100%）顶部使用
 /// 0.5px alpha 混合补偿，使 100% 视觉高度严格大于 99%。仅 macOS 原生
-/// 渲染路径启用，PNG fallback 和其他平台保持原始 -1px 整数补偿。
+/// 渲染路径启用；PNG fallback 和其他平台 100% 时完全填满 fill_area，
+/// 无顶部补偿。
 pub fn draw_mouse_icon(
     canvas: &mut IconCanvas,
     state: &TrayStatusState,
