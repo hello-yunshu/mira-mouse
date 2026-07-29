@@ -1144,6 +1144,61 @@ function SwitchField({ field, device, writeBusy, runMutation }: {
   );
 }
 
+/// inline-range 滑杆组件。本地预览 + debounced 提交，避免拖动时每个 onChange 都发送 HID 写请求。
+/// 拖动期间只更新本地预览值（即时 UI 反馈），停止变化 150ms 后才提交一次 mutation。
+function InlineRangeSlider({ range, value, disabled, format, onChange }: {
+  range: RangeSpec;
+  value: number;
+  disabled: boolean;
+  format: PluginField['format'];
+  onChange: (numericValue: number) => void;
+}) {
+  const [pendingValue, setPendingValue] = useState<number>();
+  const [lastSeenValue, setLastSeenValue] = useState(value);
+  const debounceRef = useRef(0);
+
+  // React 推荐的 "store previous props in state" 模式：prop 变化时同步本地 state。
+  // 不使用 useEffect（避免 set-state-in-effect），不使用 ref during render（避免 refs 规则）。
+  if (lastSeenValue !== value) {
+    setLastSeenValue(value);
+    setPendingValue(undefined);
+  }
+
+  // value 变化或卸载时取消 pending debounce，避免过期 onChange 调用。
+  useEffect(() => () => window.clearTimeout(debounceRef.current), [value]);
+
+  const displayedValue = pendingValue ?? value;
+  const sliderPercent = ((displayedValue - range.min) / (range.max - range.min)) * 100;
+
+  return (
+    <div className="as-slider-wrap">
+      <input
+        type="range"
+        className="as-slider"
+        min={range.min}
+        max={range.max}
+        step={range.step ?? 1}
+        value={displayedValue}
+        disabled={disabled}
+        style={{ '--slider-percent': `${sliderPercent}%` } as React.CSSProperties}
+        onChange={(e) => {
+          const numericValue = Number(e.target.value);
+          setPendingValue(numericValue);
+          window.clearTimeout(debounceRef.current);
+          debounceRef.current = window.setTimeout(() => {
+            // value 是闭包捕获的 prop（用户拖动时的值）。
+            // 若 value 已通过外部更新变为 numericValue，effect 清理会取消此 timeout。
+            if (numericValue !== value) {
+              onChange(numericValue);
+            }
+          }, 150);
+        }}
+      />
+      <span className="as-slider-value">{formatFieldValue(displayedValue, format, i18n.t)}</span>
+    </div>
+  );
+}
+
 /// 按 field.editor 渲染字段控件。声明式，不含字段级特殊分支。
 function FieldRenderer({ field, device, writeBusy, runMutation }: {
   field: PluginField;
@@ -1225,24 +1280,16 @@ function FieldRenderer({ field, device, writeBusy, runMutation }: {
         );
       }
       const numericValue = typeof value === 'number' ? value : range.min;
-      const sliderPercent = ((numericValue - range.min) / (range.max - range.min)) * 100;
       return (
         <>
           <span>{label}</span>
-          <div className="as-slider-wrap">
-            <input
-              type="range"
-              className="as-slider"
-              min={range.min}
-              max={range.max}
-              step={range.step}
-              value={numericValue}
-              disabled={!writable}
-              style={{ '--slider-percent': `${sliderPercent}%` } as React.CSSProperties}
-              onChange={(e) => mutation && applyMutation(mutation, resolveFieldMutationParams(field, device, Number(e.target.value)))}
-            />
-            <span className="as-slider-value">{formatFieldValue(numericValue, field.format, i18n.t)}</span>
-          </div>
+          <InlineRangeSlider
+            range={range}
+            value={numericValue}
+            disabled={!writable}
+            format={field.format}
+            onChange={(v) => mutation && applyMutation(mutation, resolveFieldMutationParams(field, device, v))}
+          />
         </>
       );
     }
@@ -1724,7 +1771,8 @@ function AdvancedSettingsModal({ groups, device, writeBusy, onClose, onEditField
     : groups;
 
   const bodyRef = useRef<HTMLDivElement>(null);
-  const { canScrollUp, canScrollDown } = useScrollFadeState(bodyRef);
+  const bodyContentRef = useRef<HTMLDivElement>(null);
+  const { canScrollUp, canScrollDown } = useScrollFadeState(bodyRef, bodyContentRef);
 
   const renderEntry = (entry: AdvancedSettingsEntry, index: number) => {
     if (entry.type === 'stageLayout') {
@@ -1800,7 +1848,7 @@ function AdvancedSettingsModal({ groups, device, writeBusy, onClose, onEditField
       );
     }
 
-    // inline-range：滑杆（设计稿 .as-slider-wrap / .as-slider / .as-slider-value）。
+    // inline-range：滑杆（复用 InlineRangeSlider 组件，本地预览 + debounced 提交）。
     if (field.editor === 'inline-range') {
       const range = field.range;
       if (!range) {
@@ -1815,25 +1863,17 @@ function AdvancedSettingsModal({ groups, device, writeBusy, onClose, onEditField
         );
       }
       const numericValue = typeof value === 'number' ? value : range.min;
-      const sliderPercent = ((numericValue - range.min) / (range.max - range.min)) * 100;
       return (
         <li key={itemKey} className="as-item">
           <span className="as-item-label">{zoneLabelNode}{label}</span>
           <span className="as-item-right">
-            <div className="as-slider-wrap">
-              <input
-                type="range"
-                className="as-slider"
-                min={range.min}
-                max={range.max}
-                step={range.step}
-                value={numericValue}
-                disabled={!editable}
-                style={{ '--slider-percent': `${sliderPercent}%` } as React.CSSProperties}
-                onChange={(e) => mutation && void runMutation(mutation, resolveFieldMutationParams(field, device, Number(e.target.value)))}
-              />
-              <span className="as-slider-value">{formatFieldValue(numericValue, field.format, i18n.t)}</span>
-            </div>
+            <InlineRangeSlider
+              range={range}
+              value={numericValue}
+              disabled={!editable}
+              format={field.format}
+              onChange={(v) => mutation && void runMutation(mutation, resolveFieldMutationParams(field, device, v))}
+            />
           </span>
         </li>
       );
@@ -1927,33 +1967,35 @@ function AdvancedSettingsModal({ groups, device, writeBusy, onClose, onEditField
         </div>
       </div>
       <div ref={bodyRef} className={`as-body${canScrollUp ? ' scroll-fade-top' : ''}${canScrollDown ? ' scroll-fade-bottom' : ''}`}>
-        {filteredGroups.length === 0 ? (
-          <p className="as-empty">{i18n.t('advancedSettings.searchNoResults')}</p>
-        ) : filteredGroups.map((group) => (
-          <section key={group.section} className="advanced-settings-section" data-section={group.section}>
-            <div className="as-section-header">
-              <span className="as-section-icon">{sectionIcon(group.section)}</span>
-              <span className="as-section-title">{sectionLabel(group.section)}</span>
-            </div>
-            {group.section === 'device' && (
-              <div className="as-device-info">
-                <div className="as-device-info-icon"><Mouse weight="regular" /></div>
-                <div className="as-device-info-text">
-                  <div className="as-device-info-name">{device.name}</div>
-                  <div className="as-device-info-meta">
-                    {[
-                      typeof device.state.firmwareVersion === 'string' ? `${i18n.t('mock.firmware')} ${device.state.firmwareVersion}` : '',
-                      typeof device.state.serialNumber === 'string' ? `SN ${device.state.serialNumber}` : '',
-                    ].filter(Boolean).join(' · ')}
+        <div ref={bodyContentRef} className="as-body-content">
+          {filteredGroups.length === 0 ? (
+            <p className="as-empty">{i18n.t('advancedSettings.searchNoResults')}</p>
+          ) : filteredGroups.map((group) => (
+            <section key={group.section} className="advanced-settings-section" data-section={group.section}>
+              <div className="as-section-header">
+                <span className="as-section-icon">{sectionIcon(group.section)}</span>
+                <span className="as-section-title">{sectionLabel(group.section)}</span>
+              </div>
+              {group.section === 'device' && (
+                <div className="as-device-info">
+                  <div className="as-device-info-icon"><Mouse weight="regular" /></div>
+                  <div className="as-device-info-text">
+                    <div className="as-device-info-name">{device.name}</div>
+                    <div className="as-device-info-meta">
+                      {[
+                        typeof device.state.firmwareVersion === 'string' ? `${i18n.t('mock.firmware')} ${device.state.firmwareVersion}` : '',
+                        typeof device.state.serialNumber === 'string' ? `SN ${device.state.serialNumber}` : '',
+                      ].filter(Boolean).join(' · ')}
+                    </div>
                   </div>
                 </div>
-              </div>
-            )}
-            <ul className={`advanced-settings-list${group.section === 'device' ? ' as-device-list' : ''}`}>
-              {group.entries.map((entry, index) => renderEntry(entry, index))}
-            </ul>
-          </section>
-        ))}
+              )}
+              <ul className={`advanced-settings-list${group.section === 'device' ? ' as-device-list' : ''}`}>
+                {group.entries.map((entry, index) => renderEntry(entry, index))}
+              </ul>
+            </section>
+          ))}
+        </div>
       </div>
       <div className="as-footer">
         <span className="as-footer-hint">{i18n.t('advancedSettings.changesImmediate')}</span>
