@@ -1247,4 +1247,168 @@ mod tests {
             "O(N) EWMA on 4096 samples should be <100ms, got {elapsed:?}"
         );
     }
+
+    // ── RillML 1.0 prediction / fallback smoke ──────────────────────────────
+
+    /// 所有 handler 端 fallback reason 都必须是预定义稳定码，
+    /// 不能包含底层异常文本（保证 UI 不直接暴露内部错误）。
+    fn is_stable_fallback_reason(reason: &str) -> bool {
+        const STABLE_REASONS: &[&str] = &[
+            "noDischargingSample",
+            "emptyBattery",
+            "insufficientTrainingData",
+            "insufficientValidationData",
+            "qualityMetricsUnavailable",
+            "candidateNotBetter",
+            "candidateOutsideSafetyBounds",
+        ];
+        STABLE_REASONS.contains(&reason)
+    }
+
+    /// RillML 1.0 真实预测 smoke：用足够的放电历史调用 `predict()`，验证响应 schema、
+    /// source/reason 合法性、training_samples/validation_samples 正确性，以及
+    /// remaining_hours 为合法有限值或根据质量门正确 fallback。
+    ///
+    /// 不要求 AI 一定战胜 baseline——质量门回退也是正确结果。
+    #[test]
+    fn prediction_smoke_with_sufficient_discharge_history() {
+        let start = Utc.with_ymd_and_hms(2026, 1, 5, 0, 0, 0).unwrap();
+        let config = BatteryModelConfig::default();
+
+        // 构建 80 个放电段。每段 8 个样本、5 分钟间隔（35 分钟总时长 ≥ 30 min
+        // MIN_OBSERVATION_MINUTES），段间 15 分钟间隔（> 10 min session_gap_minutes）。
+        // 放电率随小时正弦变化，让线性模型能学习日周期模式。
+        // 最后一段是"当前未完成段"，不产生 observation，因此 79 个有效 observation。
+        let mut samples = Vec::with_capacity(640);
+        for index in 0..80u32 {
+            let segment_start = start + Duration::minutes((index * 50) as i64);
+            let hour_angle = segment_start.hour() as f64 / 24.0 * std::f64::consts::TAU;
+            // drop ∈ [3, 7]，放电率 = drop / (35/60) h，随小时正弦变化
+            let drop = (5.0 + 2.0 * hour_angle.sin()).round().clamp(3.0, 7.0) as u8;
+            for step in 0..8u32 {
+                let at = segment_start + Duration::minutes((step * 5) as i64);
+                let pct = 80u8.saturating_sub(((drop as f64 * step as f64) / 7.0).round() as u8);
+                samples.push(sample(at, pct, false));
+            }
+        }
+        let now = start + Duration::minutes(80 * 50);
+
+        let result = predict(
+            &BatteryPredictionInput {
+                now_unix_ms: now.timestamp_millis(),
+                now_timezone_offset_minutes: 0,
+                samples,
+                current_context: None,
+            },
+            &config,
+        )
+        .expect("predict must not error on valid discharge history");
+
+        // --- 响应 schema 正确性 ---
+        // source 必须是合法枚举变体
+        assert!(
+            result.source == PredictionSource::LocalAi
+                || result.source == PredictionSource::BaselineRecommended,
+            "source must be a valid PredictionSource variant, got {:?}",
+            result.source
+        );
+
+        // training_samples：79 个 observation 都经过 model.learn()
+        assert_eq!(result.training_samples, 79);
+        // validation_samples 不超过 training_samples
+        assert!(
+            result.validation_samples <= result.training_samples,
+            "validation_samples ({}) must not exceed training_samples ({})",
+            result.validation_samples,
+            result.training_samples
+        );
+
+        // --- source / reason / remaining_hours 一致性 ---
+        match result.source {
+            PredictionSource::LocalAi => {
+                // 通过质量门：remaining_hours 必须是合法有限正值
+                let hours = result
+                    .remaining_hours
+                    .expect("LocalAi source must carry remaining_hours");
+                assert!(
+                    hours.is_finite() && hours > 0.0 && hours <= config.max_remaining_hours,
+                    "remaining_hours must be finite, positive, and within bounds, got {hours}"
+                );
+                assert_eq!(
+                    result.reason, "candidatePassedQualityGate",
+                    "LocalAi source must carry candidatePassedQualityGate reason"
+                );
+                // 质量门已过 → validation_samples 必须达标
+                assert!(result.validation_samples >= config.min_validation_samples);
+            }
+            PredictionSource::BaselineRecommended => {
+                // 质量门回退：remaining_hours 必须为 None
+                assert_eq!(
+                    result.remaining_hours, None,
+                    "BaselineRecommended must not carry remaining_hours"
+                );
+                // reason 必须是稳定错误码，不能是底层异常文本
+                assert!(
+                    is_stable_fallback_reason(&result.reason),
+                    "fallback reason must be a stable code, got: {}",
+                    result.reason
+                );
+            }
+        }
+    }
+
+    /// 验证 `predict()` 的各 fallback 路径都返回稳定错误码而非底层异常文本，
+    /// 且 remaining_hours 一致地为 None（Battery Usage 回退到 deterministic baseline）。
+    #[test]
+    fn prediction_smoke_fallback_reasons_are_stable_codes() {
+        let now = test_now();
+        let config = BatteryModelConfig::default();
+
+        // 无放电样本（全部充电中）→ noDischargingSample
+        let result = predict(
+            &BatteryPredictionInput {
+                now_unix_ms: now.timestamp_millis(),
+                now_timezone_offset_minutes: 0,
+                samples: vec![sample(now, 80, true)],
+                current_context: None,
+            },
+            &config,
+        )
+        .unwrap();
+        assert_eq!(result.source, PredictionSource::BaselineRecommended);
+        assert_eq!(result.reason, "noDischargingSample");
+        assert!(result.remaining_hours.is_none());
+        assert_eq!(result.training_samples, 0);
+
+        // 电量为 0 → emptyBattery
+        let result = predict(
+            &BatteryPredictionInput {
+                now_unix_ms: now.timestamp_millis(),
+                now_timezone_offset_minutes: 0,
+                samples: vec![sample(now, 0, false)],
+                current_context: None,
+            },
+            &config,
+        )
+        .unwrap();
+        assert_eq!(result.source, PredictionSource::BaselineRecommended);
+        assert_eq!(result.reason, "emptyBattery");
+        assert!(result.remaining_hours.is_none());
+
+        // 单个放电样本（无完整放电段）→ insufficientTrainingData
+        let result = predict(
+            &BatteryPredictionInput {
+                now_unix_ms: now.timestamp_millis(),
+                now_timezone_offset_minutes: 0,
+                samples: vec![sample(now, 80, false)],
+                current_context: None,
+            },
+            &config,
+        )
+        .unwrap();
+        assert_eq!(result.source, PredictionSource::BaselineRecommended);
+        assert_eq!(result.reason, "insufficientTrainingData");
+        assert_eq!(result.training_samples, 0);
+        assert!(result.remaining_hours.is_none());
+    }
 }
