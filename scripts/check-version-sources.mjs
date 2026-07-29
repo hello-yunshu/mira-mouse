@@ -64,6 +64,29 @@ if (/package\.json['"]?\)\.version|package\.json['"]?\]\.version/.test(workflow)
   throw new Error('.github/workflows/pipeline.yml must not read the app version from package.json');
 }
 
+const cliReleaseWorkflow = await readFile('.github/workflows/mira-plugin-cli-release.yml', 'utf8');
+if (/\bmacos-13\b/.test(cliReleaseWorkflow)) {
+  throw new Error('.github/workflows/mira-plugin-cli-release.yml must not use the retired macos-13 runner');
+}
+if (
+  !cliReleaseWorkflow.includes('runner: macos-15') ||
+  !cliReleaseWorkflow.includes('runner: macos-15-intel')
+) {
+  throw new Error(
+    '.github/workflows/mira-plugin-cli-release.yml must build both Apple Silicon and Intel macOS targets',
+  );
+}
+if (!cliReleaseWorkflow.includes('sudo apt-get install -y libudev-dev')) {
+  throw new Error(
+    '.github/workflows/mira-plugin-cli-release.yml must install the Linux hidapi build dependency',
+  );
+}
+if (!cliReleaseWorkflow.includes('shasum -a 256')) {
+  throw new Error(
+    '.github/workflows/mira-plugin-cli-release.yml must support SHA-256 generation on macOS',
+  );
+}
+
 const modelPackWorkflow = await readFile('.github/workflows/model-pack.yml', 'utf8');
 const previewWorkflow = await readFile('.github/workflows/preview.yml', 'utf8');
 const handlerReleaseWorkflow = await readFile(
@@ -149,6 +172,14 @@ const modelManifest = JSON.parse(await readFile('local-ai/model-manifest.json', 
 if (!semver.test(modelManifest.version)) {
   throw new Error('local-ai/model-manifest.json must define a SemVer version');
 }
+
+const localAiCargo = await readFile('crates/mira-local-ai/Cargo.toml', 'utf8');
+assertSynced(
+  'crates/mira-local-ai/Cargo.toml mira-protocol dependency',
+  localAiCargo,
+  /^mira-protocol\s*=\s*\{\s*version\s*=\s*"(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)"/m,
+  appVersion,
+);
 
 const citation = await readFile('CITATION.cff', 'utf8');
 assertSynced('CITATION.cff', citation, /^version:\s*(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)/m, appVersion);
