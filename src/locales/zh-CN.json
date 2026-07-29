@@ -339,6 +339,7 @@
       "updatable": "可更新至 v{{version}}",
       "updating": "更新中…",
       "updateBundle": "更新",
+      "updated": "已更新至 v{{version}}",
       "rollbackBundle": "回退",
       "automaticCheckLabel": "自动检查 AI 引擎更新",
       "automaticCheckHint": "启动后每 6 小时，以及网络恢复或回到前台后，检查本地 AI 引擎是否有新版本",
@@ -452,6 +453,7 @@
       "defaultBundled": "默认内置",
       "updatable": "可更新至 v{{version}}",
       "updating": "正在更新…",
+      "updated": "已更新至 v{{version}}",
       "update": "更新插件",
       "stage": {
         "downloading": "下载插件包",
