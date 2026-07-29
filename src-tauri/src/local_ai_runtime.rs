@@ -318,7 +318,7 @@ mod tests {
     fn rill_trust_key_is_valid_and_separate_from_plugin_signing() {
         assert_ne!(
             RILL_PRODUCTION_PUBLIC_KEY_HEX,
-            crate::PRODUCTION_PUBLIC_KEY_HEX
+            crate::PLUGIN_PRODUCTION_KEY_002_PUBLIC_KEY_HEX
         );
         assert_ne!(RILL_HANDLER_PUBLIC_KEY_HEX, RILL_PRODUCTION_PUBLIC_KEY_HEX);
         assert_ne!(
