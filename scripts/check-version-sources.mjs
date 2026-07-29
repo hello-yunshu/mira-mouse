@@ -187,4 +187,15 @@ assertSynced('CITATION.cff', citation, /^version:\s*(\d+\.\d+\.\d+(?:[-+][0-9A-Z
 const roadmap = await readFile('ROADMAP.md', 'utf8');
 assertSynced('ROADMAP.md', roadmap, /\*\*版本\s*(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)\s*\*\*/, appVersion);
 
+for (const path of ['README.md', 'README.en.md']) {
+  const readme = await readFile(path, 'utf8');
+  for (const [label, pattern] of [
+    ['macOS download', /releases\/latest\/download\/Mira_macOS_(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)_aarch64\.dmg/],
+    ['Windows download', /releases\/latest\/download\/Mira_Windows_(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)_x64-setup\.exe/],
+    ['Linux download', /releases\/latest\/download\/Mira_Linux_(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)_amd64\.AppImage/],
+  ]) {
+    assertSynced(`${path} ${label}`, readme, pattern, appVersion);
+  }
+}
+
 console.log(`app version source: Cargo.toml [workspace.package].version = ${appVersion}`);
