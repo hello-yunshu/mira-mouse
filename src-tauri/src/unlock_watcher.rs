@@ -269,7 +269,7 @@ fn spawn_windows(app: AppHandle) {
                 ptr::null_mut(),
                 ptr::null_mut(),
                 h_instance,
-                ptr::null(),
+                ptr::null_mut(),
             )
         };
         if hwnd.is_null() {
