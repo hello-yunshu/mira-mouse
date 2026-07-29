@@ -1657,6 +1657,251 @@ mod tests {
         assert_eq!(reading.batteries[1].percentage, 50);
     }
 
+    /// AMaster INFINITY MOUSE .100 (protocol-a-receiver) 端到端电池测试。
+    /// 0xF7 receiver-status 报文：offset 2 = mouseBattery, offset 4 = mouseOnline,
+    /// offset 10 = receiverBattery。dedicated 0xD6 battery response offset 3 = 鼠标主电量。
+    /// 反编译证据：mouse_battery = res[2]; dongle_battery = res[10]。
+
+    #[test]
+    fn amaster_100_separates_mouse_and_receiver_batteries() {
+        // mouse=17, receiver=40 两个值独立解析，互不覆盖。
+        let outputs = BTreeMap::from([(
+            "receiver".into(),
+            json!({"mouseBattery": 17, "mouseOnline": true, "receiverBattery": 40}),
+        )]);
+        let reading = standard_reading(outputs, None, BTreeMap::new());
+        // Hero 主电量使用 mouse 17%，不是 receiver 40%。
+        assert_eq!(reading.battery_percent, Some(17));
+        assert_eq!(reading.batteries.len(), 2);
+        assert_eq!(reading.batteries[0].id, "mouse");
+        assert_eq!(reading.batteries[0].percentage, 17);
+        assert_eq!(reading.batteries[1].id, "receiver");
+        assert_eq!(reading.batteries[1].percentage, 40);
+    }
+
+    #[test]
+    fn amaster_100_battery_snapshot_contains_independent_entries() {
+        // DeviceSnapshot batteries 包含独立的 mouse 与 receiver 条目。
+        let outputs = BTreeMap::from([(
+            "receiver".into(),
+            json!({"mouseBattery": 17, "mouseOnline": true, "receiverBattery": 40}),
+        )]);
+        let reading = standard_reading(outputs, None, BTreeMap::new());
+        let mouse = reading
+            .batteries
+            .iter()
+            .find(|b| b.id == "mouse")
+            .expect("mouse battery entry must exist");
+        let receiver = reading
+            .batteries
+            .iter()
+            .find(|b| b.id == "receiver")
+            .expect("receiver battery entry must exist");
+        assert_eq!(mouse.percentage, 17);
+        assert_eq!(receiver.percentage, 40);
+        assert_ne!(mouse.percentage, receiver.percentage);
+        assert_ne!(mouse.id, receiver.id);
+    }
+
+    #[test]
+    fn amaster_100_offset10_zero_hides_receiver_battery() {
+        // offset10=0 → 接收器电量不显示，不创建 0% 接收器组件。
+        let outputs = BTreeMap::from([(
+            "receiver".into(),
+            json!({"mouseBattery": 17, "mouseOnline": true, "receiverBattery": 0}),
+        )]);
+        let reading = standard_reading(outputs, None, BTreeMap::new());
+        assert_eq!(reading.battery_percent, Some(17));
+        assert_eq!(reading.batteries.len(), 1);
+        assert_eq!(reading.batteries[0].id, "mouse");
+        assert_eq!(reading.batteries[0].percentage, 17);
+        assert!(
+            reading.batteries.iter().all(|b| b.id != "receiver"),
+            "receiver battery must not appear when offset10=0"
+        );
+    }
+
+    #[test]
+    fn amaster_100_offset10_full_reports_receiver_100() {
+        // offset10=100 → 接收器满电 100%。
+        let outputs = BTreeMap::from([(
+            "receiver".into(),
+            json!({"mouseBattery": 17, "mouseOnline": true, "receiverBattery": 100}),
+        )]);
+        let reading = standard_reading(outputs, None, BTreeMap::new());
+        let receiver = reading
+            .batteries
+            .iter()
+            .find(|b| b.id == "receiver")
+            .expect("receiver battery must exist at 100%");
+        assert_eq!(receiver.percentage, 100);
+    }
+
+    #[test]
+    fn amaster_100_offset10_invalid_does_not_clamp() {
+        // offset10=101 → 无效，不 clamp 到 100%，不显示接收器电量。
+        let outputs = BTreeMap::from([(
+            "receiver".into(),
+            json!({"mouseBattery": 17, "mouseOnline": true, "receiverBattery": 101}),
+        )]);
+        let reading = standard_reading(outputs, None, BTreeMap::new());
+        assert_eq!(reading.battery_percent, Some(17));
+        assert!(
+            reading.batteries.iter().all(|b| b.id != "receiver"),
+            "receiver battery must not appear when offset10=101"
+        );
+        // 关键断言：不得 clamp 到 100%。
+        assert!(
+            reading
+                .batteries
+                .iter()
+                .all(|b| !(b.id == "receiver" && b.percentage == 100)),
+            "receiver battery must not be clamped to 100"
+        );
+    }
+
+    #[test]
+    fn amaster_100_mouse_offline_hides_mouse_battery() {
+        // mouseOnline=false → mouse 电量不显示，receiver 不得顶替 mouse 成 Hero 主电量。
+        let outputs = BTreeMap::from([(
+            "receiver".into(),
+            json!({"mouseBattery": 0, "mouseOnline": false, "receiverBattery": 40}),
+        )]);
+        let reading = standard_reading(outputs, None, BTreeMap::new());
+        // Hero 主电量必须为 None（mouse 离线），不得用 receiver 40 顶替。
+        assert_eq!(reading.battery_percent, None);
+        assert!(
+            reading.batteries.iter().all(|b| b.id != "mouse"),
+            "mouse battery must not appear when mouseOnline=false"
+        );
+        // receiver 40 仍然作为独立组件显示。
+        let receiver = reading
+            .batteries
+            .iter()
+            .find(|b| b.id == "receiver")
+            .expect("receiver battery must still appear");
+        assert_eq!(receiver.percentage, 40);
+    }
+
+    #[test]
+    fn amaster_100_survives_missing_dedicated_battery_response() {
+        // dedicated 0xD6 mouse battery response 暂时缺失 → 优雅处理，
+        // 从 receiver-status offset 2 回退获取 mouse 电量。
+        let outputs = BTreeMap::from([(
+            "receiver".into(),
+            json!({"mouseBattery": 17, "mouseOnline": true, "receiverBattery": 40}),
+        )]);
+        let reading = standard_reading(outputs, None, BTreeMap::new());
+        // 没有 battery output 时，mouse 电量来自 receiver.mouseBattery。
+        assert_eq!(reading.battery_percent, Some(17));
+        let mouse = reading
+            .batteries
+            .iter()
+            .find(|b| b.id == "mouse")
+            .expect("mouse battery must fall back to receiver-status offset 2");
+        assert_eq!(mouse.percentage, 17);
+    }
+
+    #[test]
+    fn amaster_100_forbids_offset2_as_receiver_battery() {
+        // 禁止：不得把 offset 2 (mouseBattery) 当作接收器电量。
+        let outputs = BTreeMap::from([(
+            "receiver".into(),
+            json!({"mouseBattery": 17, "mouseOnline": true, "receiverBattery": 40}),
+        )]);
+        let reading = standard_reading(outputs, None, BTreeMap::new());
+        let receiver = reading
+            .batteries
+            .iter()
+            .find(|b| b.id == "receiver")
+            .expect("receiver entry must exist");
+        // receiver 必须是 40（offset 10），绝不能是 17（offset 2）。
+        assert_eq!(receiver.percentage, 40);
+        assert_ne!(receiver.percentage, 17);
+    }
+
+    #[test]
+    fn amaster_100_forbids_receiver_overwriting_mouse_hero() {
+        // 禁止：不得把 receiver 40 覆盖 mouse 17 成为 Hero 主电量。
+        let outputs = BTreeMap::from([(
+            "receiver".into(),
+            json!({"mouseBattery": 17, "mouseOnline": true, "receiverBattery": 40}),
+        )]);
+        let reading = standard_reading(outputs, None, BTreeMap::new());
+        // Hero 主电量必须是 17，不得被 receiver 40 覆盖。
+        assert_eq!(reading.battery_percent, Some(17));
+        assert_ne!(reading.battery_percent, Some(40));
+    }
+
+    #[test]
+    fn amaster_100_forbids_receiver_as_hero_when_mouse_offline() {
+        // 禁止：mouse 离线时不得把 receiver 当 Hero 主电量。
+        let outputs = BTreeMap::from([(
+            "receiver".into(),
+            json!({"mouseBattery": 0, "mouseOnline": false, "receiverBattery": 40}),
+        )]);
+        let reading = standard_reading(outputs, None, BTreeMap::new());
+        assert_eq!(
+            reading.battery_percent, None,
+            "receiver must not become Hero battery when mouse is offline"
+        );
+    }
+
+    #[test]
+    fn amaster_100_forbids_byte_normalization_for_receiver() {
+        // 禁止：不得按 0..255 归一化 receiver 电量。
+        // offset10=101 必须被丢弃，而不是归一化为 (101/255)*100≈40 或 clamp 到 100。
+        let outputs = BTreeMap::from([(
+            "receiver".into(),
+            json!({"mouseBattery": 17, "mouseOnline": true, "receiverBattery": 101}),
+        )]);
+        let reading = standard_reading(outputs, None, BTreeMap::new());
+        // receiver 不得出现任何百分比（不 clamp、不归一化）。
+        assert!(
+            reading.batteries.iter().all(|b| b.id != "receiver"),
+            "receiver battery must be dropped, not normalized from 0..255"
+        );
+        // 同理验证 255（0xFF）也不得归一化。
+        let outputs_ff = BTreeMap::from([(
+            "receiver".into(),
+            json!({"mouseBattery": 17, "mouseOnline": true, "receiverBattery": 255}),
+        )]);
+        let reading_ff = standard_reading(outputs_ff, None, BTreeMap::new());
+        assert!(
+            reading_ff.batteries.iter().all(|b| b.id != "receiver"),
+            "receiver battery 0xFF must be dropped, not normalized"
+        );
+    }
+
+    #[test]
+    fn amaster_100_dedicated_battery_response_takes_precedence_for_hero() {
+        // 当 dedicated 0xD6 battery response 存在时，它提供 Hero 主电量；
+        // receiver-status 的 mouseBattery 作为独立 mouse 条目，receiver 作为独立条目。
+        let outputs = BTreeMap::from([
+            (
+                "battery".into(),
+                json!({"percentage": 17, "charging": false, "valid": true}),
+            ),
+            (
+                "receiver".into(),
+                json!({"mouseBattery": 17, "mouseOnline": true, "receiverBattery": 40}),
+            ),
+        ]);
+        let reading = standard_reading(outputs, None, BTreeMap::new());
+        // Hero 主电量来自 dedicated battery response = 17。
+        assert_eq!(reading.battery_percent, Some(17));
+        // mouse 条目来自 battery output（id=mouse），receiver 条目来自 receiver-status。
+        assert_eq!(reading.batteries.len(), 2);
+        let mouse = reading.batteries.iter().find(|b| b.id == "mouse").unwrap();
+        let receiver = reading
+            .batteries
+            .iter()
+            .find(|b| b.id == "receiver")
+            .unwrap();
+        assert_eq!(mouse.percentage, 17);
+        assert_eq!(receiver.percentage, 40);
+    }
+
     #[test]
     fn drops_invalid_or_unavailable_battery_percentages() {
         let outputs = BTreeMap::from([
