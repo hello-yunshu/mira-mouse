@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { check, type DownloadEvent, type Update } from '@tauri-apps/plugin-updater';
-import { relaunch } from '@tauri-apps/plugin-process';
 import { invoke } from '@tauri-apps/api/core';
 import { notifyInfo } from './notify';
 import i18n from './i18n';
@@ -144,5 +143,8 @@ export async function installAppUpdate(): Promise<void> {
 }
 
 export async function relaunchAfterUpdate(): Promise<void> {
-  await relaunch();
+  // tauri-plugin-process 的 relaunch() 与 tauri-plugin-single-instance 冲突：
+  // 新进程启动时旧进程仍在运行，single-instance 检测到已有实例后退出新进程。
+  // 改用自定义的 relaunch_app 命令：延迟启动新实例，等旧进程退出并清理 socket 后再启动。
+  await invoke('relaunch_app');
 }

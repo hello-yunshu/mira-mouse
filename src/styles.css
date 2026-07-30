@@ -4394,6 +4394,11 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   to { opacity: 1; transform: translateY(0); }
 }
 
+@keyframes mira-section-exit {
+  from { opacity: 1; transform: translateY(0); }
+  to { opacity: 0; transform: translateY(calc(var(--motion-distance) * -1)); }
+}
+
 /* 等级筛选 pill 标签切换动画：旧值上移淡出，新值从下方滑入 */
 @keyframes mira-pill-label-in {
   from { opacity: 0; transform: translateY(6px); }
@@ -4637,23 +4642,29 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
 
 .settings-page > header,
 .settings-page > .sub-nav,
-.settings-scroll-area > .card,
-.settings-scroll-area > section,
+.settings-scroll-content > .card,
+.settings-scroll-content > section,
 .about-page > header,
 .log-page > header,
 .log-page > .log-toolbar,
 .log-page > .log-list-wrapper {
-  animation: mira-section-enter var(--motion-base) var(--motion-ease-out) backwards;
+  animation: mira-section-enter 130ms var(--motion-ease-out) backwards;
 }
-.settings-page > .sub-nav { animation-delay: 40ms; }
-.settings-scroll-area > .card:nth-of-type(1),
-.settings-scroll-area > section:nth-of-type(1) { animation-delay: 80ms; }
-.settings-scroll-area > .card:nth-of-type(2),
-.settings-scroll-area > section:nth-of-type(2) { animation-delay: 120ms; }
-.settings-scroll-area > .card:nth-of-type(n+3),
-.settings-scroll-area > section:nth-of-type(n+3) { animation-delay: 160ms; }
-.log-page > .log-toolbar { animation-delay: 40ms; }
-.log-page > .log-list-wrapper { animation-delay: 80ms; }
+.settings-page > .sub-nav { animation-delay: 20ms; }
+.settings-scroll-content > .card:nth-of-type(1),
+.settings-scroll-content > section:nth-of-type(1) { animation-delay: 0ms; }
+.settings-scroll-content > .card:nth-of-type(2),
+.settings-scroll-content > section:nth-of-type(2) { animation-delay: 20ms; }
+.settings-scroll-content > .card:nth-of-type(n+3),
+.settings-scroll-content > section:nth-of-type(n+3) { animation-delay: 40ms; }
+.log-page > .log-toolbar { animation-delay: 20ms; }
+.log-page > .log-list-wrapper { animation-delay: 40ms; }
+
+/* 设置页 tab 切换：旧页所有块同时淡出，退出动画结束后新页块依次淡入 */
+.settings-scroll-content.is-exiting > .card,
+.settings-scroll-content.is-exiting > section {
+  animation: mira-section-exit 130ms var(--motion-ease-standard) both;
+}
 
 .log-preview-hint {
   margin: -2px 0 8px;
@@ -4956,7 +4967,7 @@ input[type="color"] {
   .empty,
   .dashboard > *,
   .settings-page > *,
-  .settings-scroll-area > *,
+  .settings-scroll-content > *,
   .about-page > *,
   .log-page > *,
   .control-stage > *,

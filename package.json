@@ -9,7 +9,7 @@
     "assets:windows-installer": "python3 scripts/generate-windows-installer-assets.py",
     "assets:macos-dark-icon": "bash scripts/generate-macos-dark-icon.sh",
     "sidecar:build": "cargo run --package xtask -- dist-sidecar",
-    "build:dmg": "npm exec tauri build -- --bundles app,dmg",
+    "build:dmg": "TAURI_BUNDLER_DMG_IGNORE_CI=1 npm exec tauri build -- --bundles app,dmg",
     "build:test-app": "node scripts/build-test-app.mjs",
     "smoke:test-app": "bash scripts/smoke-test-built-app.sh",
     "version:print": "node scripts/app-version.mjs",

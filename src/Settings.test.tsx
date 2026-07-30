@@ -97,8 +97,7 @@ describe('SettingsPage', () => {
     })));
 
     fireEvent.click(screen.getByRole('button', { name: '设备' }));
-    expect(screen.queryByText('本地 AI 分析')).toBeNull();
-    expect(screen.getByText('用于生成 24 小时和 10 天电量图表与本地用电摘要。')).toBeInTheDocument();
+    expect(await screen.findByText('用于生成 24 小时和 10 天电量图表与本地用电摘要。')).toBeInTheDocument();
     const batteryAiToggle = screen.getByRole('switch', { name: '开启 AI 分析' });
     expect(batteryAiToggle).not.toBeChecked();
     fireEvent.click(batteryAiToggle);
@@ -136,9 +135,9 @@ describe('SettingsPage', () => {
     const receiverToggle = screen.getByRole('switch', { name: '接收器灯光' });
     expect(receiverToggle).toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: '隐私' }));
-    expect(screen.getByRole('switch', { name: '禁用遥测' })).toBeDisabled();
+    await waitFor(() => expect(screen.getByRole('switch', { name: '禁用遥测' })).toBeDisabled());
     fireEvent.click(screen.getByRole('button', { name: '插件' }));
-    const pluginAiToggle = screen.getByRole('switch', { name: '本地 AI 分析' });
+    const pluginAiToggle = await screen.findByRole('switch', { name: '本地 AI 分析' });
     expect(pluginAiToggle).toBeChecked();
     expect(screen.getByRole('button', { name: '检查更新' }).closest('.plugin-update-actions')).toHaveClass('align-end');
     expect(screen.getByRole('button', { name: '检查插件更新' }).closest('.plugin-update-actions')).toHaveClass('align-end');
@@ -149,7 +148,7 @@ describe('SettingsPage', () => {
       settings: expect.objectContaining({ localAiAnalysisEnabled: false }),
     })));
     fireEvent.click(screen.getByRole('button', { name: '设备' }));
-    expect(screen.getByRole('switch', { name: '开启 AI 分析' })).not.toBeChecked();
+    await waitFor(() => expect(screen.getByRole('switch', { name: '开启 AI 分析' })).not.toBeChecked());
     expect(screen.queryByText('本地 AI 分析')).toBeNull();
   });
 
@@ -171,11 +170,13 @@ describe('SettingsPage', () => {
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('settings_get'));
 
     fireEvent.click(screen.getByRole('button', { name: '插件' }));
-    expect(screen.getByRole('switch', { name: '本地 AI 分析' })).toBeChecked();
+    expect(await screen.findByRole('switch', { name: '本地 AI 分析' })).toBeChecked();
 
     fireEvent.click(screen.getByRole('button', { name: '设备' }));
-    expect(screen.getByRole('switch', { name: '开启 AI 分析' })).not.toBeChecked();
-    expect(screen.queryByText('本地 AI 分析')).toBeNull();
+    await waitFor(() => {
+      expect(screen.getByRole('switch', { name: '开启 AI 分析' })).not.toBeChecked();
+      expect(screen.queryByText('本地 AI 分析')).toBeNull();
+    });
   });
 
   it('updates and rolls back the local AI bundle as a single unit', async () => {
@@ -214,7 +215,7 @@ describe('SettingsPage', () => {
     render(<SettingsPage onNavigateAbout={vi.fn()} onThemeChange={vi.fn()} />);
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('local_ai_status'));
     fireEvent.click(screen.getByRole('button', { name: '插件' }));
-    expect(screen.getByText('本地 AI 引擎')).toBeInTheDocument();
+    expect(await screen.findByText('本地 AI 引擎')).toBeInTheDocument();
     expect(screen.getByText('引擎可用')).toBeInTheDocument();
     const localAiItem = screen.getByText('本地 AI 引擎').closest('.plugin-item');
     expect(localAiItem).not.toBeNull();

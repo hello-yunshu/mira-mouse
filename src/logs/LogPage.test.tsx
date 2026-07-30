@@ -109,7 +109,9 @@ describe('Settings about tab logs card ordering', () => {
     const aboutTab = await screen.findByRole('button', { name: /^关于$/ });
     fireEvent.click(aboutTab);
 
-    const aboutMain = await screen.findByRole('main');
+    // 等待 about tab 内容渲染（tab 切换有退出→进入过渡动画）
+    await screen.findByRole('heading', { name: '日志与诊断' });
+    const aboutMain = screen.getByRole('main');
     const cards = aboutMain.querySelectorAll('section.card');
     expect(cards.length).toBeGreaterThanOrEqual(2);
     // 第 1 块是品牌卡片，第 2 块必须是日志与诊断卡片
