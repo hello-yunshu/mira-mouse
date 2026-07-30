@@ -131,7 +131,6 @@ struct LogServiceInner {
 }
 
 impl LogService {
-    /// 创建并启动服务。
     /// - `session_id`: 应用本次启动会话 ID
     /// - `storage_dir`: 日志目录（来自 app_log_dir）
     /// - `redactor`: 已初始化的脱敏器
@@ -239,7 +238,6 @@ impl LogService {
         }
     }
 
-    /// 当前日志服务状态。
     pub fn status(&self) -> LogStatus {
         let buffer = self.inner.buffer.lock().unwrap();
         let (recent_error_count, recent_warn_count) = buffer.recent_counts();
@@ -538,7 +536,6 @@ impl LogService {
         }
     }
 
-    /// 当前会话的 buffer 快照。
     pub(crate) fn buffer_snapshot_for_session(&self) -> Vec<LogEntry> {
         self.inner
             .buffer

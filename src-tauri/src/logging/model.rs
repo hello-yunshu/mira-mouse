@@ -328,9 +328,9 @@ pub struct LogPage {
     pub entries: Vec<LogEntry>,
     /// 是否还有更早的记录（id 更小的）。
     pub has_more: bool,
-    /// 当前返回的最早一条记录的 id；用作下一页游标。
+    /// 下一页游标（本页最旧条目 id）。
     pub oldest_id: Option<u64>,
-    /// 当前会话内匹配的总条数（用于状态展示，非精确计数）。
+    /// 状态展示用近似计数（非精确）。
     pub total_in_session: usize,
 }
 
@@ -374,7 +374,6 @@ pub enum ExportScope {
 #[serde(rename_all = "camelCase")]
 pub struct LogStatus {
     pub session_id: String,
-    /// 当前最低采集等级。
     pub min_level: LogLevel,
     /// 内存缓冲区当前条数。
     pub buffer_count: usize,
@@ -386,19 +385,18 @@ pub struct LogStatus {
     pub disk_usage_bytes: u64,
     /// 磁盘日志占用上限字节数。
     pub disk_quota_bytes: u64,
-    /// 当前错误数（最近 N 条中 Error 等级）。
+    /// 最近 N 条中 Error 等级的计数。
     pub recent_error_count: usize,
-    /// 当前警告数（最近 N 条中 Warn 等级）。
+    /// 最近 N 条中 Warn 等级的计数。
     pub recent_warn_count: usize,
     /// 文件写入是否启用（目录不可写时为 false）。
     pub file_persistence_enabled: bool,
-    /// 临时诊断会话信息；None 表示未启用。
+    /// None 表示未启用临时诊断会话。
     pub diagnostic_session: Option<DiagnosticSessionStatus>,
     /// 协议诊断会话信息；None 表示未启用。
     pub protocol_diagnostic: Option<ProtocolDiagnosticStatus>,
 }
 
-/// 临时诊断会话状态。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiagnosticSessionStatus {

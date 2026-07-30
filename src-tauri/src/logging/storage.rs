@@ -55,7 +55,6 @@ enum StorageMessage {
     Shutdown,
 }
 
-/// 初始化存储。返回 (handle, join_handle)。
 /// `dir` 为日志目录；创建失败时 writer 立即降级为 disabled。
 pub fn spawn(dir: PathBuf) -> (LogStorageHandle, JoinHandle<()>) {
     let (tx, rx) = mpsc::channel::<StorageMessage>();
@@ -108,17 +107,14 @@ impl LogStorageHandle {
         let _ = self.tx.send(StorageMessage::Shutdown);
     }
 
-    /// 当前是否启用文件持久化。
     pub fn enabled(&self) -> bool {
         *self.enabled.lock().unwrap()
     }
 
-    /// 当前磁盘占用（字节）。
     pub fn disk_usage(&self) -> u64 {
         *self.disk_usage.lock().unwrap()
     }
 
-    /// 当前日志目录。
     pub fn dir(&self) -> PathBuf {
         self.dir.lock().unwrap().clone()
     }

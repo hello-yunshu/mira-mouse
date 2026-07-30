@@ -99,7 +99,7 @@ function controlPageKind(capabilities: PluginCapability[]): ControlPageKind {
 
 function isWindowsPlatform(): boolean {
   const previewPlatform = new URLSearchParams(window.location.search).get('platform');
-  // 显式指定 platform 时以参数为准，不再 fallback 到 userAgent
+  // 显式指定 platform 时以参数为准，不依赖 userAgent
   if (previewPlatform !== null) return previewPlatform === 'windows';
   return navigator.userAgent.includes('Windows');
 }
@@ -151,8 +151,7 @@ function connectionDisplay(connection: string | undefined, t: (key: string) => s
 
 function formatSleepTime(value: unknown): string {
   const seconds = typeof value === 'number' ? value : Number(value);
-  // ITERATION-004 §2.3：sleep -1 表示“从不休眠”（AM35 协议使用 65535 → -1 映射）。
-  // 之前的实现把 -1 当作“未报告”显示，与实际语义不符。
+  // sleep -1 表示“从不休眠”（AM35 协议使用 65535 → -1 映射）。
   if (seconds === -1) return i18n.t('common.never');
   if (!Number.isFinite(seconds) || seconds <= 0) return i18n.t('common.notReported');
   if (seconds % 60 === 0) return i18n.t('common.minute', { count: seconds / 60 });
@@ -577,7 +576,7 @@ function resolveSummaryValue(item: PluginSummaryItem, device: DeviceState): {
 }
 
 function CapabilitySummary({ capability, device }: { capability: PluginCapability; device: DeviceState }) {
-  // P1-1 (Iteration 008)：summary 上限只作用于 polling capability（fixedSlot=2 或 group=polling）。
+  // summary 上限只作用于 polling capability（fixedSlot=2 或 group=polling）。
   // 非 polling capability 的 summary 不被截断。
   const allItems = capability.metadata.summary ?? [];
   const reportedItems = allItems.filter((item) => {
@@ -1707,18 +1706,17 @@ function StageLayout({ capability, device, writeBusy, runMutation }: {
   );
 }
 
-/// P0-D：Advanced Settings 条目类型。支持 field / stageLayout / zone / summary 四种形态，
+/// Advanced Settings 条目类型。支持 field / stageLayout / zone / summary 四种形态，
 /// 复用现有 FieldRenderer / StageLayout / ZoneRenderer 渲染。
-/// P0-K：不再为 LightingZone 添加 zone 整体条目，改为收集独立字段（避免 field+zone 双重渲染）。
-/// P0-L：polling overflow 以 summary 条目进入 Advanced Settings。
-/// P0-3 (Iteration 008)：field entry 保留 zoneId/zoneLabelKey 以正确区分多 zone 同名字段。
+/// polling overflow 以 summary 条目进入 Advanced Settings。
+/// field entry 保留 zoneId/zoneLabelKey 以正确区分多 zone 同名字段。
 type AdvancedSettingsEntry =
   | { type: 'field'; capability: PluginCapability; field: PluginField; zoneId?: string; zoneLabelKey?: string }
   | { type: 'stageLayout'; capability: PluginCapability }
   | { type: 'zone'; capability: PluginCapability }
   | { type: 'summary'; capability: PluginCapability; item: PluginSummaryItem };
 
-/// P0-C：Advanced Settings 模态窗口。展示未进入 Dashboard 首页的可写字段和 details 字段，
+/// Advanced Settings 模态窗口。展示未进入 Dashboard 首页的可写字段和 details 字段，
 /// 按 advancedSection 分组。可编辑字段点击后打开 FieldEditModal。
 function AdvancedSettingsModal({ groups, device, writeBusy, onClose, onEditField, runMutation }: {
   groups: { section: NonNullable<PluginField['advancedSection']>; entries: AdvancedSettingsEntry[] }[];
@@ -1746,7 +1744,6 @@ function AdvancedSettingsModal({ groups, device, writeBusy, onClose, onEditField
     }
   };
 
-  // 用于搜索过滤的可读标签。
   const entryLabel = (entry: AdvancedSettingsEntry): string => {
     if (entry.type === 'stageLayout' || entry.type === 'zone') {
       return resolveLabelKey(entry.capability.labelKey, device.pluginId);
@@ -1790,7 +1787,7 @@ function AdvancedSettingsModal({ groups, device, writeBusy, onClose, onEditField
       );
     }
     if (entry.type === 'summary') {
-      // P0-L：polling overflow 以只读 summary 条目展示。
+      // polling overflow 以只读 summary 条目展示。
       const { capability, item } = entry;
       const { value } = resolveSummaryValue(item, device);
       const option = item.options?.find((candidate) => candidate.value === value);
@@ -1809,7 +1806,7 @@ function AdvancedSettingsModal({ groups, device, writeBusy, onClose, onEditField
         </li>
       );
     }
-    // field entry。P0-3 (Iteration 008)：React key 包含 zoneId，label 包含 zone 前缀以区分多 zone 同名字段。
+    // field entry。React key 包含 zoneId，label 包含 zone 前缀以区分多 zone 同名字段。
     const { capability, field, zoneId, zoneLabelKey } = entry;
     const label = resolveFieldLabel(field, device, device.pluginId);
     const mutation = resolveMutation(field.mutation, device.writableMutations);
@@ -2059,7 +2056,7 @@ function ZoneRenderer({ capability, device, writeBusy, runMutation }: {
   const activeZoneIndex = Math.max(zones.findIndex((zone) => zone.id === activeZone.id), 0);
   const multipleZones = zones.length > 1;
 
-  // P0-2 (Iteration 008)：主颜色入口必须来自 selector 选出的最高优先级、
+  // 主颜色入口必须来自 selector 选出的最高优先级、
   // 当前可见的 primary-color 字段。禁止从 raw fields 中取第一个 modal-color，
   // 那会选中不可见的 Protocol A color 而不是 AM35 的 am35-color。
   // 先过滤 reported 和 presentation，再用 selectLightingSubblocks 选择。
@@ -2067,7 +2064,7 @@ function ZoneRenderer({ capability, device, writeBusy, runMutation }: {
     fieldHasReportedValue(field, device) && field.presentation !== 'details',
   );
   const lightingSelection = selectLightingSubblocks(lightingCandidates);
-  // P0-2 (Iteration 008)：主颜色入口必须来自 selector 选出的最高优先级
+  // 主颜色入口必须来自 selector 选出的最高优先级
   // primary-color 字段，且必须是真正的颜色字段（modal-color 或 format=color）。
   // 非颜色字段（如 modal-select）即使声明了 lightingRole=primary-color 也保留在
   // visibleFields 中作为普通子块渲染，不提取为色板。
@@ -2096,11 +2093,11 @@ function ZoneRenderer({ capability, device, writeBusy, runMutation }: {
     : activeZone.id === zones[0].id;
   const tabAccent = usesThemeAccent ? 'var(--accent)' : zoneColor ?? 'var(--accent)';
 
-  // ITERATION-009 §P0-A：顶部灯带与最右普通颜色子块并存。
+  // 顶部灯带与最右普通颜色子块并存。
   // - 顶部灯带继续使用 colorField 作为可点击入口（不参与 grid 列数与子块计数）；
   // - 普通 rows 直接使用 selector 的最终顺序（已包含 primaryColor 在最右），
   //   primaryColor 通过 FieldRenderer + modal-color + lighting-row-slot 渲染，
-  //   恢复此前普通颜色子块样式，不再从 rows 中删除；
+  //   保留普通颜色子块样式，不从 rows 中删除；
   // - 两处共享同一 colorField / colorMutation / zoneColor / device 状态，
   //   任意一处写入成功后另一处立即同步，写入失败时两处都保持原色。
   // - 顶部灯带不计入 6 个普通子块上限；grid 列数与 compact 阈值仅基于 visibleFields。
@@ -2199,7 +2196,7 @@ function StatusItem({ capability, device, placement, onClick }: {
 }) {
   const baseDisplay = resolveStatusDisplay(capability);
   if (!baseDisplay) return null;
-  // P0-E：解析 variants，获取当前设备状态下生效的显示来源。
+  // 解析 variants，获取当前设备状态下生效的显示来源。
   const display = resolveStatusDisplayVariant(baseDisplay, device);
   if (!display.valueSource) return null;
 
@@ -2895,7 +2892,7 @@ function Dashboard({
   };
 
   const { groups: controlGroups, usedDedupeKeys: controlDedupeKeys, fallback: controlFallback } = useMemo(() => {
-    // ITERATION-005 §P0-A：使用纯函数选择器，输入 ReadonlySet<string>，返回新 Set。
+    // 使用纯函数选择器，输入 ReadonlySet<string>，返回新 Set。
     // 共享 dedupeKey 上下文，防止 control 与 status 区域出现重复入口。
     const { selected: controlCandidates, fallback, usedDedupeKeys } = selectDashboardControls(
       device.pluginCapabilities,
@@ -2904,7 +2901,7 @@ function Dashboard({
       (capability) => capabilityHasControlContent(capability, device),
       new Set<string>(),
     );
-    // P0-F：直接使用选择器返回的最终序列，不再按 fixedSlot/order 重新排序。
+    // 直接使用选择器返回的最终序列，无需按 fixedSlot/order 重新排序。
     // 选择器已保证 [leading → 核心(DPI→polling→lighting) → trailing] 顺序。
     // finalIndex 来自选择器序列的数组索引，用于保持 DOM 顺序与选择器语义一致。
     const groups = new Map<string, {
@@ -2934,7 +2931,7 @@ function Dashboard({
         });
       }
     });
-    // Map 保留插入顺序，不再 .sort()。选择器已限制最多 4 项，无需再次 slice。
+    // Map 保留插入顺序，无需 .sort()。选择器已限制最多 4 项，无需再次 slice。
     const result = [...groups.values()]
       .map((group) => ({
         ...group,
@@ -3010,13 +3007,13 @@ function Dashboard({
   };
 
   const { items: statusItems, fallback: statusFallback } = useMemo(() => {
-    // ITERATION-005 §P0-A：纯函数选择器，消费 controlDedupeKeys 作为依赖。
+    // 纯函数选择器，消费 controlDedupeKeys 作为依赖。
     // 共享 dedupeKey 上下文，避免与上方控制区出现重复入口（如全部读数、电量）。
     const hasReportedStatus = (capability: PluginCapability): boolean => {
       const base = resolveStatusDisplay(capability);
       if (!base) return false;
       if (capabilityRuntimePending(capability)) return true;
-      // ITERATION-006 §P0-C：先解析 active variant，再检查 valueSource/onClickField。
+      // 先解析 active variant，再检查 valueSource/onClickField。
       // 当 statusDisplay.variants 存在时，valueSource/onClickField 在 variant 上而非 base 上。
       const active = resolveStatusDisplayVariant(base, device);
       const requestedField = resolveStatusField(capability, active.onClickField, device);
@@ -3057,7 +3054,7 @@ function Dashboard({
       const base = resolveStatusDisplay(capability);
       // 已通过 hasReportedStatus 校验，display 必然存在；保留防御性检查。
       if (!base) continue;
-      // ITERATION-006 §P0-C：使用 active variant 的 onClickField，而非 base。
+      // 使用 active variant 的 onClickField，而非 base。
       const display = resolveStatusDisplayVariant(base, device);
       let onClick: (() => void) | undefined;
       if (display.onClickField) {
@@ -3111,15 +3108,13 @@ function Dashboard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [device, pluginLocaleRevision, controlDedupeKeys]);
 
-  // P0-J/P0-K/P0-L：Advanced Settings 分组。消费真实 selector fallback（非声明式），
-  // 不再按 fallbackRegion=advanced 声明收集，而是消费：
+  // Advanced Settings 分组。消费真实 selector fallback（非声明式）：
   // 1. selectDashboardControls(...).fallback（控制区未入选的候选）
   // 2. selectDashboardStatus(...).fallback（状态区未入选的候选）
   // 3. polling subblock fallback（回报率超过 3 项的溢出）
   // 4. lighting subblock fallback（灯光超过 6 项的溢出 + presentation=details 字段）
   // 5. placement.region=details 的 capability 字段
   // 6. 已在首页的 capability 中的 presentation=details 字段
-  // P0-K：LightingZone 不再添加 zone 整体条目，改为收集独立字段（避免 field+zone 双重渲染）。
   // inventory fallbackRegion 去 "全部读数"，不进 Advanced；hidden 不展示。
   // system.all-readings 不重复。
   const advancedFieldGroups = useMemo(() => {
@@ -3135,7 +3130,7 @@ function Dashboard({
       groups.get(target)!.push(entry);
     };
 
-    // 字段去重键：capabilityId:zoneId-or-root:fieldId（P0-3 Iteration 008：必须包含 zoneId）。
+    // 字段去重键：capabilityId:zoneId-or-root:fieldId（必须包含 zoneId）。
     const collectedFieldKeys = new Set<string>();
     const collectedSummaryKeys = new Set<string>();
     // 已处理的 capability（避免 fallback 与 details region 重复收集）。
@@ -3149,7 +3144,7 @@ function Dashboard({
       }
     }
 
-    // P0-3 (Iteration 008)：按 zone 遍历，保留 zoneId/zoneLabelKey 上下文。
+    // 按 zone 遍历，保留 zoneId/zoneLabelKey 上下文。
     // 禁止 zones.flatMap(zone => zone.fields) 后丢失 zone。
     // 顶层字段（capability.metadata.fields）使用 'root' 作为 zoneId。
     const collectAllFields = (capability: PluginCapability) => {
@@ -3161,7 +3156,6 @@ function Dashboard({
       ) {
         addEntry('performance', { type: 'stageLayout', capability });
       }
-      // P0-K：LightingZone 不再添加 zone 整体条目；独立字段在下面收集。
       // 顶层字段（无 zone）
       for (const field of capability.metadata.fields ?? []) {
         if (!resolveVisibleWhen(field.visibleWhen, device)) continue;
@@ -3242,9 +3236,9 @@ function Dashboard({
       collectAllFields(capability);
     }
 
-    // 4. P0-L：polling overflow。对每个有 summary 的 capability，
+    // 4. polling overflow。对每个有 summary 的 capability，
     //    计算 selectSummarySubblocks fallback，溢出项进入 Advanced Settings。
-    //    P1-1 (Iteration 008)：summary 上限只作用于 polling capability。
+    //    summary 上限只作用于 polling capability。
     for (const capability of device.pluginCapabilities) {
       if (!capabilityAvailable(capability)) continue;
       const summary = capability.metadata.summary;
@@ -3263,9 +3257,9 @@ function Dashboard({
       }
     }
 
-    // 5. P0-K：lighting overflow。对每个 LightingZone capability，
+    // 5. lighting overflow。对每个 LightingZone capability，
     //    计算 selectLightingSubblocks fallback + presentation=details 字段。
-    //    P0-3 (Iteration 008)：去重键包含 zoneId，保留 zone 上下文。
+    //    去重键包含 zoneId，保留 zone 上下文。
     for (const capability of device.pluginCapabilities) {
       if (!capabilityAvailable(capability)) continue;
       if (capability.control !== 'LightingZone') continue;
@@ -3722,9 +3716,8 @@ export default function App() {
       setRefreshNonce((value) => value + 1);
     }).then((un) => { unlistenResume = un; })
       .catch(() => {});
-    // ITERATION-009 §4.2 方案 B：macOS native 通知只提醒。
-    // 不再注册窗口聚焦监听消费 pending_notification_action——此前实现把用户
-    // 任意打开 Mira 误判为点击通知。Windows/Linux 由 navigate-* / open-battery-usage
+    // macOS native 通知只提醒。
+    // 不监听窗口聚焦事件，避免误把用户主动打开当作通知点击。Windows/Linux 由 navigate-* / open-battery-usage
     // 事件直接处理；macOS 系统通知仅显示 title/body，应用内 Toast 保留可点击入口。
     return () => {
       if (unlisten) unlisten();
@@ -3786,7 +3779,7 @@ export default function App() {
     let unlisten: (() => void) | undefined;
     let unlistenEntries: (() => void) | undefined;
 
-    // 启动时立即读取一次缓存
+    // 启动时预读缓存，避免首次渲染空白
     invoke<DeviceSnapshotEntry[]>('device_snapshots')
       .then((entries) => {
         if (!cancelled) {

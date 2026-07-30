@@ -92,7 +92,6 @@ impl<'a> ProtocolEventContext<'a> {
     }
 }
 
-/// 创建一个协议事件 LogInput，附带公共字段。
 fn new_protocol_event(
     level: LogLevel,
     target: &'static str,

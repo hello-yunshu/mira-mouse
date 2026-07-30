@@ -7,9 +7,7 @@ export const MAX_CONTROL_GROUPS = 6;
 export const MAX_STATUS_ITEMS = 6;
 export const MAX_CONTROL_OPTIONS = 8;
 
-// ─── ITERATION-004 §2.1：Dashboard Priority 全局选择器 ─────────────────────
-// 替代旧的 sort(order) + slice(MAX) 行为，使用 priority/fixedSlot/fourthSlotEligible/
-// dedupeKey/fallbackRegion 实现统一槽位选择。详见 DASHBOARD_PRIORITY_ALL_PLUGINS.md。
+// Dashboard Priority 全局选择器
 
 /** 上方控制区：preferred=3, max=4, 第 4 项需 priority>=90 且 fourthSlotEligible。 */
 export const CONTROL_PREFERRED_COUNT = 3;
@@ -17,63 +15,52 @@ export const CONTROL_MAX_COUNT = 4;
 /** 下方状态区：preferred=3, max=4, 第 4 项需 priority>=90 且 fourthSlotEligible。 */
 export const STATUS_PREFERRED_COUNT = 3;
 export const STATUS_MAX_COUNT = 4;
-/** 第 4 槽位最低优先级阈值。 */
 export const FOURTH_SLOT_MIN_PRIORITY = 90;
-/** 下方基础槽位最低优先级阈值。 */
 export const STATUS_BASE_SLOT_MIN_PRIORITY = 60;
 
-/** Dashboard placement region。 */
 export type PluginRegion = 'hero' | 'control' | 'status' | 'details';
 
-/** 返回 capability 在指定 region 的所有 placement。 */
 export function placementsFor(capability: PluginCapability, region: PluginRegion): NonNullable<PluginCapability['placements']> {
   return (capability.placements ?? []).filter((p) => p.region === region);
 }
 
-/** Dashboard 选择上下文：包含去重键已用集合（跨区域共享）。 */
 export interface DashboardSelectionContext {
   /** 已使用的 dedupeKey 集合（跨 control/status 共享，防止重复入口）。 */
   usedDedupeKeys: Set<string>;
 }
 
-/** P0-A：纯函数选择结果。usedDedupeKeys 是新 Set，包含输入 keys + 本次选中的 keys。 */
+/** 纯函数选择结果。usedDedupeKeys 是新 Set，包含输入 keys + 本次选中的 keys。 */
 export interface DashboardSelectionResult<T> {
   selected: T[];
   fallback: T[];
   usedDedupeKeys: Set<string>;
 }
 
-/** 控制区 placement 候选项：capability + placement + 解析后的优先级。 */
 export interface ControlCandidate {
   capability: PluginCapability;
   placement: PluginCapabilityPlacement;
   /** 解析后的 priority（默认 0）。 */
   priority: number;
-  /** 解析后的 fixedSlot（1/2/3 或 undefined）。 */
   fixedSlot: 1 | 2 | 3 | undefined;
   /** 解析后的 fourthSlotEligible（默认 false）。 */
   fourthSlotEligible: boolean;
-  /** 解析后的 dedupeKey。 */
   dedupeKey: string | undefined;
   /** 槽位组 ID（placement.group || capability.id）。 */
   groupId: string;
-  /** P0-E：候选槽位位置。leading=核心序列之前；trailing=核心序列之后。默认 trailing。 */
+  /** 候选槽位位置。leading=核心序列之前；trailing=核心序列之后。默认 trailing。 */
   optionalPosition: 'leading' | 'trailing';
 }
 
 /**
- * ITERATION-005 §P0-A/P0-B：Dashboard 上方控制区统一选择器（纯函数）。
- *
- * 替代旧的 `sort(order).slice(0, MAX_CONTROL_GROUPS)`，按以下规则选择：
+ * 选择规则：
  * 1. 过滤 availability / visibleWhen / content；
  * 2. 按 dedupeKey 去重（跨区域共享 usedDedupeKeys）；
  * 3. 放置 fixedSlot 1/2/3（DPI/回报率/灯光，按固定顺序）；
  * 4. 从剩余候选中选择第 4 项（需 priority>=90 且 fourthSlotEligible）；
  * 5. 未选中项按 fallbackRegion 回退（调用方可用于高级设置页）。
  *
- * P0-A：输入 ReadonlySet<string>，绝不 mutate 调用者 Set；返回新的 Set。
- * P0-B：删除空缺 fixedSlot 回退填充；fixedSlot 1/2/3 仅接受 fixedSlot===1/2/3
- *       的候选；某 fixedSlot 无候选时该位置为空，普通 candidate 绝不填入 fixedSlot。
+ * fixedSlot 1/2/3 仅接受 fixedSlot===1/2/3 的候选；某 fixedSlot 无候选时该位置为空，
+ * 普通 candidate 绝不填入 fixedSlot。
  * 没有合格第 4 项时只显示 3 项，不显示空占位，不为凑满 4 格降低阈值。
  */
 export function selectDashboardControls(
@@ -83,10 +70,8 @@ export function selectDashboardControls(
   contentFilter: (capability: PluginCapability) => boolean,
   usedDedupeKeys: ReadonlySet<string>,
 ): DashboardSelectionResult<ControlCandidate> {
-  // P0-A：本地副本，绝不 mutate 调用者 Set。
   const usedKeys = new Set(usedDedupeKeys);
 
-  // 收集所有 control placement 候选项。
   const candidates: ControlCandidate[] = [];
   for (const capability of capabilities) {
     if (!availabilityFilter(capability)) continue;
@@ -107,7 +92,6 @@ export function selectDashboardControls(
     }
   }
 
-  // 按 dedupeKey 去重（同 dedupeKey 只保留 priority 最高的）。
   const byDedupeKey = new Map<string, ControlCandidate>();
   const noDedupeKey: ControlCandidate[] = [];
   for (const candidate of candidates) {
@@ -125,7 +109,7 @@ export function selectDashboardControls(
   }
   const deduped = [...byDedupeKey.values(), ...noDedupeKey];
 
-  // 放置 fixedSlot 1/2/3。P0-B：仅接受 fixedSlot===1/2/3 的候选，不回退填充。
+  // 放置 fixedSlot 1/2/3：仅接受 fixedSlot===1/2/3 的候选，空位留空，普通 candidate 不填入 fixedSlot。
   const fixedSlots: (ControlCandidate | undefined)[] = [undefined, undefined, undefined];
   const remaining: ControlCandidate[] = [];
   for (const candidate of deduped) {
@@ -144,18 +128,13 @@ export function selectDashboardControls(
     remaining.push(candidate);
   }
 
-  // 排序：priority desc → order asc → groupId asc（stable）。
   remaining.sort((a, b) => {
     if (b.priority !== a.priority) return b.priority - a.priority;
     if (a.placement.order !== b.placement.order) return a.placement.order - b.placement.order;
     return a.groupId < b.groupId ? -1 : a.groupId > b.groupId ? 1 : 0;
   });
 
-  // P0-B：已删除"空缺 fixedSlot 回退填充"逻辑。
-  // fixedSlot 1/2/3 仅接受 fixedSlot===1/2/3 的候选；若某 fixedSlot 无候选，
-  // 该位置为空（不显示）。普通 candidate 绝不填入 fixedSlot。
-
-  // P0-E：核心序列 DPI→回报率→灯光（fixedSlot 1/2/3），相对顺序不可被打断。
+  // 核心序列 DPI→回报率→灯光（fixedSlot 1/2/3），相对顺序不可被打断。
   // 候选只能放在核心序列的 leading（之前）或 trailing（之后），禁止插入核心中间。
   // 最多一个候选，通过 optionalPosition 控制位置（默认 trailing）。
   const coreSequence: ControlCandidate[] = [];
@@ -163,10 +142,9 @@ export function selectDashboardControls(
     if (candidate) coreSequence.push(candidate);
   }
 
-  // P0-G：候选选择。只有 priority>=90 且 fourthSlotEligible 的候选才竞争。
-  // 候选选择：priority desc → order asc → stable id asc（remaining 已按此排序）。
-  // 不再要求核心三项全部就位：核心缺失时仍允许一个候选（leading 或 trailing），
-  // 候选不填 fixedSlot，剩余核心项保持相对顺序。
+  // 候选选择：只有 priority>=90 且 fourthSlotEligible 的候选才竞争。
+  // 核心缺失时仍允许一个候选（leading 或 trailing），候选不填 fixedSlot，
+  // 剩余核心项保持相对顺序。
   // 示例：无灯光 + leading → candidate → DPI → polling；
   //       无灯光 + trailing → DPI → polling → candidate；
   //       仅 DPI → candidate → DPI 或 DPI → candidate。
@@ -187,14 +165,11 @@ export function selectDashboardControls(
     }
   }
 
-  // 组装最终序列：leading → 核心序列 → trailing。
-  // 核心缺失时仍保持剩余核心相对顺序。
   const selected: ControlCandidate[] = [];
   if (leadingCandidate) selected.push(leadingCandidate);
   for (const candidate of coreSequence) selected.push(candidate);
   if (trailingCandidate) selected.push(trailingCandidate);
 
-  // 未选中项作为 fallback 返回（调用方可用于高级设置页）。
   const fallback = remaining.filter((c) => {
     if (c.fixedSlot) return false; // 已在 fixedSlot 但未入选的跳过（不应发生）。
     const region = c.placement.fallbackRegion ?? 'advanced';
@@ -205,18 +180,14 @@ export function selectDashboardControls(
 }
 
 /**
- * ITERATION-005 §P0-A/P0-B：Dashboard 下方状态区统一选择器（纯函数）。
- *
- * 替代旧的 `sort(order).slice(0, MAX_STATUS_ITEMS)`，按以下规则选择：
+ * 选择规则：
  * 1. 过滤 availability / visibleWhen / reported value；
  * 2. 与系统入口、上方入口、全部读数、电量、连接状态去重（共享 usedDedupeKeys）；
  * 3. 按 priority desc、order asc、stable id asc 排序；
  * 4. 选择最多 3 个基础项（priority >= STATUS_BASE_SLOT_MIN_PRIORITY）；
  * 5. 第 4 项单独应用 priority>=90 与 fourthSlotEligible。
  *
- * P0-A：输入 ReadonlySet<string>，绝不 mutate 调用者 Set；返回新的 Set。
- * P0-B：删除"高优先级候选不足时从 deferred 补齐至 PREFERRED_COUNT"逻辑；
- *       只选 priority >= STATUS_BASE_SLOT_MIN_PRIORITY 的候选；不足 3 项就显示少于 3 项。
+ * 只选 priority >= STATUS_BASE_SLOT_MIN_PRIORITY 的候选；不足 3 项就显示少于 3 项。
  * 不显示空占位，不为了布局完整展示低价值项目。
  */
 export function selectDashboardStatus(
@@ -226,7 +197,6 @@ export function selectDashboardStatus(
   hasReportedValue: (capability: PluginCapability) => boolean,
   usedDedupeKeys: ReadonlySet<string>,
 ): DashboardSelectionResult<ControlCandidate> {
-  // P0-A：本地副本，绝不 mutate 调用者 Set。
   const usedKeys = new Set(usedDedupeKeys);
 
   const candidates: ControlCandidate[] = [];
@@ -249,7 +219,6 @@ export function selectDashboardStatus(
     }
   }
 
-  // 按 dedupeKey 去重。
   const byDedupeKey = new Map<string, ControlCandidate>();
   const noDedupeKey: ControlCandidate[] = [];
   for (const candidate of candidates) {
@@ -267,7 +236,6 @@ export function selectDashboardStatus(
   }
   const deduped = [...byDedupeKey.values(), ...noDedupeKey];
 
-  // 排序：priority desc → order asc → groupId asc（stable）。
   deduped.sort((a, b) => {
     if (b.priority !== a.priority) return b.priority - a.priority;
     if (a.placement.order !== b.placement.order) return a.placement.order - b.placement.order;
@@ -277,9 +245,6 @@ export function selectDashboardStatus(
   const selected: ControlCandidate[] = [];
   const deferred: ControlCandidate[] = [];
 
-  // P0-B：基础 3 槽位只选 priority >= STATUS_BASE_SLOT_MIN_PRIORITY 的候选。
-  // 已删除"高优先级候选不足时从 deferred 补齐至 PREFERRED_COUNT"逻辑。
-  // 不足 3 项就显示少于 3 项，不显示空占位。
   for (const candidate of deduped) {
     if (selected.length >= STATUS_PREFERRED_COUNT) {
       deferred.push(candidate);
@@ -293,7 +258,6 @@ export function selectDashboardStatus(
     }
   }
 
-  // 第 4 槽位：priority>=90 且 fourthSlotEligible。
   if (selected.length >= STATUS_PREFERRED_COUNT && selected.length < STATUS_MAX_COUNT) {
     const fourthCandidate = deferred.find(
       (c) => c.priority >= FOURTH_SLOT_MIN_PRIORITY && c.fourthSlotEligible,
@@ -304,7 +268,6 @@ export function selectDashboardStatus(
     }
   }
 
-  // 把 deferred 中未入选的低优先级项也加入 fallback（调用方可决定是否展示）。
   const fallback: ControlCandidate[] = [];
   for (const candidate of deferred) {
     if (selected.includes(candidate)) continue;
@@ -458,7 +421,6 @@ export function fieldHasReportedValue(field: PluginField, device: DeviceState): 
   return value !== undefined && value !== null && value !== '';
 }
 
-/// 读 field.switch 判断开关状态。
 /// 无 switch 时返回 true；否则用 readPath 读取 switch.source 的值，返回 value !== switch.offValue。
 export function resolveSwitchState(field: PluginField, device: DeviceState): boolean {
   const sw: PluginSwitch | undefined = field.switch;
@@ -471,8 +433,6 @@ export function resolveSwitchState(field: PluginField, device: DeviceState): boo
 export type PluginFieldInteraction = 'toggle' | 'action' | 'modal' | 'control';
 
 /**
- * 根据字段自己的 editor 契约决定点击行为。
- *
  * 宿主不感知 capability、设备或厂商名称：弹窗字段打开编辑器，开关和动作
  * 直接执行，其余需要多个选项或专用布局的字段回到 capability 控制区。
  */
@@ -494,8 +454,6 @@ export function resolveFieldInteraction(field: PluginField): PluginFieldInteract
 }
 
 /**
- * 解析 inline-toggle 下一次应写入的值。
- *
  * 布尔开关可由 offValue 直接反转；枚举开关优先恢复调用方记住的非关闭值，
  * 再回退到插件声明的第一个非关闭选项。返回 undefined 表示契约没有提供安全
  * 的恢复值，此时宿主不猜测设备语义。
@@ -526,8 +484,8 @@ export function resolveFieldLabel(field: PluginField, device: DeviceState, plugi
   return '';
 }
 
-/// 解析字段当前值的友好名称。声明选项的 labelKey 可随当前语言翻译，
-/// 因此已知选项优先；运行时 labelSource 只用于插件未声明的动态值。
+/// 声明选项的 labelKey 可随当前语言翻译，因此已知选项优先；
+/// 运行时 labelSource 只用于插件未声明的动态值。
 export function resolveFieldValueLabel(field: PluginField, device: DeviceState, pluginId?: string): string | undefined {
   if (field.options) {
     const value = readPath(device, field.source);
@@ -563,9 +521,8 @@ export function resolveDetailValueLabel(group: string, key: string, device: Devi
   return undefined;
 }
 
-/// 选项解析：合并 field.options 和 field.optionSource。
-/// 有 optionSource 时用 readPath 读取运行时选项数组，与 field.options 合并
-/// （optionSource 优先但限制在 MAX_CONTROL_OPTIONS 内）。
+/// 合并 field.options 和 field.optionSource：有 optionSource 时用 readPath 读取运行时选项数组，
+/// 与 field.options 合并（optionSource 优先但限制在 MAX_CONTROL_OPTIONS 内）。
 export function resolveFieldOptions(field: PluginField, device: DeviceState): PluginFieldOption[] {
   const declared = field.options ?? [];
   if (!field.optionSource) return declared;
@@ -587,7 +544,6 @@ export function resolveFieldOptions(field: PluginField, device: DeviceState): Pl
     const declaredMatch = declared.find((opt) => opt.value === item);
     return declaredMatch ?? { value: item as string | number | boolean, labelKey: String(item) };
   });
-  // optionSource 优先：runtime 在前，declared 补足，限制在 MAX_CONTROL_OPTIONS 内
   const merged: PluginFieldOption[] = [];
   const seen = new Set<unknown>();
   for (const option of runtime) {
@@ -603,7 +559,7 @@ export function resolveFieldOptions(field: PluginField, device: DeviceState): Pl
   return merged.slice(0, MAX_CONTROL_OPTIONS);
 }
 
-/// 读 field.range。当 field.rangeSource 存在时，从设备快照读取动态 max 值
+/// 当 field.rangeSource 存在时，从设备快照读取动态 max 值
 /// （可选 rangeMaxOffset 偏移），覆盖静态 range.max。min 和 step 仍取自静态 range。
 export function resolveFieldRange(field: PluginField, device?: DeviceState): RangeSpec | undefined {
   const base = field.range;
@@ -616,26 +572,21 @@ export function resolveFieldRange(field: PluginField, device?: DeviceState): Ran
   return { min: base.min, max: dynamicMax, step: base.step };
 }
 
-/// 读 capability.metadata.stageLayout。
 export function resolveStageLayout(capability: PluginCapability): PluginStageLayout | undefined {
   return capability.metadata.stageLayout;
 }
 
-/// 读 capability.metadata.zones，过滤 visibleWhen 后返回可见区域。
 export function resolveZones(capability: PluginCapability, device: DeviceState): PluginZone[] {
   const zones = capability.metadata.zones;
   if (!zones) return [];
   return zones.filter((zone) => resolveVisibleWhen(zone.visibleWhen, device));
 }
 
-/// 读 capability.metadata.statusDisplay。
 export function resolveStatusDisplay(capability: PluginCapability): PluginStatusDisplay | undefined {
   return capability.metadata.statusDisplay;
 }
 
 /**
- * P0-E：解析状态栏显示变体。
- *
  * 若 display.variants 存在，返回第一个 visibleWhen 匹配的 variant；
  * 否则返回 display 本身（向后兼容）。
  *
@@ -655,8 +606,6 @@ export function resolveStatusDisplayVariant(
 }
 
 /**
- * P1-B：Placement Contract Validator。
- *
  * 返回错误消息或 null（合法）。检查 dashboard placement 的必填字段和非法组合。
  * 运行时兼容旧数据：undefined 的 priority/dashboardRole/fallbackRegion 不算非法
  * （由 selector 用默认值兜底）；此函数只检查"声明了但非法"的组合。
@@ -666,42 +615,34 @@ export function validatePlacement(placement: PluginCapabilityPlacement): string 
   if (placement.fixedSlot !== undefined && placement.fixedSlot !== 1 && placement.fixedSlot !== 2 && placement.fixedSlot !== 3) {
     return `fixedSlot must be 1, 2, or 3, got ${String(placement.fixedSlot)}`;
   }
-  // fixedSlot 仅对 fixed-core 角色合法。
   const role = placement.dashboardRole ?? 'candidate';
   if (placement.fixedSlot !== undefined && role !== 'fixed-core') {
     return `fixedSlot=${placement.fixedSlot} requires dashboardRole='fixed-core', got '${role}'`;
   }
-  // priority 范围检查（0..100）。
   const priority = placement.priority ?? 0;
   if (typeof priority === 'number' && (priority < 0 || priority > 100)) {
     return `priority must be in [0, 100], got ${priority}`;
   }
-  // fourthSlotEligible 为 true 时 priority 必须 >= 90。
   if (placement.fourthSlotEligible && priority < FOURTH_SLOT_MIN_PRIORITY) {
     return `fourthSlotEligible=true requires priority>=${FOURTH_SLOT_MIN_PRIORITY}, got priority=${priority}`;
   }
-  // status placement 不应有 fixedSlot。
   if (placement.region === 'status' && placement.fixedSlot !== undefined) {
     return `status placement must not declare fixedSlot, got ${placement.fixedSlot}`;
   }
-  // hero/details placement 不应有 dashboardRole=fixed-core。
   if ((placement.region === 'hero' || placement.region === 'details') && role === 'fixed-core') {
     return `${placement.region} placement must not use dashboardRole='fixed-core'`;
   }
-  // P1-B：dedupeKey 如果声明则必须是非空字符串。
   if (placement.dedupeKey !== undefined) {
     if (typeof placement.dedupeKey !== 'string' || placement.dedupeKey.length === 0) {
       return `dedupeKey must be a non-empty string, got ${String(placement.dedupeKey)}`;
     }
   }
-  // P1-B：fallbackRegion 只允许 advanced | inventory | hidden（不再接受 details）。
   if (placement.fallbackRegion !== undefined) {
     const allowed: ReadonlySet<string> = new Set(['advanced', 'inventory', 'hidden']);
     if (!allowed.has(placement.fallbackRegion)) {
       return `fallbackRegion must be one of advanced|inventory|hidden, got '${placement.fallbackRegion}'`;
     }
   }
-  // P1-B：optionalPosition 仅对 dashboardRole='candidate' 有效。
   if (placement.optionalPosition !== undefined && role !== 'candidate') {
     return `optionalPosition requires dashboardRole='candidate', got '${role}'`;
   }
@@ -715,8 +656,6 @@ export function validatePlacement(placement: PluginCapabilityPlacement): string 
 }
 
 /**
- * 返回状态栏当前应操作的字段。
- *
  * 某些声明会按连接方式提供同一设置的多个字段，例如蓝牙与 2.4G 的休眠
  * 时间。状态栏的首选字段在当前连接不可见时，选择具有相同编辑契约的可见
  * 同级字段；这个选择完全基于声明，不依赖厂商或协议名称。
@@ -743,7 +682,6 @@ export function resolveStatusField(
   ));
 }
 
-/// 聚合所有 capability 的 metadata.stateMapping，返回合并的字段→source 路径映射。
 export function resolveStateMapping(capabilities: PluginCapability[]): PluginStateMapping {
   const mapping: PluginStateMapping = {};
   for (const capability of capabilities) {
@@ -757,8 +695,6 @@ export function resolveStateMapping(capabilities: PluginCapability[]): PluginSta
   return mapping;
 }
 
-/// 从所有 LightingZone capability 的 zones[].fields[].mutation 收集灯光 mutation，
-/// 筛选在 writableMutations 中的。替代 supportsLightingMutation/supportsAnyLighting。
 export function resolveLightingMutations(capabilities: PluginCapability[], writableMutations: string[]): string[] {
   const result: string[] = [];
   const seen = new Set<string>();
@@ -779,7 +715,6 @@ export function resolveLightingMutations(capabilities: PluginCapability[], writa
   return result;
 }
 
-/// 解析灯光角色可用性：基于 zones 中 id 为 'mouse'/'receiver' 的区域是否有可写 mutation。
 /// 与后端 Capability::lighting_role() 的 zone id 约定一致。
 export function resolveLightingRoles(capabilities: PluginCapability[], writableMutations: string[]): { mouse: boolean; receiver: boolean } {
   const roles = { mouse: false, receiver: false };
@@ -796,21 +731,14 @@ export function resolveLightingRoles(capabilities: PluginCapability[], writableM
   return roles;
 }
 
-// ─── ITERATION-006 §P0-F/P0-G：子块选择器 ──────────────────────────────────
-// 通用子块选择纯函数：按 priority desc → order asc → stable id asc 排序，
-// 取前 max 项作为选中项，其余作为 fallback。
-// 适用于回报率页面（max=3）和灯光页面（max=6，固定两端）。
+// 子块选择器
 
-/** 回报率页面子块上限。 */
 export const POLLING_MAX_SUBBLOCKS = 3;
-/** 灯光页面子块上限。 */
 export const LIGHTING_MAX_SUBBLOCKS = 6;
 /** 灯光页面中间候选上限（effect 和 primary-color 之外）。 */
 export const LIGHTING_MAX_CANDIDATES = 4;
 
 /**
- * P1-1 (Iteration 008)：判断一个 capability 是否是回报率（polling）能力。
- *
  * 判定依据（placement 语义，不硬编码 plugin/capability id）：
  * - fixedSlot === 2（DPI=1、回报率=2、灯光=3 的固定槽位约定）；或
  * - group === 'polling'。
@@ -824,12 +752,6 @@ export function isPollingCapability(capability: PluginCapability): boolean {
   );
 }
 
-/**
- * P1-1 (Iteration 008)：返回一个 capability summary 的有效上限。
- *
- * - polling capability → POLLING_MAX_SUBBLOCKS (3)
- * - 非 polling capability → Infinity（不截断）
- */
 export function summaryMaxForCapability(capability: PluginCapability): number {
   return isPollingCapability(capability) ? POLLING_MAX_SUBBLOCKS : Infinity;
 }
@@ -841,7 +763,6 @@ export interface SubblockSelection<T> {
 }
 
 /**
- * P0-G (Iteration 008)：灯光子块选择结果（结构化）。
  * `primaryColor` 是 selector 选出的最高优先级、当前可见的 primary-color 字段。
  * `effect` 是 selector 选出的最高优先级灯效字段。
  * `selected` 仍按 [effect, ...candidates, primary-color] 顺序排列。
@@ -855,11 +776,7 @@ export interface LightingSubblockSelection {
 }
 
 /**
- * P0-F：通用子块选择器（纯函数）。
- *
- * 按 priority desc → order asc → stable id asc 排序，取前 max 项。
  * 不足 max 项时保持实际数量，不补空、不拿低优先级项凑数。
- * 超过 max 项时，前 max 项入选，其余进入 fallback（调用方可用于 Advanced Settings）。
  *
  * 适用于回报率页面（max=3）的 summary items 选择。
  */
@@ -886,8 +803,6 @@ export function selectSummarySubblocks(
 }
 
 /**
- * P0-G：灯光子块选择器（纯函数）。
- *
  * 固定两端：lightingRole='effect' 最左，lightingRole='primary-color' 最右。
  * 中间最多 4 个 candidate（按 priority desc → id asc 排序）。
  * 总数最多 6（1 effect + 4 candidate + 1 primary-color）。
@@ -896,9 +811,6 @@ export function selectSummarySubblocks(
  * - 多个 primary-color 只取最高优先级；
  * - 未声明 lightingRole 的字段视为 candidate（向后兼容）；
  * - 次级颜色、比例、raw 字段应声明 presentation='details' 或由 fallback 接收。
- *
- * 返回的 selected 已按 [effect, ...candidates, primary-color] 顺序排列。
- * fallback 包含未入选的 effect/primary-color 候选和超出 4 个的 candidate。
  */
 export function selectLightingSubblocks(
   fields: PluginField[],
@@ -950,7 +862,7 @@ export function selectLightingSubblocks(
   };
 }
 
-/// 演示模式 mutation 模拟器。深拷贝 device，遍历 pluginCapabilities 找到匹配 mutation 的可写字段，
+/// 深拷贝 device，遍历 pluginCapabilities 找到匹配 mutation 的可写字段，
 /// 通过 field.source 写入新值，并利用 stateMapping 同步 state.* 与 capabilities.* 两侧镜像字段。
 /// stageLayout（DPI 分档）单独处理 active/value 的语义性写入。未知 mutation 静默返回原状态。
 export function simulateDemoMutation(

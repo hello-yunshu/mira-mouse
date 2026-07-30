@@ -23,7 +23,6 @@ pub async fn log_query(query: LogQuery, state: State<'_, LogService>) -> Result<
     Ok(state.query(&query))
 }
 
-/// 当前日志服务状态。
 #[tauri::command]
 pub async fn log_status(state: State<'_, LogService>) -> Result<LogStatus, String> {
     Ok(state.status())
@@ -166,9 +165,7 @@ pub async fn log_export(
 
 /// 导出诊断包 ZIP。
 ///
-/// 诊断上下文（应用版本、平台、架构、会话 ID、本地 AI 状态等）由本命令在后端
-/// 自行收集，不再依赖前端传入——前端无法可靠获取平台/架构等信息，且原先前端
-/// 构造的 `ctx` 各字段均为空，导致诊断包缺少系统信息。
+/// 诊断上下文由后端自行收集（前端无法可靠获取平台/架构等信息）。
 ///
 /// `path` 由前端通过系统保存对话框获取。
 #[tauri::command]

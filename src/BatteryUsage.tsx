@@ -22,15 +22,12 @@ import { Modal } from './overlay';
 import { Tooltip } from './Tooltip';
 import { useScrollFadeState } from './useScrollOverflow';
 
-// ─── 工具函数 ───────────────────────────────────────────────────────────────
-
 function isPureWebPreview(): boolean {
   return !('__TAURI_INTERNALS__' in window);
 }
 
 // 切换 battery range 时后端返回新 response 引用但内容常相同，新引用会让下游
-// memo 浅比较失效，触发 StatusStrip/Summary 重渲染与 CSS transition/animation 抖动。
-// equal 函数 + useStable 在内容相同时复用旧引用，让 memo 浅比较生效。
+// memo 浅比较失效、触发 StatusStrip/Summary 重渲染与 CSS transition/animation 抖动。
 function batteryDeviceEqual(a: BatteryHistoryDevice | undefined, b: BatteryHistoryDevice | undefined): boolean {
   if (a === b) return true;
   if (!a || !b) return false;
@@ -69,12 +66,7 @@ const insightArrayEqual = (a: readonly BatteryInsight[], b: readonly BatteryInsi
 /**
  * 引用稳定 hook：内容相同时复用旧引用，让下游 memo 浅比较生效。
  * 用于切换 battery range 时 response 引用变化但内容相同的场景。
- *
- * 实现说明：用 useState 持有「上一次返回的引用」，render 中比较内容——
- * 内容相同则返回旧引用（命中下游 memo）；内容变化则 setState 触发一次
- * 重渲染，并直接返回新引用，避免本次渲染先用旧值再切到新值的视觉跳跃。
- * 这符合 React 关于「storing information from previous renders」的官方
- * 用法（https://react.dev/reference/react/useState#storing-information-from-previous-renders）。
+ * 参考 React 官方用法：https://react.dev/reference/react/useState#storing-information-from-previous-renders
  */
 function useStable<T>(value: T, equal: (a: T, b: T) => boolean): T {
   const [stable, setStable] = useState<T>(value);
@@ -152,7 +144,6 @@ function formatInsightMessage(insight: BatteryInsight, t: (key: string, options?
   }
 }
 
-// ─── 文本淡入淡出 ───────────────────────────────────────────────────────────
 // 双 span 交叉 opacity 过渡：旧值淡出 + 新值淡入，单层 opacity + 1px translateY，
 // 220ms 时长（对齐 motion-base）。独立 .battery-fade-text 类避免与 LiveValue 共享样式。
 // 多行模式：next span 用 absolute 脱离文档流，容器高度仅由 current 决定，避免新旧文案
@@ -212,7 +203,6 @@ const FadeText = forwardRef<HTMLSpanElement, {
   );
 });
 
-// ─── 溢出文字弹窗 ───────────────────────────────────────────────────────────
 // 检测文字溢出容器时复用 Tooltip 显示完整内容。Tooltip 通过 OverlayPortal 渲染到
 // 顶层 #mira-overlay-root，避免被祖先 overflow: hidden / overflow-y: auto 裁切。
 // 内部用 FadeText 渲染，让 summary 文本在内容变化时获得淡入淡出动画。
@@ -663,8 +653,6 @@ function BatteryUsageChart({ points, range, generatedAt }: ChartProps) {
   );
 }
 
-// ─── 摘要卡片 ───────────────────────────────────────────────────────────────
-
 interface SummaryProps {
   device: BatteryHistoryDevice | undefined;
   insights: BatteryInsight[];
@@ -883,7 +871,6 @@ const BatteryUsageStatusStrip = memo(function BatteryUsageStatusStrip({
   );
 });
 
-// ─── 洞察卡片筛选 ───────────────────────────────────────────────────────────
 // 从全量 insights 中筛出可展示的卡片：去重 → 特殊洞察置顶 + 基础洞察按优先级补齐
 // → 截断到 maxCount → 偶数化（固定 2 列布局，避免单块占行）。
 // 抽出为独立函数，让 BatteryUsageModal 对 24h/10d 各跑一次取最小值作为 maxCount，
@@ -918,8 +905,6 @@ function filterInsightsForCards(insights: BatteryInsight[], maxCount: number = I
   }
   return visible;
 }
-
-// ─── 洞察卡片 ───────────────────────────────────────────────────────────────
 
 const INSIGHT_EXIT_MS = 220;
 // 高度过渡时长对齐 --motion-slow（300ms），让弹窗高度变化与内容淡入同步收束。
@@ -1089,8 +1074,6 @@ function BatteryInsightCards({ insights, aiAnalysisEnabled, maxCount, deviceKey 
     </div>
   );
 }
-
-// ─── 空状态 ─────────────────────────────────────────────────────────────────
 
 function BatteryHistoryDisabledState({ onClose }: { onClose: () => void }) {
   const { t } = useTranslation();
