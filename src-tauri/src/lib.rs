@@ -1958,6 +1958,19 @@ fn apply_night_mode_transition(app: &AppHandle, target_phase: NightPhase) {
     // force_reeval：新设备刚插入，旧 saved 来自上一个设备不再适用。
     // 仅在关灯路径（target=Night）清除本地 saved，让关灯路径重新读取并
     // 保存当前设备的状态；恢复路径（target=Day）保留 saved 以正常恢复。
+    //
+    // 备份 force_reeval 清空前的原 saved：USB 重连后设备仍处于上次 Night
+    // 模式关闭的状态时，Night 分支会读到 is_on=false，"灯光本就关闭：不
+    // 保存状态"逻辑会丢弃 saved，导致 phase=Night + saved=None 卡死状态，
+    // Day 路径因 saved 为空直接返回无法恢复灯光。此时回退到原 saved（仍
+    // 代表"恢复目标"）。Day 路径的 snapshot_supports_mutation 校验会跳过
+    // 设备不兼容的恢复，不会误开灯。
+    let (saved_mouse_before_force, saved_receiver_before_force) =
+        if force_reeval && target_phase == NightPhase::Night {
+            (saved_mouse.clone(), saved_receiver.clone())
+        } else {
+            (None, None)
+        };
     let saved_mouse = if force_reeval && target_phase == NightPhase::Night {
         None
     } else {
@@ -2065,8 +2078,13 @@ fn apply_night_mode_transition(app: &AppHandle, target_phase: NightPhase) {
                                 any_failed = true;
                             }
                         }
+                    } else if force_reeval && saved_mouse_before_force.is_some() {
+                        // 灯光本就关闭（常见于 USB 重连后设备仍处于上次 Night 模式
+                        // 关闭的状态）：保留原 saved 作为恢复目标，避免进入
+                        // phase=Night + saved=None 卡死状态导致 Day 路径无法恢复灯光。
+                        new_saved_mouse = saved_mouse_before_force;
                     }
-                    // 灯光本就关闭：不保存状态，退出时不强行开灯。
+                    // 灯光本就关闭且非 force_reeval：不保存状态，退出时不强行开灯。
                 }
             }
 
@@ -2114,8 +2132,13 @@ fn apply_night_mode_transition(app: &AppHandle, target_phase: NightPhase) {
                                 any_failed = true;
                             }
                         }
+                    } else if force_reeval && saved_receiver_before_force.is_some() {
+                        // effect 本就为 0（常见于 USB 重连后设备仍处于上次 Night 模式
+                        // 关闭的状态）：保留原 saved 作为恢复目标，避免 Day 路径无法
+                        // 恢复灯光。与鼠标灯光分支的 force_reeval 处理对称。
+                        new_saved_receiver = saved_receiver_before_force;
                     }
-                    // effect 本就为 0：不保存状态。
+                    // effect 本就为 0 且非 force_reeval：不保存状态。
                 }
             }
 
