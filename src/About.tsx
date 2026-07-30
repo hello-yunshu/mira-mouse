@@ -67,7 +67,7 @@ export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0 }:
   function handleBack() {
     if (exiting) return;
     setExiting(true);
-    exitTimer.current = window.setTimeout(onBack, 130);
+    exitTimer.current = window.setTimeout(onBack, 200);
   }
 
   useEffect(() => {

@@ -4671,6 +4671,21 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   animation: mira-section-exit 130ms var(--motion-ease-standard) both;
 }
 
+/* 关于页入场/出场：位移和时长略大于设置页，弥补缺少 sub-nav 中间层导致的序列感不足 */
+.about-page {
+  --motion-distance: 10px;
+}
+.about-page > header,
+.about-page .settings-scroll-content > .card,
+.about-page .settings-scroll-content > section {
+  animation-duration: 200ms;
+}
+.about-page .settings-scroll-content.is-exiting > .card,
+.about-page .settings-scroll-content.is-exiting > section,
+.about-page.is-exiting > header {
+  animation-duration: 200ms;
+}
+
 .log-preview-hint {
   margin: -2px 0 8px;
   padding: 5px 8px;
