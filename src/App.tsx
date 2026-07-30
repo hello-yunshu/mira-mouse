@@ -3920,7 +3920,12 @@ export default function App() {
                     : appNotification.action === 'battery-usage'
                       ? openBatteryUsage
                       : appNotification.action === 'relaunch'
-                        ? () => void relaunchAfterUpdate()
+                        ? () => {
+                          setAppNotification(undefined);
+                          void relaunchAfterUpdate().catch((err) => {
+                            notifyError(t('notification.relaunchFailed'), String(err));
+                          });
+                        }
                         : undefined
               : undefined
           }

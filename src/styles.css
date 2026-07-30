@@ -4666,6 +4666,11 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   animation: mira-section-exit 130ms var(--motion-ease-standard) both;
 }
 
+/* 关于页离开时 header 也参与淡出，与内容块同步消失 */
+.about-page.is-exiting > header {
+  animation: mira-section-exit 130ms var(--motion-ease-standard) both;
+}
+
 .log-preview-hint {
   margin: -2px 0 8px;
   padding: 5px 8px;
