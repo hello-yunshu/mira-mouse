@@ -222,7 +222,7 @@ type DiagnosticDialogState = {
   level: LogLevel;
 };
 
-/** 格式化本地时间：列表只显示时分秒（与设计稿一致），完整时间保留在 dateTime 属性中。 */
+/** 列表只显示时分秒（与设计稿一致），完整时间在 dateTime 属性中。 */
 function formatLocalTime(rfc3339: string): string {
   try {
     const date = new Date(rfc3339);
@@ -233,19 +233,17 @@ function formatLocalTime(rfc3339: string): string {
   }
 }
 
-/** 格式化字节大小。 */
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-/** 等级对应的视觉 token 名（不使用内联颜色，保持主题一致）。 */
+/** 保持主题一致的等级 token 名。 */
 function levelClassName(level: LogLevel): string {
   return `log-level log-level-${level}`;
 }
 
-/** 来源显示标签。 */
 function sourceLabel(source: LogSource): string {
   return i18n.t(`logs.filter.${source === 'local-ai' ? 'localAi' : source}`);
 }
@@ -360,7 +358,6 @@ function displayLogFieldLabel(key: string): string {
   return translationKey ? i18n.t(translationKey) : key;
 }
 
-/** 复制单条日志到剪贴板。 */
 async function copyEntryToClipboard(entry: LogEntry): Promise<void> {
   const payload = {
     id: entry.id,
@@ -1159,7 +1156,7 @@ export function LogPage({ onBack }: { onBack: () => void }) {
       if (pausedRef.current) {
         // 暂停期间：累计到 pendingBatchRef，恢复或跳转最新时合并；同时更新计数。
         pendingBatchRef.current.push(...filtered);
-        // 防止长时间暂停导致无界增长：只保留最近一个展示窗口的条目。
+        // 限制 pending 批次大小，防止长时间暂停累积。
         if (pendingBatchRef.current.length > MAX_VIEW_ENTRIES) {
           pendingBatchRef.current = pendingBatchRef.current.slice(-MAX_VIEW_ENTRIES);
         }
@@ -1300,8 +1297,7 @@ export function LogPage({ onBack }: { onBack: () => void }) {
 
   /** 暂停切换。 */
   const pauseToggle = useCallback(() => {
-    // 读取当前暂停状态决定是否恢复；副作用（合并日志）放在 updater 之外，
-    // 避免在 StrictMode 双调用 updater 时重复触发副作用。
+    // 副作用放在 updater 之外，避免 StrictMode 双调用重复触发。
     const resuming = pausedRef.current;
     setPaused((p) => !p);
     if (resuming) {

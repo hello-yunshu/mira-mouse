@@ -133,7 +133,7 @@ function Toggle({ checked, onChange, label, disabled = false, showOnWhenDisabled
   );
 }
 
-// 与 App.tsx 中 isWindowsPlatform 一致：兼容 ?platform=windows 网页预览
+// 必须与 App.tsx 同名函数保持一致
 function isWindowsPlatform(): boolean {
   const previewPlatform = new URLSearchParams(window.location.search).get('platform');
   return previewPlatform === 'windows' || navigator.userAgent.includes('Windows');
@@ -153,10 +153,7 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const { canScrollUp, canScrollDown } = useScrollFadeState(scrollRef, contentRef);
-  // Settings writes are full-object replacements. Keep one authoritative
-  // optimistic snapshot and coalesce serialized saves so rapid UI changes
-  // cannot race, overwrite a newer response, contend for settings.json.tmp,
-  // or build a long write backlog while dragging a range control.
+  // 乐观快照 + 串行化保存合并，避免拖动 range 时竞态、写盘队列堆积、settings.json.tmp 争用。
   const settingsRef = useRef<AppSettings>(DEFAULT_SETTINGS);
   const settingsHydrated = useRef(previewMode);
   const pendingHydrationPatch = useRef<Partial<AppSettings>>({});
