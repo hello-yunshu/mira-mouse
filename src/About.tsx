@@ -45,6 +45,8 @@ export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0 }:
   const [info, setInfo] = useState<AboutInfo | null>(previewMode ? PREVIEW_INFO : null);
   const [error, setError] = useState<string>('');
   const [update, setUpdate] = useState<AppUpdateState>(appUpdateState());
+  const [exiting, setExiting] = useState(false);
+  const exitTimer = useRef<number | undefined>(undefined);
 
   useEffect(() => {
     if (previewMode) return;
@@ -58,6 +60,15 @@ export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0 }:
   }, [previewMode, t]);
 
   useEffect(() => onAppUpdateState(setUpdate), []);
+
+  useEffect(() => () => window.clearTimeout(exitTimer.current), []);
+
+  // 返回时先播放出场动画（与设置页 tab 切换一致），动画结束后再卸载页面。
+  function handleBack() {
+    if (exiting) return;
+    setExiting(true);
+    exitTimer.current = window.setTimeout(onBack, 130);
+  }
 
   useEffect(() => {
     if (focusUpdateToken === 0) return;
@@ -110,17 +121,17 @@ export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0 }:
   const linkError = t('notification.openExternalFailed');
 
   return (
-    <main className="about-page">
+    <main className={`about-page${exiting ? ' is-exiting' : ''}`}>
       <header>
         <div>
           <p className="eyebrow">{t('about.eyebrow')}</p>
           <h1>{t('about.title')}</h1>
         </div>
-        <button className="secondary" onClick={onBack}>{t('common.back')}</button>
+        <button className="secondary" onClick={handleBack}>{t('common.back')}</button>
       </header>
 
       <div ref={scrollRef} className={`settings-scroll-area${canScrollUp ? ' scroll-fade-top' : ''}${canScrollDown ? ' scroll-fade-bottom' : ''}`}>
-      <div ref={contentRef} className="settings-scroll-content">
+      <div ref={contentRef} className={`settings-scroll-content${exiting ? ' is-exiting' : ''}`}>
       <section className="card about-section about-intro-card">
         <span className="about-logo-frame" aria-hidden="true">
           <img className="about-logo about-logo-light" src="/app-icon.png" alt="" />

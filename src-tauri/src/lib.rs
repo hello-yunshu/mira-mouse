@@ -12634,9 +12634,10 @@ fn relaunch_app(app: tauri::AppHandle) -> Result<(), String> {
     {
         // current_exe = Mira.app/Contents/MacOS/Mira，推断 .app bundle 路径，
         // 用 open -n 通过 LaunchServices 启动（符合 macOS 启动规范）。
+        // ancestors: [0]=Mira, [1]=MacOS, [2]=Contents, [3]=Mira.app
         let app_bundle = current_exe
             .ancestors()
-            .nth(2)
+            .nth(3)
             .ok_or_else(|| "cannot determine app bundle path".to_string())?;
         std::process::Command::new("sh")
             .arg("-c")

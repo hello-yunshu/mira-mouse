@@ -596,6 +596,7 @@
     "openExternalFailed": "Failed to open page",
     "checkUpdateFailed": "Update check failed",
     "installUpdateFailed": "Update install failed",
+    "relaunchFailed": "Relaunch failed, please restart manually to complete the update",
     "updateErrorNetwork": "Network connection failed, please check your network and try again",
     "updateErrorVerification": "Update package verification failed, please try again"
   },
