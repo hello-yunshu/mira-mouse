@@ -175,6 +175,12 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
     tab: focusPluginUpdateToken > 0 || focusLocalAiUpdateToken > 0 ? 'plugins' : initialTab,
     focusToken: focusPluginUpdateToken,
   }));
+  // tab 切换过渡：targetTab 控制高亮，displayedTab 控制实际渲染的内容。
+  // 切换时先在旧内容上播放退出动画（is-exiting），动画结束后才切换 displayedTab，
+  // 新内容因 key 变化重新挂载自动触发依次淡入。
+  const [displayedTab, setDisplayedTab] = useState<SettingsTab>(tabState.tab);
+  const [exiting, setExiting] = useState(false);
+  const exitTimer = useRef<number | undefined>(undefined);
   const pendingPluginFocus = useRef(false);
   const pendingLocalAiFocus = useRef(false);
   // 任一焦点 token 增长时强制切到 plugins 标签，待渲染后由专属 effect 滚动聚焦。
@@ -284,12 +290,12 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
   }, [focusPluginUpdateToken]);
 
   useEffect(() => {
-    if (!pendingPluginFocus.current || tab !== 'plugins') return;
+    if (!pendingPluginFocus.current || displayedTab !== 'plugins') return;
     pendingPluginFocus.current = false;
     const target = document.getElementById('settings-plugin-update-section');
     target?.scrollIntoView?.({ block: 'start', behavior: 'smooth' });
     target?.focus?.({ preventScroll: true });
-  }, [tab, focusPluginUpdateToken]);
+  }, [displayedTab, focusPluginUpdateToken]);
 
   // 点击「本地 AI 更新可用」通知后，先切到 plugins 标签，再滚动到 AI 引擎卡片。
   useEffect(() => {
@@ -298,18 +304,36 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
   }, [focusLocalAiUpdateToken]);
 
   useEffect(() => {
-    if (!pendingLocalAiFocus.current || tab !== 'plugins') return;
+    if (!pendingLocalAiFocus.current || displayedTab !== 'plugins') return;
     pendingLocalAiFocus.current = false;
     const target = document.getElementById('settings-local-ai-section');
     target?.scrollIntoView?.({ block: 'start', behavior: 'smooth' });
     target?.focus?.({ preventScroll: true });
-  }, [tab, focusLocalAiUpdateToken]);
+  }, [displayedTab, focusLocalAiUpdateToken]);
 
   // 把当前激活的标签上抛给父组件，使设置页在卸载/重建（例如进入关于页再返回）
   // 后能恢复到用户先前所在的标签，而不是每次都落回首个标签。
   useEffect(() => {
     onTabChange?.(tab);
   }, [tab, onTabChange]);
+
+  // tab 切换过渡：tab（目标）变化时先播放退出动画，动画结束后切换 displayedTab。
+  // 新内容因 key 变化重新挂载，自动触发依次淡入。
+  useEffect(() => {
+    if (tab === displayedTab) return;
+    window.clearTimeout(exitTimer.current);
+    // 用 rAF 延迟一帧设置 exiting，确保浏览器先应用 key 变化前的旧 DOM 状态，
+    // 再添加 is-exiting class 触发退出动画。
+    const raf = requestAnimationFrame(() => setExiting(true));
+    exitTimer.current = window.setTimeout(() => {
+      setDisplayedTab(tab);
+      setExiting(false);
+    }, 130);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.clearTimeout(exitTimer.current);
+    };
+  }, [tab, displayedTab]);
 
   const TABS: { id: SettingsTab; label: string }[] = [
     { id: 'general', label: t('settings.tab.general') },
@@ -572,8 +596,8 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
       </nav>
 
       <div ref={scrollRef} className={`settings-scroll-area${canScrollUp ? ' scroll-fade-top' : ''}${canScrollDown ? ' scroll-fade-bottom' : ''}`}>
-      <div ref={contentRef} className="settings-scroll-content">
-      {tab === 'general' && (
+      <div ref={contentRef} key={displayedTab} className={`settings-scroll-content${exiting ? ' is-exiting' : ''}`}>
+      {displayedTab === 'general' && (
         <>
           <section className="card settings-section">
             <div className="card-title"><h2>{t('settings.language.label')}</h2></div>
@@ -660,7 +684,7 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
         </>
       )}
 
-      {tab === 'device' && (
+      {displayedTab === 'device' && (
         <>
           <section className="card settings-section">
             <div className="card-title">
@@ -841,7 +865,7 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
         </>
       )}
 
-      {tab === 'plugins' && (
+      {displayedTab === 'plugins' && (
         <>
         <section id="settings-local-ai-section" className="card settings-section" tabIndex={-1}>
           <div className="card-title">
@@ -1009,7 +1033,7 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
         </>
       )}
 
-      {tab === 'privacy' && (
+      {displayedTab === 'privacy' && (
         <section className="card settings-section">
           <div className="card-title"><h2>{t('settings.section.privacy')}</h2></div>
           <SettingRow title={t('settings.privacy.telemetryLabel')} hint={t('settings.privacy.telemetryHint')}>
@@ -1046,7 +1070,7 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
         </section>
       )}
 
-      {tab === 'about' && (
+      {displayedTab === 'about' && (
         <>
           <section className="card settings-section settings-action-card">
             <div className="card-title"><h2>{t('settings.section.about')}</h2></div>

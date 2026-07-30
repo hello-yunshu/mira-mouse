@@ -16,10 +16,8 @@ import { OVERLAY_ROOT_ID } from './overlay';
 import { notifyInfo } from './notify';
 
 const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
-const { relaunchMock } = vi.hoisted(() => ({ relaunchMock: vi.fn() }));
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }));
-vi.mock('@tauri-apps/plugin-process', () => ({ relaunch: relaunchMock }));
 
 beforeEach(() => {
   invokeMock.mockRejectedValue(new Error('not mocked'));
@@ -39,7 +37,7 @@ beforeEach(() => {
         contact: {
           github: 'https://github.com/hello-yunshu',
           repository: 'https://github.com/hello-yunshu/mira-mouse',
-          x: 'https://x.com/yunyunyshu',
+          x: 'https://x.com/yunyunshu',
           telegram: 'https://t.me/yunyunshu',
           developerName: 'test',
           copyright: 'test',
@@ -47,9 +45,11 @@ beforeEach(() => {
         updaterActive: false,
       });
     }
+    if (command === 'relaunch_app') {
+      return Promise.resolve();
+    }
     return Promise.reject(new Error('not mocked'));
   });
-  relaunchMock.mockReset();
 });
 
 afterEach(() => {
@@ -137,9 +137,9 @@ describe('ITERATION-009 §4.1: 通知 action 路由', () => {
     await enterDemoMode();
     const notification = await dispatchAndWait('relaunch');
     fireEvent.click(notification);
-    // relaunchAfterUpdate 内部调用 @tauri-apps/plugin-process 的 relaunch
+    // relaunchAfterUpdate 内部调用自定义的 relaunch_app 命令
     await waitFor(() => {
-      expect(relaunchMock).toHaveBeenCalled();
+      expect(invokeMock).toHaveBeenCalledWith('relaunch_app');
     });
   });
 

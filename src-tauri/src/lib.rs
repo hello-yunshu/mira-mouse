@@ -12618,6 +12618,59 @@ fn show_update_notification(
     }
 }
 
+/// 自定义重启命令：解决 tauri-plugin-single-instance 与 tauri-plugin-process relaunch() 冲突。
+///
+/// `relaunch()` 先 spawn 新进程再退出旧进程，但新进程启动时 single-instance
+/// 检测到旧进程的 Unix socket 仍在监听，立即退出新进程，导致重启失败。
+///
+/// 本命令改为延迟启动：先 spawn 一个独立子进程（sleep 1 秒后启动新实例），
+/// 然后调用 `app.exit(0)` 退出当前进程。退出时 single-instance 的 `RunEvent::Exit`
+/// 回调会清理 socket。1 秒后子进程启动新实例，此时 socket 已被清理，新实例正常成为单例。
+#[tauri::command]
+fn relaunch_app(app: tauri::AppHandle) -> Result<(), String> {
+    let current_exe = std::env::current_exe().map_err(|e| e.to_string())?;
+
+    #[cfg(target_os = "macos")]
+    {
+        // current_exe = Mira.app/Contents/MacOS/Mira，推断 .app bundle 路径，
+        // 用 open -n 通过 LaunchServices 启动（符合 macOS 启动规范）。
+        let app_bundle = current_exe
+            .ancestors()
+            .nth(2)
+            .ok_or_else(|| "cannot determine app bundle path".to_string())?;
+        std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("sleep 1 && open -n -a '{}'", app_bundle.display()))
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let exe_str = current_exe.to_string_lossy().to_string();
+        std::process::Command::new("cmd")
+            .args([
+                "/c",
+                &format!("timeout /t 1 /nobreak >nul & start \"\" \"{exe_str}\""),
+            ])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let exe_str = current_exe.to_string_lossy().to_string();
+        std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("sleep 1 && '{exe_str}'"))
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+
+    app.exit(0);
+    Ok(())
+}
+
 // 电量使用情况 Tauri 命令
 
 /// 获取电量历史（24 小时或 10 天聚合 + 洞察分析）。
@@ -14144,6 +14197,7 @@ pub fn run() {
             settings_set,
             hide_to_tray,
             show_update_notification,
+            relaunch_app,
             export_diagnostics,
             plugin_locales,
             battery_history_get,
