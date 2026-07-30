@@ -4201,18 +4201,20 @@ mod settings_tests {
                     version: "1.3.5".into(),
                     release_tag: "plugin/amaster/v1.3.5".into(),
                     url: "https://github.com/hello-yunshu/mira-mouse-plugins/releases/download/test/amaster.mira-plugin".into(),
-                    sha256: "0".repeat(64),
+                    package_sha: "0".repeat(64),
                     publisher_key_id: PLUGIN_PRODUCTION_KEY_002_ID.into(),
                     notes: None,
+                    yanked: false,
                 },
                 PluginRegistryEntry {
                     plugin_id: "mira.logitech-hidpp".into(),
                     version: "0.6.1".into(),
                     release_tag: "plugin/logitech-hidpp/v0.6.1".into(),
                     url: "https://github.com/hello-yunshu/mira-mouse-plugins/releases/download/test/logitech.mira-plugin".into(),
-                    sha256: "1".repeat(64),
+                    package_sha: "1".repeat(64),
                     publisher_key_id: PLUGIN_PRODUCTION_KEY_002_ID.into(),
                     notes: None,
+                    yanked: false,
                 },
             ],
         };
@@ -4231,6 +4233,51 @@ mod settings_tests {
                 .unwrap()
                 .update_available
         );
+    }
+
+    #[test]
+    fn plugin_updates_treat_yanked_entries_as_absent() {
+        // yanked=true 的 entry 不应出现在候选里：available_version/release_tag/notes 全部
+        // 为 None，update_available=false，等同于该插件不在 registry 中。这样 UI 不会向
+        // 用户暴露已撤回的版本号或 notes，install_plugin_update 也会单独拒绝。
+        let current = BTreeMap::from([
+            ("mira.amaster".into(), "1.3.3".into()),
+            ("mira.logitech-hidpp".into(), "0.6.1".into()),
+        ]);
+        let registry = PluginRegistry {
+            schema_version: 1,
+            plugins: vec![
+                PluginRegistryEntry {
+                    plugin_id: "mira.amaster".into(),
+                    version: "1.3.5".into(),
+                    release_tag: "plugin/amaster/v1.3.5".into(),
+                    url: "https://github.com/hello-yunshu/mira-mouse-plugins/releases/download/test/amaster.mira-plugin".into(),
+                    package_sha: "0".repeat(64),
+                    publisher_key_id: PLUGIN_PRODUCTION_KEY_002_ID.into(),
+                    notes: Some("yanked release".into()),
+                    yanked: true,
+                },
+                PluginRegistryEntry {
+                    plugin_id: "mira.logitech-hidpp".into(),
+                    version: "0.6.1".into(),
+                    release_tag: "plugin/logitech-hidpp/v0.6.1".into(),
+                    url: "https://github.com/hello-yunshu/mira-mouse-plugins/releases/download/test/logitech.mira-plugin".into(),
+                    package_sha: "1".repeat(64),
+                    publisher_key_id: PLUGIN_PRODUCTION_KEY_002_ID.into(),
+                    notes: None,
+                    yanked: false,
+                },
+            ],
+        };
+        let updates = plugin_updates_for_versions(&current, registry).unwrap();
+        let amaster = updates
+            .iter()
+            .find(|item| item.plugin_id == "mira.amaster")
+            .unwrap();
+        assert!(!amaster.update_available);
+        assert!(amaster.available_version.is_none());
+        assert!(amaster.release_tag.is_none());
+        assert!(amaster.notes.is_none());
     }
 
     #[test]
@@ -7068,10 +7115,14 @@ struct PluginRegistryEntry {
     version: String,
     release_tag: String,
     url: String,
-    sha256: String,
+    package_sha: String,
     publisher_key_id: String,
     #[serde(default)]
     notes: Option<String>,
+    // schema_version=1 的 registry 强制写入此字段（update-registry.mjs/sign-registry.mjs）。
+    // true 表示该 entry 已被撤回，消费方必须跳过更新检查与安装。
+    #[serde(default)]
+    yanked: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -7277,9 +7328,11 @@ fn plugin_updates_for_versions(
     current: &BTreeMap<String, String>,
     registry: PluginRegistry,
 ) -> Result<Vec<PluginUpdateInfo>, String> {
+    // yanked=true 的 entry 视同不存在，避免向 UI 暴露已撤回的版本号/notes/release_tag。
     let remote = registry
         .plugins
         .into_iter()
+        .filter(|entry| !entry.yanked)
         .map(|entry| (entry.plugin_id.clone(), entry))
         .collect::<BTreeMap<_, _>>();
     current
@@ -11829,6 +11882,11 @@ fn install_plugin_update(app: &AppHandle, plugin_id: &str) -> Result<PluginInsta
         .into_iter()
         .find(|entry| entry.plugin_id == plugin_id)
         .ok_or_else(|| format!("plugin {plugin_id} is not in the update registry"))?;
+    if entry.yanked {
+        return Err(format!(
+            "plugin {plugin_id} has been yanked from the update registry"
+        ));
+    }
     let current_semver = semver::Version::parse(&previous_version)
         .map_err(|error| format!("invalid installed version: {error}"))?;
     let next_semver = semver::Version::parse(&entry.version)
@@ -11866,10 +11924,10 @@ fn install_plugin_update(app: &AppHandle, plugin_id: &str) -> Result<PluginInsta
         },
     );
     let actual_sha = hex::encode(Sha256::digest(&bytes));
-    if actual_sha != entry.sha256 {
+    if actual_sha != entry.package_sha {
         return Err(format!(
             "plugin SHA-256 mismatch: expected {}, got {actual_sha}",
-            entry.sha256
+            entry.package_sha
         ));
     }
     let trust = production_trust_store();
