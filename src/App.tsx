@@ -2321,8 +2321,8 @@ function DeviceDetails({ device, deviceKey, onClose }: { device: DeviceState; de
   const [diagFormat, setDiagFormat] = useState<'markdown' | 'json'>('markdown');
   const [logSessionId, setLogSessionId] = useState<string | null>(null);
   const capScrollRef = useRef<HTMLDivElement>(null);
-  // capability-groups 使用 CSS columns 布局，添加内容包装层会破坏列流动，
-  // 因此只观察容器本身；MutationObserver 仍会捕获子节点变化触发重新测量。
+  // capability-groups 是滚动容器；只观察容器本身即可，
+  // MutationObserver 会捕获子节点（含两列内分组）变化触发重新测量。
   const { canScrollUp: capCanScrollUp, canScrollDown: capCanScrollDown } = useScrollFadeState(capScrollRef);
   const pluginId = device.pluginId;
 
@@ -2361,6 +2361,29 @@ function DeviceDetails({ device, deviceKey, onClose }: { device: DeviceState; de
   const groups = Object.entries(device.capabilities)
     .filter(([, fields]) => fields && Object.keys(fields).length > 0)
     .sort(([a], [b]) => (detailOrder.get(a) ?? 10_000) - (detailOrder.get(b) ?? 10_000) || a.localeCompare(b));
+
+  // 双列平衡分配：用字段数估算每个分组高度，贪心放到当前较短的一列，
+  // 让块在两列间散落分布，避免一列很长、一列很空。估算高度由分组
+  // padding(20) + h3(~17) + 每行字段(~18) 构成，足以驱动贪心决策。
+  const { leftGroups, rightGroups } = useMemo(() => {
+    let leftHeight = 0;
+    let rightHeight = 0;
+    const leftGroups: typeof groups = [];
+    const rightGroups: typeof groups = [];
+    for (const entry of groups) {
+      const [, fields] = entry;
+      const fieldCount = Object.keys(fields).length;
+      const height = 20 + 17 + fieldCount * 18;
+      if (leftHeight <= rightHeight) {
+        leftGroups.push(entry);
+        leftHeight += height;
+      } else {
+        rightGroups.push(entry);
+        rightHeight += height;
+      }
+    }
+    return { leftGroups, rightGroups };
+  }, [groups]);
 
   const handleCopyAll = useCallback(() => {
     setCopyState('copying');
@@ -2502,30 +2525,62 @@ function DeviceDetails({ device, deviceKey, onClose }: { device: DeviceState; de
         </div>
       </div>
       <div ref={capScrollRef} className={`capability-groups${capCanScrollUp ? ' scroll-fade-top' : ''}${capCanScrollDown ? ' scroll-fade-bottom' : ''}`}>
-        {groups.length ? groups.map(([group, fields]) => (
-          <section className="capability-group" key={group}>
-            <h3>
-              {capabilityGroupLabel(group, pluginId)}
-              <ReadStatusBadge status={device.readStatuses?.[group]} />
-            </h3>
-            <dl>
-              {Object.entries(fields).map(([key, value]) => {
-                const valueLabel = resolveDetailValueLabel(group, key, device);
-                const complex = isComplexValue(value);
-                return (
-                  <div key={key}>
-                    <dt>{capabilityFieldLabel(key, pluginId)}</dt>
-                    <dd>
-                      {complex
-                        ? <DetailValue value={value} />
-                        : <FormattedValue value={value} label={valueLabel} />}
-                    </dd>
-                  </div>
-                );
-              })}
-            </dl>
-          </section>
-        )) : <p className="setting-hint">{i18n.t('dashboard.noCapabilities')}</p>}
+        {groups.length ? (
+          <>
+            <div className="capability-column">
+              {leftGroups.map(([group, fields]) => (
+                <section className="capability-group" key={group}>
+                  <h3>
+                    {capabilityGroupLabel(group, pluginId)}
+                    <ReadStatusBadge status={device.readStatuses?.[group]} />
+                  </h3>
+                  <dl>
+                    {Object.entries(fields).map(([key, value]) => {
+                      const valueLabel = resolveDetailValueLabel(group, key, device);
+                      const complex = isComplexValue(value);
+                      return (
+                        <div key={key}>
+                          <dt>{capabilityFieldLabel(key, pluginId)}</dt>
+                          <dd>
+                            {complex
+                              ? <DetailValue value={value} />
+                              : <FormattedValue value={value} label={valueLabel} />}
+                          </dd>
+                        </div>
+                      );
+                    })}
+                  </dl>
+                </section>
+              ))}
+            </div>
+            <div className="capability-column">
+              {rightGroups.map(([group, fields]) => (
+                <section className="capability-group" key={group}>
+                  <h3>
+                    {capabilityGroupLabel(group, pluginId)}
+                    <ReadStatusBadge status={device.readStatuses?.[group]} />
+                  </h3>
+                  <dl>
+                    {Object.entries(fields).map(([key, value]) => {
+                      const valueLabel = resolveDetailValueLabel(group, key, device);
+                      const complex = isComplexValue(value);
+                      return (
+                        <div key={key}>
+                          <dt>{capabilityFieldLabel(key, pluginId)}</dt>
+                          <dd>
+                            {complex
+                              ? <DetailValue value={value} />
+                              : <FormattedValue value={value} label={valueLabel} />}
+                          </dd>
+                        </div>
+                      );
+                    })}
+                  </dl>
+                </section>
+              ))}
+            </div>
+          </>
+        ) : <p className="setting-hint">{i18n.t('dashboard.noCapabilities')}</p>}
       </div>
     </Modal>
   );
