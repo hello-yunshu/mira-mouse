@@ -2233,12 +2233,18 @@ body:has(.platform-fallback:not(.web-preview)) {
 .device-details .icon-button { display: grid; place-items: center; border-radius: 50%; }
 .device-details .icon-button svg { width: var(--modal-close-icon); height: var(--modal-close-icon); }
 .details-note { margin: 9px 0 11px; color: var(--muted); font-size: 10px; line-height: 1.45; }
-.capability-groups { min-height: 0; overflow-y: auto; overscroll-behavior: contain; columns: 2; column-gap: 8px; padding-right: 3px; scrollbar-width: none; }
+/* 双列布局：用 flex + 两列容器替代 CSS columns。
+   原先 columns: 2 在固定高度 + overflow-y: auto 时退化为 column-fill: auto 行为，
+   浏览器先填满第一列再溢出到第二列，造成一列很长、一列很空。
+   改为两列独立 flex 容器后，分组由 JS 贪心分配到当前较短的一列，
+   高度受限于 viewport 时仍能保持视觉平衡。 */
+.capability-groups { min-height: 0; overflow-y: auto; overscroll-behavior: contain; display: flex; gap: 8px; padding-right: 3px; scrollbar-width: none; }
 .capability-groups::-webkit-scrollbar { display: none; }
 /* capability-groups 列采用两列布局，淡出距离更短避免遮挡列内容 */
 .capability-groups.scroll-fade-top,
 .capability-groups.scroll-fade-bottom { --scroll-fade: 8px; }
-.capability-group { min-width: 0; break-inside: avoid; margin: 0 0 8px; padding: 10px; border-radius: 12px; background: var(--surface-group-bg); border: 1px solid var(--surface-group-border); }
+.capability-column { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.capability-group { min-width: 0; margin: 0; padding: 10px; border-radius: 12px; background: var(--surface-group-bg); border: 1px solid var(--surface-group-border); }
 .capability-group h3 { margin: 0 0 5px; font-size: 12px; }
 .capability-group dl { margin: 0; }
 .capability-group dl > div { display: flex; justify-content: space-between; gap: 8px; padding: 4px 0; border-top: 1px solid rgb(127 120 140 / 9%); font-size: 10px; }
@@ -4666,23 +4672,13 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   animation: mira-section-exit 130ms var(--motion-ease-standard) both;
 }
 
-/* 关于页离开时 header 也参与淡出，与内容块同步消失 */
-.about-page.is-exiting > header {
-  animation: mira-section-exit 130ms var(--motion-ease-standard) both;
-}
-
-/* 关于页入场/出场：位移和时长略大于设置页，弥补缺少 sub-nav 中间层导致的序列感不足 */
+/* 关于页入场：位移和时长略大于设置页，弥补缺少 sub-nav 中间层导致的序列感不足 */
 .about-page {
   --motion-distance: 10px;
 }
 .about-page > header,
 .about-page .settings-scroll-content > .card,
 .about-page .settings-scroll-content > section {
-  animation-duration: 200ms;
-}
-.about-page .settings-scroll-content.is-exiting > .card,
-.about-page .settings-scroll-content.is-exiting > section,
-.about-page.is-exiting > header {
   animation-duration: 200ms;
 }
 
