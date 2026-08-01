@@ -293,6 +293,8 @@ export interface AppSettings {
   trayShowBatteryTitle: boolean;
   trayIncludeReceiverBattery: boolean;
   trayShowConnection: boolean;
+  /** Windows 独立数字电量图标：开启后在鼠标状态图标外创建独立的数字电量托盘图标。 */
+  trayShowBatteryIcon: boolean;
   trayIconColor: string;
   /** 托盘渲染模式：auto | native-macos | dynamic-image | static */
   trayRenderMode: 'auto' | 'native-macos' | 'dynamic-image' | 'static';
