@@ -8,6 +8,6 @@ publish = false
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["std"] }
-mira-protocol = { version = "1.0.6", path = "../mira-protocol" }
+mira-protocol = { version = "1.0.7", path = "../mira-protocol" }
 rill-ml = { workspace = true }
 thiserror.workspace = true
