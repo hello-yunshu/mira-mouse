@@ -13884,10 +13884,9 @@ fn build_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     // 初始不可见，由 update_tray 根据 tray_show_battery_icon 设置和连接状态控制。
     #[cfg(target_os = "windows")]
     {
-        TrayIconBuilder::with_id(BATTERY_TRAY_ID)
+        let battery_tray = TrayIconBuilder::with_id(BATTERY_TRAY_ID)
             .icon(initial_icon)
             .icon_as_template(false)
-            .visible(false)
             .show_menu_on_left_click(false)
             .menu(&menu)
             .on_menu_event(|app, event| match event.id().as_ref() {
@@ -13912,6 +13911,7 @@ fn build_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             })
             .tooltip("Mira")
             .build(app)?;
+        battery_tray.set_visible(false)?;
     }
 
     let settings = cached_settings(app.handle());
