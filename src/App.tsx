@@ -2860,6 +2860,11 @@ function Dashboard({
   const [writeBusy, setWriteBusy] = useState(false);
   const [editingField, setEditingField] = useState<{ capability: PluginCapability; field: PluginField } | null>(null);
   const [statusSwitchRestoreValues, setStatusSwitchRestoreValues] = useState<Record<string, unknown>>({});
+  const forcedPreviewMessage = demoMode
+    && new URLSearchParams(window.location.search).get('preview') === 'writing'
+    ? t('dashboard.writing')
+    : '';
+  const visiblePreviewMessage = previewMessage || forcedPreviewMessage;
 
   const positionBatteryPopover = useCallback(() => {
     const anchor = batteryControlRef.current;
@@ -3547,7 +3552,7 @@ function Dashboard({
       <section
         className={[
           'control-stage',
-          previewMessage ? 'has-preview-message' : '',
+          visiblePreviewMessage ? 'has-preview-message' : '',
           pollingContextTarget ? 'has-shared-context' : '',
           metricPresentation ? 'has-shared-metric' : '',
           surfacePresentation ? 'has-shared-surface' : '',
@@ -3616,7 +3621,7 @@ function Dashboard({
             sync={contextMotionSync}
           />
         </div>
-        {previewMessage && <p className="preview-message">{previewMessage}</p>}
+        {visiblePreviewMessage && <p className="preview-message">{visiblePreviewMessage}</p>}
         {editingField && (
           <FieldEditModal
             field={editingField.field}

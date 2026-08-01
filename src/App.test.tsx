@@ -43,6 +43,13 @@ describe('Mira shell', () => {
     expect(screen.queryByRole('button', { name: '最大化窗口' })).not.toBeInTheDocument();
     expect(within(controls).getByRole('button', { name: '关闭窗口' })).toBeInTheDocument();
   });
+  it('can hold the writing status open for visual review in the web preview', () => {
+    window.history.pushState({}, '', '?preview=writing');
+    render(<App />);
+    fireEvent.click(screen.getByText('查看演示'));
+    expect(screen.getByText('正在和鼠标沟通…')).toBeInTheDocument();
+    expect(document.querySelector('.control-stage')).toHaveClass('has-preview-message');
+  });
   it('hides to tray from the Windows close control and keeps maximize absent', () => {
     Object.defineProperty(navigator, 'userAgent', { configurable: true, value: 'Windows' });
     render(<App />);
