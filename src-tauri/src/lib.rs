@@ -1974,8 +1974,8 @@ fn apply_night_mode_transition(app: &AppHandle, target_phase: NightPhase) {
     // 备份 force_reeval 清空前的原 saved：USB 重连后设备仍处于上次 Night
     // 模式关闭的状态时，Night 分支会读到 is_on=false，"灯光本就关闭：不
     // 保存状态"逻辑会丢弃 saved，导致 phase=Night + saved=None 卡死状态，
-    // Day 路径因 saved 为空直接返回无法恢复灯光。此时回退到原 saved（仍
-    // 代表"恢复目标"）。Day 路径的 snapshot_supports_mutation 校验会跳过
+    // 恢复路径因 saved 为空直接返回无法恢复灯光。此时回退到原 saved（仍
+    // 代表"恢复目标"）。恢复路径的 snapshot_supports_mutation 校验会跳过
     // 设备不兼容的恢复，不会误开灯。
     let (saved_mouse_before_force, saved_receiver_before_force) =
         if force_reeval && target_phase == NightPhase::Night {
@@ -2095,10 +2095,20 @@ fn apply_night_mode_transition(app: &AppHandle, target_phase: NightPhase) {
                                 any_failed = true;
                             }
                         }
-                    } else if force_reeval && saved_mouse_before_force.is_some() {
+                    } else if force_reeval
+                        && saved_mouse_before_force.is_some()
+                        && saved_identity_matches(
+                            &saved_mouse_before_force
+                                .as_ref()
+                                .map(|s| s.device_identity.clone())
+                                .unwrap_or(None),
+                            &snapshot,
+                        )
+                    {
                         // 灯光本就关闭（常见于 USB 重连后设备仍处于上次 Night 模式
-                        // 关闭的状态）：保留原 saved 作为恢复目标，避免进入
-                        // phase=Night + saved=None 卡死状态导致 Day 路径无法恢复灯光。
+                        // 关闭的状态）：仅当设备身份匹配时才保留原 saved 作为恢复目标，
+                        // 避免进入 phase=Night + saved=None 卡死状态导致恢复路径无法恢复灯光。
+                        // 设备身份不匹配（不同设备替换）：不回退 saved，恢复路径不会跨设备恢复。
                         new_saved_mouse = saved_mouse_before_force;
                     }
                     // 灯光本就关闭且非 force_reeval：不保存状态，退出时不强行开灯。
@@ -2152,10 +2162,19 @@ fn apply_night_mode_transition(app: &AppHandle, target_phase: NightPhase) {
                                 any_failed = true;
                             }
                         }
-                    } else if force_reeval && saved_receiver_before_force.is_some() {
+                    } else if force_reeval
+                        && saved_receiver_before_force.is_some()
+                        && saved_identity_matches(
+                            &saved_receiver_before_force
+                                .as_ref()
+                                .map(|s| s.device_identity.clone())
+                                .unwrap_or(None),
+                            &snapshot,
+                        )
+                    {
                         // effect 本就为 0（常见于 USB 重连后设备仍处于上次 Night 模式
-                        // 关闭的状态）：保留原 saved 作为恢复目标，避免 Day 路径无法
-                        // 恢复灯光。与鼠标灯光分支的 force_reeval 处理对称。
+                        // 关闭的状态）：仅当设备身份匹配时才保留原 saved 作为恢复目标。
+                        // 与鼠标灯光分支的 force_reeval 处理对称。
                         new_saved_receiver = saved_receiver_before_force;
                     }
                     // effect 本就为 0 且非 force_reeval：不保存状态。
@@ -3793,7 +3812,7 @@ fn detect_new_device_key(
     new.keys().any(|k| !old.contains_key(k))
 }
 
-/// Day 路径单目标（鼠标或接收器）的恢复决策。纯函数，可单元测试。
+/// 恢复路径单目标（鼠标或接收器）的恢复决策。纯函数，可单元测试。
 #[derive(Debug, PartialEq, Eq)]
 enum NightRestoreDecision {
     /// 无 saved，无需恢复。
@@ -3807,7 +3826,7 @@ enum NightRestoreDecision {
 }
 
 /// 根据 saved 是否存在、设备身份匹配、快照就绪和 mutation 可写性，
-/// 决定 Day 路径对单个目标（鼠标或接收器）的恢复行为。
+/// 决定恢复路径对单个目标（鼠标或接收器）的恢复行为。
 fn plan_light_restore(
     saved_present: bool,
     saved_identity: &Option<String>,
@@ -7131,7 +7150,7 @@ mod night_mode_tests {
 
     /// 重新插入时设备灯光仍关闭，但存在 Mira 自动关灯留下的 saved，必须恢复。
     /// force_reeval 路径已通过 saved_mouse_before_force 回退保留 saved（上次修复），
-    /// Day 路径通过 plan_light_restore 校验身份后恢复。
+    /// 恢复路径通过 plan_light_restore 校验身份后恢复。
     #[test]
     fn reconnect_with_light_off_still_restores_from_saved() {
         // saved 来自 Mira 自动关灯（含设备身份）。
@@ -7226,14 +7245,14 @@ mod night_mode_tests {
 
     /// force_reeval 处理后不会留下 Night + saved=None 的错误状态。
     /// 验证：force_reeval + target=Night + 灯光本就关闭 → 回退到原 saved（含身份）。
-    /// Day 路径随后根据身份校验决定恢复。
+    /// 恢复路径随后根据身份校验决定恢复。
     #[test]
     fn force_reeval_does_not_leave_night_with_none_saved() {
         // 原 saved（来自上次关灯，含设备身份）。
         let original_identity = Some("group-a".into());
 
         // force_reeval 回退后的 saved 仍保留原身份。
-        // Day 路径：同一设备重连 → 身份匹配 → Restore。
+        // 恢复路径：同一设备重连 → 身份匹配 → Restore。
         let snap = make_lighting_snapshot("A", Some("group-a"), "set-mouse-lighting");
         let decision = plan_light_restore(
             true,
@@ -7244,7 +7263,57 @@ mod night_mode_tests {
         assert_eq!(
             decision,
             NightRestoreDecision::Restore,
-            "force_reeval 回退的 saved 应保留身份，Day 路径应恢复"
+            "force_reeval 回退的 saved 应保留身份，恢复路径应恢复"
+        );
+    }
+
+    /// force_reeval 回退时校验设备身份：不同设备替换不回退 saved。
+    /// 场景：设备 A 关灯后断开，插入设备 B（不同身份），Night 阶段灯光本就关闭。
+    /// 此时不应把设备 A 的 saved 回退到设备 B，恢复路径也不会跨设备恢复。
+    #[test]
+    fn force_reeval_rollback_rejects_different_device() {
+        // 设备 A 的 saved（含 group-a 身份）。
+        let saved_a_identity = Some("group-a".into());
+        // 重新插入的是设备 B（group-b 身份）。
+        let snap_b = make_lighting_snapshot("B", Some("group-b"), "set-mouse-lighting");
+        // 恢复路径校验：身份不匹配 → DropSaved，不恢复。
+        let decision = plan_light_restore(
+            true,
+            &saved_a_identity,
+            Some(&snap_b),
+            Some("set-mouse-lighting"),
+        );
+        assert_eq!(
+            decision,
+            NightRestoreDecision::DropSaved,
+            "不同设备替换时恢复路径应丢弃 saved"
+        );
+        // 关灯路径 force_reeval 回退：身份不匹配不回退（由 saved_identity_matches 守护）。
+        assert!(
+            !saved_identity_matches(&saved_a_identity, &snap_b),
+            "关灯路径 force_reeval 回退应因身份不匹配而跳过"
+        );
+    }
+
+    /// force_reeval 回退时校验设备身份：同一设备重连正常回退。
+    #[test]
+    fn force_reeval_rollback_accepts_same_device() {
+        let saved_a_identity = Some("group-a".into());
+        let snap_a = make_lighting_snapshot("A", Some("group-a"), "set-mouse-lighting");
+        assert!(
+            saved_identity_matches(&saved_a_identity, &snap_a),
+            "同一设备重连时 force_reeval 回退应通过身份校验"
+        );
+    }
+
+    /// 旧版 saved（无 device_identity）在 force_reeval 回退时兼容通过。
+    #[test]
+    fn force_reeval_rollback_allows_legacy_none_identity() {
+        let saved_legacy_identity = None;
+        let snap = make_lighting_snapshot("A", Some("group-a"), "set-mouse-lighting");
+        assert!(
+            saved_identity_matches(&saved_legacy_identity, &snap),
+            "旧版 saved 无身份字段时 force_reeval 回退应兼容通过"
         );
     }
 }
