@@ -34,6 +34,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   trayShowBatteryTitle: true,
   trayIncludeReceiverBattery: false,
   trayShowConnection: true,
+  trayShowBatteryIcon: false,
   trayIconColor: 'auto',
   trayRenderMode: 'auto',
   lowBatteryThreshold: 20,
@@ -634,11 +635,9 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
             <SettingRow title={t('settings.autostart.label')} hint={t('settings.autostart.hint')}>
               <Toggle checked={autostartEnabled} onChange={toggleAutostart} label={t('settings.autostart.label')} />
             </SettingRow>
-            <SettingRow title={t('settings.trayBattery.label')} hint={t('settings.trayBattery.hint')}>
+            <SettingRow title={t('settings.trayBattery.label')} hint={t(windowsPlatform ? 'settings.trayBattery.hintWindows' : 'settings.trayBattery.hint')}>
               {windowsPlatform ? (
-                <Tooltip label={t('settings.trayBattery.disabledHint')}>
-                  <Toggle checked={settings.trayShowBatteryTitle} onChange={(v) => update({ trayShowBatteryTitle: v })} label={t('settings.trayBattery.label')} disabled />
-                </Tooltip>
+                <Toggle checked={settings.trayShowBatteryIcon} onChange={(v) => update({ trayShowBatteryIcon: v })} label={t('settings.trayBattery.label')} />
               ) : (
                 <Toggle checked={settings.trayShowBatteryTitle} onChange={(v) => update({ trayShowBatteryTitle: v })} label={t('settings.trayBattery.label')} />
               )}

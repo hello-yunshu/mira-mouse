@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use crate::tray::image::render_mouse_icon_rgba;
+use crate::tray::image::{render_battery_digit_rgba, render_mouse_icon_rgba};
 use crate::tray::state::{TrayRenderMode, TrayStatusState};
 use crate::tray::style::{TrayIconColorMode, TrayTheme, TrayVisualStyle};
 
@@ -110,6 +110,93 @@ impl DynamicImageTrayRenderer {
             return None;
         }
         let rgba = self.render_mouse_rgba(state, style);
+        Some(tauri::image::Image::new_owned(rgba, 64, 64))
+    }
+}
+
+// ─── Windows 数字电量图标渲染器 ─────────────────────────────────────────────
+
+/// 数字电量图标缓存 key：捕获影响数字图标视觉的所有字段。
+///
+/// 与 `TrayIconCacheKey` 的区别：不包含 `show_receiver`、`receiver_battery`、
+/// `receiver_charging`、`render_mode`（数字图标只显示鼠标电量，不受这些影响）。
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[allow(dead_code)]
+pub struct BatteryIconCacheKey {
+    pub connected: bool,
+    pub mouse_battery: Option<u8>,
+    pub mouse_charging: bool,
+    pub low_battery_threshold: u8,
+    pub theme: TrayTheme,
+    pub icon_color_mode: TrayIconColorMode,
+}
+
+impl BatteryIconCacheKey {
+    #[allow(dead_code)]
+    pub fn from_state_and_style(state: &TrayStatusState, style: &TrayVisualStyle) -> Self {
+        Self {
+            connected: state.connected,
+            mouse_battery: state.mouse_battery,
+            mouse_charging: state.mouse_charging,
+            low_battery_threshold: state.low_battery_threshold,
+            theme: style.theme,
+            icon_color_mode: style.icon_color_mode,
+        }
+    }
+}
+
+/// 数字电量图标渲染器。
+///
+/// 与 `DynamicImageTrayRenderer` 结构一致：内部维护 `HashMap` 缓存，
+/// 通过 `BatteryIconCacheKey` 进行 diff。未连接时返回 `None`。
+#[derive(Default)]
+#[allow(dead_code)]
+pub struct BatteryDigitRenderer {
+    cache: HashMap<BatteryIconCacheKey, Vec<u8>>,
+    last_key: Option<BatteryIconCacheKey>,
+}
+
+impl BatteryDigitRenderer {
+    #[allow(dead_code)]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 当前状态对应的缓存 key 是否与上次不同。
+    #[allow(dead_code)]
+    pub fn needs_update(&self, state: &TrayStatusState, style: &TrayVisualStyle) -> bool {
+        let key = BatteryIconCacheKey::from_state_and_style(state, style);
+        self.last_key.as_ref() != Some(&key)
+    }
+
+    #[allow(dead_code)]
+    pub fn mark_current(&mut self, state: &TrayStatusState, style: &TrayVisualStyle) {
+        self.last_key = Some(BatteryIconCacheKey::from_state_and_style(state, style));
+    }
+
+    /// 渲染数字电量图标并转换为 `tauri::image::Image`。
+    ///
+    /// - 已连接：返回 `Some(Image)`（数字电量图标）
+    /// - 未连接：返回 `None`（调用方应隐藏/移除数字图标）
+    #[allow(dead_code)]
+    pub fn render_image(
+        &mut self,
+        state: &TrayStatusState,
+        style: &TrayVisualStyle,
+    ) -> Option<tauri::image::Image<'static>> {
+        if !state.connected {
+            self.last_key = Some(BatteryIconCacheKey::from_state_and_style(state, style));
+            return None;
+        }
+        let key = BatteryIconCacheKey::from_state_and_style(state, style);
+        let rgba = if let Some(cached) = self.cache.get(&key) {
+            cached.clone()
+        } else {
+            let rgba = render_battery_digit_rgba(state, style);
+            self.cache.insert(key.clone(), rgba.clone());
+            rgba
+        };
+        self.last_key = Some(key);
         Some(tauri::image::Image::new_owned(rgba, 64, 64))
     }
 }
@@ -413,5 +500,164 @@ mod tests {
 
         // 两个不同的 key 应该都被缓存
         assert_eq!(renderer.cache.len(), 2);
+    }
+
+    // ─── BatteryDigitRenderer 测试 ───────────────────────────────────────────
+    //
+    // 对应需求：状态不变时不重复渲染、颜色或主题变化会更新图标、
+    // 设备断开后移除数字图标、重复开启不会创建多个图标（缓存命中）。
+
+    #[test]
+    fn battery_renderer_needs_update_on_first_call() {
+        let renderer = BatteryDigitRenderer::new();
+        let state = make_state(Some(75), false);
+        let style = make_style();
+        assert!(renderer.needs_update(&state, &style));
+    }
+
+    #[test]
+    fn battery_renderer_needs_update_false_after_render() {
+        // 状态不变时不重复渲染
+        let mut renderer = BatteryDigitRenderer::new();
+        let state = make_state(Some(75), false);
+        let style = make_style();
+
+        let _ = renderer.render_image(&state, &style);
+        assert!(!renderer.needs_update(&state, &style));
+    }
+
+    #[test]
+    fn battery_renderer_needs_update_true_after_state_change() {
+        let mut renderer = BatteryDigitRenderer::new();
+        let style = make_style();
+
+        let state1 = make_state(Some(75), false);
+        let _ = renderer.render_image(&state1, &style);
+        assert!(!renderer.needs_update(&state1, &style));
+
+        let state2 = make_state(Some(80), false);
+        assert!(renderer.needs_update(&state2, &style));
+    }
+
+    #[test]
+    fn battery_renderer_needs_update_true_after_theme_change() {
+        // 颜色或主题变化会更新图标
+        let mut renderer = BatteryDigitRenderer::new();
+        let state = make_state(Some(75), false);
+
+        let dark_style = TrayVisualStyle::from_settings(&test_settings(), TrayTheme::Dark);
+        let _ = renderer.render_image(&state, &dark_style);
+        assert!(!renderer.needs_update(&state, &dark_style));
+
+        let light_style = TrayVisualStyle::from_settings(&test_settings(), TrayTheme::Light);
+        assert!(renderer.needs_update(&state, &light_style));
+    }
+
+    #[test]
+    fn battery_renderer_render_image_returns_some_when_connected() {
+        // 设置开启且已连接时创建数字图标
+        let mut renderer = BatteryDigitRenderer::new();
+        let state = make_state(Some(75), false);
+        let style = make_style();
+
+        let image = renderer.render_image(&state, &style);
+        assert!(image.is_some());
+    }
+
+    #[test]
+    fn battery_renderer_render_image_returns_none_when_disconnected() {
+        // 设备断开后移除数字图标
+        let mut renderer = BatteryDigitRenderer::new();
+        let state = make_disconnected_state();
+        let style = make_style();
+
+        let image = renderer.render_image(&state, &style);
+        assert!(image.is_none());
+    }
+
+    #[test]
+    fn battery_renderer_cache_hit_on_same_state() {
+        // 重复渲染不会创建多个图标缓存条目
+        let mut renderer = BatteryDigitRenderer::new();
+        let state = make_state(Some(75), false);
+        let style = make_style();
+
+        let _img1 = renderer.render_image(&state, &style).unwrap();
+        let _img2 = renderer.render_image(&state, &style).unwrap();
+
+        assert_eq!(renderer.cache.len(), 1);
+        assert!(!renderer.needs_update(&state, &style));
+    }
+
+    #[test]
+    fn battery_renderer_different_levels_produce_different_caches() {
+        let mut renderer = BatteryDigitRenderer::new();
+        let style = make_style();
+
+        let low_state = make_state(Some(10), false);
+        let high_state = make_state(Some(90), false);
+
+        let low_image = renderer.render_image(&low_state, &style);
+        let high_image = renderer.render_image(&high_state, &style);
+
+        assert!(low_image.is_some());
+        assert!(high_image.is_some());
+        assert_eq!(renderer.cache.len(), 2);
+    }
+
+    #[test]
+    fn battery_renderer_key_ignores_receiver_battery() {
+        // 鼠标 17%、接收器 40% 时数字必须显示 17（缓存 key 不含接收器电量）
+        let style = make_style();
+
+        let mouse_only = make_state(Some(17), false);
+        let key1 = BatteryIconCacheKey::from_state_and_style(&mouse_only, &style);
+
+        // 构造含接收器电量的状态
+        let settings = test_settings();
+        let snapshot = DeviceSnapshot {
+            display_name: "Test".into(),
+            connection: Connection::Usb,
+            selection_priority: 0,
+            battery_percent: Some(17),
+            charging: false,
+            batteries: vec![
+                mira_core::DeviceBattery {
+                    id: "mouse".into(),
+                    label: "鼠标".into(),
+                    percentage: 17,
+                    charging: false,
+                },
+                mira_core::DeviceBattery {
+                    id: "receiver".into(),
+                    label: "接收器".into(),
+                    percentage: 40,
+                    charging: false,
+                },
+            ],
+            dpi: None,
+            dpi_stages: None,
+            polling_rate_hz: None,
+            supported_polling_rates_hz: None,
+            profile: None,
+            confirmed_light_color: None,
+            capabilities: Default::default(),
+            plugin_capabilities: Vec::new(),
+            writable_mutations: Vec::new(),
+            evidence: "hardware-verified".into(),
+            readonly: false,
+            plugin_id: None,
+            history_identity: None,
+            read_statuses: Default::default(),
+            mouse_ready: None,
+            family: None,
+        };
+        let with_receiver = TrayStatusState::from_snapshot(Some(&snapshot), &settings);
+        let key2 = BatteryIconCacheKey::from_state_and_style(&with_receiver, &style);
+
+        assert_eq!(
+            key1, key2,
+            "digit icon cache key must ignore receiver battery"
+        );
     }
 }

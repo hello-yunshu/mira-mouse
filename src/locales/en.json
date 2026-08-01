@@ -372,6 +372,7 @@
     "trayBattery": {
       "label": "Show battery percentage",
       "hint": "The icon still fills by battery level; this just controls the number beside it",
+      "hintWindows": "Show a separate numeric battery icon next to the mouse status icon",
       "disabledHint": "Windows tray can't show text beside the icon…"
     },
     "trayIconColor": {

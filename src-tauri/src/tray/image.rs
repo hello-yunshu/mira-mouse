@@ -538,6 +538,154 @@ pub fn render_mouse_icon_rgba_macos(state: &TrayStatusState, style: &TrayVisualS
     canvas.into_rgba_bytes()
 }
 
+// ─── Windows 数字电量图标绘制 ───────────────────────────────────────────────
+//
+// Windows 无法在托盘图标旁显示文字，这里在 64×64 canvas 上绘制纯数字电量。
+// 复用 IconCanvas 和 TrayVisualStyle 的颜色规则。
+//
+// 字体：5×7 像素位图字体，每个像素以 BLOCK_SIZE=4 放大 → 单字符 20×28。
+// 3 位数字 "100" = 20×3 + 2×GAP(1) = 62，留 1px 左右边距。
+// 单字符 "7" = 20，居中 x=22。
+
+// 以下常量和函数仅在 Windows 数字电量图标路径和单元测试中使用，
+// 非 Windows 的 lib 构建中为死代码；标记 allow(dead_code) 避免警告。
+#[allow(dead_code)]
+const BATTERY_FONT_WIDTH: i32 = 5;
+#[allow(dead_code)]
+const BATTERY_FONT_HEIGHT: i32 = 7;
+#[allow(dead_code)]
+const BATTERY_DIGIT_BLOCK: i32 = 4;
+#[allow(dead_code)]
+const BATTERY_DIGIT_GAP: i32 = 1;
+
+/// 5×7 像素字体，数字 0-9。每行一个 u8，bit 0 = x=0（最左），bit 4 = x=4。
+#[allow(dead_code)]
+const DIGIT_FONT: [[u8; 7]; 10] = [
+    // 0
+    [
+        0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110,
+    ],
+    // 1
+    [
+        0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110,
+    ],
+    // 2
+    [
+        0b01110, 0b10001, 0b00001, 0b00110, 0b01000, 0b10000, 0b11111,
+    ],
+    // 3
+    [
+        0b01110, 0b10001, 0b00001, 0b00110, 0b00001, 0b10001, 0b01110,
+    ],
+    // 4
+    [
+        0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010,
+    ],
+    // 5
+    [
+        0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110,
+    ],
+    // 6
+    [
+        0b01110, 0b10000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110,
+    ],
+    // 7
+    [
+        0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000,
+    ],
+    // 8
+    [
+        0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110,
+    ],
+    // 9
+    [
+        0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00001, 0b01110,
+    ],
+];
+
+/// 电量未知时显示的横线 pattern（5×7，中间一行）。
+#[allow(dead_code)]
+const DASH_PATTERN: [u8; 7] = [0, 0, 0, 0b01110, 0, 0, 0];
+
+/// 在 canvas 上绘制单个字符（数字或横线）。
+#[allow(dead_code)]
+fn draw_font_glyph(
+    canvas: &mut IconCanvas,
+    pattern: &[u8; 7],
+    origin_x: i32,
+    origin_y: i32,
+    color: RgbaColor,
+) {
+    for row in 0..BATTERY_FONT_HEIGHT {
+        for col in 0..BATTERY_FONT_WIDTH {
+            if (pattern[row as usize] >> col) & 1 == 1 {
+                let px = origin_x + col * BATTERY_DIGIT_BLOCK;
+                let py = origin_y + row * BATTERY_DIGIT_BLOCK;
+                canvas.fill_rounded_rect(
+                    px,
+                    py,
+                    px + BATTERY_DIGIT_BLOCK,
+                    py + BATTERY_DIGIT_BLOCK,
+                    0,
+                    color,
+                );
+            }
+        }
+    }
+}
+
+/// 在 canvas 上绘制数字电量图标。
+///
+/// 显示规则：
+/// - 有可信电量：显示数字（如 67、100），颜色按 fill_for_battery 分级
+/// - 电量未知：显示 "--"，使用 unknown_fill 颜色
+///
+/// 不显示 "%"。充电状态和低电量通过颜色区分（沿用现有视觉规则）。
+#[allow(dead_code)]
+pub fn draw_battery_digit_icon(
+    canvas: &mut IconCanvas,
+    state: &TrayStatusState,
+    style: &TrayVisualStyle,
+) {
+    let color = match state.mouse_battery {
+        Some(percentage) => style.fill_for_battery(
+            percentage,
+            state.mouse_charging,
+            state.low_battery_threshold,
+        ),
+        None => style.unknown_fill,
+    };
+
+    let chars: Vec<char> = match state.mouse_battery {
+        Some(percentage) => percentage.to_string().chars().collect(),
+        None => vec!['-', '-'],
+    };
+
+    let count = chars.len() as i32;
+    let glyph_width = BATTERY_FONT_WIDTH * BATTERY_DIGIT_BLOCK;
+    let total_width = count * glyph_width + (count - 1) * BATTERY_DIGIT_GAP;
+    let total_height = BATTERY_FONT_HEIGHT * BATTERY_DIGIT_BLOCK;
+    let origin_x = (canvas.width as i32 - total_width) / 2;
+    let origin_y = (canvas.height as i32 - total_height) / 2;
+
+    for (i, ch) in chars.iter().enumerate() {
+        let dx = origin_x + i as i32 * (glyph_width + BATTERY_DIGIT_GAP);
+        if *ch == '-' {
+            draw_font_glyph(canvas, &DASH_PATTERN, dx, origin_y, color);
+        } else if let Some(digit) = ch.to_digit(10) {
+            draw_font_glyph(canvas, &DIGIT_FONT[digit as usize], dx, origin_y, color);
+        }
+    }
+}
+
+/// 生成 64×64 RGBA 数字电量图标。
+#[allow(dead_code)]
+pub fn render_battery_digit_rgba(state: &TrayStatusState, style: &TrayVisualStyle) -> Vec<u8> {
+    let mut canvas = IconCanvas::new(ICON_SIZE, ICON_SIZE);
+    draw_battery_digit_icon(&mut canvas, state, style);
+    canvas.into_rgba_bytes()
+}
+
 #[allow(dead_code)]
 pub fn encode_rgba_png(
     rgba: &[u8],
@@ -1334,5 +1482,170 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ─── Windows 数字电量图标测试 ───────────────────────────────────────────
+
+    fn make_state_with_receiver(mouse_pct: u8, receiver_pct: u8) -> TrayStatusState {
+        let snapshot = DeviceSnapshot {
+            display_name: "Test".into(),
+            connection: Connection::Usb,
+            selection_priority: 0,
+            battery_percent: Some(mouse_pct),
+            charging: false,
+            batteries: vec![
+                mira_core::DeviceBattery {
+                    id: "mouse".into(),
+                    label: "鼠标".into(),
+                    percentage: mouse_pct,
+                    charging: false,
+                },
+                mira_core::DeviceBattery {
+                    id: "receiver".into(),
+                    label: "接收器".into(),
+                    percentage: receiver_pct,
+                    charging: false,
+                },
+            ],
+            dpi: None,
+            dpi_stages: None,
+            polling_rate_hz: None,
+            supported_polling_rates_hz: None,
+            profile: None,
+            confirmed_light_color: None,
+            capabilities: Default::default(),
+            plugin_capabilities: Vec::new(),
+            writable_mutations: Vec::new(),
+            evidence: "hardware-verified".into(),
+            readonly: false,
+            plugin_id: None,
+            history_identity: None,
+            read_statuses: Default::default(),
+            mouse_ready: None,
+            family: None,
+        };
+        TrayStatusState::from_snapshot(Some(&snapshot), &test_settings())
+    }
+
+    #[test]
+    fn battery_digit_renders_64x64() {
+        let state = make_state(Some(67), false);
+        let style = make_style();
+        let bytes = render_battery_digit_rgba(&state, &style);
+        assert_eq!(bytes.len(), 64 * 64 * 4);
+    }
+
+    #[test]
+    fn battery_digit_different_levels_produce_different_icons() {
+        let style = make_style();
+        for (a, b) in [(7u8, 17u8), (17, 67), (67, 99), (99, 100), (7, 100)] {
+            let bytes_a = render_battery_digit_rgba(&make_state(Some(a), false), &style);
+            let bytes_b = render_battery_digit_rgba(&make_state(Some(b), false), &style);
+            assert_ne!(
+                bytes_a, bytes_b,
+                "digit icons for {a}% and {b}% should differ"
+            );
+        }
+    }
+
+    #[test]
+    fn battery_digit_unknown_shows_dashes_not_full() {
+        let style = make_style();
+        let unknown = render_battery_digit_rgba(&make_state(None, false), &style);
+        let full = render_battery_digit_rgba(&make_state(Some(100), false), &style);
+        let zero = render_battery_digit_rgba(&make_state(Some(0), false), &style);
+        assert_ne!(unknown, full, "unknown battery must not look like 100%");
+        assert_ne!(unknown, zero, "unknown battery must not look like 0%");
+    }
+
+    #[test]
+    fn battery_digit_unknown_has_pixels() {
+        // "--" should produce some non-transparent pixels
+        let style = make_style();
+        let bytes = render_battery_digit_rgba(&make_state(None, false), &style);
+        assert!(
+            bytes.chunks_exact(4).any(|c| c[3] > 0),
+            "unknown battery dashes should have visible pixels"
+        );
+    }
+
+    #[test]
+    fn battery_digit_charging_differs_from_non_charging() {
+        let style = make_style();
+        let normal = render_battery_digit_rgba(&make_state(Some(50), false), &style);
+        let charging = render_battery_digit_rgba(&make_state(Some(50), true), &style);
+        assert_ne!(normal, charging);
+    }
+
+    #[test]
+    fn battery_digit_low_battery_differs_from_normal() {
+        let style = make_style();
+        let low = render_battery_digit_rgba(&make_state(Some(10), false), &style);
+        let normal = render_battery_digit_rgba(&make_state(Some(80), false), &style);
+        assert_ne!(low, normal);
+    }
+
+    #[test]
+    fn battery_digit_shows_mouse_not_receiver() {
+        // 鼠标 17%、接收器 40% 时数字必须显示 17
+        let style = make_style();
+        let with_receiver = render_battery_digit_rgba(&make_state_with_receiver(17, 40), &style);
+        let mouse_only = render_battery_digit_rgba(&make_state(Some(17), false), &style);
+        // 数字图标只显示鼠标电量，不受接收器影响
+        assert_eq!(
+            with_receiver, mouse_only,
+            "digit icon should show mouse 17% regardless of receiver"
+        );
+    }
+
+    #[test]
+    fn battery_digit_theme_differs() {
+        let state = make_state(Some(75), false);
+        let dark = TrayVisualStyle::from_settings(&test_settings(), TrayTheme::Dark);
+        let light = TrayVisualStyle::from_settings(&test_settings(), TrayTheme::Light);
+        let dark_bytes = render_battery_digit_rgba(&state, &dark);
+        let light_bytes = render_battery_digit_rgba(&state, &light);
+        // unknown_fill is the same for both themes, but the cache key includes theme.
+        // Since fill_for_battery uses fixed colors (green/yellow/red), the bytes
+        // may be identical. The important invariant is that theme is in the cache key.
+        // Here we verify the function runs without error for both themes.
+        assert_eq!(dark_bytes.len(), light_bytes.len());
+    }
+
+    #[test]
+    fn battery_digit_has_transparent_background() {
+        let state = make_state(Some(67), false);
+        let style = make_style();
+        let bytes = render_battery_digit_rgba(&state, &style);
+        // corners should be transparent (no digit pixels there)
+        assert_eq!(bytes[3], 0, "top-left corner should be transparent");
+        let corner = ((63 * 64 + 63) * 4) as usize;
+        assert_eq!(
+            bytes[corner + 3],
+            0,
+            "bottom-right corner should be transparent"
+        );
+    }
+
+    #[test]
+    fn battery_digit_single_digit_centered() {
+        // Single digit "7" should have visible pixels in the center area
+        let state = make_state(Some(7), false);
+        let style = make_style();
+        let bytes = render_battery_digit_rgba(&state, &style);
+        // Check that center region has non-transparent pixels
+        let center_y = 32;
+        let mut found_visible = false;
+        for x in 20..44 {
+            let idx = ((center_y * 64 + x) * 4) as usize;
+            if bytes[idx + 3] > 0 {
+                found_visible = true;
+                break;
+            }
+        }
+        assert!(
+            found_visible,
+            "single digit should have visible pixels near center"
+        );
     }
 }

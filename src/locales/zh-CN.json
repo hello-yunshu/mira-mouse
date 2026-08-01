@@ -372,6 +372,7 @@
     "trayBattery": {
       "label": "显示电量百分比",
       "hint": "图标仍按电量填充，此处仅控制数字显示",
+      "hintWindows": "在鼠标状态图标旁显示独立的数字电量图标",
       "disabledHint": "Windows 托盘图标旁边暂时放不了文字…"
     },
     "trayIconColor": {

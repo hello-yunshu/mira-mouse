@@ -853,6 +853,9 @@ struct SessionState {
     /// 托盘图标控制器：内部维护动态图标缓存和 diff 逻辑。
     /// 替换旧的 tray_icon_level / tray_is_charging / tray_uses_dark 三个缓存字段。
     tray_renderer: Mutex<tray::renderer::PlatformTrayController>,
+    /// Windows 数字电量图标渲染器（仅 Windows 使用，其他平台保留以保持结构统一）。
+    #[allow(dead_code)]
+    battery_renderer: Mutex<tray::dynamic_icon::BatteryDigitRenderer>,
     /// 缓存托盘菜单签名，避免每轮轮询都重建菜单（仅图标做了 diff）。
     /// 签名相同时跳过菜单重建，仅更新 title/tooltip（轻量文本操作）。
     tray_menu_signature: Mutex<Option<TrayMenuSignature>>,
@@ -3265,6 +3268,10 @@ struct AppSettings {
     tray_show_battery_title: bool,
     tray_include_receiver_battery: bool,
     tray_show_connection: bool,
+    /// Windows 独立数字电量图标：开启后在鼠标状态图标外创建独立的数字电量托盘图标。
+    /// 仅 Windows 生效；macOS/Linux 继续使用 `tray_show_battery_title` 菜单栏文字。
+    /// 默认 false，避免老用户升级后自动出现第二个托盘图标。
+    tray_show_battery_icon: bool,
     /// 托盘鼠标图标颜色： "white"（白色轮廓）、"black"（黑色轮廓）、"auto"（跟随菜单栏/系统外观）。
     /// 默认 "auto"。
     tray_icon_color: String,
@@ -3334,6 +3341,7 @@ impl Default for AppSettings {
             tray_show_battery_title: true,
             tray_include_receiver_battery: false,
             tray_show_connection: true,
+            tray_show_battery_icon: false,
             tray_icon_color: "auto".into(),
             tray_render_mode: "auto".into(),
             low_battery_threshold: 20,
@@ -12798,6 +12806,10 @@ pub(crate) fn open_battery_usage_from_tray(app: &AppHandle) {
 
 const TRAY_ID: &str = "mira-status";
 
+/// Windows 独立数字电量图标托盘 ID。仅在 Windows 上创建。
+#[cfg(target_os = "windows")]
+const BATTERY_TRAY_ID: &str = "mira-battery";
+
 /// Resolve a settings language value ("auto"|"zh-CN"|"en") to a concrete language code.
 /// "auto" follows the system locale via `sys_locale`; defaults to Chinese when undetectable.
 fn effective_language(settings_language: &str) -> &'static str {
@@ -13736,7 +13748,12 @@ fn update_tray(
             true,
             None::<&str>,
         )?)?;
-        tray.set_menu(Some(menu))?;
+        tray.set_menu(Some(menu.clone()))?;
+        // Windows: 数字电量图标托盘共享同一份菜单（克隆 Arc 引用）
+        #[cfg(target_os = "windows")]
+        if let Some(battery_tray) = app.tray_by_id(BATTERY_TRAY_ID) {
+            let _ = battery_tray.set_menu(Some(menu));
+        }
         if let Ok(mut cached) = state.tray_menu_signature.lock() {
             *cached = Some(current_signature);
         }
@@ -13758,6 +13775,62 @@ fn update_tray(
         tray.set_title(Some(""))?;
         tray.set_tooltip(Some(tr_tooltip_disconnected(lang)))?;
     }
+
+    // Windows: 更新独立数字电量图标托盘
+    #[cfg(target_os = "windows")]
+    update_battery_tray(app, &tray_state, &style, settings, snapshot, lang)?;
+
+    Ok(())
+}
+
+/// Windows 独立数字电量图标更新逻辑。
+///
+/// - 设置关闭或设备断开：隐藏数字图标（不调用 mark_current，确保下次显示时正确 diff）
+/// - 设置开启且已连接：显示图标，通过 BatteryDigitRenderer 做 diff，未变化时跳过 set_icon
+///
+/// tooltip 复用主图标的 tooltip（含完整百分比），图标数字始终只代表鼠标电量。
+#[cfg(target_os = "windows")]
+fn update_battery_tray(
+    app: &AppHandle,
+    state: &tray::state::TrayStatusState,
+    style: &tray::style::TrayVisualStyle,
+    settings: &AppSettings,
+    snapshot: Option<&DeviceSnapshot>,
+    lang: &str,
+) -> Result<(), Box<dyn std::error>> {
+    let Some(battery_tray) = app.tray_by_id(BATTERY_TRAY_ID) else {
+        return Ok(());
+    };
+
+    let should_show = settings.tray_show_battery_icon && state.connected;
+
+    if !should_show {
+        battery_tray.set_visible(false)?;
+        return Ok(());
+    }
+
+    battery_tray.set_visible(true)?;
+
+    let session = app.state::<SessionState>();
+    if let Ok(mut renderer) = session.battery_renderer.lock() {
+        if renderer.needs_update(state, style) {
+            if let Some(image) = renderer.render_image(state, style) {
+                battery_tray.set_icon(Some(image))?;
+                battery_tray.set_icon_as_template(false)?;
+            }
+        }
+    }
+
+    if let Some(snapshot) = snapshot {
+        battery_tray.set_tooltip(Some(tr_tooltip_connected(
+            lang,
+            connection_label(snapshot.connection, lang),
+            &snapshot.display_name,
+            state.mouse_battery,
+            state.mouse_charging,
+        )))?;
+    }
+
     Ok(())
 }
 
@@ -13800,6 +13873,42 @@ fn build_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         })
         .tooltip("Mira · 未连接受支持的鼠标")
         .build(app)?;
+
+    // Windows 独立数字电量图标托盘：与主图标共享菜单和事件处理逻辑。
+    // 初始不可见，由 update_tray 根据 tray_show_battery_icon 设置和连接状态控制。
+    #[cfg(target_os = "windows")]
+    {
+        let battery_menu = Menu::with_items(app, &[&open_i, &quit_i])?;
+        TrayIconBuilder::with_id(BATTERY_TRAY_ID)
+            .icon(initial_icon.clone())
+            .icon_as_template(false)
+            .visible(false)
+            .show_menu_on_left_click(false)
+            .menu(&battery_menu)
+            .on_menu_event(|app, event| match event.id().as_ref() {
+                "quit" => app.exit(0),
+                id if id.starts_with("battery-") => {
+                    open_battery_usage_from_tray(app);
+                }
+                _ => {
+                    focus_main_from_tray(app);
+                }
+            })
+            .on_tray_icon_event(|tray, event| {
+                if let tauri::tray::TrayIconEvent::Click {
+                    button: tauri::tray::MouseButton::Left,
+                    button_state: tauri::tray::MouseButtonState::Up,
+                    ..
+                } = event
+                {
+                    let app = tray.app_handle();
+                    focus_main_from_tray(app);
+                }
+            })
+            .tooltip("Mira")
+            .build(app)?;
+    }
+
     let settings = cached_settings(app.handle());
     let state = app.state::<SessionState>();
     let snapshot = selected_snapshot(&state);
