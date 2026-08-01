@@ -13797,19 +13797,23 @@ fn update_battery_tray(
     settings: &AppSettings,
     snapshot: Option<&DeviceSnapshot>,
     lang: &str,
-) -> Result<(), Box<dyn std::error>> {
+) -> Result<(), Box<dyn std::error::Error>> {
     let Some(battery_tray) = app.tray_by_id(BATTERY_TRAY_ID) else {
         return Ok(());
     };
 
-    let should_show = settings.tray_show_battery_icon && state.connected;
+    let should_show = tray::dynamic_icon::battery_tray_should_show(
+        settings.tray_show_battery_icon,
+        state.connected,
+    );
 
     if !should_show {
+        if let Ok(mut renderer) = app.state::<SessionState>().battery_renderer.lock() {
+            renderer.invalidate();
+        }
         battery_tray.set_visible(false)?;
         return Ok(());
     }
-
-    battery_tray.set_visible(true)?;
 
     let session = app.state::<SessionState>();
     if let Ok(mut renderer) = session.battery_renderer.lock() {
@@ -13820,6 +13824,8 @@ fn update_battery_tray(
             }
         }
     }
+    // 先刷新图像再显示，避免重新启用时短暂露出隐藏前的旧数字。
+    battery_tray.set_visible(true)?;
 
     if let Some(snapshot) = snapshot {
         battery_tray.set_tooltip(Some(tr_tooltip_connected(
@@ -13847,7 +13853,7 @@ fn build_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     TrayIconBuilder::with_id(TRAY_ID)
-        .icon(initial_icon)
+        .icon(initial_icon.clone())
         .icon_as_template(false)
         .show_menu_on_left_click(false)
         .menu(&menu)
@@ -13878,13 +13884,12 @@ fn build_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     // 初始不可见，由 update_tray 根据 tray_show_battery_icon 设置和连接状态控制。
     #[cfg(target_os = "windows")]
     {
-        let battery_menu = Menu::with_items(app, &[&open_i, &quit_i])?;
         TrayIconBuilder::with_id(BATTERY_TRAY_ID)
-            .icon(initial_icon.clone())
+            .icon(initial_icon)
             .icon_as_template(false)
             .visible(false)
             .show_menu_on_left_click(false)
-            .menu(&battery_menu)
+            .menu(&menu)
             .on_menu_event(|app, event| match event.id().as_ref() {
                 "quit" => app.exit(0),
                 id if id.starts_with("battery-") => {

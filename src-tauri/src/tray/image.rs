@@ -543,9 +543,10 @@ pub fn render_mouse_icon_rgba_macos(state: &TrayStatusState, style: &TrayVisualS
 // Windows 无法在托盘图标旁显示文字，这里在 64×64 canvas 上绘制纯数字电量。
 // 复用 IconCanvas 和 TrayVisualStyle 的颜色规则。
 //
-// 字体：5×7 像素位图字体，每个像素以 BLOCK_SIZE=4 放大 → 单字符 20×28。
-// 3 位数字 "100" = 20×3 + 2×GAP(1) = 62，留 1px 左右边距。
-// 单字符 "7" = 20，居中 x=22。
+// 字体：5×7 像素位图字体，按字符数使用不同 block 和间距：
+// - 单字符：block=7，35×49，居中；
+// - 双字符：block=5，字符间隔 5px；
+// - 三字符：block=3，字符间隔 4px，确保 100 缩到 16px 后仍有透明分隔。
 
 // 以下常量和函数仅在 Windows 数字电量图标路径和单元测试中使用，
 // 非 Windows 的 lib 构建中为死代码；标记 allow(dead_code) 避免警告。
@@ -554,11 +555,17 @@ const BATTERY_FONT_WIDTH: i32 = 5;
 #[allow(dead_code)]
 const BATTERY_FONT_HEIGHT: i32 = 7;
 #[allow(dead_code)]
-const BATTERY_DIGIT_BLOCK: i32 = 4;
+const BATTERY_SINGLE_BLOCK: i32 = 7;
 #[allow(dead_code)]
-const BATTERY_DIGIT_GAP: i32 = 1;
+const BATTERY_DOUBLE_BLOCK: i32 = 5;
+#[allow(dead_code)]
+const BATTERY_TRIPLE_BLOCK: i32 = 3;
+#[allow(dead_code)]
+const BATTERY_DOUBLE_GAP: i32 = 5;
+#[allow(dead_code)]
+const BATTERY_TRIPLE_GAP: i32 = 4;
 
-/// 5×7 像素字体，数字 0-9。每行一个 u8，bit 0 = x=0（最左），bit 4 = x=4。
+/// 5×7 像素字体，数字 0-9。每行一个 u8，最高有效位位于最左侧。
 #[allow(dead_code)]
 const DIGIT_FONT: [[u8; 7]; 10] = [
     // 0
@@ -614,47 +621,71 @@ fn draw_font_glyph(
     pattern: &[u8; 7],
     origin_x: i32,
     origin_y: i32,
+    block: i32,
     color: RgbaColor,
 ) {
     for row in 0..BATTERY_FONT_HEIGHT {
         for col in 0..BATTERY_FONT_WIDTH {
-            if (pattern[row as usize] >> col) & 1 == 1 {
-                let px = origin_x + col * BATTERY_DIGIT_BLOCK;
-                let py = origin_y + row * BATTERY_DIGIT_BLOCK;
-                canvas.fill_rounded_rect(
-                    px,
-                    py,
-                    px + BATTERY_DIGIT_BLOCK,
-                    py + BATTERY_DIGIT_BLOCK,
-                    0,
-                    color,
-                );
+            let bit = BATTERY_FONT_WIDTH - 1 - col;
+            if (pattern[row as usize] >> bit) & 1 == 1 {
+                let px = origin_x + col * block;
+                let py = origin_y + row * block;
+                canvas.fill_rounded_rect(px, py, px + block, py + block, 0, color);
             }
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+struct BatteryDigitLayout {
+    block: i32,
+    gap: i32,
+    glyph_width: i32,
+    total_width: i32,
+    total_height: i32,
+    origin_x: i32,
+    origin_y: i32,
+}
+
+#[allow(dead_code)]
+fn battery_digit_layout(canvas: &IconCanvas, count: i32) -> BatteryDigitLayout {
+    let (block, gap) = match count {
+        1 => (BATTERY_SINGLE_BLOCK, 0),
+        2 => (BATTERY_DOUBLE_BLOCK, BATTERY_DOUBLE_GAP),
+        _ => (BATTERY_TRIPLE_BLOCK, BATTERY_TRIPLE_GAP),
+    };
+    let glyph_width = BATTERY_FONT_WIDTH * block;
+    let total_width = count * glyph_width + (count - 1) * gap;
+    let total_height = BATTERY_FONT_HEIGHT * block;
+    BatteryDigitLayout {
+        block,
+        gap,
+        glyph_width,
+        total_width,
+        total_height,
+        origin_x: (canvas.width as i32 - total_width) / 2,
+        origin_y: (canvas.height as i32 - total_height) / 2,
     }
 }
 
 /// 在 canvas 上绘制数字电量图标。
 ///
 /// 显示规则：
-/// - 有可信电量：显示数字（如 67、100），颜色按 fill_for_battery 分级
-/// - 电量未知：显示 "--"，使用 unknown_fill 颜色
+/// - 有可信电量：显示数字（如 67、100），主体继承托盘图标颜色；
+/// - 电量未知：显示 "--"；
+/// - 低电量：左上角增加红色圆点；
+/// - 充电：右上角增加绿色短线。
 ///
-/// 不显示 "%"。充电状态和低电量通过颜色区分（沿用现有视觉规则）。
+/// 不显示 "%"。状态标记与数字主体分开，确保白色/黑色/自动设置真实生效，
+/// 同时让高电量的充电状态也能仅凭形状区分。
 #[allow(dead_code)]
 pub fn draw_battery_digit_icon(
     canvas: &mut IconCanvas,
     state: &TrayStatusState,
     style: &TrayVisualStyle,
 ) {
-    let color = match state.mouse_battery {
-        Some(percentage) => style.fill_for_battery(
-            percentage,
-            state.mouse_charging,
-            state.low_battery_threshold,
-        ),
-        None => style.unknown_fill,
-    };
+    let color = style.outline_secondary;
 
     let chars: Vec<char> = match state.mouse_battery {
         Some(percentage) => percentage.to_string().chars().collect(),
@@ -662,19 +693,39 @@ pub fn draw_battery_digit_icon(
     };
 
     let count = chars.len() as i32;
-    let glyph_width = BATTERY_FONT_WIDTH * BATTERY_DIGIT_BLOCK;
-    let total_width = count * glyph_width + (count - 1) * BATTERY_DIGIT_GAP;
-    let total_height = BATTERY_FONT_HEIGHT * BATTERY_DIGIT_BLOCK;
-    let origin_x = (canvas.width as i32 - total_width) / 2;
-    let origin_y = (canvas.height as i32 - total_height) / 2;
+    let layout = battery_digit_layout(canvas, count);
 
     for (i, ch) in chars.iter().enumerate() {
-        let dx = origin_x + i as i32 * (glyph_width + BATTERY_DIGIT_GAP);
+        let dx = layout.origin_x + i as i32 * (layout.glyph_width + layout.gap);
         if *ch == '-' {
-            draw_font_glyph(canvas, &DASH_PATTERN, dx, origin_y, color);
+            draw_font_glyph(
+                canvas,
+                &DASH_PATTERN,
+                dx,
+                layout.origin_y,
+                layout.block,
+                color,
+            );
         } else if let Some(digit) = ch.to_digit(10) {
-            draw_font_glyph(canvas, &DIGIT_FONT[digit as usize], dx, origin_y, color);
+            draw_font_glyph(
+                canvas,
+                &DIGIT_FONT[digit as usize],
+                dx,
+                layout.origin_y,
+                layout.block,
+                color,
+            );
         }
+    }
+
+    if state
+        .mouse_battery
+        .is_some_and(|percentage| percentage <= state.low_battery_threshold)
+    {
+        canvas.fill_circle(8, 8, 4, style.low_fill);
+    }
+    if state.mouse_charging {
+        canvas.fill_rounded_rect(51, 5, 61, 9, 1, style.charging_fill);
     }
 }
 
@@ -1527,6 +1578,25 @@ mod tests {
         TrayStatusState::from_snapshot(Some(&snapshot), &test_settings())
     }
 
+    fn rgba_pixel(bytes: &[u8], x: i32, y: i32) -> [u8; 4] {
+        let index = ((y * ICON_SIZE as i32 + x) * 4) as usize;
+        bytes[index..index + 4].try_into().unwrap()
+    }
+
+    fn nearest_neighbor_resize(bytes: &[u8], size: u32) -> Vec<u8> {
+        let mut resized = vec![0; (size * size * 4) as usize];
+        for y in 0..size {
+            for x in 0..size {
+                let source_x = x * ICON_SIZE / size;
+                let source_y = y * ICON_SIZE / size;
+                let source = ((source_y * ICON_SIZE + source_x) * 4) as usize;
+                let destination = ((y * size + x) * 4) as usize;
+                resized[destination..destination + 4].copy_from_slice(&bytes[source..source + 4]);
+            }
+        }
+        resized
+    }
+
     #[test]
     fn battery_digit_renders_64x64() {
         let state = make_state(Some(67), false);
@@ -1572,9 +1642,13 @@ mod tests {
     #[test]
     fn battery_digit_charging_differs_from_non_charging() {
         let style = make_style();
-        let normal = render_battery_digit_rgba(&make_state(Some(50), false), &style);
-        let charging = render_battery_digit_rgba(&make_state(Some(50), true), &style);
-        assert_ne!(normal, charging);
+        let normal = render_battery_digit_rgba(&make_state(Some(80), false), &style);
+        let charging = render_battery_digit_rgba(&make_state(Some(80), true), &style);
+        assert_ne!(
+            normal, charging,
+            "80% charging must have a shape marker, not only a color difference"
+        );
+        assert_eq!(rgba_pixel(&charging, 56, 7), style.charging_fill.channels());
     }
 
     #[test]
@@ -1583,6 +1657,7 @@ mod tests {
         let low = render_battery_digit_rgba(&make_state(Some(10), false), &style);
         let normal = render_battery_digit_rgba(&make_state(Some(80), false), &style);
         assert_ne!(low, normal);
+        assert_eq!(rgba_pixel(&low, 8, 8), style.low_fill.channels());
     }
 
     #[test]
@@ -1605,11 +1680,21 @@ mod tests {
         let light = TrayVisualStyle::from_settings(&test_settings(), TrayTheme::Light);
         let dark_bytes = render_battery_digit_rgba(&state, &dark);
         let light_bytes = render_battery_digit_rgba(&state, &light);
-        // unknown_fill is the same for both themes, but the cache key includes theme.
-        // Since fill_for_battery uses fixed colors (green/yellow/red), the bytes
-        // may be identical. The important invariant is that theme is in the cache key.
-        // Here we verify the function runs without error for both themes.
-        assert_eq!(dark_bytes.len(), light_bytes.len());
+        assert_ne!(
+            dark_bytes, light_bytes,
+            "digit body must inherit the effective white/black tray color"
+        );
+    }
+
+    #[test]
+    fn battery_digit_body_uses_outline_secondary_color() {
+        let state = make_state(Some(80), false);
+        let style = make_style();
+        let bytes = render_battery_digit_rgba(&state, &style);
+        let layout = battery_digit_layout(&IconCanvas::new(ICON_SIZE, ICON_SIZE), 2);
+        let x = layout.origin_x + layout.block;
+        let y = layout.origin_y;
+        assert_eq!(rgba_pixel(&bytes, x, y), style.outline_secondary.channels());
     }
 
     #[test]
@@ -1647,5 +1732,123 @@ mod tests {
             found_visible,
             "single digit should have visible pixels near center"
         );
+    }
+
+    #[test]
+    fn battery_digit_two_and_seven_are_not_horizontally_mirrored() {
+        let style = make_style();
+        let canvas = IconCanvas::new(ICON_SIZE, ICON_SIZE);
+        let layout = battery_digit_layout(&canvas, 1);
+
+        let two = render_battery_digit_rgba(&make_state(Some(2), false), &style);
+        let two_row = layout.origin_y + 2 * layout.block + layout.block / 2;
+        assert_eq!(
+            rgba_pixel(&two, layout.origin_x + layout.block / 2, two_row)[3],
+            0,
+            "2 row 3 must be empty on the left"
+        );
+        assert!(
+            rgba_pixel(
+                &two,
+                layout.origin_x + 4 * layout.block + layout.block / 2,
+                two_row,
+            )[3] > 0,
+            "2 row 3 must be filled on the right"
+        );
+
+        let seven = render_battery_digit_rgba(&make_state(Some(7), false), &style);
+        let seven_upper = layout.origin_y + layout.block + layout.block / 2;
+        assert_eq!(
+            rgba_pixel(&seven, layout.origin_x + layout.block / 2, seven_upper,)[3],
+            0,
+            "7 upper stroke must be empty on the left"
+        );
+        assert!(
+            rgba_pixel(
+                &seven,
+                layout.origin_x + 4 * layout.block + layout.block / 2,
+                seven_upper,
+            )[3] > 0,
+            "7 upper stroke must start on the right"
+        );
+        let seven_lower = layout.origin_y + 4 * layout.block + layout.block / 2;
+        assert!(
+            rgba_pixel(
+                &seven,
+                layout.origin_x + layout.block + layout.block / 2,
+                seven_lower,
+            )[3] > 0,
+            "7 diagonal must continue toward the left"
+        );
+        assert_eq!(
+            rgba_pixel(
+                &seven,
+                layout.origin_x + 3 * layout.block + layout.block / 2,
+                seven_lower,
+            )[3],
+            0,
+            "7 diagonal must not be mirrored toward the right"
+        );
+    }
+
+    #[test]
+    fn battery_digit_100_has_safe_edges_and_transparent_digit_gaps() {
+        let style = make_style();
+        let bytes = render_battery_digit_rgba(&make_state(Some(100), false), &style);
+        let canvas = IconCanvas::new(ICON_SIZE, ICON_SIZE);
+        let layout = battery_digit_layout(&canvas, 3);
+
+        let visible_x: Vec<i32> = (0..ICON_SIZE as i32)
+            .filter(|&x| (0..ICON_SIZE as i32).any(|y| rgba_pixel(&bytes, x, y)[3] > 0))
+            .collect();
+        assert!(visible_x.first().is_some_and(|x| *x > 0));
+        assert!(visible_x.last().is_some_and(|x| *x < ICON_SIZE as i32 - 1));
+
+        for digit_index in 0..2 {
+            let gap_start =
+                layout.origin_x + (digit_index + 1) * layout.glyph_width + digit_index * layout.gap;
+            for x in gap_start..gap_start + layout.gap {
+                assert!(
+                    (0..ICON_SIZE as i32).all(|y| rgba_pixel(&bytes, x, y)[3] == 0),
+                    "100 digit gap column {x} must remain fully transparent"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn battery_digits_keep_separation_at_windows_tray_sizes() {
+        let style = make_style();
+        for percentage in [17u8, 67, 100] {
+            let source = render_battery_digit_rgba(&make_state(Some(percentage), false), &style);
+            let count = percentage.to_string().len() as i32;
+            let layout = battery_digit_layout(&IconCanvas::new(ICON_SIZE, ICON_SIZE), count);
+
+            for size in [16u32, 20, 24, 32] {
+                let resized = nearest_neighbor_resize(&source, size);
+                for digit_index in 0..count - 1 {
+                    let gap_start = layout.origin_x
+                        + (digit_index + 1) * layout.glyph_width
+                        + digit_index * layout.gap;
+                    let gap_end = gap_start + layout.gap;
+                    let sampled_gap_columns: Vec<u32> = (0..size)
+                        .filter(|&x| {
+                            let source_x = (x * ICON_SIZE / size) as i32;
+                            source_x >= gap_start && source_x < gap_end
+                        })
+                        .collect();
+                    assert!(
+                        !sampled_gap_columns.is_empty(),
+                        "{percentage}% must retain a sampled gap at {size}px"
+                    );
+                    assert!(sampled_gap_columns.iter().all(|&x| {
+                        (0..size).all(|y| {
+                            let index = ((y * size + x) * 4 + 3) as usize;
+                            resized[index] == 0
+                        })
+                    }));
+                }
+            }
+        }
     }
 }
