@@ -156,6 +156,12 @@ pub struct BatteryDigitRenderer {
     last_key: Option<BatteryIconCacheKey>,
 }
 
+/// 数字托盘的可见性只由 Windows 专用设置和设备连接状态决定。
+#[allow(dead_code)]
+pub fn battery_tray_should_show(enabled: bool, connected: bool) -> bool {
+    enabled && connected
+}
+
 impl BatteryDigitRenderer {
     #[allow(dead_code)]
     pub fn new() -> Self {
@@ -174,6 +180,15 @@ impl BatteryDigitRenderer {
         self.last_key = Some(BatteryIconCacheKey::from_state_and_style(state, style));
     }
 
+    /// 隐藏数字托盘时清除最后一次已应用 key。
+    ///
+    /// 像素缓存仍可复用，但再次显示必须重新执行 `set_icon`，避免 Windows
+    /// 保留隐藏前的旧图像。
+    #[allow(dead_code)]
+    pub fn invalidate(&mut self) {
+        self.last_key = None;
+    }
+
     /// 渲染数字电量图标并转换为 `tauri::image::Image`。
     ///
     /// - 已连接：返回 `Some(Image)`（数字电量图标）
@@ -185,7 +200,7 @@ impl BatteryDigitRenderer {
         style: &TrayVisualStyle,
     ) -> Option<tauri::image::Image<'static>> {
         if !state.connected {
-            self.last_key = Some(BatteryIconCacheKey::from_state_and_style(state, style));
+            self.invalidate();
             return None;
         }
         let key = BatteryIconCacheKey::from_state_and_style(state, style);
@@ -573,6 +588,43 @@ mod tests {
 
         let image = renderer.render_image(&state, &style);
         assert!(image.is_none());
+    }
+
+    #[test]
+    fn battery_renderer_hide_invalidates_applied_icon_without_duplicating_cache() {
+        let mut renderer = BatteryDigitRenderer::new();
+        let state = make_state(Some(17), false);
+        let style = make_style();
+
+        let _ = renderer.render_image(&state, &style).unwrap();
+        assert!(!renderer.needs_update(&state, &style));
+        renderer.invalidate();
+        assert!(
+            renderer.needs_update(&state, &style),
+            "showing again must reapply the icon even when the battery key is unchanged"
+        );
+        let _ = renderer.render_image(&state, &style).unwrap();
+        assert_eq!(renderer.cache.len(), 1);
+    }
+
+    #[test]
+    fn battery_tray_visibility_follows_setting_and_connection_lifecycle() {
+        let sequence = [
+            (false, false, false),
+            (true, false, false),
+            (true, true, true),
+            (false, true, false),
+            (true, true, true),
+            (true, false, false),
+            (true, true, true),
+        ];
+        for (enabled, connected, expected) in sequence {
+            assert_eq!(
+                battery_tray_should_show(enabled, connected),
+                expected,
+                "enabled={enabled}, connected={connected}"
+            );
+        }
     }
 
     #[test]

@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SettingsPage } from './Settings';
 import type { AppSettings, PluginCapability } from './types';
 import { checkForPluginUpdates } from './plugin-updater';
+import i18n from './i18n';
 
 const { invokeMock, startAutomaticAppUpdateCheckMock } = vi.hoisted(() => ({
   invokeMock: vi.fn(),
@@ -55,9 +56,10 @@ const pluginCapabilities: PluginCapability[] = [
 const writableMutations = ['set-mouse-lighting'];
 
 describe('SettingsPage', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     invokeMock.mockReset();
     startAutomaticAppUpdateCheckMock.mockReset();
+    await i18n.changeLanguage('zh-CN');
     window.history.replaceState({}, '', '/');
   });
 
@@ -67,6 +69,74 @@ describe('SettingsPage', () => {
 
     expect(screen.getByRole('option', { name: '跟随菜单栏背景' })).toBeInTheDocument();
     expect(screen.getByText('根据菜单栏的实际背景自动切换：深色背景用白色轮廓，浅色背景用黑色轮廓')).toBeInTheDocument();
+  });
+
+  it('enables the Windows battery icon toggle and saves only trayShowBatteryIcon', async () => {
+    window.history.replaceState({}, '', '/?platform=windows');
+    const windowsSettings = {
+      ...settings,
+      trayShowBatteryTitle: false,
+      trayShowBatteryIcon: false,
+    };
+    invokeMock.mockImplementation((command: string, payload?: { settings?: AppSettings }) => {
+      if (command === 'settings_get') return Promise.resolve(windowsSettings);
+      if (command === 'settings_set') return Promise.resolve(payload?.settings);
+      if (command === 'autostart_state') return Promise.resolve(false);
+      if (command === 'about_info') return Promise.resolve({ bundledPlugins: [] });
+      return Promise.resolve(undefined);
+    });
+
+    render(<SettingsPage onNavigateAbout={vi.fn()} onThemeChange={vi.fn()} />);
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('settings_get'));
+
+    const toggle = screen.getByRole('switch', { name: '显示电量百分比' });
+    expect(toggle).not.toBeDisabled();
+    expect(toggle).not.toBeChecked();
+    expect(screen.getByText('在鼠标状态图标旁显示独立的数字电量图标')).toBeInTheDocument();
+
+    fireEvent.click(toggle);
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('settings_set', {
+      settings: expect.objectContaining({
+        trayShowBatteryIcon: true,
+        trayShowBatteryTitle: false,
+      }),
+    }));
+  });
+
+  it.each(['macos', 'linux'])('keeps trayShowBatteryTitle on %s', async (platform) => {
+    window.history.replaceState({}, '', `/?platform=${platform}`);
+    const platformSettings = {
+      ...settings,
+      trayShowBatteryTitle: false,
+      trayShowBatteryIcon: false,
+    };
+    invokeMock.mockImplementation((command: string, payload?: { settings?: AppSettings }) => {
+      if (command === 'settings_get') return Promise.resolve(platformSettings);
+      if (command === 'settings_set') return Promise.resolve(payload?.settings);
+      if (command === 'autostart_state') return Promise.resolve(false);
+      if (command === 'about_info') return Promise.resolve({ bundledPlugins: [] });
+      return Promise.resolve(undefined);
+    });
+
+    render(<SettingsPage onNavigateAbout={vi.fn()} onThemeChange={vi.fn()} />);
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('settings_get'));
+    fireEvent.click(screen.getByRole('switch', { name: '显示电量百分比' }));
+
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('settings_set', {
+      settings: expect.objectContaining({
+        trayShowBatteryTitle: true,
+        trayShowBatteryIcon: false,
+      }),
+    }));
+  });
+
+  it('shows the English Windows battery icon hint', async () => {
+    await i18n.changeLanguage('en');
+    window.history.replaceState({}, '', '/?platform=windows');
+    render(<SettingsPage onNavigateAbout={vi.fn()} onThemeChange={vi.fn()} previewMode />);
+
+    expect(screen.getByRole('switch', { name: 'Show battery percentage' })).not.toBeDisabled();
+    expect(screen.getByText('Show a separate numeric battery icon next to the mouse status icon')).toBeInTheDocument();
   });
 
   it('loads settings and keeps unsupported controls honest', async () => {
