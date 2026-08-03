@@ -649,6 +649,138 @@ describe('real device snapshot mapping', () => {
     expect(document.documentElement.style.getPropertyValue('--accent')).toBe(themeAccent('#CC2244'));
   });
 
+  it('uses receiver color when mouse light is off and receiver light is on', async () => {
+    // 鼠标灯关 + 接收器灯开 → 主题色应为接收器颜色
+    const mouseOffReceiverOnSnapshot: DeviceSnapshot = {
+      displayName: 'Mouse-Off-Receiver-On',
+      connection: 'wireless',
+      batteryPercent: 80,
+      charging: false,
+      batteries: [{ id: 'mouse', label: '鼠标', percentage: 80, charging: false }],
+      dpi: 1600,
+      dpiStages: [{ value: 1600, color: '#9a8bd0', active: true, enabled: true }],
+      confirmedLightColor: '#CC2244',
+      capabilities: {
+        mouseLighting: { effect: 0, color: '#CC2244', enabled: false },
+        receiverLighting: { effect: 1, effectName: '常亮', speed: 2, brightness: 3, option: 7, color: '#00FF00', enabled: true },
+      },
+      pluginCapabilities: [
+        {
+          id: 'lighting', control: 'LightingZone', labelKey: 'plugin.label.capability.lighting', readOnly: false,
+          placements: [
+            { region: 'control', group: 'lighting', order: 30, span: 1, icon: 'lightbulb', priority: 100, dashboardRole: 'fixed-core', fixedSlot: 3, fourthSlotEligible: false, dedupeKey: 'dashboard.lighting', fallbackRegion: 'advanced' },
+          ],
+          metadata: {
+            accentSource: 'state.mouseLightColor',
+            zones: [
+              {
+                id: 'mouse', labelKey: 'dashboard.mouseLighting',
+                fields: [
+                  { id: 'status', source: 'state.mouseLightEffect', mutation: 'set-mouse-lighting', param: 'effect', editor: 'inline-toggle', switch: { source: 'state.mouseLightEffect', offValue: 0, restoreField: 'effect' }, labelKey: 'dashboard.status' },
+                  { id: 'color', source: 'state.mouseLightColor', mutation: 'set-mouse-lighting', param: 'color', editor: 'modal-color', format: 'color', labelKey: 'dashboard.mouseLightColor', lightingRole: 'primary-color', priority: 100 },
+                ],
+              },
+              {
+                id: 'receiver', labelKey: 'dashboard.receiverLighting',
+                visibleWhen: { path: 'capabilities.receiverLighting', ne: null },
+                fields: [
+                  { id: 'status', source: 'state.receiverLightEffect', mutation: 'set-receiver-lighting', param: 'effect', editor: 'inline-toggle', switch: { source: 'state.receiverLightEffect', offValue: 0, restoreField: 'effect' }, labelKey: 'dashboard.status' },
+                  { id: 'color', source: 'state.receiverLightColor', mutation: 'set-receiver-lighting', param: 'color', editor: 'modal-color', labelKey: 'receiverLighting.field.color', visibleWhen: { path: 'state.receiverLightEffect', ne: 0 }, lightingRole: 'primary-color', priority: 100 },
+                ],
+              },
+            ],
+            stateMapping: {
+              mouseLightColor: 'confirmedLightColor',
+              mouseLightEffect: 'capabilities.mouseLighting.effect',
+              receiverLightEffect: 'capabilities.receiverLighting.effect',
+              receiverLightColor: 'capabilities.receiverLighting.color',
+            },
+          },
+        },
+      ],
+      writableMutations: ['set-mouse-lighting', 'set-receiver-lighting'],
+      evidence: 'hardware-verified',
+    };
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'settings_get') return Promise.resolve(settings);
+      if (command === 'device_snapshots') return Promise.resolve(entries(mouseOffReceiverOnSnapshot));
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Mouse-Off-Receiver-On' });
+    const accent = document.documentElement.style.getPropertyValue('--accent');
+    // 鼠标灯关 + 接收器灯开 → 接收器颜色
+    expect(accent).toBe(themeAccent('#00FF00'));
+    expect(accent).not.toBe(themeAccent('#CC2244'));
+  });
+
+  it('uses mouse color when both mouse and receiver lights are off', async () => {
+    // 鼠标灯关 + 接收器灯关 → 主题色应为鼠标颜色（默认主设备）
+    const bothOffSnapshot: DeviceSnapshot = {
+      displayName: 'Both-Lights-Off',
+      connection: 'wireless',
+      batteryPercent: 80,
+      charging: false,
+      batteries: [{ id: 'mouse', label: '鼠标', percentage: 80, charging: false }],
+      dpi: 1600,
+      dpiStages: [{ value: 1600, color: '#9a8bd0', active: true, enabled: true }],
+      confirmedLightColor: '#CC2244',
+      capabilities: {
+        mouseLighting: { effect: 0, color: '#CC2244', enabled: false },
+        receiverLighting: { effect: 0, effectName: '关闭', speed: 0, brightness: 0, color: '#000000', enabled: false },
+      },
+      pluginCapabilities: [
+        {
+          id: 'lighting', control: 'LightingZone', labelKey: 'plugin.label.capability.lighting', readOnly: false,
+          placements: [
+            { region: 'control', group: 'lighting', order: 30, span: 1, icon: 'lightbulb', priority: 100, dashboardRole: 'fixed-core', fixedSlot: 3, fourthSlotEligible: false, dedupeKey: 'dashboard.lighting', fallbackRegion: 'advanced' },
+          ],
+          metadata: {
+            accentSource: 'state.mouseLightColor',
+            zones: [
+              {
+                id: 'mouse', labelKey: 'dashboard.mouseLighting',
+                fields: [
+                  { id: 'status', source: 'state.mouseLightEffect', mutation: 'set-mouse-lighting', param: 'effect', editor: 'inline-toggle', switch: { source: 'state.mouseLightEffect', offValue: 0, restoreField: 'effect' }, labelKey: 'dashboard.status' },
+                  { id: 'color', source: 'state.mouseLightColor', mutation: 'set-mouse-lighting', param: 'color', editor: 'modal-color', format: 'color', labelKey: 'dashboard.mouseLightColor', lightingRole: 'primary-color', priority: 100 },
+                ],
+              },
+              {
+                id: 'receiver', labelKey: 'dashboard.receiverLighting',
+                visibleWhen: { path: 'capabilities.receiverLighting', ne: null },
+                fields: [
+                  { id: 'status', source: 'state.receiverLightEffect', mutation: 'set-receiver-lighting', param: 'effect', editor: 'inline-toggle', switch: { source: 'state.receiverLightEffect', offValue: 0, restoreField: 'effect' }, labelKey: 'dashboard.status' },
+                  { id: 'color', source: 'state.receiverLightColor', mutation: 'set-receiver-lighting', param: 'color', editor: 'modal-color', labelKey: 'receiverLighting.field.color', visibleWhen: { path: 'state.receiverLightEffect', ne: 0 }, lightingRole: 'primary-color', priority: 100 },
+                ],
+              },
+            ],
+            stateMapping: {
+              mouseLightColor: 'confirmedLightColor',
+              mouseLightEffect: 'capabilities.mouseLighting.effect',
+              receiverLightEffect: 'capabilities.receiverLighting.effect',
+              receiverLightColor: 'capabilities.receiverLighting.color',
+            },
+          },
+        },
+      ],
+      writableMutations: ['set-mouse-lighting', 'set-receiver-lighting'],
+      evidence: 'hardware-verified',
+    };
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'settings_get') return Promise.resolve(settings);
+      if (command === 'device_snapshots') return Promise.resolve(entries(bothOffSnapshot));
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Both-Lights-Off' });
+    const accent = document.documentElement.style.getPropertyValue('--accent');
+    // 都关 → 鼠标颜色（默认）
+    expect(accent).toBe(themeAccent('#CC2244'));
+    expect(accent).not.toBe(themeAccent('#00FF00'));
+  });
+
   it('uses receiver lighting options to label the off effect', async () => {
     const offReceiverSnapshot: DeviceSnapshot = {
       displayName: 'Off Receiver Mouse', connection: 'wireless', batteryPercent: 80,

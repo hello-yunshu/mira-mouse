@@ -32,7 +32,7 @@ import { SettingsPage, type SettingsTab } from './Settings';
 import { AboutPage } from './About';
 import { BatteryUsageModal, type BatteryUsageConnectedTarget } from './BatteryUsage';
 import { BatteryLevelIcon } from './BatteryLevelIcon';
-import type { AboutInfo, AppSettings, DeviceSnapshot, DeviceSnapshotEntry, DeviceState, DpiStage, PluginCapability, PluginCapabilityPlacement, PluginField, PluginFieldFormat, PluginSummaryItem, RangeSpec, ReadStatus, ThemeMode } from './types';
+import type { AboutInfo, AppSettings, DeviceSnapshot, DeviceSnapshotEntry, DeviceState, DpiStage, PluginCapability, PluginCapabilityPlacement, PluginField, PluginFieldFormat, PluginSummaryItem, PluginZone, RangeSpec, ReadStatus, ThemeMode } from './types';
 import { DetailValue } from './DetailValue';
 import {
   placementsFor,
@@ -790,15 +790,70 @@ function capabilityAvailable(capability: PluginCapability): boolean {
   return capability.available !== false;
 }
 
-/** 从插件声明中取得用于宿主装饰的颜色，不依赖任何厂商状态字段名。 */
+/** 判断灯光 zone 是否处于开启状态。 */
+function zoneLightingEnabled(zone: PluginZone, device: DeviceState): boolean {
+  if (!resolveVisibleWhen(zone.visibleWhen, device)) return false;
+  // 优先用 switch 字段（inline-toggle 开关）判断。
+  const switchField = zone.fields.find((field) => field.switch);
+  if (switchField) return resolveSwitchState(switchField, device);
+  // 无 switch 时用 effect 字段：值非 0 视为开启。
+  const effectField = zone.fields.find((field) => field.lightingRole === 'effect');
+  if (effectField) {
+    const value = readPath(device, effectField.source);
+    return value !== undefined && value !== null && value !== 0;
+  }
+  // 无开关信息时默认开启。
+  return true;
+}
+
+/** 读取 zone 中 primary-color 字段的颜色值。 */
+function zonePrimaryColor(zone: PluginZone, device: DeviceState): string | undefined {
+  const colorField = zone.fields.find(
+    (field) => field.lightingRole === 'primary-color' && (field.format === 'color' || field.editor === 'modal-color'),
+  ) ?? zone.fields.find((field) => field.format === 'color' || field.editor === 'modal-color');
+  if (!colorField) return undefined;
+  const value = readPath(device, colorField.source);
+  return typeof value === 'string' ? value : undefined;
+}
+
+/**
+ * 从插件声明中取得用于宿主装饰的颜色，不依赖任何厂商状态字段名。
+ * 主题色规则：accentSource 指向主灯光（鼠标）；主灯光开 → 主灯光色；
+ * 主灯光关 + 其他灯光（接收器）开 → 其他灯光色；都关 → 主灯光色（默认）。
+ */
 function declaredAccentColor(device: DeviceState): string | undefined {
-  // 主题色是插件明确声明的展示契约。鼠标与接收器同时存在时，插件可稳定
-  // 指向鼠标灯光，不受 capability/zone 排列顺序影响。
   for (const capability of device.pluginCapabilities.filter(capabilityAvailable)) {
     const source = capability.metadata.accentSource;
     if (!source) continue;
+    const zones = capability.metadata.zones ?? [];
+    // 找到 accentSource 对应的主 zone。
+    const primaryZone = zones.find(
+      (zone) => resolveVisibleWhen(zone.visibleWhen, device)
+        && zone.fields.some((field) => field.source === source && (field.format === 'color' || field.editor === 'modal-color')),
+    );
+    if (!primaryZone) {
+      const value = readPath(device, source);
+      if (typeof value === 'string') return value;
+      continue;
+    }
+    // 主灯光开 → 主灯光色。
+    if (zoneLightingEnabled(primaryZone, device)) {
+      const value = readPath(device, source);
+      if (typeof value === 'string') return value;
+    }
+    // 主灯光关：找其他开启的 zone。
+    for (const zone of zones) {
+      if (zone === primaryZone) continue;
+      if (!resolveVisibleWhen(zone.visibleWhen, device)) continue;
+      if (zoneLightingEnabled(zone, device)) {
+        const color = zonePrimaryColor(zone, device);
+        if (color) return color;
+      }
+    }
+    // 都关 → 主灯光色（默认）。
     const value = readPath(device, source);
     if (typeof value === 'string') return value;
+    return undefined;
   }
   // 兼容尚未声明 accentSource 的旧插件：优先使用灯光颜色，再回退 DPI。
   for (const capability of device.pluginCapabilities.filter(capabilityAvailable)) {
