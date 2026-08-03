@@ -321,7 +321,7 @@ describe('SettingsPage', () => {
         modelPackId: 'mira.battery.default',
         modelPackVersion: bundleVersion,
         rollbackAvailable: true,
-        previousVersion: '0.5.0',
+        previousVersion: '0.3.0',
       });
       if (command === 'local_ai_updates_check') return Promise.resolve([
         { component: 'bundle', currentVersion: bundleVersion, availableVersion: '0.6.0', updateAvailable: true },
@@ -351,10 +351,11 @@ describe('SettingsPage', () => {
     fireEvent.click(screen.getByRole('button', { name: '检查更新' }));
     expect(await screen.findByText('可更新至 v0.6.0')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '更新' }));
-    // 安装失败后回退按钮出现，且带版本号。
-    await waitFor(() => expect(screen.getByRole('button', { name: '回退至 v0.5.0' })).toBeInTheDocument());
+    // 安装失败后回退按钮出现，且上一版本号显示在按钮旁。
+    await waitFor(() => expect(screen.getByRole('button', { name: '回退' })).toBeInTheDocument());
+    expect(screen.getByText('v0.3.0')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: '回退至 v0.5.0' }));
+    fireEvent.click(screen.getByRole('button', { name: '回退' }));
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('local_ai_update_rollback', { component: 'bundle' }));
   });
 

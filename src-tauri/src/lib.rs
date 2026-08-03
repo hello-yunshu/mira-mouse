@@ -12946,6 +12946,10 @@ fn export_diagnostics(app: tauri::AppHandle) -> Result<serde_json::Value, String
 
 fn focus_main(window: Option<WebviewWindow>) {
     if let Some(window) = window {
+        // macOS 上 is_visible() 对最小化窗口仍返回 true，需同时检查 is_minimized()，
+        // 确保从隐藏或最小化状态恢复时都 emit window-resumed。
+        let was_hidden =
+            !window.is_visible().unwrap_or(false) || window.is_minimized().unwrap_or(false);
         // macOS: 先恢复 Regular 激活策略，再 show/set_focus。
         // 顺序很重要：Accessory 状态下 show 的窗口无法获取焦点。
         #[cfg(target_os = "macos")]
@@ -12958,6 +12962,9 @@ fn focus_main(window: Option<WebviewWindow>) {
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
+        if was_hidden {
+            let _ = window.app_handle().emit("window-resumed", ());
+        }
     }
 }
 
