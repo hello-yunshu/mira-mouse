@@ -3747,6 +3747,13 @@ export default function App() {
     });
   }, []);
 
+  // 设置页卸载时清除插件/AI 引擎更新聚焦 token，避免下次进入设置时重复跳转和重复显示"已更新至"标签。
+  // token 仅在点击更新完成通知时递增，离开设置页即视为已消费。
+  const handleSettingsExit = useCallback(() => {
+    setSettingsPluginFocusToken(0);
+    setSettingsLocalAiFocusToken(0);
+  }, []);
+
   useEffect(() => onAppNotification(setAppNotification), []);
 
   useEffect(() => {
@@ -3948,7 +3955,7 @@ export default function App() {
           ? <AwaitingMouseState deviceName={device.name} onRefresh={() => { setRefreshNonce((value) => value + 1); invoke('device_refresh').catch(() => {}); }} onOpenSettings={() => setView('settings')} />
           : <Dashboard device={device} deviceEntries={deviceEntries} onDeviceChange={setDevice} onDeviceSelect={selectDevice} onOpenBatteryUsage={openBatteryUsage} pluginLocaleRevision={pluginLocaleRevision} demoMode={demoMode} />
     )}
-    {view === 'settings' && <SettingsPage initialTab={settingsTab} onTabChange={setSettingsTab} previewMode={pureWeb} focusPluginUpdateToken={settingsPluginFocusToken} focusLocalAiUpdateToken={settingsLocalAiFocusToken} onNavigateAbout={() => setView('about')} onOpenBatteryUsage={openBatteryUsage} onBatteryUsageSettingsChange={syncBatteryUsageSettings} onThemeChange={setTheme} pluginCapabilities={device?.pluginCapabilities ?? []} writableMutations={device?.writableMutations ?? []} />}
+    {view === 'settings' && <SettingsPage initialTab={settingsTab} onTabChange={setSettingsTab} previewMode={pureWeb} focusPluginUpdateToken={settingsPluginFocusToken} focusLocalAiUpdateToken={settingsLocalAiFocusToken} onSettingsExit={handleSettingsExit} onNavigateAbout={() => setView('about')} onOpenBatteryUsage={openBatteryUsage} onBatteryUsageSettingsChange={syncBatteryUsageSettings} onThemeChange={setTheme} pluginCapabilities={device?.pluginCapabilities ?? []} writableMutations={device?.writableMutations ?? []} />}
     {view === 'about' && <AboutPage previewMode={pureWeb} focusUpdateToken={aboutFocusToken} onBack={() => setView('settings')} />}
     <BatteryUsageModal
       key={batteryUsageSession}

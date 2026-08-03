@@ -146,7 +146,7 @@ function isMacPlatform(): boolean {
     || (previewPlatform === null && /Macintosh|Mac OS X/.test(navigator.userAgent));
 }
 
-export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, onBatteryUsageSettingsChange, onThemeChange, previewMode = false, pluginCapabilities = [], writableMutations = [], focusPluginUpdateToken = 0, focusLocalAiUpdateToken = 0, initialTab = 'general', onTabChange }: { onNavigateAbout: () => void; onOpenBatteryUsage?: () => void; onBatteryUsageSettingsChange?: (settings: { batteryHistoryEnabled: boolean; aiAnalysisEnabled: boolean }) => void; onThemeChange: (theme: ThemeMode) => void; previewMode?: boolean; pluginCapabilities?: PluginCapability[]; writableMutations?: string[]; focusPluginUpdateToken?: number; focusLocalAiUpdateToken?: number; initialTab?: SettingsTab; onTabChange?: (tab: SettingsTab) => void }) {
+export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, onBatteryUsageSettingsChange, onThemeChange, previewMode = false, pluginCapabilities = [], writableMutations = [], focusPluginUpdateToken = 0, focusLocalAiUpdateToken = 0, initialTab = 'general', onTabChange, onSettingsExit }: { onNavigateAbout: () => void; onOpenBatteryUsage?: () => void; onBatteryUsageSettingsChange?: (settings: { batteryHistoryEnabled: boolean; aiAnalysisEnabled: boolean }) => void; onThemeChange: (theme: ThemeMode) => void; previewMode?: boolean; pluginCapabilities?: PluginCapability[]; writableMutations?: string[]; focusPluginUpdateToken?: number; focusLocalAiUpdateToken?: number; initialTab?: SettingsTab; onTabChange?: (tab: SettingsTab) => void; onSettingsExit?: () => void }) {
   const { t } = useTranslation();
   const windowsPlatform = isWindowsPlatform();
   const macPlatform = isMacPlatform();
@@ -311,6 +311,9 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
     target?.scrollIntoView?.({ block: 'start', behavior: 'smooth' });
     target?.focus?.({ preventScroll: true });
   }, [displayedTab, focusLocalAiUpdateToken]);
+
+  // 设置页卸载时通知父组件清除更新聚焦 token，避免下次进入时重复跳转和重复显示"已更新至"标签。
+  useEffect(() => () => onSettingsExit?.(), [onSettingsExit]);
 
   // 把当前激活的标签上抛给父组件，使设置页在卸载/重建（例如进入关于页再返回）
   // 后能恢复到用户先前所在的标签，而不是每次都落回首个标签。
@@ -563,7 +566,8 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
   async function handleLocalAiRollback() {
     if (previewMode) return;
     try {
-      await rollbackLocalAiUpdate();
+      const nextStatus = await rollbackLocalAiUpdate();
+      if (nextStatus) setLocalAiStatus(nextStatus);
     } catch (error) {
       notifyError(t('notification.rollbackLocalAiFailed'), friendlyUpdateError(error));
     }
@@ -907,6 +911,11 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
               </div>
               <div className="plugin-meta">
                 <span className="badge badge-ok">{t('settings.localAi.signedBundle')}</span>
+                {focusLocalAiUpdateToken > 0 && localAiUpdate.phase === 'installed' && (
+                  <span className="badge badge-ok">{t('settings.localAi.updated', {
+                    version: localAiUpdate.updates.find((item) => item.component === 'bundle')?.currentVersion ?? localAiStatus.runtimeVersion,
+                  })}</span>
+                )}
                 {!localAiStatus.rollbackAvailable && <span className="badge">{t('settings.localAi.defaultBundled')}</span>}
               </div>
               {localAiUpdate.updates.find((item) => item.component === 'bundle')?.updateAvailable && (
@@ -934,15 +943,10 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
                   </span>
                 </div>
               )}
-              {localAiUpdate.phase === 'installed' && (
-                <div className="plugin-update-row">
-                  <span className="badge badge-ok">{t('settings.localAi.updated', { version: localAiUpdate.updates.find((item) => item.component === 'bundle')?.currentVersion ?? localAiStatus.runtimeVersion })}</span>
-                </div>
-              )}
               {localAiStatus.rollbackAvailable && (
                 <div className="plugin-item-actions">
-                  <button className="secondary" disabled={localAiUpdate.phase === 'downloading'} onClick={() => void handleLocalAiRollback()}>
-                    {t('settings.localAi.rollbackBundle')}
+                  <button className="secondary" disabled={localAiUpdate.phase === 'downloading' || localAiUpdate.phase === 'checking'} onClick={() => void handleLocalAiRollback()}>
+                    {localAiUpdate.phase === 'checking' ? t('settings.localAi.rollingBack') : t('settings.localAi.rollbackBundle')}
                   </button>
                 </div>
               )}
@@ -984,6 +988,9 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
                       <span className={`badge ${plugin.signatureVerified ? 'badge-ok' : 'badge-warn'}`}>
                         {plugin.signatureVerified ? t('settings.pluginUpdate.signatureVerified') : t('settings.pluginUpdate.signatureUnverified')}
                       </span>
+                      {focusPluginUpdateToken > 0 && pluginUpdate.phase === 'installed' && pluginUpdate.lastInstalledPluginId === plugin.pluginId && (
+                        <span className="badge badge-ok">{t('settings.pluginUpdate.updated', { version: pluginUpdate.lastInstalledVersion })}</span>
+                      )}
                       {plugin.bundleByDefault && <span className="badge">{t('settings.pluginUpdate.defaultBundled')}</span>}
                     </div>
                     {pluginUpdates.find((item) => item.pluginId === plugin.pluginId)?.updateAvailable && (
@@ -1013,11 +1020,6 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
                               ? t('about.downloadedPercent', { percent: Math.min(100, Math.round((pluginUpdate.downloadedBytes / pluginUpdate.totalBytes) * 100)) })
                               : t('about.downloadedMib', { mib: (pluginUpdate.downloadedBytes / 1024 / 1024).toFixed(1) })}
                         </span>
-                      </div>
-                    )}
-                    {pluginUpdate.phase === 'installed' && pluginUpdate.lastInstalledPluginId === plugin.pluginId && (
-                      <div className="plugin-update-row">
-                        <span className="badge badge-ok">{t('settings.pluginUpdate.updated', { version: pluginUpdate.lastInstalledVersion })}</span>
                       </div>
                     )}
                   </div>
