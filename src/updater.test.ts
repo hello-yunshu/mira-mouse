@@ -18,7 +18,11 @@ import {
   relaunchAfterUpdate,
   startAutomaticAppUpdateCheck,
   stopAutomaticAppUpdateCheck,
+  recordUpdateReminderDismissed,
+  recordUpdateReminderIgnored,
+  remindInstalledUpdateOnShown,
 } from './updater';
+import { onAppNotification, type AppNotification } from './notify';
 
 describe('application updater', () => {
   beforeEach(() => {
@@ -117,5 +121,146 @@ describe('application updater', () => {
     expect(mocks.invoke).not.toHaveBeenCalledWith('show_update_notification', expect.objectContaining({ title: '发现新版本' }));
     expect(mocks.invoke).toHaveBeenCalledWith('show_update_notification', expect.objectContaining({ title: '更新就绪', action: 'about-update' }));
     expect(appUpdateState()).toMatchObject({ phase: 'installed' });
+  });
+
+  it('reminds to relaunch when the main window is shown after an update is installed', async () => {
+    mocks.downloadAndInstall.mockImplementation(async (onEvent) => {
+      onEvent({ event: 'Started', data: { contentLength: 100 } });
+      onEvent({ event: 'Finished' });
+    });
+    mocks.check.mockResolvedValue({
+      version: '0.2.0',
+      body: 'Release notes',
+      date: '2026-06-23T00:00:00Z',
+      downloadAndInstall: mocks.downloadAndInstall,
+      close: vi.fn().mockResolvedValue(undefined),
+    });
+
+    const notifications: AppNotification[] = [];
+    const unsubscribe = onAppNotification((notification) => notifications.push(notification));
+
+    await checkForAppUpdate();
+    await installAppUpdate();
+    expect(appUpdateState().phase).toBe('installed');
+    // 安装完成时发送一次应用内通知
+    expect(notifications.filter((n) => n.action === 'relaunch')).toHaveLength(1);
+
+    // 模拟主窗口从托盘恢复
+    remindInstalledUpdateOnShown();
+    expect(notifications.filter((n) => n.action === 'relaunch')).toHaveLength(2);
+
+    // 再次恢复，第三次提醒
+    remindInstalledUpdateOnShown();
+    expect(notifications.filter((n) => n.action === 'relaunch')).toHaveLength(3);
+
+    unsubscribe();
+  });
+
+  it('stops reminding after the user dismisses the notification twice', async () => {
+    mocks.downloadAndInstall.mockImplementation(async (onEvent) => {
+      onEvent({ event: 'Started', data: { contentLength: 100 } });
+      onEvent({ event: 'Finished' });
+    });
+    mocks.check.mockResolvedValue({
+      version: '0.2.0',
+      body: 'Release notes',
+      date: '2026-06-23T00:00:00Z',
+      downloadAndInstall: mocks.downloadAndInstall,
+      close: vi.fn().mockResolvedValue(undefined),
+    });
+
+    const notifications: AppNotification[] = [];
+    const unsubscribe = onAppNotification((notification) => notifications.push(notification));
+
+    await checkForAppUpdate();
+    await installAppUpdate();
+    expect(notifications.filter((n) => n.action === 'relaunch')).toHaveLength(1);
+
+    // 用户主动关闭 2 次，达到阈值
+    recordUpdateReminderDismissed();
+    recordUpdateReminderDismissed();
+
+    // 主窗口恢复不再触发提醒
+    remindInstalledUpdateOnShown();
+    expect(notifications.filter((n) => n.action === 'relaunch')).toHaveLength(1);
+
+    unsubscribe();
+  });
+
+  it('stops reminding after the user ignores the notification three times', async () => {
+    mocks.downloadAndInstall.mockImplementation(async (onEvent) => {
+      onEvent({ event: 'Started', data: { contentLength: 100 } });
+      onEvent({ event: 'Finished' });
+    });
+    mocks.check.mockResolvedValue({
+      version: '0.2.0',
+      body: 'Release notes',
+      date: '2026-06-23T00:00:00Z',
+      downloadAndInstall: mocks.downloadAndInstall,
+      close: vi.fn().mockResolvedValue(undefined),
+    });
+
+    const notifications: AppNotification[] = [];
+    const unsubscribe = onAppNotification((notification) => notifications.push(notification));
+
+    await checkForAppUpdate();
+    await installAppUpdate();
+    expect(notifications.filter((n) => n.action === 'relaunch')).toHaveLength(1);
+
+    // 超时忽视 3 次，达到阈值
+    recordUpdateReminderIgnored();
+    recordUpdateReminderIgnored();
+    recordUpdateReminderIgnored();
+
+    remindInstalledUpdateOnShown();
+    expect(notifications.filter((n) => n.action === 'relaunch')).toHaveLength(1);
+
+    unsubscribe();
+  });
+
+  it('resets dismiss/ignore counters on a new install cycle', async () => {
+    mocks.downloadAndInstall.mockImplementation(async (onEvent) => {
+      onEvent({ event: 'Started', data: { contentLength: 100 } });
+      onEvent({ event: 'Finished' });
+    });
+    mocks.check.mockResolvedValue({
+      version: '0.2.0',
+      body: 'Release notes',
+      date: '2026-06-23T00:00:00Z',
+      downloadAndInstall: mocks.downloadAndInstall,
+      close: vi.fn().mockResolvedValue(undefined),
+    });
+
+    const notifications: AppNotification[] = [];
+    const unsubscribe = onAppNotification((notification) => notifications.push(notification));
+
+    await checkForAppUpdate();
+    await installAppUpdate();
+    // 关闭 2 次达到阈值
+    recordUpdateReminderDismissed();
+    recordUpdateReminderDismissed();
+    remindInstalledUpdateOnShown();
+    expect(notifications.filter((n) => n.action === 'relaunch')).toHaveLength(1);
+
+    // 新的安装周期重置计数
+    await installAppUpdate();
+    expect(notifications.filter((n) => n.action === 'relaunch')).toHaveLength(2);
+    // 窗口恢复再次触发提醒
+    remindInstalledUpdateOnShown();
+    expect(notifications.filter((n) => n.action === 'relaunch')).toHaveLength(3);
+
+    unsubscribe();
+  });
+
+  it('does not remind when no update is installed', async () => {
+    mocks.check.mockResolvedValue(null);
+    await checkForAppUpdate();
+    expect(appUpdateState().phase).toBe('up-to-date');
+
+    const notifications: AppNotification[] = [];
+    const unsubscribe = onAppNotification((notification) => notifications.push(notification));
+    remindInstalledUpdateOnShown();
+    expect(notifications.filter((n) => n.action === 'relaunch')).toHaveLength(0);
+    unsubscribe();
   });
 });

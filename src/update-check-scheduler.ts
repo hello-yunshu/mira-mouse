@@ -29,16 +29,11 @@ export function createAutomaticUpdateScheduler({ intervalMs, run }: AutomaticUpd
     }
   }
 
-  function handleVisibilityChange(): void {
-    if (document.visibilityState === 'visible') triggerIfDue();
-  }
-
   function ensureSchedule(): void {
     if (timer !== undefined || typeof window === 'undefined') return;
     timer = window.setInterval(triggerIfDue, intervalMs);
     window.addEventListener('online', triggerIfDue);
     window.addEventListener('focus', triggerIfDue);
-    document.addEventListener('visibilitychange', handleVisibilityChange);
   }
 
   function stop(): void {
@@ -49,7 +44,6 @@ export function createAutomaticUpdateScheduler({ intervalMs, run }: AutomaticUpd
     }
     window.removeEventListener('online', triggerIfDue);
     window.removeEventListener('focus', triggerIfDue);
-    document.removeEventListener('visibilitychange', handleVisibilityChange);
     started = false;
     lastRunAt = undefined;
   }

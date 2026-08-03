@@ -3049,6 +3049,7 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
 }
 .plugin-update-row .setting-hint { margin-left: 0; }
 .plugin-update-row button { padding: 6px 13px; font-size: 12px; }
+.plugin-version-label { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
 .plugin-meta { display: flex; gap: 5px; align-items: center; flex-wrap: wrap; }
 .badge {
   padding: 2.5px 8px;

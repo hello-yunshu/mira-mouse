@@ -65,7 +65,7 @@ import {
 } from './pluginAdapter';
 import { onAppNotification, notifyError, notifySuccess, type AppNotification } from './notify';
 import { useScrollFadeState } from './useScrollOverflow';
-import { relaunchAfterUpdate, startAutomaticAppUpdateCheck } from './updater';
+import { relaunchAfterUpdate, startAutomaticAppUpdateCheck, recordUpdateReminderDismissed, recordUpdateReminderIgnored, remindInstalledUpdateOnShown } from './updater';
 import { startAutomaticPluginUpdateCheck } from './plugin-updater';
 import { startAutomaticLocalAiUpdateCheck } from './local-ai-updater';
 import { initUpdatePriorityCoordinator } from './update-priority';
@@ -3836,6 +3836,7 @@ export default function App() {
       .catch(() => {});
     listen('window-resumed', () => {
       setRefreshNonce((value) => value + 1);
+      remindInstalledUpdateOnShown();
     }).then((un) => { unlistenResume = un; })
       .catch(() => {});
     // macOS native 通知只提醒。
@@ -3859,7 +3860,11 @@ export default function App() {
 
   useEffect(() => {
     if (!appNotification) return;
-    const timeout = window.setTimeout(() => setAppNotification(undefined), 6000);
+    const isRelaunchReminder = appNotification.action === 'relaunch';
+    const timeout = window.setTimeout(() => {
+      if (isRelaunchReminder) recordUpdateReminderIgnored();
+      setAppNotification(undefined);
+    }, 6000);
     return () => window.clearTimeout(timeout);
   }, [appNotification]);
 
@@ -4053,7 +4058,7 @@ export default function App() {
           }
         >
           <div><strong>{appNotification.title}</strong>{appNotification.body && <p>{appNotification.body}</p>}</div>
-          <button type="button" onClick={(event) => { event.stopPropagation(); setAppNotification(undefined); }} aria-label={t('dashboard.closeNotification')}><X weight="bold" /></button>
+          <button type="button" onClick={(event) => { event.stopPropagation(); if (appNotification.action === 'relaunch') recordUpdateReminderDismissed(); setAppNotification(undefined); }} aria-label={t('dashboard.closeNotification')}><X weight="bold" /></button>
         </aside>
       </OverlayPortal>
     )}
