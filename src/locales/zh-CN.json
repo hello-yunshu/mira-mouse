@@ -341,6 +341,7 @@
       "updateBundle": "更新",
       "updated": "已更新至 v{{version}}",
       "rollbackBundle": "回退",
+      "rollbackToVersion": "回退至 v{{version}}",
       "rollingBack": "回退中…",
       "automaticCheckLabel": "自动检查 AI 引擎更新",
       "automaticCheckHint": "启动后每 6 小时，以及网络恢复或回到前台后，检查本地 AI 引擎是否有新版本",

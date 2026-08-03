@@ -955,7 +955,11 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
               {localAiStatus.rollbackAvailable && (localAiUpdate.phase === 'error' || localAiUpdate.phase === 'checking') && (
                 <div className="plugin-item-actions">
                   <button className="secondary" disabled={localAiUpdate.phase === 'checking'} onClick={() => void handleLocalAiRollback()}>
-                    {localAiUpdate.phase === 'checking' ? t('settings.localAi.rollingBack') : t('settings.localAi.rollbackBundle')}
+                    {localAiUpdate.phase === 'checking'
+                      ? t('settings.localAi.rollingBack')
+                      : localAiStatus.previousVersion
+                        ? t('settings.localAi.rollbackToVersion', { version: localAiStatus.previousVersion })
+                        : t('settings.localAi.rollbackBundle')}
                   </button>
                 </div>
               )}

@@ -341,6 +341,7 @@
       "updateBundle": "Update",
       "updated": "Updated to v{{version}}",
       "rollbackBundle": "Roll back",
+      "rollbackToVersion": "Roll back to v{{version}}",
       "rollingBack": "Rolling back…",
       "automaticCheckLabel": "Automatically check for AI engine updates",
       "automaticCheckHint": "Checks the local AI engine on launch, every 6 hours, and after returning online or to the foreground",

@@ -333,6 +333,7 @@ export interface LocalAiStatus {
   handlerVersion?: string;
   handlerApiVersion?: number;
   rollbackAvailable: boolean;
+  previousVersion?: string;
   error?: string;
 }
 
