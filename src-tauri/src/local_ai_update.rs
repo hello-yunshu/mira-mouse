@@ -79,6 +79,8 @@ pub struct LocalAiStatus {
     pub handler_version: Option<String>,
     pub handler_api_version: Option<u32>,
     pub rollback_available: bool,
+    /// 上一次部署的版本号，仅当 rollback_available 为 true 时有值。
+    pub previous_version: Option<String>,
     pub error: Option<String>,
 }
 
@@ -144,7 +146,13 @@ pub fn status(app: &AppHandle) -> LocalAiStatus {
         Err(error) => return status_error(None, error),
     };
     let metadata = read_metadata(&deployment_current_dir(&root).join("install.json"));
-    let rollback_available = deployment_previous_dir(&root).is_dir();
+    let previous_dir = deployment_previous_dir(&root);
+    let rollback_available = previous_dir.is_dir();
+    let previous_version = if rollback_available {
+        read_metadata(&previous_dir.join("install.json")).map(|item| item.deployment_version)
+    } else {
+        None
+    };
     let Some(installation) = resolve_installation(app) else {
         return LocalAiStatus {
             ready: false,
@@ -160,6 +168,7 @@ pub fn status(app: &AppHandle) -> LocalAiStatus {
             handler_version: metadata.as_ref().map(|item| item.handler_version.clone()),
             handler_api_version: metadata.as_ref().map(|item| item.handler_api_version),
             rollback_available,
+            previous_version,
             error: Some("runtimeModelOrHandlerNotInstalled".into()),
         };
     };
@@ -177,6 +186,7 @@ pub fn status(app: &AppHandle) -> LocalAiStatus {
             handler_version: Some(probe.handler_version),
             handler_api_version: Some(probe.handler_api_version),
             rollback_available,
+            previous_version,
             error: None,
         },
         Err(error) => LocalAiStatus {
@@ -193,6 +203,7 @@ pub fn status(app: &AppHandle) -> LocalAiStatus {
             handler_version: metadata.as_ref().map(|item| item.handler_version.clone()),
             handler_api_version: metadata.as_ref().map(|item| item.handler_api_version),
             rollback_available,
+            previous_version,
             error: Some(error),
         },
     }
@@ -307,6 +318,7 @@ fn status_error(bundle_version: Option<String>, error: String) -> LocalAiStatus 
         handler_version: None,
         handler_api_version: None,
         rollback_available: false,
+        previous_version: None,
         error: Some(error),
     }
 }
@@ -997,6 +1009,7 @@ mod tests {
             handler_version: Some(handler.into()),
             handler_api_version: Some(HANDLER_API_VERSION),
             rollback_available: false,
+            previous_version: None,
             error: None,
         }
     }
