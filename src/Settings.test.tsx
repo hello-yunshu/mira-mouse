@@ -295,11 +295,63 @@ describe('SettingsPage', () => {
     expect(localAiItem?.querySelector('.plugin-meta .badge')).toHaveClass('badge-ok');
     expect(screen.queryByText('随 Mira 打包的 Runtime 与模型，可整体更新或回退；异常时自动回退到 Mira 原有算法。')).toBeNull();
 
+    // 更新成功后回退按钮不应显示（仅出错时显示）。
+    expect(screen.queryByRole('button', { name: '回退' })).toBeNull();
+
     fireEvent.click(screen.getByRole('button', { name: '检查更新' }));
     expect(await screen.findByText('可更新至 v0.6.0')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '更新' }));
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('local_ai_update_install', { component: 'bundle' }));
     await waitFor(() => expect(screen.queryByText('可更新至 v0.6.0')).toBeNull());
+
+    // 更新成功后回退按钮仍不应显示。
+    expect(screen.queryByRole('button', { name: '回退' })).toBeNull();
+  });
+
+  it('shows the rollback button only when local AI update errors', async () => {
+    const bundleVersion = '0.5.0';
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'settings_get') return Promise.resolve(settings);
+      if (command === 'autostart_state') return Promise.resolve(false);
+      if (command === 'about_info') return Promise.resolve({ bundledPlugins: [] });
+      if (command === 'local_ai_status') return Promise.resolve({
+        ready: true,
+        bundleVersion: bundleVersion,
+        runtimeVersion: '0.5.0',
+        modelPackId: 'mira.battery.default',
+        modelPackVersion: bundleVersion,
+        rollbackAvailable: true,
+      });
+      if (command === 'local_ai_updates_check') return Promise.resolve([
+        { component: 'bundle', currentVersion: bundleVersion, availableVersion: '0.6.0', updateAvailable: true },
+      ]);
+      if (command === 'local_ai_update_install') {
+        return Promise.reject(new Error('install failed'));
+      }
+      if (command === 'local_ai_update_rollback') return Promise.resolve({
+        ready: true,
+        bundleVersion: '0.5.0',
+        runtimeVersion: '0.5.0',
+        modelPackId: 'mira.battery.default',
+        modelPackVersion: '0.5.0',
+        rollbackAvailable: false,
+      });
+      return Promise.resolve(undefined);
+    });
+
+    render(<SettingsPage onNavigateAbout={vi.fn()} onThemeChange={vi.fn()} />);
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('local_ai_status'));
+    fireEvent.click(screen.getByRole('button', { name: '插件' }));
+    expect(await screen.findByText('本地 AI 引擎')).toBeInTheDocument();
+
+    // 出错前回退按钮不显示。
+    expect(screen.queryByRole('button', { name: '回退' })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: '检查更新' }));
+    expect(await screen.findByText('可更新至 v0.6.0')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '更新' }));
+    // 安装失败后回退按钮出现。
+    await waitFor(() => expect(screen.getByRole('button', { name: '回退' })).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole('button', { name: '回退' }));
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('local_ai_update_rollback', { component: 'bundle' }));
