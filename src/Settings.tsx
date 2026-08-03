@@ -405,6 +405,15 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
     }
   }), []);
 
+  // 本地 AI 出错后保留回退入口；恢复正常运行一段时间后清除错误状态，回退按钮随之消失。
+  useEffect(() => {
+    if (localAiUpdate.phase !== 'error') return;
+    const timer = setTimeout(() => {
+      setLocalAiUpdate((current) => (current.phase === 'error' ? { ...current, phase: 'idle', error: undefined } : current));
+    }, 10 * 60 * 1000);
+    return () => clearTimeout(timer);
+  }, [localAiUpdate.phase, localAiUpdate.error]);
+
   useEffect(() => {
     onBatteryUsageSettingsChange?.({
       batteryHistoryEnabled: settings.batteryHistoryEnabled,
@@ -943,9 +952,9 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
                   </span>
                 </div>
               )}
-              {localAiStatus.rollbackAvailable && (
+              {localAiStatus.rollbackAvailable && (localAiUpdate.phase === 'error' || localAiUpdate.phase === 'checking') && (
                 <div className="plugin-item-actions">
-                  <button className="secondary" disabled={localAiUpdate.phase === 'downloading' || localAiUpdate.phase === 'checking'} onClick={() => void handleLocalAiRollback()}>
+                  <button className="secondary" disabled={localAiUpdate.phase === 'checking'} onClick={() => void handleLocalAiRollback()}>
                     {localAiUpdate.phase === 'checking' ? t('settings.localAi.rollingBack') : t('settings.localAi.rollbackBundle')}
                   </button>
                 </div>
