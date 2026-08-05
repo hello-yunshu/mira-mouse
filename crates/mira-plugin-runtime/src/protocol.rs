@@ -709,14 +709,23 @@ fn maybe_merge_onboard_lighting(
             }
         }
     }
-    let (onboard_outputs, _) = package.execute_with_cache(
+    let (onboard_outputs, _) = match package.execute_with_cache(
         ctx.api,
         ctx.path,
         &onboard_workflow_id,
         ctx.feature_index_cache,
         ctx.cached_handles,
         ctx.hid_io_stats,
-    )?;
+    ) {
+        Ok(onboard) => onboard,
+        // onboard 灯光读取是可选增强：失败不应让整次设备读取失败。
+        // 缺失的 mouseLighting 由宿主快照合并保留旧值（capabilities 缺失键粘性）。
+        Err(error) => {
+            #[cfg(debug_assertions)]
+            eprintln!("[mira] onboard lighting read failed: {error}");
+            return Ok(());
+        }
+    };
     for (key, value) in onboard_outputs {
         outputs.entry(key).or_insert(value);
     }

@@ -9972,7 +9972,14 @@ fn apply_snapshot_patch(
                 return snapshot;
             };
             let Some(contract) = wake_recovery_contract_for(inspection, snapshot.connection) else {
-                return snapshot;
+                // 通用能力合并：Full 读取成功但偶发缺失的能力键（如个别步骤超时
+                // 被跳过、可选增强读取失败）保留上次值，避免能力面板（如灯光）
+                // 因单次读取中断而消失。品牌无关。
+                let mut capabilities = existing.capabilities.clone();
+                merge_capability_patch(&mut capabilities, snapshot.capabilities.clone());
+                let mut merged = snapshot;
+                merged.capabilities = capabilities;
+                return merged;
             };
             if snapshot_has_recovery_component(&snapshot, contract) {
                 snapshot
@@ -15919,6 +15926,56 @@ mod snapshot_patch_tests {
         assert_eq!(result.battery_percent, Some(61));
         assert_eq!(result.dpi, Some(3200));
         assert_eq!(result.batteries[0].percentage, 61);
+    }
+
+    #[test]
+    fn full_snapshot_keeps_missing_capabilities_from_existing() {
+        let mut existing = snapshot_with_batteries(vec![battery("mouse", 64, false)]);
+        existing.capabilities = BTreeMap::from([
+            (
+                "mouseLighting".to_string(),
+                serde_json::json!({
+                    "enabled": true,
+                    "color": "#ff0000"
+                }),
+            ),
+            (
+                "dpiCapability".to_string(),
+                serde_json::json!({ "count": 5 }),
+            ),
+        ]);
+
+        // 偶发读取中断：新快照缺 mouseLighting（保留旧值），但 dpiCapability 有更新值
+        let mut incoming = snapshot_with_batteries(vec![battery("mouse", 63, false)]);
+        incoming.capabilities = BTreeMap::from([(
+            "dpiCapability".to_string(),
+            serde_json::json!({ "count": 6 }),
+        )]);
+        let result = apply_snapshot_patch(
+            Some(&existing),
+            SnapshotPatch::Full(incoming),
+            &mock_inspection(),
+            &mock_device(),
+            &mock_devices(),
+            Connection::Wireless,
+        );
+
+        assert_eq!(
+            result
+                .capabilities
+                .get("mouseLighting")
+                .and_then(|v| v.get("color")),
+            Some(&serde_json::Value::String("#ff0000".to_string())),
+            "缺失的能力键应保留上次值，避免灯光面板因单次读取中断而消失"
+        );
+        assert_eq!(
+            result
+                .capabilities
+                .get("dpiCapability")
+                .and_then(|v| v.get("count")),
+            Some(&serde_json::Value::Number(6.into())),
+            "新值应正常覆盖"
+        );
     }
 
     #[test]
