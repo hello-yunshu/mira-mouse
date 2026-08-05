@@ -18,6 +18,29 @@ const MAX_SAMPLES: usize = 10_000;
 /// Battery percentages are normally integer-quantized. A 1% change over a few
 /// minutes is not enough evidence to extrapolate an hourly drain rate.
 const MIN_OBSERVATION_MINUTES: f64 = 30.0;
+/// 样本权重下限：保证 recency weight 恒正且有限（rill-ml 要求 weight >= 0，
+/// weight = 0 会跳过学习）。极旧样本取该下限，等效于被忽略但不会静默删除。
+const MIN_RECENCY_WEIGHT: f64 = 1e-6;
+
+/// 训练样本的近期权重：越靠近预测时刻的样本越重要。
+///
+/// weight = exp(-age_hours / tau)，age 为样本相对 `prediction_time` 的时长（小时）。
+/// - 未来时间戳 clamp 到 age = 0（权重 1.0），不会产生 NaN；
+/// - tau 优先取 `learning_recency_tau_hours`，未显式设置时复用确定性基线的
+///   `baseline_decay_tau_hours`，不凭空引入新参数；非法 tau（NaN / 非正）回退基线 tau。
+/// - 权重下限 `MIN_RECENCY_WEIGHT`。
+pub fn recency_weight(
+    sample_time: DateTime<Utc>,
+    prediction_time: DateTime<Utc>,
+    config: &BatteryModelConfig,
+) -> f64 {
+    let tau_hours = config
+        .learning_recency_tau_hours
+        .filter(|tau| tau.is_finite() && *tau > 0.0)
+        .unwrap_or(config.baseline_decay_tau_hours);
+    let age_hours = (prediction_time - sample_time).num_seconds().max(0) as f64 / 3600.0;
+    (-age_hours / tau_hours).exp().max(MIN_RECENCY_WEIGHT)
+}
 /// A large downward change inside this window may be a lower-charge battery
 /// swap or reconnect recalibration rather than ordinary discharge.
 const SHORT_LEVEL_DISCONTINUITY_MINUTES: i64 = 15;
@@ -91,6 +114,9 @@ pub fn predict(
                 0,
                 None,
                 None,
+                None,
+                None,
+                None,
                 &BatteryModelSchemaStatus::SchemaMismatch,
             ));
         }
@@ -109,11 +135,24 @@ pub fn predict(
             0,
             None,
             None,
+            None,
+            None,
+            None,
             &schema_status,
         ));
     };
     if current.percentage == 0 {
-        return Ok(fallback("emptyBattery", 0, 0, None, None, &schema_status));
+        return Ok(fallback(
+            "emptyBattery",
+            0,
+            0,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &schema_status,
+        ));
     }
 
     let observations = discharge_observations(&samples, config);
@@ -198,6 +237,16 @@ fn validated_model_prediction(
     let mut total_weight_sum: f64 = 0.0;
     let mut prev_ended_at: Option<DateTime<Utc>> = None;
 
+    // 阶段 3（加权学习，默认关闭）：训练样本按 recency 权重；评价指标同步维护
+    // 加权 MAE / 近期窗口 MAE / 训练有效权重。未开启时权重恒为 1.0，
+    // 行为与冻结路径逐位一致（见参考实现等价性测试）。
+    let weighted_enabled = config.weighted_learning_enabled;
+    let mut training_weight_sum: f64 = 0.0;
+    let mut validation_weight_sum: f64 = 0.0;
+    let mut candidate_weighted_error_sum: f64 = 0.0;
+    let mut recent_error_sum: f64 = 0.0;
+    let mut recent_count: u64 = 0;
+
     for observation in observations {
         // 1. 从 prev_ended_at 衰减到 observation.at,得到以 observation.at 为锚的累加器。
         //    此时累加器等价于原 weighted_baseline_rate(&observations[..index], observation.at, tau)。
@@ -229,13 +278,36 @@ fn validated_model_prediction(
                         comparator
                             .record(1, observation.drain_per_hour, ai_prediction)
                             .map_err(|_| BatteryPredictionError::InvalidModel)?;
+                        let metric_weight = if weighted_enabled {
+                            recency_weight(observation.at, now, config)
+                        } else {
+                            1.0
+                        };
+                        validation_weight_sum += metric_weight;
+                        let ai_error = (observation.drain_per_hour - ai_prediction).abs();
+                        candidate_weighted_error_sum += metric_weight * ai_error;
+                        if (now - observation.at).num_seconds().max(0) as f64 / 3600.0
+                            <= config.quality_window as f64
+                        {
+                            recent_error_sum += ai_error;
+                            recent_count += 1;
+                        }
                     }
                 }
             }
         }
-        model
-            .learn(features, observation.drain_per_hour)
-            .map_err(|_| BatteryPredictionError::InvalidModel)?;
+        if weighted_enabled {
+            let weight = recency_weight(observation.at, now, config);
+            training_weight_sum += weight;
+            model
+                .learn_weighted(features, observation.drain_per_hour, weight)
+                .map_err(|_| BatteryPredictionError::InvalidModel)?;
+        } else {
+            training_weight_sum += 1.0;
+            model
+                .learn(features, observation.drain_per_hour)
+                .map_err(|_| BatteryPredictionError::InvalidModel)?;
+        }
 
         // 2. 从 observation.at 衰减到 observation.ended_at,再以 weight=1.0 加入当前观测。
         //    这把累加器锚点推进到 observation.ended_at,为下一轮准备好以 ended_at 为锚的求和。
@@ -260,6 +332,10 @@ fn validated_model_prediction(
     let baseline_mae = baseline.and_then(|entry| entry.rolling_mae());
     let candidate_mae = candidate.and_then(|entry| entry.rolling_mae());
     let training_samples = model.samples_seen();
+    let weighted_mae = (validation_weight_sum > 0.0)
+        .then_some(candidate_weighted_error_sum / validation_weight_sum);
+    let recent_mae = (recent_count > 0).then_some(recent_error_sum / recent_count as f64);
+    let effective_sample_weight = Some(training_weight_sum);
 
     if training_samples < config.min_training_samples {
         return Ok(fallback(
@@ -268,6 +344,24 @@ fn validated_model_prediction(
             validation_samples,
             baseline_mae,
             candidate_mae,
+            weighted_mae,
+            recent_mae,
+            effective_sample_weight,
+            schema_status,
+        ));
+    }
+    // 加权学习保护：训练样本虽然够数，但有效权重不足（如 tau 极短、样本几乎全部
+    // 过期）时，加权模型可信度不足，同样回退确定性基线。
+    if weighted_enabled && training_weight_sum < config.min_training_samples as f64 {
+        return Ok(fallback(
+            "insufficientEffectiveWeight",
+            training_samples,
+            validation_samples,
+            baseline_mae,
+            candidate_mae,
+            weighted_mae,
+            recent_mae,
+            effective_sample_weight,
             schema_status,
         ));
     }
@@ -279,6 +373,9 @@ fn validated_model_prediction(
             validation_samples,
             baseline_mae,
             candidate_mae,
+            weighted_mae,
+            recent_mae,
+            effective_sample_weight,
             schema_status,
         ));
     }
@@ -289,16 +386,29 @@ fn validated_model_prediction(
             validation_samples,
             baseline_mae,
             candidate_mae,
+            weighted_mae,
+            recent_mae,
+            effective_sample_weight,
             schema_status,
         ));
     };
-    if candidate_error >= baseline_error * config.required_error_ratio {
+    // 加权模式下以加权 MAE 作为候选质量指标：加权模型对近期样本的表现才是用户
+    // 真正关心的。加权 MAE 缺失时退回普通 candidate MAE。
+    let candidate_error_for_gate = if weighted_enabled {
+        weighted_mae.unwrap_or(candidate_error)
+    } else {
+        candidate_error
+    };
+    if candidate_error_for_gate >= baseline_error * config.required_error_ratio {
         return Ok(fallback(
             "candidateNotBetter",
             training_samples,
             validation_samples,
             baseline_mae,
             candidate_mae,
+            weighted_mae,
+            recent_mae,
+            effective_sample_weight,
             schema_status,
         ));
     }
@@ -336,6 +446,9 @@ fn validated_model_prediction(
             validation_samples,
             baseline_mae,
             candidate_mae,
+            weighted_mae,
+            recent_mae,
+            effective_sample_weight,
             schema_status,
         ));
     }
@@ -347,6 +460,9 @@ fn validated_model_prediction(
             validation_samples,
             baseline_mae,
             candidate_mae,
+            weighted_mae,
+            recent_mae,
+            effective_sample_weight,
             schema_status,
         ));
     }
@@ -359,19 +475,25 @@ fn validated_model_prediction(
         validation_samples,
         baseline_mae,
         candidate_mae,
-        weighted_mae: None,
-        recent_mae: None,
-        effective_sample_weight: None,
+        weighted_mae,
+        recent_mae,
+        effective_sample_weight,
         schema_status: Some(schema_status.clone()),
     })
 }
 
+/// 构造回退结果。参数与 `BatteryPredictionOutput` 的指标字段一一对应，
+/// 显式传参可防止遗漏任一指标，故允许超过 7 个参数。
+#[allow(clippy::too_many_arguments)]
 fn fallback(
     reason: &str,
     training_samples: u64,
     validation_samples: u64,
     baseline_mae: Option<f64>,
     candidate_mae: Option<f64>,
+    weighted_mae: Option<f64>,
+    recent_mae: Option<f64>,
+    effective_sample_weight: Option<f64>,
     schema_status: &BatteryModelSchemaStatus,
 ) -> BatteryPredictionOutput {
     BatteryPredictionOutput {
@@ -382,9 +504,9 @@ fn fallback(
         validation_samples,
         baseline_mae,
         candidate_mae,
-        weighted_mae: None,
-        recent_mae: None,
-        effective_sample_weight: None,
+        weighted_mae,
+        recent_mae,
+        effective_sample_weight,
         schema_status: Some(schema_status.clone()),
     }
 }
@@ -554,6 +676,13 @@ mod tests {
         )
         .map_err(|_| BatteryPredictionError::InvalidModel)?;
 
+        let weighted_enabled = config.weighted_learning_enabled;
+        let mut training_weight_sum: f64 = 0.0;
+        let mut validation_weight_sum: f64 = 0.0;
+        let mut candidate_weighted_error_sum: f64 = 0.0;
+        let mut recent_error_sum: f64 = 0.0;
+        let mut recent_count: u64 = 0;
+
         for (index, observation) in observations.iter().enumerate() {
             let recent_rate = weighted_baseline_rate_reference(
                 &observations[..index],
@@ -578,13 +707,36 @@ mod tests {
                             comparator
                                 .record(1, observation.drain_per_hour, ai_prediction)
                                 .map_err(|_| BatteryPredictionError::InvalidModel)?;
+                            let metric_weight = if weighted_enabled {
+                                recency_weight(observation.at, now, config)
+                            } else {
+                                1.0
+                            };
+                            validation_weight_sum += metric_weight;
+                            let ai_error = (observation.drain_per_hour - ai_prediction).abs();
+                            candidate_weighted_error_sum += metric_weight * ai_error;
+                            if (now - observation.at).num_seconds().max(0) as f64 / 3600.0
+                                <= config.quality_window as f64
+                            {
+                                recent_error_sum += ai_error;
+                                recent_count += 1;
+                            }
                         }
                     }
                 }
             }
-            model
-                .learn(features, observation.drain_per_hour)
-                .map_err(|_| BatteryPredictionError::InvalidModel)?;
+            if weighted_enabled {
+                let weight = recency_weight(observation.at, now, config);
+                training_weight_sum += weight;
+                model
+                    .learn_weighted(features, observation.drain_per_hour, weight)
+                    .map_err(|_| BatteryPredictionError::InvalidModel)?;
+            } else {
+                training_weight_sum += 1.0;
+                model
+                    .learn(features, observation.drain_per_hour)
+                    .map_err(|_| BatteryPredictionError::InvalidModel)?;
+            }
         }
 
         comparator.update_best();
@@ -595,6 +747,10 @@ mod tests {
         let baseline_mae = baseline.and_then(|entry| entry.rolling_mae());
         let candidate_mae = candidate.and_then(|entry| entry.rolling_mae());
         let training_samples = model.samples_seen();
+        let weighted_mae = (validation_weight_sum > 0.0)
+            .then_some(candidate_weighted_error_sum / validation_weight_sum);
+        let recent_mae = (recent_count > 0).then_some(recent_error_sum / recent_count as f64);
+        let effective_sample_weight = Some(training_weight_sum);
 
         if training_samples < config.min_training_samples {
             return Ok(fallback(
@@ -603,6 +759,22 @@ mod tests {
                 validation_samples,
                 baseline_mae,
                 candidate_mae,
+                weighted_mae,
+                recent_mae,
+                effective_sample_weight,
+                schema_status,
+            ));
+        }
+        if weighted_enabled && training_weight_sum < config.min_training_samples as f64 {
+            return Ok(fallback(
+                "insufficientEffectiveWeight",
+                training_samples,
+                validation_samples,
+                baseline_mae,
+                candidate_mae,
+                weighted_mae,
+                recent_mae,
+                effective_sample_weight,
                 schema_status,
             ));
         }
@@ -615,6 +787,9 @@ mod tests {
                 validation_samples,
                 baseline_mae,
                 candidate_mae,
+                weighted_mae,
+                recent_mae,
+                effective_sample_weight,
                 schema_status,
             ));
         }
@@ -625,16 +800,27 @@ mod tests {
                 validation_samples,
                 baseline_mae,
                 candidate_mae,
+                weighted_mae,
+                recent_mae,
+                effective_sample_weight,
                 schema_status,
             ));
         };
-        if candidate_error >= baseline_error * config.required_error_ratio {
+        let candidate_error_for_gate = if weighted_enabled {
+            weighted_mae.unwrap_or(candidate_error)
+        } else {
+            candidate_error
+        };
+        if candidate_error_for_gate >= baseline_error * config.required_error_ratio {
             return Ok(fallback(
                 "candidateNotBetter",
                 training_samples,
                 validation_samples,
                 baseline_mae,
                 candidate_mae,
+                weighted_mae,
+                recent_mae,
+                effective_sample_weight,
                 schema_status,
             ));
         }
@@ -663,6 +849,9 @@ mod tests {
                 validation_samples,
                 baseline_mae,
                 candidate_mae,
+                weighted_mae,
+                recent_mae,
+                effective_sample_weight,
                 schema_status,
             ));
         }
@@ -674,6 +863,9 @@ mod tests {
                 validation_samples,
                 baseline_mae,
                 candidate_mae,
+                weighted_mae,
+                recent_mae,
+                effective_sample_weight,
                 schema_status,
             ));
         }
@@ -686,9 +878,9 @@ mod tests {
             validation_samples,
             baseline_mae,
             candidate_mae,
-            weighted_mae: None,
-            recent_mae: None,
-            effective_sample_weight: None,
+            weighted_mae,
+            recent_mae,
+            effective_sample_weight,
             schema_status: Some(schema_status.clone()),
         })
     }
@@ -699,6 +891,28 @@ mod tests {
 
     fn test_schema_status() -> BatteryModelSchemaStatus {
         BatteryModelSchemaStatus::LegacyCompatibility
+    }
+
+    fn new_linear_regression(
+        config: &BatteryModelConfig,
+    ) -> Result<LinearRegression, BatteryPredictionError> {
+        let optimizer = Optimizer::sgd(config.feature_count, {
+            let mut sgd = SgdConfig::default();
+            sgd.learning_rate = config.learning_rate;
+            sgd.l2 = config.l2;
+            sgd
+        })
+        .map_err(|_| BatteryPredictionError::InvalidModel)?;
+        LinearRegression::new(config.feature_count, {
+            let mut lr_config = LinearRegressionConfig::default();
+            lr_config.optimizer = optimizer;
+            lr_config.loss = RegressionLoss::Huber(
+                HuberLoss::new(config.huber_delta)
+                    .map_err(|_| BatteryPredictionError::InvalidModel)?,
+            );
+            lr_config
+        })
+        .map_err(|_| BatteryPredictionError::InvalidModel)
     }
 
     fn sample(at: DateTime<Utc>, percentage: u8, charging: bool) -> BatterySampleInput {
@@ -809,6 +1023,258 @@ mod tests {
         .unwrap();
         assert_eq!(capped.source, PredictionSource::BaselineRecommended);
         assert_eq!(capped.remaining_hours, None);
+    }
+
+    /// recency_weight 契约：最新样本≈1.0、未来时间戳 clamp、极旧样本下限、
+    /// 非法 tau 回退、绝不产生 NaN。
+    #[test]
+    fn recency_weight_properties_hold() {
+        let now = test_now();
+        let weighted = BatteryModelConfig {
+            learning_recency_tau_hours: Some(48.0),
+            ..BatteryModelConfig::default()
+        };
+        // 同刻样本权重 1.0；未来时间戳 clamp 到 age=0 → 1.0
+        assert_eq!(recency_weight(now, now, &weighted), 1.0);
+        assert_eq!(
+            recency_weight(now + Duration::hours(3), now, &weighted),
+            1.0
+        );
+        // 一个 tau 后权重 ≈ e^-1
+        let one_tau = recency_weight(now - Duration::hours(48), now, &weighted);
+        assert!((one_tau - (-1.0f64).exp()).abs() < 1e-9);
+        // 极旧样本取下限，恒正
+        let ancient = recency_weight(now - Duration::days(400), now, &weighted);
+        assert_eq!(ancient, MIN_RECENCY_WEIGHT);
+        assert!(ancient > 0.0);
+        // 非法 tau（NaN / 0）回退 baseline tau=48，权重有限且为正
+        for bad_tau in [Some(f64::NAN), Some(0.0), Some(-1.0)] {
+            let bad = BatteryModelConfig {
+                learning_recency_tau_hours: bad_tau,
+                ..BatteryModelConfig::default()
+            };
+            let w = recency_weight(now - Duration::hours(48), now, &bad);
+            assert!(w.is_finite() && w > 0.0);
+            assert!((w - (-1.0f64).exp()).abs() < 1e-9);
+        }
+        // 默认配置（未设置）复用 baseline tau
+        assert_eq!(
+            recency_weight(now, now, &BatteryModelConfig::default()),
+            1.0
+        );
+    }
+
+    /// 行为切换（长期高耗电 → 近期低耗电）后，加权模型直接以模型输出对比：
+    /// 加权模型对近期状态的预测明显低于未加权模型（适应更快）。
+    #[test]
+    fn weighted_learning_adapts_faster_at_model_level() {
+        let start = Utc.with_ymd_and_hms(2026, 1, 5, 0, 0, 0).unwrap();
+        let config = BatteryModelConfig {
+            weighted_learning_enabled: true,
+            learning_recency_tau_hours: Some(48.0),
+            ..BatteryModelConfig::default()
+        };
+        let now = start + Duration::hours(802);
+        let mut plain = new_linear_regression(&config).unwrap();
+        let mut weighted = new_linear_regression(&config).unwrap();
+        for index in 0..400 {
+            let at = start + Duration::hours(index * 2);
+            let features = battery_features::build_battery_features(80, at, 0, Some(5.0), None)
+                .unwrap()
+                .values;
+            let drain = if index < 300 { 10.0 } else { 2.0 };
+            plain
+                .learn(&features, drain)
+                .map_err(|_| BatteryPredictionError::InvalidModel)
+                .unwrap();
+            weighted
+                .learn_weighted(&features, drain, recency_weight(at, now, &config))
+                .map_err(|_| BatteryPredictionError::InvalidModel)
+                .unwrap();
+        }
+        let features_now = battery_features::build_battery_features(80, now, 0, Some(2.0), None)
+            .unwrap()
+            .values;
+        let plain_rate = plain.predict(&features_now).unwrap();
+        let weighted_rate = weighted.predict(&features_now).unwrap();
+        assert!(
+            (weighted_rate - 2.0).abs() < (plain_rate - 2.0).abs(),
+            "weighted should track the recent low-drain state: weighted={weighted_rate} vs plain={plain_rate}, truth=2.0"
+        );
+    }
+
+    /// 加权模式在通过质量门时输出 weighted_mae / recent_mae / effective_sample_weight，
+    /// 且有效权重严格小于训练样本数（确实按时间衰减了权重）。
+    #[test]
+    fn weighted_mode_emits_weighted_metrics_on_success() {
+        let start = Utc.with_ymd_and_hms(2026, 1, 5, 0, 0, 0).unwrap();
+        let observations = (0..120)
+            .map(|index| {
+                let at = start + Duration::hours(index);
+                let angle = at.hour() as f64 / 24.0 * std::f64::consts::TAU;
+                DrainObservation {
+                    at,
+                    ended_at: at + Duration::minutes(30),
+                    timezone_offset_minutes: 0,
+                    percentage: 80,
+                    drain_per_hour: 5.0 + 3.0 * angle.sin() + 1.5 * angle.cos(),
+                    context: None,
+                }
+            })
+            .collect::<Vec<_>>();
+        let config = BatteryModelConfig {
+            weighted_learning_enabled: true,
+            learning_recency_tau_hours: Some(120.0),
+            ..BatteryModelConfig::default()
+        };
+        let result = validated_model_prediction(
+            &observations,
+            80,
+            start + Duration::hours(121),
+            0,
+            None,
+            &config,
+            &test_schema_status(),
+        )
+        .unwrap();
+        assert_eq!(result.source, PredictionSource::LocalAi);
+        assert!(result.weighted_mae.is_some_and(f64::is_finite));
+        assert!(result.recent_mae.is_some_and(f64::is_finite));
+        let effective = result.effective_sample_weight.unwrap();
+        assert!(effective.is_finite() && effective > 0.0);
+        assert!(
+            effective < result.training_samples as f64,
+            "effective weight {effective} must be below sample count {}",
+            result.training_samples
+        );
+        // 未加权配置下 weighted_mae 应等于 candidate MAE（权重全为 1.0）
+        let plain = validated_model_prediction(
+            &observations,
+            80,
+            start + Duration::hours(121),
+            0,
+            None,
+            &BatteryModelConfig::default(),
+            &test_schema_status(),
+        )
+        .unwrap();
+        assert_eq!(plain.source, PredictionSource::LocalAi);
+        let plain_effective = plain.effective_sample_weight.unwrap();
+        assert_eq!(plain_effective, plain.training_samples as f64);
+    }
+
+    /// 加权保护门：tau 极短导致有效权重不足时回退确定性基线。
+    #[test]
+    fn weighted_insufficient_effective_weight_falls_back() {
+        let start = Utc.with_ymd_and_hms(2026, 1, 5, 0, 0, 0).unwrap();
+        let observations: Vec<DrainObservation> = (0..120)
+            .map(|index| {
+                let at = start + Duration::hours(index);
+                DrainObservation {
+                    at,
+                    ended_at: at + Duration::minutes(30),
+                    timezone_offset_minutes: 0,
+                    percentage: 80,
+                    drain_per_hour: 5.0,
+                    context: None,
+                }
+            })
+            .collect();
+        // tau=0.5h：120 小时前的样本权重 ≈ 0，有效权重 ≈ 最近 1-2 个样本 < 6
+        let config = BatteryModelConfig {
+            weighted_learning_enabled: true,
+            learning_recency_tau_hours: Some(0.5),
+            ..BatteryModelConfig::default()
+        };
+        let result = validated_model_prediction(
+            &observations,
+            80,
+            start + Duration::hours(121),
+            0,
+            None,
+            &config,
+            &test_schema_status(),
+        )
+        .unwrap();
+        assert_eq!(result.source, PredictionSource::BaselineRecommended);
+        assert_eq!(result.reason, "insufficientEffectiveWeight");
+        assert_eq!(result.remaining_hours, None);
+    }
+
+    /// 加权模式下生产实现与参考实现逐字段等价（含新增指标字段）。
+    #[test]
+    fn weighted_mode_matches_reference_implementation() {
+        let start = Utc.with_ymd_and_hms(2026, 1, 5, 0, 0, 0).unwrap();
+        let config = BatteryModelConfig {
+            weighted_learning_enabled: true,
+            learning_recency_tau_hours: Some(24.0),
+            ..BatteryModelConfig::default()
+        };
+        for seed in 0..4u64 {
+            // 与 incremental_ewma 参考测试同款数据样式（2h 间隔、平滑日周期），
+            // 两种 EWMA 实现的浮点等价性在该数据集上已被 1e-9 验证。
+            let observations: Vec<DrainObservation> = (0..120)
+                .map(|i| {
+                    let at = start + Duration::hours(i);
+                    let angle = (at.hour() as f64 + seed as f64) / 24.0 * std::f64::consts::TAU;
+                    DrainObservation {
+                        at,
+                        ended_at: at + Duration::minutes(30),
+                        timezone_offset_minutes: 0,
+                        percentage: 80,
+                        drain_per_hour: 5.0 + 3.0 * angle.sin() + 1.5 * angle.cos(),
+                        context: None,
+                    }
+                })
+                .collect();
+            let got = validated_model_prediction(
+                &observations,
+                80,
+                start + Duration::hours(121),
+                0,
+                None,
+                &config,
+                &test_schema_status(),
+            )
+            .unwrap();
+            let want = validated_model_prediction_reference(
+                &observations,
+                80,
+                start + Duration::hours(121),
+                0,
+                None,
+                &config,
+                &test_schema_status(),
+            )
+            .unwrap();
+            assert_eq!(got.source, want.source, "seed={seed}");
+            assert_eq!(got.reason, want.reason, "seed={seed}");
+            assert_eq!(got.training_samples, want.training_samples);
+            assert_eq!(got.validation_samples, want.validation_samples);
+            let eq = |a: Option<f64>, b: Option<f64>| match (a, b) {
+                (Some(x), Some(y)) => (x - y).abs() < 1e-3,
+                (None, None) => true,
+                _ => false,
+            };
+            // 生产增量 EWMA 与参考 O(N²) 在浮点上允许微小差异（参考测试同款容差）。
+            assert!(
+                eq(got.baseline_mae, want.baseline_mae),
+                "seed={seed} got={:?} want={:?}",
+                got.baseline_mae,
+                want.baseline_mae
+            );
+            assert!(eq(got.candidate_mae, want.candidate_mae), "seed={seed}");
+            assert!(eq(got.weighted_mae, want.weighted_mae), "seed={seed}");
+            assert!(eq(got.recent_mae, want.recent_mae), "seed={seed}");
+            // 有效权重由权重求和而来，双实现应完全一致
+            assert!(
+                eq(got.effective_sample_weight, want.effective_sample_weight),
+                "seed={seed} got={:?} want={:?}",
+                got.effective_sample_weight,
+                want.effective_sample_weight
+            );
+            assert_eq!(got.remaining_hours, want.remaining_hours, "seed={seed}");
+        }
     }
 
     #[test]
