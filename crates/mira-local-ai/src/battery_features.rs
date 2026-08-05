@@ -55,7 +55,7 @@ pub const BATTERY_FEATURE_NAMES: [&str; 9] = [
 /// recent_drain_rate      f64；raw 0..=max_drain_per_hour（%h）；normalized /10（不 clamp）；缺失：取 1.0/10=0.1
 /// dpi_normalized         f64；raw 100..=100000；normalized clamp(dpi/60000,0,1)；缺失：0.0 + 降低 context quality
 /// polling_rate_normalized f64；raw 1..=16000；normalized clamp(polling/16000,0,1)；缺失：0.0 + 降低 context quality
-/// lighting_intensity     f64；raw mode∈[0,1] × brightness∈[0,100]；normalized mode×(brightness/100)；缺失：0.0 + 降低 context quality
+/// lighting_intensity     f64；raw mode∈\[0,1\] × brightness∈\[0,100\]；normalized mode×(brightness/100)；缺失：0.0 + 降低 context quality
 ///
 /// 归一化公式的修改必须创建新的 schema 版本，不得原地改动 v1 语义。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
