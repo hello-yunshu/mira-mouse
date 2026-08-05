@@ -493,7 +493,8 @@ struct ErrorMatcher {
 /// }
 /// ```
 ///
-/// `payloadCopy` 偏移相对于报告（含 report ID）。
+/// `fromLength`/`toLength` 均为报告总长度（含 report ID），与 transport 的
+/// `writeLength` 语义一致。`payloadCopy` 偏移相对于报告（含 report ID）。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct WriteFallback {
@@ -3639,6 +3640,26 @@ fn input_payload_from_report(
     None
 }
 
+/// 3.3 节：按 `writeFallbacks` 声明的 report ID/长度转换生成备用报告。
+///
+/// `fromLength`/`toLength` 均为总长度（含 report ID）。仅当原报告长度与
+/// report ID 完全匹配声明时返回转换后的报告，否则返回 `None`（宿主继续
+/// 尝试下一个 fallback 或 feature report）。
+fn convert_report_with_fallback(fallback: &WriteFallback, report: &[u8]) -> Option<Vec<u8>> {
+    if report.len() != fallback.from_length || report.first() != Some(&fallback.from_report_id) {
+        return None;
+    }
+    let copy_start = fallback.payload_copy.from_offset;
+    let copy_end = copy_start + fallback.payload_copy.length;
+    let copy = report.get(copy_start..copy_end)?;
+    let mut converted = vec![0u8; fallback.to_length];
+    converted[0] = fallback.to_report_id;
+    let to_start = fallback.payload_copy.to_offset;
+    let to_end = to_start + fallback.payload_copy.length;
+    converted.get_mut(to_start..to_end)?.copy_from_slice(copy);
+    Some(converted)
+}
+
 fn write_output_report_with_fallback(
     device: &HidDevice,
     report: &[u8],
@@ -3652,16 +3673,7 @@ fn write_output_report_with_fallback(
                 // 3.3 节：备用 report ID/长度转换由插件声明的 `writeFallbacks` 处理。
                 // 宿主只执行声明式 fallback，不认识 HID++ short-to-long 等品牌特有转换。
                 for fallback in fallbacks {
-                    if report.len() == fallback.from_length + 1
-                        && report.first() == Some(&fallback.from_report_id)
-                    {
-                        let mut long_report = vec![0u8; fallback.to_length + 1];
-                        long_report[0] = fallback.to_report_id;
-                        let copy = &report[fallback.payload_copy.from_offset
-                            ..fallback.payload_copy.from_offset + fallback.payload_copy.length];
-                        long_report[fallback.payload_copy.to_offset
-                            ..fallback.payload_copy.to_offset + fallback.payload_copy.length]
-                            .copy_from_slice(copy);
+                    if let Some(long_report) = convert_report_with_fallback(fallback, report) {
                         match device.write(&long_report) {
                             Ok(written) if written == long_report.len() => {
                                 return Ok(report.len());
@@ -3674,8 +3686,9 @@ fn write_output_report_with_fallback(
                                 ));
                             }
                             Err(long_error) => {
-                                let feature_result =
-                                    device.send_feature_report(report).map(|_| report.len());
+                                let feature_result = device
+                                    .send_feature_report(&long_report)
+                                    .map(|_| report.len());
                                 return feature_result.map_err(|feature_error| {
                                     format!(
                                         "{output_error}; fallback {}: {long_error}; fallback feature report: {feature_error}",
@@ -4975,12 +4988,56 @@ mod tests {
         assert!(output_report_write_needs_feature_fallback(
             "hidapi error: WriteFile: (0x00000001) Incorrect function."
         ));
+        assert!(output_report_write_needs_feature_fallback(
+            "hidapi error: WriteFile: (0x00000001) 函数不正确。"
+        ));
         assert!(!output_report_write_needs_feature_fallback(
             "hidapi error: WriteFile: (0x00000005) Access is denied."
         ));
         assert!(!output_report_write_needs_feature_fallback(
             "hidapi error: timeout waiting for device"
         ));
+    }
+
+    fn short_to_long_fallback() -> WriteFallback {
+        WriteFallback {
+            name: "short-to-long-report".into(),
+            from_report_id: 0x10,
+            from_length: 7,
+            to_report_id: 0x11,
+            to_length: 20,
+            payload_copy: PayloadCopy {
+                from_offset: 1,
+                to_offset: 1,
+                length: 6,
+            },
+        }
+    }
+
+    #[test]
+    fn write_fallback_converts_short_report_to_long_report() {
+        let report = [0x10, 0x01, 0x0c, 0x81, 0x00, 0x00, 0x00];
+        let converted = convert_report_with_fallback(&short_to_long_fallback(), &report).unwrap();
+        assert_eq!(converted.len(), 20);
+        assert_eq!(converted[0], 0x11);
+        assert_eq!(&converted[1..7], &report[1..7]);
+        assert!(converted[7..].iter().all(|&byte| byte == 0));
+    }
+
+    #[test]
+    fn write_fallback_rejects_mismatched_length_or_report_id() {
+        let fallback = short_to_long_fallback();
+        // payload-only slice without the report ID byte must not match.
+        assert!(
+            convert_report_with_fallback(&fallback, &[0x01, 0x0c, 0x81, 0x00, 0x00, 0x00])
+                .is_none()
+        );
+        // Wrong report ID with the right length must not match.
+        assert!(convert_report_with_fallback(
+            &fallback,
+            &[0x11, 0x01, 0x0c, 0x81, 0x00, 0x00, 0x00]
+        )
+        .is_none());
     }
 
     /// 3.3 节：声明式错误帧匹配单元测试。
