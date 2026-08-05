@@ -1,7 +1,7 @@
-use chrono::{DateTime, Datelike, FixedOffset, Timelike, Utc};
+use chrono::{DateTime, FixedOffset, Utc};
 use mira_protocol::{
-    BatteryModelConfig, BatteryPredictionInput, BatteryPredictionOutput, BatterySampleInput,
-    DeviceContextSnapshot, PredictionSource,
+    BatteryModelConfig, BatteryModelSchemaStatus, BatteryPredictionInput, BatteryPredictionOutput,
+    BatterySampleInput, DeviceContextSnapshot, PredictionSource,
 };
 use rill_ml::{
     diagnostics::BaselineComparator,
@@ -12,6 +12,8 @@ use rill_ml::{
 };
 use thiserror::Error;
 
+pub mod battery_features;
+
 const MAX_SAMPLES: usize = 10_000;
 /// Battery percentages are normally integer-quantized. A 1% change over a few
 /// minutes is not enough evidence to extrapolate an hourly drain rate.
@@ -19,13 +21,6 @@ const MIN_OBSERVATION_MINUTES: f64 = 30.0;
 /// A large downward change inside this window may be a lower-charge battery
 /// swap or reconnect recalibration rather than ordinary discharge.
 const SHORT_LEVEL_DISCONTINUITY_MINUTES: i64 = 15;
-
-/// DPI 归一化上界。当前主流最高 DPI 约 30000（Razer DeathAdder V3 Pro），
-/// 设为 60000（2x）为未来高分辨率传感器预留空间。
-const MAX_DPI: f64 = 60000.0;
-/// 回报率归一化上界。当前主流最高回报率 8000 Hz（Razer Viper 8KHz），
-/// 设为 16000 Hz（2x）为未来更高刷新率设备预留空间。
-const MAX_POLLING_RATE_HZ: f64 = 16000.0;
 
 #[derive(Debug, Clone)]
 struct DrainObservation {
@@ -50,6 +45,8 @@ pub enum BatteryPredictionError {
     InvalidSample { index: usize },
     #[error("unable to initialize the configured model")]
     InvalidModel,
+    #[error("battery feature schema identity failure: {0}")]
+    FeatureSchema(#[from] battery_features::BatteryFeatureError),
 }
 
 pub fn predict(
@@ -72,6 +69,32 @@ pub fn predict(
             return Err(BatteryPredictionError::InvalidSample { index });
         }
     }
+    // 阶段 2：schema 身份检查。模型包声明了 schema / descriptor 但身份不一致时，
+    // 必须拒绝该模型并回退确定性预测；不崩溃、不删除历史数据。旧模型包（无身份
+    // 字段）进入 legacy 兼容路径，仍只检查 feature count。
+    let schema_status = match battery_features::check_schema_identity(config)? {
+        battery_features::SchemaIdentity::Matched => BatteryModelSchemaStatus::DescriptorMatched,
+        battery_features::SchemaIdentity::LegacyModelPack => {
+            BatteryModelSchemaStatus::LegacyCompatibility
+        }
+        battery_features::SchemaIdentity::Mismatch(mismatch) => {
+            eprintln!(
+                "mira-local-ai: model schema rejected ({kind}: expected {expected}, got {actual}); \
+                 falling back to deterministic prediction",
+                kind = mismatch.kind,
+                expected = mismatch.expected,
+                actual = mismatch.actual.as_deref().unwrap_or("<missing>"),
+            );
+            return Ok(fallback(
+                "schemaMismatch",
+                0,
+                0,
+                None,
+                None,
+                &BatteryModelSchemaStatus::SchemaMismatch,
+            ));
+        }
+    };
     samples.retain(|sample| sample.at_unix_ms <= input.now_unix_ms);
     samples.sort_by_key(|sample| sample.at_unix_ms);
 
@@ -80,10 +103,17 @@ pub fn predict(
         .filter(|sample| !sample.charging && sample.at_unix_ms <= input.now_unix_ms)
         .max_by_key(|sample| sample.at_unix_ms)
     else {
-        return Ok(fallback("noDischargingSample", 0, 0, None, None));
+        return Ok(fallback(
+            "noDischargingSample",
+            0,
+            0,
+            None,
+            None,
+            &schema_status,
+        ));
     };
     if current.percentage == 0 {
-        return Ok(fallback("emptyBattery", 0, 0, None, None));
+        return Ok(fallback("emptyBattery", 0, 0, None, None, &schema_status));
     }
 
     let observations = discharge_observations(&samples, config);
@@ -96,6 +126,7 @@ pub fn predict(
         input.now_timezone_offset_minutes,
         prediction_context.as_ref(),
         config,
+        &schema_status,
     )
 }
 
@@ -137,6 +168,7 @@ fn validated_model_prediction(
     now_timezone_offset_minutes: i32,
     current_context: Option<&DeviceContextSnapshot>,
     config: &BatteryModelConfig,
+    schema_status: &BatteryModelSchemaStatus,
 ) -> Result<BatteryPredictionOutput, BatteryPredictionError> {
     // RillML 1.0 将 SgdConfig/LinearRegressionConfig 标记为 #[non_exhaustive]，
     // 必须通过 Default + 字段赋值构造，不能用结构体表达式。
@@ -179,16 +211,17 @@ fn validated_model_prediction(
         }
         let recent_rate = (total_weight_sum > 0.0).then_some(weighted_rate_sum / total_weight_sum);
 
-        let features = features(
+        let feature_vector = battery_features::build_battery_features(
             observation.percentage,
             observation.at,
             observation.timezone_offset_minutes,
             recent_rate,
             observation.context.as_ref(),
-        );
+        )?;
+        let features = &feature_vector.values;
         if model.samples_seen() >= config.min_training_samples {
             if let Some(baseline_prediction) = recent_rate {
-                if let Ok(ai_prediction) = model.predict(&features) {
+                if let Ok(ai_prediction) = model.predict(features) {
                     if ai_prediction.is_finite() {
                         comparator
                             .record(0, observation.drain_per_hour, baseline_prediction)
@@ -201,7 +234,7 @@ fn validated_model_prediction(
             }
         }
         model
-            .learn(&features, observation.drain_per_hour)
+            .learn(features, observation.drain_per_hour)
             .map_err(|_| BatteryPredictionError::InvalidModel)?;
 
         // 2. 从 observation.at 衰减到 observation.ended_at,再以 weight=1.0 加入当前观测。
@@ -235,6 +268,7 @@ fn validated_model_prediction(
             validation_samples,
             baseline_mae,
             candidate_mae,
+            schema_status,
         ));
     }
     if validation_samples < config.min_validation_samples || baseline_samples != validation_samples
@@ -245,6 +279,7 @@ fn validated_model_prediction(
             validation_samples,
             baseline_mae,
             candidate_mae,
+            schema_status,
         ));
     }
     let (Some(baseline_error), Some(candidate_error)) = (baseline_mae, candidate_mae) else {
@@ -254,6 +289,7 @@ fn validated_model_prediction(
             validation_samples,
             baseline_mae,
             candidate_mae,
+            schema_status,
         ));
     };
     if candidate_error >= baseline_error * config.required_error_ratio {
@@ -263,6 +299,7 @@ fn validated_model_prediction(
             validation_samples,
             baseline_mae,
             candidate_mae,
+            schema_status,
         ));
     }
 
@@ -278,13 +315,16 @@ fn validated_model_prediction(
     }
     let recent_rate = (total_weight_sum > 0.0).then_some(weighted_rate_sum / total_weight_sum);
     let predicted_rate = model
-        .predict(&features(
-            current_percentage,
-            now,
-            now_timezone_offset_minutes,
-            recent_rate,
-            current_context,
-        ))
+        .predict(
+            &battery_features::build_battery_features(
+                current_percentage,
+                now,
+                now_timezone_offset_minutes,
+                recent_rate,
+                current_context,
+            )?
+            .values,
+        )
         .map_err(|_| BatteryPredictionError::InvalidModel)?;
     if !predicted_rate.is_finite()
         || predicted_rate <= 0.0
@@ -296,6 +336,7 @@ fn validated_model_prediction(
             validation_samples,
             baseline_mae,
             candidate_mae,
+            schema_status,
         ));
     }
     let remaining_hours = current_percentage as f64 / predicted_rate;
@@ -306,6 +347,7 @@ fn validated_model_prediction(
             validation_samples,
             baseline_mae,
             candidate_mae,
+            schema_status,
         ));
     }
 
@@ -317,6 +359,10 @@ fn validated_model_prediction(
         validation_samples,
         baseline_mae,
         candidate_mae,
+        weighted_mae: None,
+        recent_mae: None,
+        effective_sample_weight: None,
+        schema_status: Some(schema_status.clone()),
     })
 }
 
@@ -326,6 +372,7 @@ fn fallback(
     validation_samples: u64,
     baseline_mae: Option<f64>,
     candidate_mae: Option<f64>,
+    schema_status: &BatteryModelSchemaStatus,
 ) -> BatteryPredictionOutput {
     BatteryPredictionOutput {
         remaining_hours: None,
@@ -335,95 +382,15 @@ fn fallback(
         validation_samples,
         baseline_mae,
         candidate_mae,
+        weighted_mae: None,
+        recent_mae: None,
+        effective_sample_weight: None,
+        schema_status: Some(schema_status.clone()),
     }
 }
 
-/// 将灯光模式名映射为功耗强度评分 \[0, 1\]。
-///
-/// 不同灯光模式的功耗差异显著：关闭最省电，彩虹/星光等全彩动态模式最耗电。
-/// 未知模式默认取中位强度 0.5，避免引入偏差。
-fn light_mode_intensity(mode: &str) -> f64 {
-    match mode.to_lowercase().as_str() {
-        "off" | "disabled" | "none" => 0.0,
-        "static" | "fixed" | "solid" => 0.3,
-        "breathing" | "breath" => 0.5,
-        "reactive" => 0.6,
-        "ripple" => 0.7,
-        "wave" => 0.8,
-        "starlight" => 0.85,
-        "rainbow" | "cycle" | "spectrum" => 0.9,
-        "custom" => 1.0,
-        _ => 0.5,
-    }
-}
-
-/// 从 `DeviceContextSnapshot` 提取 3 个归一化特征：DPI、回报率、灯光综合强度。
-///
-/// 归一化策略：
-/// - DPI: `dpi / 60000.0`，clamp 到 \[0, 1\]
-/// - 回报率: `polling_rate_hz / 16000.0`，clamp 到 \[0, 1\]
-/// - 灯光强度: `mode_intensity * (brightness / 100.0)`，无亮度时仅用 mode_intensity
-///
-/// 上下文缺失（旧 schema 样本）时返回 `[0.0, 0.0, 0.0]`，
-/// 线性模型中对应权重贡献为 0，等价于不使用该特征，保证向后兼容。
-fn context_features(context: Option<&DeviceContextSnapshot>) -> [f64; 3] {
-    match context {
-        Some(ctx) => {
-            let dpi = ctx
-                .dpi
-                .map(|d| (d as f64 / MAX_DPI).clamp(0.0, 1.0))
-                .unwrap_or(0.0);
-            let polling_rate = ctx
-                .polling_rate_hz
-                .map(|p| (p as f64 / MAX_POLLING_RATE_HZ).clamp(0.0, 1.0))
-                .unwrap_or(0.0);
-            let light_intensity = ctx
-                .light_mode
-                .as_ref()
-                .map(|mode| {
-                    let base = light_mode_intensity(mode);
-                    match ctx.light_brightness {
-                        Some(b) => base * (b as f64 / 100.0),
-                        None => base,
-                    }
-                })
-                .unwrap_or(0.0);
-            [dpi, polling_rate, light_intensity]
-        }
-        None => [0.0, 0.0, 0.0],
-    }
-}
-
-/// 构造 9 维特征向量：6 个基础特征 + 3 个上下文特征。
-///
-/// 基础特征：电量百分比、时间（sin/cos）、星期（sin/cos）、近期放电率
-/// 上下文特征：DPI、回报率、灯光综合强度
-fn features(
-    percentage: u8,
-    at: DateTime<Utc>,
-    timezone_offset_minutes: i32,
-    recent_rate: Option<f64>,
-    context: Option<&DeviceContextSnapshot>,
-) -> [f64; 9] {
-    let timezone = validate_timezone_offset(timezone_offset_minutes)
-        .expect("timezone offsets are validated at the handler boundary");
-    let local = at.with_timezone(&timezone);
-    let hour_angle = local.hour() as f64 / 24.0 * std::f64::consts::TAU;
-    let weekday_angle = local.weekday().num_days_from_monday() as f64 / 7.0 * std::f64::consts::TAU;
-    let [dpi, polling_rate, light_intensity] = context_features(context);
-    [
-        percentage as f64 / 100.0,
-        hour_angle.sin(),
-        hour_angle.cos(),
-        weekday_angle.sin(),
-        weekday_angle.cos(),
-        recent_rate.unwrap_or(1.0) / 10.0,
-        dpi,
-        polling_rate,
-        light_intensity,
-    ]
-}
-
+/// 将灯光模式名映射为功耗强度评分 \[0, 1\] 等特征相关实现已收敛到
+/// `battery_features` 模块（唯一权威定义），此处不再重复。
 fn validate_timezone_offset(offset_minutes: i32) -> Option<FixedOffset> {
     let seconds = offset_minutes.checked_mul(60)?;
     FixedOffset::east_opt(seconds)
@@ -523,7 +490,7 @@ fn finish_segment(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::{Duration, TimeZone};
+    use chrono::{Duration, TimeZone, Timelike};
     use std::time::Instant;
 
     /// 原 O(N²) EWMA baseline 实现，从 git 历史恢复，仅供等价性测试对比。
@@ -562,6 +529,7 @@ mod tests {
         now_timezone_offset_minutes: i32,
         current_context: Option<&DeviceContextSnapshot>,
         config: &BatteryModelConfig,
+        schema_status: &BatteryModelSchemaStatus,
     ) -> Result<BatteryPredictionOutput, BatteryPredictionError> {
         let optimizer = Optimizer::sgd(config.feature_count, {
             let mut sgd = SgdConfig::default();
@@ -592,16 +560,17 @@ mod tests {
                 observation.at,
                 config.baseline_decay_tau_hours,
             );
-            let features = features(
+            let features = &battery_features::build_battery_features(
                 observation.percentage,
                 observation.at,
                 observation.timezone_offset_minutes,
                 recent_rate,
                 observation.context.as_ref(),
-            );
+            )?
+            .values;
             if model.samples_seen() >= config.min_training_samples {
                 if let Some(baseline_prediction) = recent_rate {
-                    if let Ok(ai_prediction) = model.predict(&features) {
+                    if let Ok(ai_prediction) = model.predict(features) {
                         if ai_prediction.is_finite() {
                             comparator
                                 .record(0, observation.drain_per_hour, baseline_prediction)
@@ -614,7 +583,7 @@ mod tests {
                 }
             }
             model
-                .learn(&features, observation.drain_per_hour)
+                .learn(features, observation.drain_per_hour)
                 .map_err(|_| BatteryPredictionError::InvalidModel)?;
         }
 
@@ -634,6 +603,7 @@ mod tests {
                 validation_samples,
                 baseline_mae,
                 candidate_mae,
+                schema_status,
             ));
         }
         if validation_samples < config.min_validation_samples
@@ -645,6 +615,7 @@ mod tests {
                 validation_samples,
                 baseline_mae,
                 candidate_mae,
+                schema_status,
             ));
         }
         let (Some(baseline_error), Some(candidate_error)) = (baseline_mae, candidate_mae) else {
@@ -654,6 +625,7 @@ mod tests {
                 validation_samples,
                 baseline_mae,
                 candidate_mae,
+                schema_status,
             ));
         };
         if candidate_error >= baseline_error * config.required_error_ratio {
@@ -663,19 +635,23 @@ mod tests {
                 validation_samples,
                 baseline_mae,
                 candidate_mae,
+                schema_status,
             ));
         }
 
         let recent_rate =
             weighted_baseline_rate_reference(observations, now, config.baseline_decay_tau_hours);
         let predicted_rate = model
-            .predict(&features(
-                current_percentage,
-                now,
-                now_timezone_offset_minutes,
-                recent_rate,
-                current_context,
-            ))
+            .predict(
+                &battery_features::build_battery_features(
+                    current_percentage,
+                    now,
+                    now_timezone_offset_minutes,
+                    recent_rate,
+                    current_context,
+                )?
+                .values,
+            )
             .map_err(|_| BatteryPredictionError::InvalidModel)?;
         if !predicted_rate.is_finite()
             || predicted_rate <= 0.0
@@ -687,6 +663,7 @@ mod tests {
                 validation_samples,
                 baseline_mae,
                 candidate_mae,
+                schema_status,
             ));
         }
         let remaining_hours = current_percentage as f64 / predicted_rate;
@@ -697,6 +674,7 @@ mod tests {
                 validation_samples,
                 baseline_mae,
                 candidate_mae,
+                schema_status,
             ));
         }
 
@@ -708,11 +686,19 @@ mod tests {
             validation_samples,
             baseline_mae,
             candidate_mae,
+            weighted_mae: None,
+            recent_mae: None,
+            effective_sample_weight: None,
+            schema_status: Some(schema_status.clone()),
         })
     }
 
     fn test_now() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 7, 15, 12, 0, 0).unwrap()
+    }
+
+    fn test_schema_status() -> BatteryModelSchemaStatus {
+        BatteryModelSchemaStatus::LegacyCompatibility
     }
 
     fn sample(at: DateTime<Utc>, percentage: u8, charging: bool) -> BatterySampleInput {
@@ -802,6 +788,7 @@ mod tests {
             0,
             None,
             &BatteryModelConfig::default(),
+            &test_schema_status(),
         )
         .unwrap();
         assert_eq!(result.source, PredictionSource::LocalAi);
@@ -817,6 +804,7 @@ mod tests {
                 max_remaining_hours: 0.1,
                 ..BatteryModelConfig::default()
             },
+            &test_schema_status(),
         )
         .unwrap();
         assert_eq!(capped.source, PredictionSource::BaselineRecommended);
@@ -913,25 +901,44 @@ mod tests {
         }
     }
 
-    /// 验证灯光模式到功耗强度评分的映射。
+    /// 验证灯光模式到功耗强度评分的映射（经由 build_battery_features 的灯光特征）。
     #[test]
     fn light_mode_intensity_maps_known_modes() {
-        assert_eq!(light_mode_intensity("off"), 0.0);
-        assert_eq!(light_mode_intensity("OFF"), 0.0);
-        assert_eq!(light_mode_intensity("static"), 0.3);
-        assert_eq!(light_mode_intensity("breathing"), 0.5);
-        assert_eq!(light_mode_intensity("reactive"), 0.6);
-        assert_eq!(light_mode_intensity("ripple"), 0.7);
-        assert_eq!(light_mode_intensity("wave"), 0.8);
-        assert_eq!(light_mode_intensity("starlight"), 0.85);
-        assert_eq!(light_mode_intensity("rainbow"), 0.9);
-        assert_eq!(light_mode_intensity("custom"), 1.0);
-        assert_eq!(light_mode_intensity("unknown_xyz"), 0.5);
+        let now = test_now();
+        let intensity_for = |mode: &str| {
+            let ctx = DeviceContextSnapshot {
+                dpi: None,
+                polling_rate_hz: None,
+                light_mode: Some(mode.into()),
+                light_brightness: None,
+                profile: None,
+            };
+            battery_features::build_battery_features(80, now, 0, Some(5.0), Some(&ctx))
+                .unwrap()
+                .values[8]
+        };
+        assert_eq!(intensity_for("off"), 0.0);
+        assert_eq!(intensity_for("OFF"), 0.0);
+        assert_eq!(intensity_for("static"), 0.3);
+        assert_eq!(intensity_for("breathing"), 0.5);
+        assert_eq!(intensity_for("reactive"), 0.6);
+        assert_eq!(intensity_for("ripple"), 0.7);
+        assert_eq!(intensity_for("wave"), 0.8);
+        assert_eq!(intensity_for("starlight"), 0.85);
+        assert_eq!(intensity_for("rainbow"), 0.9);
+        assert_eq!(intensity_for("custom"), 1.0);
+        assert_eq!(intensity_for("unknown_xyz"), 0.5);
     }
 
-    /// 验证 context_features 归一化与缺失值回退。
+    /// 验证上下文特征归一化与缺失值回退。
     #[test]
     fn context_features_normalize_and_default_correctly() {
+        let now = test_now();
+        let build = |ctx: Option<&DeviceContextSnapshot>| {
+            battery_features::build_battery_features(80, now, 0, Some(5.0), ctx)
+                .unwrap()
+                .values
+        };
         let ctx = DeviceContextSnapshot {
             dpi: Some(16000),
             polling_rate_hz: Some(8000),
@@ -939,7 +946,8 @@ mod tests {
             light_brightness: Some(80),
             profile: None,
         };
-        let [dpi, rate, light] = context_features(Some(&ctx));
+        let feats = build(Some(&ctx));
+        let [dpi, rate, light] = [feats[6], feats[7], feats[8]];
         assert!((dpi - (16000.0 / 60000.0)).abs() < 1e-9);
         assert!((rate - (8000.0 / 16000.0)).abs() < 1e-9);
         // breathing=0.5 * brightness=0.8 = 0.4
@@ -952,8 +960,8 @@ mod tests {
             light_brightness: None,
             profile: None,
         };
-        let [_, _, light2] = context_features(Some(&ctx_no_brightness));
-        assert!((light2 - 0.5).abs() < 1e-9);
+        let feats2 = build(Some(&ctx_no_brightness));
+        assert!((feats2[8] - 0.5).abs() < 1e-9);
 
         let ctx_high = DeviceContextSnapshot {
             dpi: Some(65000),
@@ -962,11 +970,14 @@ mod tests {
             light_brightness: Some(80),
             profile: None,
         };
-        let [dpi_high, _, _] = context_features(Some(&ctx_high));
-        assert!((dpi_high - 1.0).abs() < 1e-9);
+        let feats_high = build(Some(&ctx_high));
+        assert!((feats_high[6] - 1.0).abs() < 1e-9);
 
-        let [d, r, l] = context_features(None);
-        assert_eq!([d, r, l], [0.0, 0.0, 0.0]);
+        let feats_none = build(None);
+        assert_eq!(
+            [feats_none[6], feats_none[7], feats_none[8]],
+            [0.0, 0.0, 0.0]
+        );
     }
 
     /// 验证不同上下文产生不同预测结果：模型确实消费了 DPI/回报率/灯光特征。
@@ -1016,6 +1027,7 @@ mod tests {
             0,
             Some(&low_ctx),
             &BatteryModelConfig::default(),
+            &test_schema_status(),
         )
         .unwrap();
         let result_high = validated_model_prediction(
@@ -1025,6 +1037,7 @@ mod tests {
             0,
             Some(&high_ctx),
             &BatteryModelConfig::default(),
+            &test_schema_status(),
         )
         .unwrap();
 
@@ -1060,7 +1073,9 @@ mod tests {
             light_brightness: Some(50),
             profile: None,
         };
-        let feats = features(80, now, 0, Some(5.0), Some(&ctx));
+        let feats = battery_features::build_battery_features(80, now, 0, Some(5.0), Some(&ctx))
+            .unwrap()
+            .values;
         assert_eq!(feats.len(), 9);
         // 基础特征
         assert!((feats[0] - 0.8).abs() < 1e-9); // percentage
@@ -1071,7 +1086,9 @@ mod tests {
                                                                // static=0.3 * brightness=0.5 = 0.15
         assert!((feats[8] - 0.15).abs() < 1e-9); // light_intensity
 
-        let feats_none = features(80, now, 0, Some(5.0), None);
+        let feats_none = battery_features::build_battery_features(80, now, 0, Some(5.0), None)
+            .unwrap()
+            .values;
         assert_eq!(feats_none.len(), 9);
         assert_eq!(feats_none[6], 0.0);
         assert_eq!(feats_none[7], 0.0);
@@ -1125,11 +1142,26 @@ mod tests {
                 }
                 let now = at_cursor + Duration::hours(2);
 
-                let got =
-                    validated_model_prediction(&observations, 80, now, 0, None, &config).unwrap();
-                let want =
-                    validated_model_prediction_reference(&observations, 80, now, 0, None, &config)
-                        .unwrap();
+                let got = validated_model_prediction(
+                    &observations,
+                    80,
+                    now,
+                    0,
+                    None,
+                    &config,
+                    &test_schema_status(),
+                )
+                .unwrap();
+                let want = validated_model_prediction_reference(
+                    &observations,
+                    80,
+                    now,
+                    0,
+                    None,
+                    &config,
+                    &test_schema_status(),
+                )
+                .unwrap();
 
                 assert_eq!(
                     got.source, want.source,
@@ -1169,7 +1201,9 @@ mod tests {
     fn incremental_ewma_handles_empty_observations() {
         let now = test_now();
         let config = BatteryModelConfig::default();
-        let result = validated_model_prediction(&[], 80, now, 0, None, &config).unwrap();
+        let result =
+            validated_model_prediction(&[], 80, now, 0, None, &config, &test_schema_status())
+                .unwrap();
         assert_eq!(result.source, PredictionSource::BaselineRecommended);
         assert_eq!(result.remaining_hours, None);
         assert_eq!(result.training_samples, 0);
@@ -1198,6 +1232,7 @@ mod tests {
             0,
             None,
             &config,
+            &test_schema_status(),
         )
         .unwrap();
         assert_eq!(result.source, PredictionSource::BaselineRecommended);
@@ -1210,6 +1245,7 @@ mod tests {
             0,
             None,
             &config,
+            &test_schema_status(),
         )
         .unwrap();
         assert_eq!(result.source, ref_result.source);
@@ -1239,7 +1275,16 @@ mod tests {
         let now = start + Duration::hours(4096 * 10 / 60 + 2);
 
         let t0 = Instant::now();
-        let _ = validated_model_prediction(&observations, 80, now, 0, None, &config).unwrap();
+        let _ = validated_model_prediction(
+            &observations,
+            80,
+            now,
+            0,
+            None,
+            &config,
+            &test_schema_status(),
+        )
+        .unwrap();
         let elapsed = t0.elapsed();
 
         assert!(

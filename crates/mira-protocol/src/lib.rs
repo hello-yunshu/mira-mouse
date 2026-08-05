@@ -30,6 +30,24 @@ pub struct BatteryModelConfig {
     pub replacement_rise_percent: u8,
     pub min_drop_percent: f64,
     pub baseline_decay_tau_hours: f64,
+    /// 特征 schema 身份（阶段 2）。新模型包必须携带；旧模型包缺省时走
+    /// legacy 兼容路径（仍检查 feature_count，并记录 warning）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_descriptor_hash: Option<String>,
+    /// 近期数据加权学习（阶段 3）。默认关闭以保持旧模型包行为逐字节一致；
+    /// 新模型包显式开启。可通过配置单独关闭。
+    #[serde(default)]
+    pub weighted_learning_enabled: bool,
+    /// 训练样本时间衰减常数（小时）。`None` 时复用 `baseline_decay_tau_hours`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub learning_recency_tau_hours: Option<f64>,
+    /// 稳健异常与漂移检测实验层开关（阶段 4）。默认关闭。
+    #[serde(default)]
+    pub robust_detection_enabled: bool,
 }
 
 impl Default for BatteryModelConfig {
@@ -51,6 +69,12 @@ impl Default for BatteryModelConfig {
             replacement_rise_percent: 5,
             min_drop_percent: 1.0,
             baseline_decay_tau_hours: 48.0,
+            schema_id: None,
+            schema_hash: None,
+            model_descriptor_hash: None,
+            weighted_learning_enabled: false,
+            learning_recency_tau_hours: None,
+            robust_detection_enabled: false,
         }
     }
 }
@@ -66,11 +90,18 @@ impl BatteryModelConfig {
             self.max_remaining_hours,
             self.min_drop_percent,
             self.baseline_decay_tau_hours,
+            self.learning_recency_tau_hours.unwrap_or(1.0),
         ]
         .into_iter()
         .all(f64::is_finite);
         if !finite {
             return Err("battery model contains non-finite parameters");
+        }
+        if self
+            .learning_recency_tau_hours
+            .is_some_and(|tau| tau <= 0.0)
+        {
+            return Err("learning recency tau must be positive");
         }
         if self.feature_count != 9 {
             return Err("unsupported battery feature schema");
@@ -171,6 +202,19 @@ pub enum PredictionSource {
     BaselineRecommended,
 }
 
+/// 模型 schema 身份处理结果，供 host 日志与观测使用。
+/// 旧 handler 输出不携带该字段（`#[serde(default)]`），host 兼容。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum BatteryModelSchemaStatus {
+    /// 模型包声明的 schema / descriptor 身份与当前实现一致。
+    DescriptorMatched,
+    /// 模型包缺少 schema 身份字段，走 legacy 兼容路径（仅检查 feature count）。
+    LegacyCompatibility,
+    /// 模型包身份与当前实现不一致，模型被拒绝并回退确定性预测。
+    SchemaMismatch,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BatteryPredictionOutput {
@@ -181,6 +225,16 @@ pub struct BatteryPredictionOutput {
     pub validation_samples: u64,
     pub baseline_mae: Option<f64>,
     pub candidate_mae: Option<f64>,
+    /// 加权学习的评估指标（阶段 3）。旧 handler 输出不携带，host 兼容。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weighted_mae: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recent_mae: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_sample_weight: Option<f64>,
+    /// 模型 schema 身份状态（阶段 2）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_status: Option<BatteryModelSchemaStatus>,
 }
 
 #[cfg(test)]
@@ -215,6 +269,96 @@ mod tests {
         }
         .validate()
         .is_err());
+        // 非正学习衰减常数必须被拒绝
+        assert!(BatteryModelConfig {
+            learning_recency_tau_hours: Some(f64::NAN),
+            ..BatteryModelConfig::default()
+        }
+        .validate()
+        .is_err());
+        assert!(BatteryModelConfig {
+            learning_recency_tau_hours: Some(0.0),
+            ..BatteryModelConfig::default()
+        }
+        .validate()
+        .is_err());
+        assert!(BatteryModelConfig {
+            learning_recency_tau_hours: Some(72.0),
+            ..BatteryModelConfig::default()
+        }
+        .validate()
+        .is_ok());
+    }
+
+    /// 旧模型包 JSON（无新字段）必须能被新版本反序列化并走 legacy 兼容路径。
+    #[test]
+    fn legacy_model_json_without_schema_fields_deserializes() {
+        let legacy = r#"{
+            "featureCount": 9,
+            "learningRate": 0.03,
+            "l2": 0.001,
+            "huberDelta": 5.0,
+            "minTrainingSamples": 6,
+            "minValidationSamples": 8,
+            "qualityWindow": 24,
+            "requiredErrorRatio": 0.98,
+            "maxDrainPerHour": 50.0,
+            "maxRemainingHours": 9999.0,
+            "sessionGapMinutes": 10,
+            "replacementRisePercent": 5,
+            "minDropPercent": 1.0,
+            "baselineDecayTauHours": 48.0
+        }"#;
+        let config: BatteryModelConfig = serde_json::from_str(legacy).unwrap();
+        assert_eq!(config.schema_id, None);
+        assert_eq!(config.schema_hash, None);
+        assert_eq!(config.model_descriptor_hash, None);
+        assert!(!config.weighted_learning_enabled);
+        assert!(!config.robust_detection_enabled);
+        config.validate().unwrap();
+    }
+
+    /// 新模型包携带 schema 身份时必须能往返序列化。
+    #[test]
+    fn model_json_with_schema_identity_roundtrips() {
+        let config = BatteryModelConfig {
+            schema_id: Some("mira-battery-feature-schema-v1".into()),
+            schema_hash: Some("ab".repeat(32)),
+            model_descriptor_hash: Some("cd".repeat(32)),
+            weighted_learning_enabled: true,
+            ..BatteryModelConfig::default()
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let restored: BatteryModelConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored, config);
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["schemaId"], "mira-battery-feature-schema-v1");
+        assert_eq!(value["weightedLearningEnabled"], true);
+    }
+
+    /// 输出新增的可选字段缺省时不写 JSON（兼容旧 host 的 deny_unknown_fields）。
+    #[test]
+    fn output_optional_fields_are_absent_when_none() {
+        let output = BatteryPredictionOutput {
+            remaining_hours: None,
+            source: PredictionSource::BaselineRecommended,
+            reason: "test".into(),
+            training_samples: 0,
+            validation_samples: 0,
+            baseline_mae: None,
+            candidate_mae: None,
+            weighted_mae: None,
+            recent_mae: None,
+            effective_sample_weight: None,
+            schema_status: None,
+        };
+        let json = serde_json::to_string(&output).unwrap();
+        assert!(!json.contains("weightedMae"));
+        assert!(!json.contains("schemaStatus"));
+        let legacy_json = r#"{"remainingHours":null,"source":"baselineRecommended","reason":"test","trainingSamples":0,"validationSamples":0,"baselineMae":null,"candidateMae":null}"#;
+        let decoded: BatteryPredictionOutput = serde_json::from_str(legacy_json).unwrap();
+        assert_eq!(decoded.schema_status, None);
+        assert_eq!(decoded.weighted_mae, None);
     }
 
     /// 验证 context 字段为 None 时，序列化结果不包含 context/current_context 键。
