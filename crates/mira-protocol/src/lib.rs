@@ -230,15 +230,17 @@ pub struct BatteryPredictionOutput {
     pub validation_samples: u64,
     pub baseline_mae: Option<f64>,
     pub candidate_mae: Option<f64>,
-    /// 加权学习的评估指标（阶段 3）。旧 handler 输出不携带，host 兼容。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// 加权学习的评估指标（阶段 3）。`#[serde(skip)]`：绝不写入 Handler API v1 对外
+    /// JSON，避免旧 host（`deny_unknown_fields`）拒绝新 handler 输出。本轮不升级
+    /// Handler API，故这些诊断字段只在进程内计算、不跨 wire 传输。
+    #[serde(skip)]
     pub weighted_mae: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip)]
     pub recent_mae: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip)]
     pub effective_sample_weight: Option<f64>,
-    /// 模型 schema 身份状态（阶段 2）。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// 模型 schema 身份状态（阶段 2）。同样 `#[serde(skip)]`，不进入 v1 对外 JSON。
+    #[serde(skip)]
     pub schema_status: Option<BatteryModelSchemaStatus>,
 }
 
@@ -342,29 +344,81 @@ mod tests {
         assert_eq!(value["weightedLearningEnabled"], true);
     }
 
-    /// 输出新增的可选字段缺省时不写 JSON（兼容旧 host 的 deny_unknown_fields）。
+    /// 旧 host 的 Handler API v1 输出结构：只有升级前的字段集合，且 `deny_unknown_fields`
+    /// （与真实旧 host 一致）。用于验证新 handler 的 v1 输出能被旧 host 原样读取。
+    #[derive(Debug, Serialize, Deserialize, PartialEq)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct OldHostV1Output {
+        remaining_hours: Option<f64>,
+        source: PredictionSource,
+        reason: String,
+        training_samples: u64,
+        validation_samples: u64,
+        baseline_mae: Option<f64>,
+        candidate_mae: Option<f64>,
+    }
+
+    /// 输出新增的诊断字段（weighted_mae / recent_mae / effective_sample_weight /
+    /// schema_status）即使为 `Some` 也绝不写入 JSON（`#[serde(skip)]`），保证旧 host
+    /// 的 `deny_unknown_fields` 不会拒绝新 handler 的 v1 输出。
     #[test]
-    fn output_optional_fields_are_absent_when_none() {
+    fn new_handler_v1_output_never_contains_diagnostic_fields() {
         let output = BatteryPredictionOutput {
-            remaining_hours: None,
-            source: PredictionSource::BaselineRecommended,
+            remaining_hours: Some(12.5),
+            source: PredictionSource::LocalAi,
             reason: "test".into(),
-            training_samples: 0,
-            validation_samples: 0,
-            baseline_mae: None,
-            candidate_mae: None,
-            weighted_mae: None,
-            recent_mae: None,
-            effective_sample_weight: None,
-            schema_status: None,
+            training_samples: 20,
+            validation_samples: 10,
+            baseline_mae: Some(2.0),
+            candidate_mae: Some(1.0),
+            weighted_mae: Some(0.5),
+            recent_mae: Some(0.4),
+            effective_sample_weight: Some(18.0),
+            schema_status: Some(BatteryModelSchemaStatus::DescriptorMatched),
         };
         let json = serde_json::to_string(&output).unwrap();
         assert!(!json.contains("weightedMae"));
+        assert!(!json.contains("recentMae"));
+        assert!(!json.contains("effectiveSampleWeight"));
         assert!(!json.contains("schemaStatus"));
-        let legacy_json = r#"{"remainingHours":null,"source":"baselineRecommended","reason":"test","trainingSamples":0,"validationSamples":0,"baselineMae":null,"candidateMae":null}"#;
+    }
+
+    /// 方向 1：旧 host 输出结构（仅含 v1 字段 + `deny_unknown_fields`）可以读取
+    /// 新 handler 的 v1 输出。
+    #[test]
+    fn old_host_reads_new_handler_v1_output() {
+        let output = BatteryPredictionOutput {
+            remaining_hours: Some(8.0),
+            source: PredictionSource::BaselineRecommended,
+            reason: "candidateNotBetter".into(),
+            training_samples: 30,
+            validation_samples: 20,
+            baseline_mae: Some(1.8),
+            candidate_mae: Some(2.1),
+            // 即便诊断字段为 Some，序列化后也不会出现在 v1 JSON 中。
+            weighted_mae: Some(2.0),
+            recent_mae: Some(1.9),
+            effective_sample_weight: Some(28.0),
+            schema_status: Some(BatteryModelSchemaStatus::SchemaMismatch),
+        };
+        let new_handler_json = serde_json::to_string(&output).unwrap();
+        // 旧 host 用它的 v1 结构反序列化，不得因未知字段失败。
+        let old_host_view: OldHostV1Output = serde_json::from_str(&new_handler_json).unwrap();
+        assert_eq!(old_host_view.remaining_hours, Some(8.0));
+        assert_eq!(old_host_view.source, PredictionSource::BaselineRecommended);
+        assert_eq!(old_host_view.candidate_mae, Some(2.1));
+    }
+
+    /// 方向 2：新 host 可以读取旧 handler 输出（无新增字段的 legacy JSON）。
+    #[test]
+    fn new_host_reads_old_handler_output() {
+        let legacy_json = r#"{"remainingHours":5.2,"source":"localAi","reason":"ok","trainingSamples":40,"validationSamples":30,"baselineMae":1.5,"candidateMae":1.1}"#;
         let decoded: BatteryPredictionOutput = serde_json::from_str(legacy_json).unwrap();
-        assert_eq!(decoded.schema_status, None);
+        assert_eq!(decoded.remaining_hours, Some(5.2));
         assert_eq!(decoded.weighted_mae, None);
+        assert_eq!(decoded.recent_mae, None);
+        assert_eq!(decoded.effective_sample_weight, None);
+        assert_eq!(decoded.schema_status, None);
     }
 
     /// 验证 context 字段为 None 时，序列化结果不包含 context/current_context 键。

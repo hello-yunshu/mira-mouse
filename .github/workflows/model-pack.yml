@@ -127,12 +127,12 @@ jobs:
             --model local-ai/model.json \
             --output artifacts/model.rillpack
 
-      - name: Sync handler path dependencies in Cargo.lock
-        # handler 被 workspace exclude，有独立 Cargo.lock；dependabot 升级
-        # workspace 外部依赖后不会自动同步 handler 锁文件。只把 path 依赖
-        # （mira-local-ai / mira-protocol）对齐到 workspace 当前版本，禁止
-        # 无约束 `cargo update` 以免依赖漂移破坏 `--locked` 可复现性。
-        run: cargo update --manifest-path handlers/mira-battery-handler/Cargo.toml -p mira-local-ai -p mira-protocol
+      - name: Verify handler Cargo.lock is in sync with workspace
+        # handler 被 workspace exclude，有独立 Cargo.lock；升 workspace.package.version
+        # 后必须由开发者在本地 `node scripts/sync-version.mjs` 同步并提交。CI 只校验
+        # 不修改，改由 xtask handler check-lock 判断，禁止在 CI 执行 `cargo update`
+        # 以免污染锁文件、破坏 `--locked` 可复现性。
+        run: cargo run --locked --package xtask -- handler check-lock
 
       - name: Build WASM handler component
         env:

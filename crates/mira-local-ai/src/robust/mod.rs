@@ -4,13 +4,14 @@
 //! 本模块由 `robustDetectionEnabled` 控制，默认关闭。开启时只影响
 //! 训练样本权重与置信度信号，绝不直接删除数据或重置模型：
 //!
-//! - `anomaly.rs`：基于 rill-ml 1.1.0 `RollingMedianMad`（Stable）的稳健
-//!   异常评分（modified z-score）。
-//! - `drift.rs`：中位数漂移启发式 + rill-ml `DriftConsensus` 的滞后共识。
+//! - `anomaly.rs`：基于 rill-ml 1.1.0 `RollingMedianMad`（Preview，未视为
+//!   Stable API）的稳健异常评分（modified z-score）。
+//! - `drift.rs`：中位数漂移启发式 + rill-ml `DriftConsensus`（Preview，只做
+//!   实验性滞后共识，未接入生产决策）的滞后共识。
 //! - `confidence.rs`：异常/漂移 → 置信度倍率的映射。
 //!
-//! 开关关闭时本模块不参与任何计算路径，行为与阶段 3 逐位一致
-//! （见 lib.rs 训练循环与等价性测试）。
+//! 说明：漂移信号目前仅实验计算；`confidence` 与 `suggested_action` 只是
+//! 建议信号，尚未接入任何生产决策路径。开关关闭时本模块不参与任何计算路径。
 
 pub mod anomaly;
 pub mod confidence;
@@ -171,15 +172,22 @@ mod tests {
     #[test]
     fn spike_is_downweighted_but_stream_survives() {
         let mut detector = RobustDetector::new(&config()).unwrap();
-        // 有轻微噪声的稳定基线（MAD 非零），才能为异常建立相对尺度。
+        // 有轻微噪声的稳定基线（MAD 非零），才能为异常建立相对尺度。双向检测取 |z|
+        // 绝对值，偶发低于中位数的噪声点会产生很小的异常分，但远低于真正的突升。
+        let mut warmup_min_downweight: f64 = 1.0;
         for i in 0..64 {
             let signals = detector.update(5.0 + (i % 7) as f64 * 0.1).unwrap();
-            assert_eq!(signals.anomaly_downweight, 1.0);
-            assert_eq!(signals.anomaly_score, 0.0);
+            assert!(
+                signals.anomaly_score < 0.1,
+                "warmup noise should stay near zero: {}",
+                signals.anomaly_score
+            );
+            warmup_min_downweight = warmup_min_downweight.min(signals.anomaly_downweight);
         }
+        assert!(warmup_min_downweight > 0.9);
         let spike = detector.update(50.0).unwrap();
-        // 异常点被降权，但不会清空历史：后续样本恢复正常权重。
-        assert!(spike.anomaly_downweight < 1.0);
+        // 异常点被显著降权，但不会清空历史：后续样本恢复正常权重。
+        assert!(spike.anomaly_downweight < 0.5);
         assert!(spike.suggested_action != SuggestedAction::None);
         let after = detector.update(5.3).unwrap();
         assert!(after.anomaly_downweight > spike.anomaly_downweight);

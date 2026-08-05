@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! 稳健异常评分：基于 rill-ml 1.1.0 `RollingMedianMad`（Stable、有 portable
-//! state）的 modified z-score。
+//! 稳健异常评分：基于 rill-ml 1.1.0 `RollingMedianMad`（Preview，未视为
+//! Stable API）的 modified z-score。
 //!
 //! 实验层默认参数（仅本模块内部使用，不进入配置面）：
 //! - 窗口容量 16，min_samples 8；
-//! - z-score 超过 `ANOMALY_SCORE_FULL` 记 1.0，`ANOMALY_SCORE_ZERO` 及以下记 0.0，
-//!   中间线性映射。窗口 MAD 为 0（恒定流）时记 0.0，不产生 NaN。
+//! - 对 z-score 取绝对值后映射：|z| 超过 `ANOMALY_SCORE_FULL` 记 1.0，
+//!   `ANOMALY_SCORE_ZERO` 及以下记 0.0，中间线性映射。取绝对值使高低两个
+//!   方向的偏离（突升 / 突降）都被视为异常。窗口 MAD 为 0（恒定流）时记 0.0，
+//!   不产生 NaN。
 
 use rill_ml::stats::{ModifiedZScore, RollingMedianMad};
 use rill_ml::OnlineStatistic;
@@ -40,7 +42,7 @@ impl AnomalyScorer {
     pub fn update(&mut self, value: f64) -> Result<(), rill_ml::RillError> {
         self.score = if self.window.is_ready() {
             match self.window.modified_z_score(value) {
-                Ok(ModifiedZScore::Defined { score, .. }) => normalize_z(score),
+                Ok(ModifiedZScore::Defined { score, .. }) => normalize_z(score.abs()),
                 // MAD 为 0：参考窗恒定，无法建立相对尺度，按无信号处理。
                 Ok(ModifiedZScore::ZeroMad { .. }) | Err(_) => 0.0,
             }
@@ -95,6 +97,23 @@ mod tests {
         assert!(
             scorer.score() > 0.5,
             "spike should score high: {}",
+            scorer.score()
+        );
+        assert!(scorer.score() <= 1.0);
+    }
+
+    #[test]
+    fn drop_after_stable_window_scores_high() {
+        let mut scorer = AnomalyScorer::new();
+        // 有轻微噪声的稳定基线：MAD 非零，异常才有相对尺度。
+        for i in 0..64 {
+            scorer.update(5.0 + (i % 7) as f64 * 0.1).unwrap();
+        }
+        // 低值突降（如耗电率骤降到异常低），取绝对值后也被视为异常。
+        scorer.update(-50.0).unwrap();
+        assert!(
+            scorer.score() > 0.5,
+            "low-value drop should score high: {}",
             scorer.score()
         );
         assert!(scorer.score() <= 1.0);

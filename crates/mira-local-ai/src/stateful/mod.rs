@@ -105,6 +105,8 @@ pub enum RestoreError {
     ModelDescriptorHashMismatch,
     #[error("device identity mismatch: expected {expected}, got {actual}")]
     DeviceIdentityMismatch { expected: String, actual: String },
+    #[error("generation id mismatch: expected {expected}, got {actual}")]
+    GenerationMismatch { expected: u64, actual: u64 },
     #[error("restored model state validation failed: {0}")]
     InvalidModelState(String),
 }
@@ -119,6 +121,7 @@ impl RestoreError {
             RestoreError::SchemaHashMismatch => "statefulSchemaHashMismatch",
             RestoreError::ModelDescriptorHashMismatch => "statefulDescriptorMismatch",
             RestoreError::DeviceIdentityMismatch { .. } => "statefulDeviceMismatch",
+            RestoreError::GenerationMismatch { .. } => "statefulGenerationMismatch",
             RestoreError::InvalidModelState(_) => "statefulInvalidModelState",
         }
     }
@@ -325,9 +328,9 @@ impl StatefulBatteryModel {
             });
         }
         if identity.generation_id != current_generation_id {
-            return Err(RestoreError::DeviceIdentityMismatch {
-                expected: current_generation_id.to_string(),
-                actual: identity.generation_id.to_string(),
+            return Err(RestoreError::GenerationMismatch {
+                expected: current_generation_id,
+                actual: identity.generation_id,
             });
         }
 
@@ -509,7 +512,7 @@ mod tests {
         let snapshot = model.snapshot();
         let error =
             StatefulBatteryModel::restore(snapshot, &test_config(), "device-a", 5).unwrap_err();
-        assert!(matches!(error, RestoreError::DeviceIdentityMismatch { .. }));
+        assert!(matches!(error, RestoreError::GenerationMismatch { .. }));
     }
 
     #[test]

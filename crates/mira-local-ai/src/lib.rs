@@ -247,6 +247,7 @@ fn validated_model_prediction(
     let weighted_enabled = config.weighted_learning_enabled;
     let mut training_weight_sum: f64 = 0.0;
     let mut validation_weight_sum: f64 = 0.0;
+    let mut baseline_weighted_error_sum: f64 = 0.0;
     let mut candidate_weighted_error_sum: f64 = 0.0;
     let mut recent_error_sum: f64 = 0.0;
     let mut recent_count: u64 = 0;
@@ -282,6 +283,9 @@ fn validated_model_prediction(
             if let Some(baseline_prediction) = recent_rate {
                 if let Ok(ai_prediction) = model.predict(features) {
                     if ai_prediction.is_finite() {
+                        let baseline_error =
+                            (observation.drain_per_hour - baseline_prediction).abs();
+                        let ai_error = (observation.drain_per_hour - ai_prediction).abs();
                         comparator
                             .record(0, observation.drain_per_hour, baseline_prediction)
                             .map_err(|_| BatteryPredictionError::InvalidModel)?;
@@ -294,7 +298,9 @@ fn validated_model_prediction(
                             1.0
                         };
                         validation_weight_sum += metric_weight;
-                        let ai_error = (observation.drain_per_hour - ai_prediction).abs();
+                        // 与候选同一加权口径：加权模式下基线也要用同样的 recency 权重，
+                        // 否则加权候选会被拿去和未加权的普通基线比较，口径不一致。
+                        baseline_weighted_error_sum += metric_weight * baseline_error;
                         candidate_weighted_error_sum += metric_weight * ai_error;
                         if (now - observation.at).num_seconds().max(0) as f64 / 3600.0
                             <= config.quality_window as f64
@@ -353,6 +359,8 @@ fn validated_model_prediction(
     let training_samples = model.samples_seen();
     let weighted_mae = (validation_weight_sum > 0.0)
         .then_some(candidate_weighted_error_sum / validation_weight_sum);
+    let weighted_baseline_mae = (validation_weight_sum > 0.0)
+        .then_some(baseline_weighted_error_sum / validation_weight_sum);
     let recent_mae = (recent_count > 0).then_some(recent_error_sum / recent_count as f64);
     let effective_sample_weight = Some(training_weight_sum);
 
@@ -411,14 +419,19 @@ fn validated_model_prediction(
             schema_status,
         ));
     };
-    // 加权模式下以加权 MAE 作为候选质量指标：加权模型对近期样本的表现才是用户
-    // 真正关心的。加权 MAE 缺失时退回普通 candidate MAE。
+    // 加权模式下以加权 MAE 作为候选与基线的质量指标：两者都用同一份 recency 权重，
+    // 口径一致。加权指标缺失时退回普通 MAE。
     let candidate_error_for_gate = if weighted_enabled {
         weighted_mae.unwrap_or(candidate_error)
     } else {
         candidate_error
     };
-    if candidate_error_for_gate >= baseline_error * config.required_error_ratio {
+    let baseline_error_for_gate = if weighted_enabled {
+        weighted_baseline_mae.unwrap_or(baseline_error)
+    } else {
+        baseline_error
+    };
+    if candidate_error_for_gate >= baseline_error_for_gate * config.required_error_ratio {
         return Ok(fallback(
             "candidateNotBetter",
             training_samples,
@@ -698,6 +711,7 @@ mod tests {
         let weighted_enabled = config.weighted_learning_enabled;
         let mut training_weight_sum: f64 = 0.0;
         let mut validation_weight_sum: f64 = 0.0;
+        let mut baseline_weighted_error_sum: f64 = 0.0;
         let mut candidate_weighted_error_sum: f64 = 0.0;
         let mut recent_error_sum: f64 = 0.0;
         let mut recent_count: u64 = 0;
@@ -723,6 +737,9 @@ mod tests {
                 if let Some(baseline_prediction) = recent_rate {
                     if let Ok(ai_prediction) = model.predict(features) {
                         if ai_prediction.is_finite() {
+                            let baseline_error =
+                                (observation.drain_per_hour - baseline_prediction).abs();
+                            let ai_error = (observation.drain_per_hour - ai_prediction).abs();
                             comparator
                                 .record(0, observation.drain_per_hour, baseline_prediction)
                                 .map_err(|_| BatteryPredictionError::InvalidModel)?;
@@ -735,7 +752,7 @@ mod tests {
                                 1.0
                             };
                             validation_weight_sum += metric_weight;
-                            let ai_error = (observation.drain_per_hour - ai_prediction).abs();
+                            baseline_weighted_error_sum += metric_weight * baseline_error;
                             candidate_weighted_error_sum += metric_weight * ai_error;
                             if (now - observation.at).num_seconds().max(0) as f64 / 3600.0
                                 <= config.quality_window as f64
@@ -780,6 +797,8 @@ mod tests {
         let training_samples = model.samples_seen();
         let weighted_mae = (validation_weight_sum > 0.0)
             .then_some(candidate_weighted_error_sum / validation_weight_sum);
+        let weighted_baseline_mae = (validation_weight_sum > 0.0)
+            .then_some(baseline_weighted_error_sum / validation_weight_sum);
         let recent_mae = (recent_count > 0).then_some(recent_error_sum / recent_count as f64);
         let effective_sample_weight = Some(training_weight_sum);
 
@@ -842,7 +861,12 @@ mod tests {
         } else {
             candidate_error
         };
-        if candidate_error_for_gate >= baseline_error * config.required_error_ratio {
+        let baseline_error_for_gate = if weighted_enabled {
+            weighted_baseline_mae.unwrap_or(baseline_error)
+        } else {
+            baseline_error
+        };
+        if candidate_error_for_gate >= baseline_error_for_gate * config.required_error_ratio {
             return Ok(fallback(
                 "candidateNotBetter",
                 training_samples,
@@ -1311,16 +1335,18 @@ mod tests {
     #[test]
     fn robust_enabled_matches_robust_disabled_on_clean_data() {
         let start = Utc.with_ymd_and_hms(2026, 1, 5, 0, 0, 0).unwrap();
+        // 真正的"干净数据"：恒定耗电率，无趋势、无噪声。双向异常检测取 |z| 绝对值，
+        // 任何方向的方向性趋势（哪怕平滑正弦）都会被识别为偏离，因此等价性测试必须
+        // 用完全恒定流，才能保证 MAD=0 → 异常分 0 → 权重 ×1.0，开启与否逐位一致。
         let observations: Vec<DrainObservation> = (0..120)
             .map(|i| {
                 let at = start + Duration::hours(2 * i);
-                let angle = (at.hour() as f64) / 24.0 * std::f64::consts::TAU;
                 DrainObservation {
                     at,
                     ended_at: at + Duration::minutes(30),
                     timezone_offset_minutes: 0,
                     percentage: 80,
-                    drain_per_hour: 5.0 + 3.0 * angle.sin() + 1.5 * angle.cos(),
+                    drain_per_hour: 5.0,
                     context: None,
                 }
             })

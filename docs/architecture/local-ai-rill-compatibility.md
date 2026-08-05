@@ -176,6 +176,11 @@ pub robust_detection_enabled: bool  // 默认 false
 - 异常样本只通过 `anomaly_downweight` 影响训练权重。
 - 输出统一为建议动作（`None / DownWeightSample / LowerPredictionConfidence / ResetRecentRateOnly / RequestModelRetrain`）。
 
+> **现状（不夸大）**：漂移信号目前仅实验计算；`confidence` 与
+> `suggested_action` 只是建议信号，**尚未接入任何生产决策路径**（生产只消费
+> `anomaly_downweight` 训练权重）。`RobustDetector` 由
+> `robust_detection_enabled` 控制，默认关闭。
+
 ### 5.3 模块结构
 
 ```text
@@ -193,7 +198,15 @@ crates/mira-local-ai/src/robust/
 
 ---
 
-## 6. Stateful Handler ABI v2 实验骨架（阶段 5，默认关闭）
+## 6. 状态化模型实验骨架（阶段 5，默认关闭）
+
+> **重要**：本阶段只实现了**库内**的状态化模型骨架（`observe / decide /
+> snapshot / restore / reset` 原语），**并未**真正接入 IPC V3、WIT Handler
+> ABI v2、host 双栈握手或 runtime 的 stateful 调用。因此：
+>
+> - 不把阶段 5 计为生产功能完成；
+> - 不声称"已完成 Stateful Handler v2 双栈"；
+> - 不存在"handshake 失败自动回退"的运行时路径（尚无握手逻辑）。
 
 ### 6.1 开关
 
@@ -201,22 +214,14 @@ crates/mira-local-ai/src/robust/
 pub stateful_handler_enabled: bool  // 默认 false
 ```
 
-### 6.2 双栈选择逻辑
+### 6.2 当前实现边界
 
-```text
-if stateful enabled:
-  尝试 IPC V3 / handler v2
-  若 handshake 成功 → 使用状态化路径
-  否则 → 记录原因并回退
-else:
-  使用 IPC V2 / handler v1
-```
-
-完整回退链：
-
-```text
-Stateful Handler v2  →  Stateless IPC V2 Handler v1  →  确定性预测
-```
+- 提供 `StatefulBatteryModel` 库内原语与 `decide_stateful_batch` 宿主侧入口。
+- `predict` 训练路径**不**调用本骨架；`stateful_handler_enabled` 仅影响
+  `decide_stateful_batch` 是否走状态化路径。
+- IPC V3 / WIT ABI v2 / host 双栈握手 / runtime stateful 调用均**未实现**，
+  属于转正前的预留方向，不做任何实现承诺。
+- 默认生产路径保持不变：`IPC V2 + WIT Handler API v1 + 确定性 fallback`。
 
 ### 6.3 原语
 
