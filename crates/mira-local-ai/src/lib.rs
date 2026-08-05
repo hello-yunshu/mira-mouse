@@ -14,6 +14,7 @@ use thiserror::Error;
 
 pub mod battery_features;
 pub mod robust;
+pub mod stateful;
 
 const MAX_SAMPLES: usize = 10_000;
 /// Battery percentages are normally integer-quantized. A 1% change over a few
