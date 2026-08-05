@@ -48,6 +48,10 @@ pub struct BatteryModelConfig {
     /// 稳健异常与漂移检测实验层开关（阶段 4）。默认关闭。
     #[serde(default)]
     pub robust_detection_enabled: bool,
+    /// 状态化 handler ABI v2 实验骨架开关（阶段 5）。默认关闭，保持现有
+    /// IPC V2 + WIT v1 链路不变；开启时仅尝试实验路径，失败自动回退。
+    #[serde(default)]
+    pub stateful_handler_enabled: bool,
 }
 
 impl Default for BatteryModelConfig {
@@ -75,6 +79,7 @@ impl Default for BatteryModelConfig {
             weighted_learning_enabled: false,
             learning_recency_tau_hours: None,
             robust_detection_enabled: false,
+            stateful_handler_enabled: false,
         }
     }
 }
@@ -315,6 +320,7 @@ mod tests {
         assert_eq!(config.model_descriptor_hash, None);
         assert!(!config.weighted_learning_enabled);
         assert!(!config.robust_detection_enabled);
+        assert!(!config.stateful_handler_enabled);
         config.validate().unwrap();
     }
 
