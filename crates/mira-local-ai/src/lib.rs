@@ -13,6 +13,7 @@ use rill_ml::{
 use thiserror::Error;
 
 pub mod battery_features;
+pub mod robust;
 
 const MAX_SAMPLES: usize = 10_000;
 /// Battery percentages are normally integer-quantized. A 1% change over a few
@@ -70,6 +71,8 @@ pub enum BatteryPredictionError {
     InvalidModel,
     #[error("battery feature schema identity failure: {0}")]
     FeatureSchema(#[from] battery_features::BatteryFeatureError),
+    #[error("robust detection layer failed: {0}")]
+    Robust(#[from] robust::RobustDetectorError),
 }
 
 pub fn predict(
@@ -247,6 +250,12 @@ fn validated_model_prediction(
     let mut recent_error_sum: f64 = 0.0;
     let mut recent_count: u64 = 0;
 
+    // 阶段 4（稳健检测实验层，默认关闭）：开启时异常样本仅通过权重降权
+    // 影响训练；绝不删除数据或重置模型。关闭时本分支完全不参与。
+    let mut robust = (config.robust_detection_enabled)
+        .then(|| robust::RobustDetector::new(config))
+        .transpose()?;
+
     for observation in observations {
         // 1. 从 prev_ended_at 衰减到 observation.at,得到以 observation.at 为锚的累加器。
         //    此时累加器等价于原 weighted_baseline_rate(&observations[..index], observation.at, tau)。
@@ -296,8 +305,17 @@ fn validated_model_prediction(
                 }
             }
         }
-        if weighted_enabled {
-            let weight = recency_weight(observation.at, now, config);
+        if weighted_enabled || robust.is_some() {
+            let mut weight = if weighted_enabled {
+                recency_weight(observation.at, now, config)
+            } else {
+                1.0
+            };
+            if let Some(detector) = robust.as_mut() {
+                if let Ok(signals) = detector.update(observation.drain_per_hour) {
+                    weight *= signals.anomaly_downweight;
+                }
+            }
             training_weight_sum += weight;
             model
                 .learn_weighted(features, observation.drain_per_hour, weight)
@@ -682,6 +700,9 @@ mod tests {
         let mut candidate_weighted_error_sum: f64 = 0.0;
         let mut recent_error_sum: f64 = 0.0;
         let mut recent_count: u64 = 0;
+        let mut robust = (config.robust_detection_enabled)
+            .then(|| robust::RobustDetector::new(config))
+            .transpose()?;
 
         for (index, observation) in observations.iter().enumerate() {
             let recent_rate = weighted_baseline_rate_reference(
@@ -725,8 +746,17 @@ mod tests {
                     }
                 }
             }
-            if weighted_enabled {
-                let weight = recency_weight(observation.at, now, config);
+            if weighted_enabled || robust.is_some() {
+                let mut weight = if weighted_enabled {
+                    recency_weight(observation.at, now, config)
+                } else {
+                    1.0
+                };
+                if let Some(detector) = robust.as_mut() {
+                    if let Ok(signals) = detector.update(observation.drain_per_hour) {
+                        weight *= signals.anomaly_downweight;
+                    }
+                }
                 training_weight_sum += weight;
                 model
                     .learn_weighted(features, observation.drain_per_hour, weight)
@@ -1275,6 +1305,100 @@ mod tests {
             );
             assert_eq!(got.remaining_hours, want.remaining_hours, "seed={seed}");
         }
+    }
+
+    #[test]
+    fn robust_enabled_matches_robust_disabled_on_clean_data() {
+        let start = Utc.with_ymd_and_hms(2026, 1, 5, 0, 0, 0).unwrap();
+        let observations: Vec<DrainObservation> = (0..120)
+            .map(|i| {
+                let at = start + Duration::hours(2 * i);
+                let angle = (at.hour() as f64) / 24.0 * std::f64::consts::TAU;
+                DrainObservation {
+                    at,
+                    ended_at: at + Duration::minutes(30),
+                    timezone_offset_minutes: 0,
+                    percentage: 80,
+                    drain_per_hour: 5.0 + 3.0 * angle.sin() + 1.5 * angle.cos(),
+                    context: None,
+                }
+            })
+            .collect();
+        let now = start + Duration::hours(241);
+        let plain = BatteryModelConfig::default();
+        let robust_on = BatteryModelConfig {
+            robust_detection_enabled: true,
+            ..BatteryModelConfig::default()
+        };
+        let got = validated_model_prediction(
+            &observations,
+            80,
+            now,
+            0,
+            None,
+            &robust_on,
+            &test_schema_status(),
+        )
+        .unwrap();
+        let want = validated_model_prediction(
+            &observations,
+            80,
+            now,
+            0,
+            None,
+            &plain,
+            &test_schema_status(),
+        )
+        .unwrap();
+        // 干净数据上实验层完全中性（权重 ×1.0），结果必须逐字段一致：
+        // 阶段 4 开启不改变阶段 3 行为。
+        assert_eq!(got.source, want.source);
+        assert_eq!(got.reason, want.reason);
+        assert_eq!(got.training_samples, want.training_samples);
+        assert_eq!(got.validation_samples, want.validation_samples);
+        assert_eq!(got.baseline_mae, want.baseline_mae);
+        assert_eq!(got.candidate_mae, want.candidate_mae);
+        assert_eq!(got.weighted_mae, want.weighted_mae);
+        assert_eq!(got.recent_mae, want.recent_mae);
+        assert_eq!(got.effective_sample_weight, want.effective_sample_weight);
+        assert_eq!(got.remaining_hours, want.remaining_hours);
+    }
+
+    #[test]
+    fn robust_spike_downweights_but_history_survives() {
+        let start = Utc.with_ymd_and_hms(2026, 1, 5, 0, 0, 0).unwrap();
+        let base: Vec<DrainObservation> = (0..120)
+            .map(|i| {
+                let at = start + Duration::hours(2 * i);
+                let angle = (at.hour() as f64) / 24.0 * std::f64::consts::TAU;
+                DrainObservation {
+                    at,
+                    ended_at: at + Duration::minutes(30),
+                    timezone_offset_minutes: 0,
+                    percentage: 80,
+                    drain_per_hour: 5.0 + 3.0 * angle.sin() + 1.5 * angle.cos(),
+                    context: None,
+                }
+            })
+            .collect();
+        let mut spiked = base.clone();
+        spiked[60].drain_per_hour = 50.0;
+        let now = start + Duration::hours(241);
+        let config = BatteryModelConfig {
+            robust_detection_enabled: true,
+            ..BatteryModelConfig::default()
+        };
+        let clean =
+            validated_model_prediction(&base, 80, now, 0, None, &config, &test_schema_status())
+                .unwrap();
+        let with_spike =
+            validated_model_prediction(&spiked, 80, now, 0, None, &config, &test_schema_status())
+                .unwrap();
+        // 异常样本被降权：训练有效权重下降。
+        assert!(with_spike.effective_sample_weight < clean.effective_sample_weight);
+        // 单点异常不会摧毁历史：仍产出有限预测，且近期误差被降权后不劣于基线。
+        assert!(with_spike.remaining_hours.is_some_and(|h| h.is_finite()));
+        assert!(with_spike.recent_mae.is_some());
     }
 
     #[test]
