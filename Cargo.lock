@@ -3611,18 +3611,21 @@ dependencies = [
 
 [[package]]
 name = "rill-ml"
-version = "1.0.0"
+version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f5bcb553e19f57d493bfd0218286ae64b9f7d3b0a0de21fb9bad09863630a04f"
+checksum = "e5513497aeb61fdd8c4ee9ba24ada83de2a69a3c077ae58a4b9fbf347f7fdcb8"
 dependencies = [
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
  "thiserror 1.0.69",
 ]
 
 [[package]]
 name = "rill-runtime-protocol"
-version = "1.0.0"
+version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7524c0d554bec02cf03b5d3e36288f5b3c64c2d320c36aa5840e3d28eef4d3d0"
+checksum = "5e62fe7971f1e97e25ed14014a0b426002487834810fe70ea625fa74b5e21d92"
 dependencies = [
  "serde",
  "serde_json",
@@ -4728,7 +4731,7 @@ dependencies = [
  "serde_with",
  "swift-rs",
  "thiserror 2.0.19",
- "toml 0.9.12+spec-1.1.0",
+ "toml 1.1.3+spec-1.1.0",
  "url",
  "urlpattern",
  "uuid",

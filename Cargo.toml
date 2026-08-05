@@ -32,8 +32,13 @@ serde = { version = "1.0.217", features = ["derive"] }
 serde_json = "1.0.134"
 sha2 = "0.10.8"
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "rustls"] }
-rill-runtime-protocol = "1.0.0"
-rill-ml = { version = "1.0.0", default-features = false }
+# rill 版本按 major.minor 声明（允许后续兼容升级），实际可复现版本由
+# 提交的 Cargo.lock 保证；升级通过独立依赖 PR + 更新锁文件完成，禁止在
+# release 构建中运行无约束 `cargo update`。
+# `serde` feature 仅用于 rill-ml 的 FeatureSchema / ModelDescriptor 身份
+# 序列化，不打开任何 Preview 能力。
+rill-runtime-protocol = "1.1"
+rill-ml = { version = "1.1", default-features = false, features = ["serde"] }
 tempfile = "3.14.0"
 thiserror = "2.0.9"
 toml = "1.1"

@@ -10,8 +10,12 @@ name = "mira-battery-handler"
 path = "src/main.rs"
 
 [dependencies]
+# handler 是独立 workspace，显式声明 rill-ml 的 major.minor（与主 workspace
+# 保持一致），实际版本由提交的 handlers/mira-battery-handler/Cargo.lock 固定。
+# `serde` feature 仅用于 FeatureSchema / ModelDescriptor 身份序列化。
 mira-local-ai = { path = "../../crates/mira-local-ai" }
 mira-protocol = { path = "../../crates/mira-protocol" }
+rill-ml = { version = "1.1", default-features = false, features = ["serde"] }
 serde_json = "1"
 wit-bindgen = "0.29"
 

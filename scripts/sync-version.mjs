@@ -56,10 +56,11 @@ async function syncFile(path, pattern, replacement, label, version) {
 }
 
 /**
- * 在 handlers/mira-battery-handler/ 跑 `cargo update`，把 handler 独立 Cargo.lock
- * 中所有依赖同步到最新兼容版本（含 path 依赖与外部依赖如 thiserror/serde_json）。
+ * 在 handlers/mira-battery-handler/ 跑 `cargo update -p <path deps>`，把 handler 独立
+ * Cargo.lock 中的 path 依赖（mira-local-ai / mira-protocol）同步到当前 workspace 版本。
  * handler 被 workspace exclude，dependabot 升级 workspace 外部依赖后不会自动同步
  * handler 的 Cargo.lock，若漏跑会导致下游 model-pack 的 `cargo build --locked` 失败。
+ * 注意：只更新两个 path 依赖，不执行无约束的 `cargo update`，避免依赖漂移破坏可复现性。
  * cargo 不可用时跳过（不阻塞纯文档同步场景）。
  */
 async function syncHandlerLock(version) {
@@ -75,7 +76,11 @@ async function syncHandlerLock(version) {
     return false;
   }
 
-  const result = spawnSync('cargo', ['update'], { cwd: handlerDir, encoding: 'utf8' });
+  const result = spawnSync(
+    'cargo',
+    ['update', '-p', 'mira-local-ai', '-p', 'mira-protocol'],
+    { cwd: handlerDir, encoding: 'utf8' },
+  );
   if (result.status !== 0) {
     throw new Error(
       `handler lock: cargo update failed in ${handlerDir}:\n${(result.stderr || '').trim()}`,
