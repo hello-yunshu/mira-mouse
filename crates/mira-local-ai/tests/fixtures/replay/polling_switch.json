@@ -1,0 +1,5061 @@
+{
+  "name": "polling_switch",
+  "description": "长期高回报率(8000Hz) 高耗电 → 近期切换低回报率(125Hz) 低耗电",
+  "events": [
+    "polling_switch"
+  ],
+  "nowUnixMs": 1767907800000,
+  "nowTimezoneOffsetMinutes": 0,
+  "expectedBehavior": "加权模型应比普通模型更快适应近期低回报率状态。",
+  "samples": [
+    {
+      "atUnixMs": 1767571200000,
+      "percentage": 95,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767571800000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767572400000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767573000000,
+      "percentage": 91,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767573600000,
+      "percentage": 89,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767574200000,
+      "percentage": 88,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767574800000,
+      "percentage": 86,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767575400000,
+      "percentage": 85,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767576000000,
+      "percentage": 83,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767576600000,
+      "percentage": 82,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767577200000,
+      "percentage": 80,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767577800000,
+      "percentage": 79,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767578400000,
+      "percentage": 77,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767580500000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767580800000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767581100000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767581400000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767581400000,
+      "percentage": 95,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767582000000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767582600000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767583200000,
+      "percentage": 91,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767583800000,
+      "percentage": 89,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767584400000,
+      "percentage": 88,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767585000000,
+      "percentage": 86,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767585600000,
+      "percentage": 85,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767586200000,
+      "percentage": 83,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767586800000,
+      "percentage": 82,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767587400000,
+      "percentage": 80,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767588000000,
+      "percentage": 79,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767588600000,
+      "percentage": 77,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767590700000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767591000000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767591300000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767591600000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767591600000,
+      "percentage": 95,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767592200000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767592800000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767593400000,
+      "percentage": 91,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767594000000,
+      "percentage": 89,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767594600000,
+      "percentage": 88,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767595200000,
+      "percentage": 86,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767595800000,
+      "percentage": 85,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767596400000,
+      "percentage": 83,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767597000000,
+      "percentage": 82,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767597600000,
+      "percentage": 80,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767598200000,
+      "percentage": 79,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767598800000,
+      "percentage": 77,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767600900000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767601200000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767601500000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767601800000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767601800000,
+      "percentage": 95,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767602400000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767603000000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767603600000,
+      "percentage": 91,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767604200000,
+      "percentage": 89,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767604800000,
+      "percentage": 88,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767605400000,
+      "percentage": 86,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767606000000,
+      "percentage": 85,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767606600000,
+      "percentage": 83,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767607200000,
+      "percentage": 82,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767607800000,
+      "percentage": 80,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767608400000,
+      "percentage": 79,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767609000000,
+      "percentage": 77,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767611100000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767611400000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767611700000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767612000000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767612000000,
+      "percentage": 95,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767612600000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767613200000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767613800000,
+      "percentage": 91,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767614400000,
+      "percentage": 89,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767615000000,
+      "percentage": 88,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767615600000,
+      "percentage": 86,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767616200000,
+      "percentage": 85,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767616800000,
+      "percentage": 83,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767617400000,
+      "percentage": 82,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767618000000,
+      "percentage": 80,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767618600000,
+      "percentage": 79,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767619200000,
+      "percentage": 77,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767621300000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767621600000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767621900000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767622200000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767622200000,
+      "percentage": 95,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767622800000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767623400000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767624000000,
+      "percentage": 91,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767624600000,
+      "percentage": 89,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767625200000,
+      "percentage": 88,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767625800000,
+      "percentage": 86,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767626400000,
+      "percentage": 85,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767627000000,
+      "percentage": 83,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767627600000,
+      "percentage": 82,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767628200000,
+      "percentage": 80,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767628800000,
+      "percentage": 79,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767629400000,
+      "percentage": 77,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767631500000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767631800000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767632100000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767632400000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767632400000,
+      "percentage": 95,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767633000000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767633600000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767634200000,
+      "percentage": 91,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767634800000,
+      "percentage": 89,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767635400000,
+      "percentage": 88,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767636000000,
+      "percentage": 86,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767636600000,
+      "percentage": 85,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767637200000,
+      "percentage": 83,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767637800000,
+      "percentage": 82,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767638400000,
+      "percentage": 80,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767639000000,
+      "percentage": 79,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767639600000,
+      "percentage": 77,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767641700000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767642000000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767642300000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767642600000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767642600000,
+      "percentage": 95,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767643200000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767643800000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767644400000,
+      "percentage": 91,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767645000000,
+      "percentage": 89,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767645600000,
+      "percentage": 88,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767646200000,
+      "percentage": 86,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767646800000,
+      "percentage": 85,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767647400000,
+      "percentage": 83,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767648000000,
+      "percentage": 82,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767648600000,
+      "percentage": 80,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767649200000,
+      "percentage": 79,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767649800000,
+      "percentage": 77,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767651900000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767652200000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767652500000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767652800000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767652800000,
+      "percentage": 95,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767653400000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767654000000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767654600000,
+      "percentage": 91,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767655200000,
+      "percentage": 89,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767655800000,
+      "percentage": 88,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767656400000,
+      "percentage": 86,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767657000000,
+      "percentage": 85,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767657600000,
+      "percentage": 83,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767658200000,
+      "percentage": 82,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767658800000,
+      "percentage": 80,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767659400000,
+      "percentage": 79,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767660000000,
+      "percentage": 77,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767662100000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767662400000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767662700000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767663000000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767663000000,
+      "percentage": 95,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767663600000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767664200000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767664800000,
+      "percentage": 91,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767665400000,
+      "percentage": 89,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767666000000,
+      "percentage": 88,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767666600000,
+      "percentage": 86,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767667200000,
+      "percentage": 85,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767667800000,
+      "percentage": 83,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767668400000,
+      "percentage": 82,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767669000000,
+      "percentage": 80,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767669600000,
+      "percentage": 79,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767670200000,
+      "percentage": 77,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767672300000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767672600000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767672900000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767673200000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767673200000,
+      "percentage": 95,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767673800000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767674400000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767675000000,
+      "percentage": 91,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767675600000,
+      "percentage": 89,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767676200000,
+      "percentage": 88,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767676800000,
+      "percentage": 86,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767677400000,
+      "percentage": 85,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767678000000,
+      "percentage": 83,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767678600000,
+      "percentage": 82,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767679200000,
+      "percentage": 80,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767679800000,
+      "percentage": 79,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767680400000,
+      "percentage": 77,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767682500000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767682800000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767683100000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767683400000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767683400000,
+      "percentage": 95,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767684000000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767684600000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767685200000,
+      "percentage": 91,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767685800000,
+      "percentage": 89,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767686400000,
+      "percentage": 88,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767687000000,
+      "percentage": 86,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767687600000,
+      "percentage": 85,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767688200000,
+      "percentage": 83,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767688800000,
+      "percentage": 82,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767689400000,
+      "percentage": 80,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767690000000,
+      "percentage": 79,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767690600000,
+      "percentage": 77,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767692700000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767693000000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767693300000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767693600000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767693600000,
+      "percentage": 95,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767694200000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767694800000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767695400000,
+      "percentage": 91,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767696000000,
+      "percentage": 89,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767696600000,
+      "percentage": 88,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767697200000,
+      "percentage": 86,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767697800000,
+      "percentage": 85,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767698400000,
+      "percentage": 83,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767699000000,
+      "percentage": 82,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767699600000,
+      "percentage": 80,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767700200000,
+      "percentage": 79,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767700800000,
+      "percentage": 77,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767702900000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767703200000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767703500000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767703800000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767703800000,
+      "percentage": 95,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767704400000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767705000000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767705600000,
+      "percentage": 91,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767706200000,
+      "percentage": 89,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767706800000,
+      "percentage": 88,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767707400000,
+      "percentage": 86,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767708000000,
+      "percentage": 85,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767708600000,
+      "percentage": 83,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767709200000,
+      "percentage": 82,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767709800000,
+      "percentage": 80,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767710400000,
+      "percentage": 79,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767711000000,
+      "percentage": 77,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767713100000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767713400000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767713700000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767714000000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767714000000,
+      "percentage": 95,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767714600000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767715200000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767715800000,
+      "percentage": 91,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767716400000,
+      "percentage": 89,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767717000000,
+      "percentage": 88,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767717600000,
+      "percentage": 86,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767718200000,
+      "percentage": 85,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767718800000,
+      "percentage": 83,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767719400000,
+      "percentage": 82,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767720000000,
+      "percentage": 80,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767720600000,
+      "percentage": 79,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767721200000,
+      "percentage": 77,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767723300000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767723600000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767723900000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767724200000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767724200000,
+      "percentage": 95,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767724800000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767725400000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767726000000,
+      "percentage": 91,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767726600000,
+      "percentage": 89,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767727200000,
+      "percentage": 88,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767727800000,
+      "percentage": 86,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767728400000,
+      "percentage": 85,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767729000000,
+      "percentage": 83,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767729600000,
+      "percentage": 82,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767730200000,
+      "percentage": 80,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767730800000,
+      "percentage": 79,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767731400000,
+      "percentage": 77,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767733500000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767733800000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767734100000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767734400000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767734400000,
+      "percentage": 95,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767735000000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767735600000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767736200000,
+      "percentage": 91,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767736800000,
+      "percentage": 89,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767737400000,
+      "percentage": 88,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767738000000,
+      "percentage": 86,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767738600000,
+      "percentage": 85,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767739200000,
+      "percentage": 83,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767739800000,
+      "percentage": 82,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767740400000,
+      "percentage": 80,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767741000000,
+      "percentage": 79,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767741600000,
+      "percentage": 77,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767743700000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767744000000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767744300000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767744600000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767744600000,
+      "percentage": 95,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767745200000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767745800000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767746400000,
+      "percentage": 91,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767747000000,
+      "percentage": 89,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767747600000,
+      "percentage": 88,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767748200000,
+      "percentage": 86,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767748800000,
+      "percentage": 85,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767749400000,
+      "percentage": 83,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767750000000,
+      "percentage": 82,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767750600000,
+      "percentage": 80,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767751200000,
+      "percentage": 79,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767751800000,
+      "percentage": 77,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767753900000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767754200000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767754500000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767754800000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 8000,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767754800000,
+      "percentage": 95,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767755400000,
+      "percentage": 95,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767756000000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767756600000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767757200000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767757800000,
+      "percentage": 93,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767758400000,
+      "percentage": 93,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767759000000,
+      "percentage": 93,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767759600000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767760200000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767760800000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767761400000,
+      "percentage": 91,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767762000000,
+      "percentage": 91,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767764100000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767764400000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767764700000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767765000000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767765000000,
+      "percentage": 95,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767765600000,
+      "percentage": 95,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767766200000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767766800000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767767400000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767768000000,
+      "percentage": 93,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767768600000,
+      "percentage": 93,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767769200000,
+      "percentage": 93,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767769800000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767770400000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767771000000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767771600000,
+      "percentage": 91,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767772200000,
+      "percentage": 91,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767774300000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767774600000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767774900000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767775200000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767775200000,
+      "percentage": 95,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767775800000,
+      "percentage": 95,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767776400000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767777000000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767777600000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767778200000,
+      "percentage": 93,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767778800000,
+      "percentage": 93,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767779400000,
+      "percentage": 93,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767780000000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767780600000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767781200000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767781800000,
+      "percentage": 91,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767782400000,
+      "percentage": 91,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767784500000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767784800000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767785100000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767785400000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767785400000,
+      "percentage": 95,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767786000000,
+      "percentage": 95,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767786600000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767787200000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767787800000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767788400000,
+      "percentage": 93,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767789000000,
+      "percentage": 93,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767789600000,
+      "percentage": 93,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767790200000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767790800000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767791400000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767792000000,
+      "percentage": 91,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767792600000,
+      "percentage": 91,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767794700000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767795000000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767795300000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767795600000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767795600000,
+      "percentage": 95,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767796200000,
+      "percentage": 95,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767796800000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767797400000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767798000000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767798600000,
+      "percentage": 93,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767799200000,
+      "percentage": 93,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767799800000,
+      "percentage": 93,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767800400000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767801000000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767801600000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767802200000,
+      "percentage": 91,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767802800000,
+      "percentage": 91,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767804900000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767805200000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767805500000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767805800000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767805800000,
+      "percentage": 95,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767806400000,
+      "percentage": 95,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767807000000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767807600000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767808200000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767808800000,
+      "percentage": 93,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767809400000,
+      "percentage": 93,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767810000000,
+      "percentage": 93,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767810600000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767811200000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767811800000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767812400000,
+      "percentage": 91,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767813000000,
+      "percentage": 91,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767815100000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767815400000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767815700000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767816000000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767816000000,
+      "percentage": 95,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767816600000,
+      "percentage": 95,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767817200000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767817800000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767818400000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767819000000,
+      "percentage": 93,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767819600000,
+      "percentage": 93,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767820200000,
+      "percentage": 93,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767820800000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767821400000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767822000000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767822600000,
+      "percentage": 91,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767823200000,
+      "percentage": 91,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767825300000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767825600000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767825900000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767826200000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767826200000,
+      "percentage": 95,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767826800000,
+      "percentage": 95,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767827400000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767828000000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767828600000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767829200000,
+      "percentage": 93,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767829800000,
+      "percentage": 93,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767830400000,
+      "percentage": 93,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767831000000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767831600000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767832200000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767832800000,
+      "percentage": 91,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767833400000,
+      "percentage": 91,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767835500000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767835800000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767836100000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767836400000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767836400000,
+      "percentage": 95,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767837000000,
+      "percentage": 95,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767837600000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767838200000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767838800000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767839400000,
+      "percentage": 93,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767840000000,
+      "percentage": 93,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767840600000,
+      "percentage": 93,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767841200000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767841800000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767842400000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767843000000,
+      "percentage": 91,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767843600000,
+      "percentage": 91,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767845700000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767846000000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767846300000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767846600000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767846600000,
+      "percentage": 95,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767847200000,
+      "percentage": 95,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767847800000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767848400000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767849000000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767849600000,
+      "percentage": 93,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767850200000,
+      "percentage": 93,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767850800000,
+      "percentage": 93,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767851400000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767852000000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767852600000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767853200000,
+      "percentage": 91,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767853800000,
+      "percentage": 91,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767855900000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767856200000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767856500000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767856800000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767856800000,
+      "percentage": 95,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767857400000,
+      "percentage": 95,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767858000000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767858600000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767859200000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767859800000,
+      "percentage": 93,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767860400000,
+      "percentage": 93,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767861000000,
+      "percentage": 93,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767861600000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767862200000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767862800000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767863400000,
+      "percentage": 91,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767864000000,
+      "percentage": 91,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767866100000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767866400000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767866700000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767867000000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767867000000,
+      "percentage": 95,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767867600000,
+      "percentage": 95,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767868200000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767868800000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767869400000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767870000000,
+      "percentage": 93,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767870600000,
+      "percentage": 93,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767871200000,
+      "percentage": 93,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767871800000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767872400000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767873000000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767873600000,
+      "percentage": 91,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767874200000,
+      "percentage": 91,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767876300000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767876600000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767876900000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767877200000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767877200000,
+      "percentage": 95,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767877800000,
+      "percentage": 95,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767878400000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767879000000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767879600000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767880200000,
+      "percentage": 93,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767880800000,
+      "percentage": 93,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767881400000,
+      "percentage": 93,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767882000000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767882600000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767883200000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767883800000,
+      "percentage": 91,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767884400000,
+      "percentage": 91,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767886500000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767886800000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767887100000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767887400000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767887400000,
+      "percentage": 95,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767888000000,
+      "percentage": 95,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767888600000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767889200000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767889800000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767890400000,
+      "percentage": 93,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767891000000,
+      "percentage": 93,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767891600000,
+      "percentage": 93,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767892200000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767892800000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767893400000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767894000000,
+      "percentage": 91,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767894600000,
+      "percentage": 91,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767896700000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767897000000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767897300000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767897600000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767897600000,
+      "percentage": 95,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767898200000,
+      "percentage": 95,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767898800000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767899400000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767900000000,
+      "percentage": 94,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767900600000,
+      "percentage": 93,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767901200000,
+      "percentage": 93,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767901800000,
+      "percentage": 93,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767902400000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767903000000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767903600000,
+      "percentage": 92,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767904200000,
+      "percentage": 91,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767904800000,
+      "percentage": 91,
+      "charging": false,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767906900000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767907200000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767907500000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    },
+    {
+      "atUnixMs": 1767907800000,
+      "percentage": 95,
+      "charging": true,
+      "dpi": 800,
+      "pollingRateHz": 125,
+      "lightMode": "off",
+      "lightBrightness": null
+    }
+  ]
+}
