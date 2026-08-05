@@ -69,6 +69,12 @@ jobs:
         # 后若漏跑 `cargo update`，下游 model-pack 的 `cargo build --locked` 会失败。
         # 在 rust job 最前面校验，提前拦截。
         run: cargo run --package xtask -- handler check-lock
+      - name: Check rill dependency compatibility
+        # host rill-runtime-protocol / handler rill-ml / runtime release major.minor
+        # 必须一致；IPC API=2、handler ABI=1。任一不一致即失败。
+        run: node scripts/check-rill-compatibility.mjs
+      - name: Build battery handler with the committed lockfile
+        run: cargo build --manifest-path handlers/mira-battery-handler/Cargo.toml --locked
       - name: Create placeholder sidecar for lint/test
         # tauri-build 校验 externalBin 路径存在;rust job 不编译 sidecar(那是
         # tauri-bundle job 的职责),用空文件满足存在性检查即可。

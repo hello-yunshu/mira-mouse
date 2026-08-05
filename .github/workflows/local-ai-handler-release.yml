@@ -92,6 +92,9 @@ jobs:
           node scripts/inspect-mira-local-ai-index.mjs \
             artifacts/current/local-ai-stable-index.json
 
+      - name: Check rill dependency compatibility
+        run: node scripts/check-rill-compatibility.mjs --runtime-version "${{ steps.deployment.outputs.runtime-version }}"
+
       - name: Checkout Rill source matching the active Runtime
         uses: actions/checkout@v7
         with:
