@@ -14,8 +14,12 @@
 // 版本后必须同步 handler 的 Cargo.lock，否则 CI 的 xtask handler check-lock 会
 // 失败。本脚本在 handler 目录跑 `cargo update -p <path deps>` 自动同步。
 //
-// 用法：node scripts/sync-version.mjs
-// 若所有文件已是最新则不做任何写入，退出码 0。
+// 用法：
+//   node scripts/sync-version.mjs          本地普通模式：写入并同步
+//   node scripts/sync-version.mjs --check  CI 检查模式：只校验不写入，不同步则退出码 1
+// 普通模式若所有文件已是最新则不做任何写入，退出码 0。
+// 检查模式（CI 专用）绝不修改任何文件（含 handler Cargo.lock），版本或锁不同步
+// 时直接失败，提示开发者先在本地 `node scripts/sync-version.mjs` 更新后提交。
 
 import { readFile, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -53,6 +57,45 @@ async function syncFile(path, pattern, replacement, label, version) {
     console.log(`  ${label}: ${path}  (already ${version})`);
   }
   return changed;
+}
+
+/** 检查模式下只读打开文件，若版本占位符仍可被替换（即不同步）则报错并返回 true。 */
+async function checkFile(path, pattern, replacement, label, version) {
+  const text = await readFile(path, 'utf8');
+  const { changed } = replaceOnce(text, pattern, replacement, label);
+  if (changed) {
+    console.error(`  ${label}: ${path}  needs update → ${version}`);
+    return true;
+  }
+  console.log(`  ${label}: ${path}  (already ${version})`);
+  return false;
+}
+
+/**
+ * 检查模式下校验 handler Cargo.lock 中两个 path 依赖（mira-local-ai / mira-protocol）
+ * 是否已锁定到当前 workspace 版本。绝不运行 `cargo update`，避免 CI 修改锁文件。
+ */
+async function checkHandlerLock(version) {
+  const lockPath = 'handlers/mira-battery-handler/Cargo.lock';
+  if (!existsSync(lockPath)) {
+    console.log(`  handler lock: ${lockPath} not found, skipped`);
+    return false;
+  }
+  const text = await readFile(lockPath, 'utf8');
+  let out = false;
+  for (const name of ['mira-local-ai', 'mira-protocol']) {
+    const m = text.match(new RegExp(`name = "${name}"\\r?\\nversion = "([^"]+)"`));
+    if (!m) {
+      console.error(`  handler lock: ${name} missing from Cargo.lock`);
+      out = true;
+    } else if (m[1] !== version) {
+      console.error(`  handler lock: ${name} pinned ${m[1]}, workspace is ${version}`);
+      out = true;
+    } else {
+      console.log(`  handler lock: ${name} ${m[1]}  (already ${version})`);
+    }
+  }
+  return out;
 }
 
 /**
@@ -103,12 +146,16 @@ async function syncHandlerLock(version) {
 }
 
 const version = await readAppVersion();
-console.log(`syncing app version ${version} …`);
+const checkMode = process.argv.includes('--check');
+console.log(`[${checkMode ? 'check' : 'sync'}] app version ${version} …`);
 
+// 检查模式（CI）绝不写入；普通模式（本地）负责同步。共用同一套待同步目标，
+// 保证两者覆盖的版本源完全一致。
 let changed = false;
+const apply = checkMode ? checkFile : syncFile;
 
 // 1. CITATION.cff —— YAML 顶层 version: x.y.z（无引号）
-changed |= await syncFile(
+changed |= await apply(
   'CITATION.cff',
   /^(version:\s*)\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?/m,
   `$1${version}`,
@@ -117,7 +164,7 @@ changed |= await syncFile(
 );
 
 // 2. ROADMAP.md —— **版本 x.y.z**
-changed |= await syncFile(
+changed |= await apply(
   'ROADMAP.md',
   /(\*\*版本\s*)\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?(\s*\*\*)/,
   `$1${version}$2`,
@@ -128,7 +175,7 @@ changed |= await syncFile(
 // 3. publish=false 的 mira-local-ai 仍被独立 handler workspace 作为 path
 // 依赖使用。Cargo 对 prerelease 不做隐式 caret 匹配，因此这里必须与 workspace
 // 版本精确同步。
-changed |= await syncFile(
+changed |= await apply(
   'crates/mira-local-ai/Cargo.toml',
   /^(mira-protocol\s*=\s*\{\s*version\s*=\s*")\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?("\s*,\s*path\s*=\s*"\.\.\/mira-protocol"\s*\})/m,
   `$1${version}$2`,
@@ -136,8 +183,12 @@ changed |= await syncFile(
   version,
 );
 
-// 4. handler Cargo.lock —— 同步 path 依赖到当前 workspace 版本
-changed |= await syncHandlerLock(version);
+// 4. handler Cargo.lock —— 普通模式同步 path 依赖；检查模式只校验已提交锁
+if (checkMode) {
+  changed |= await checkHandlerLock(version);
+} else {
+  changed |= await syncHandlerLock(version);
+}
 
 // 5. README 直链 —— `releases/latest` 保持标签动态，文件名中的版本号仍需
 // 与构建产物一致。中英文各同步三种平台资产。
@@ -147,7 +198,7 @@ for (const path of ['README.md', 'README.en.md']) {
     ['Windows download', 'Mira_Windows_', '_x64-setup.exe'],
     ['Linux download', 'Mira_Linux_', '_amd64.AppImage'],
   ]) {
-    changed |= await syncFile(
+    changed |= await apply(
       path,
       new RegExp(`(releases/latest/download/${prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})\\d+\\.\\d+\\.\\d+(?:[-+][0-9A-Za-z.-]+)?(${suffix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`),
       `$1${version}$2`,
@@ -157,7 +208,16 @@ for (const path of ['README.md', 'README.en.md']) {
   }
 }
 
-if (changed) {
+if (checkMode) {
+  if (changed) {
+    console.error(
+      '\nsync check FAILED: version or handler lock is out of sync.\n' +
+        'Run `node scripts/sync-version.mjs` locally, review the diff, and commit.',
+    );
+    process.exit(1);
+  }
+  console.log('sync check passed: all version sources already in sync');
+} else if (changed) {
   console.log('sync complete: some files updated');
 } else {
   console.log('sync complete: all files already in sync');

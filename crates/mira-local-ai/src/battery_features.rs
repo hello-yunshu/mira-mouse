@@ -233,6 +233,9 @@ pub enum SchemaMismatchKind {
     SchemaId,
     SchemaHash,
     ModelDescriptorHash,
+    /// 三个身份字段（schema_id / schema_hash / model_descriptor_hash）只出现
+    /// 一个或两个，属于半填写，一律视为不匹配，防止身份被部分绕过。
+    IncompleteIdentity,
 }
 
 impl std::fmt::Display for SchemaMismatchKind {
@@ -241,6 +244,7 @@ impl std::fmt::Display for SchemaMismatchKind {
             SchemaMismatchKind::SchemaId => formatter.write_str("schema id"),
             SchemaMismatchKind::SchemaHash => formatter.write_str("schema hash"),
             SchemaMismatchKind::ModelDescriptorHash => formatter.write_str("model descriptor hash"),
+            SchemaMismatchKind::IncompleteIdentity => formatter.write_str("incomplete identity"),
         }
     }
 }
@@ -258,40 +262,50 @@ pub fn check_schema_identity(
     let declared_schema_id = config.schema_id.as_deref();
     let declared_schema_hash = config.schema_hash.as_deref();
     let declared_descriptor_hash = config.model_descriptor_hash.as_deref();
-    if declared_schema_id.is_none()
-        && declared_schema_hash.is_none()
-        && declared_descriptor_hash.is_none()
-    {
+    let has_any = declared_schema_id.is_some()
+        || declared_schema_hash.is_some()
+        || declared_descriptor_hash.is_some();
+    let has_all = declared_schema_id.is_some()
+        && declared_schema_hash.is_some()
+        && declared_descriptor_hash.is_some();
+
+    // 三个身份字段全部缺失 → legacy 模型包，走兼容路径。
+    if !has_any {
         return Ok(SchemaIdentity::LegacyModelPack);
     }
-    if let Some(expected) = declared_schema_id {
-        if expected != BATTERY_SCHEMA_ID {
-            return Ok(SchemaIdentity::Mismatch(SchemaIdentityMismatch {
-                kind: SchemaMismatchKind::SchemaId,
-                expected: expected.to_owned(),
-                actual: Some(BATTERY_SCHEMA_ID.to_owned()),
-            }));
-        }
+    // 只出现一个或两个字段 → 半填写，一律视为不匹配，防止身份被部分绕过。
+    if !has_all {
+        return Ok(SchemaIdentity::Mismatch(SchemaIdentityMismatch {
+            kind: SchemaMismatchKind::IncompleteIdentity,
+            expected: "all three identity fields (schema_id, schema_hash, model_descriptor_hash)"
+                .to_owned(),
+            actual: Some("partial identity fields present".to_owned()),
+        }));
     }
-    if let Some(expected) = declared_schema_hash {
-        let actual = battery_schema_hash_hex()?;
-        if expected != actual {
-            return Ok(SchemaIdentity::Mismatch(SchemaIdentityMismatch {
-                kind: SchemaMismatchKind::SchemaHash,
-                expected: expected.to_owned(),
-                actual: Some(actual),
-            }));
-        }
+
+    // 下面是 expected = 当前实现、actual = 模型包声明 的语义。
+    if declared_schema_id.unwrap() != BATTERY_SCHEMA_ID {
+        return Ok(SchemaIdentity::Mismatch(SchemaIdentityMismatch {
+            kind: SchemaMismatchKind::SchemaId,
+            expected: BATTERY_SCHEMA_ID.to_owned(),
+            actual: Some(declared_schema_id.unwrap().to_owned()),
+        }));
     }
-    if let Some(expected) = declared_descriptor_hash {
-        let actual = battery_model_descriptor_hash_hex(config)?;
-        if expected != actual {
-            return Ok(SchemaIdentity::Mismatch(SchemaIdentityMismatch {
-                kind: SchemaMismatchKind::ModelDescriptorHash,
-                expected: expected.to_owned(),
-                actual: Some(actual),
-            }));
-        }
+    let schema_hash = battery_schema_hash_hex()?;
+    if declared_schema_hash.unwrap() != schema_hash {
+        return Ok(SchemaIdentity::Mismatch(SchemaIdentityMismatch {
+            kind: SchemaMismatchKind::SchemaHash,
+            expected: schema_hash,
+            actual: Some(declared_schema_hash.unwrap().to_owned()),
+        }));
+    }
+    let descriptor_hash = battery_model_descriptor_hash_hex(config)?;
+    if declared_descriptor_hash.unwrap() != descriptor_hash {
+        return Ok(SchemaIdentity::Mismatch(SchemaIdentityMismatch {
+            kind: SchemaMismatchKind::ModelDescriptorHash,
+            expected: descriptor_hash,
+            actual: Some(declared_descriptor_hash.unwrap().to_owned()),
+        }));
     }
     Ok(SchemaIdentity::Matched)
 }
@@ -523,12 +537,22 @@ mod tests {
         }
     }
 
-    #[test]
-    fn matching_identity_is_accepted() {
+    /// 构造一个三个身份字段全部正确声明的配置，供各测试单独破坏其中一个字段。
+    fn identified_config() -> BatteryModelConfig {
         let mut config = config();
         config.schema_id = Some(BATTERY_SCHEMA_ID.to_owned());
         config.schema_hash = Some(battery_schema_hash_hex().unwrap());
         config.model_descriptor_hash = Some(battery_model_descriptor_hash_hex(&config).unwrap());
+        assert!(matches!(
+            check_schema_identity(&config).unwrap(),
+            SchemaIdentity::Matched
+        ));
+        config
+    }
+
+    #[test]
+    fn matching_identity_is_accepted() {
+        let config = identified_config();
         match check_schema_identity(&config).unwrap() {
             SchemaIdentity::Matched => {}
             other => panic!("expected Matched, got {other:?}"),
@@ -536,12 +560,76 @@ mod tests {
     }
 
     #[test]
-    fn wrong_schema_hash_is_rejected() {
+    fn only_schema_id_is_incomplete() {
         let mut config = config();
+        config.schema_id = Some(BATTERY_SCHEMA_ID.to_owned());
+        assert!(matches!(
+            check_schema_identity(&config).unwrap(),
+            SchemaIdentity::Mismatch(m) if m.kind == SchemaMismatchKind::IncompleteIdentity
+        ));
+    }
+
+    #[test]
+    fn only_schema_hash_is_incomplete() {
+        let mut config = config();
+        config.schema_hash = Some(battery_schema_hash_hex().unwrap());
+        assert!(matches!(
+            check_schema_identity(&config).unwrap(),
+            SchemaIdentity::Mismatch(m) if m.kind == SchemaMismatchKind::IncompleteIdentity
+        ));
+    }
+
+    #[test]
+    fn only_descriptor_hash_is_incomplete() {
+        let mut config = config();
+        config.model_descriptor_hash = Some(battery_model_descriptor_hash_hex(&config).unwrap());
+        assert!(matches!(
+            check_schema_identity(&config).unwrap(),
+            SchemaIdentity::Mismatch(m) if m.kind == SchemaMismatchKind::IncompleteIdentity
+        ));
+    }
+
+    #[test]
+    fn any_two_identity_fields_is_incomplete() {
+        // schema_id + schema_hash，缺 descriptor_hash。
+        let mut config = identified_config();
+        config.model_descriptor_hash = None;
+        assert!(matches!(
+            check_schema_identity(&config).unwrap(),
+            SchemaIdentity::Mismatch(m) if m.kind == SchemaMismatchKind::IncompleteIdentity
+        ));
+
+        // schema_id + descriptor_hash，缺 schema_hash。
+        let mut config = identified_config();
+        config.schema_hash = None;
+        assert!(matches!(
+            check_schema_identity(&config).unwrap(),
+            SchemaIdentity::Mismatch(m) if m.kind == SchemaMismatchKind::IncompleteIdentity
+        ));
+
+        // schema_hash + descriptor_hash，缺 schema_id。
+        let mut config = identified_config();
+        config.schema_id = None;
+        assert!(matches!(
+            check_schema_identity(&config).unwrap(),
+            SchemaIdentity::Mismatch(m) if m.kind == SchemaMismatchKind::IncompleteIdentity
+        ));
+    }
+
+    #[test]
+    fn wrong_schema_hash_is_rejected() {
+        let mut config = identified_config();
         config.schema_hash = Some("0".repeat(64));
         match check_schema_identity(&config).unwrap() {
             SchemaIdentity::Mismatch(mismatch) => {
                 assert_eq!(mismatch.kind, SchemaMismatchKind::SchemaHash);
+                // expected = 当前实现；actual = 模型包声明。
+                assert_eq!(
+                    mismatch.expected,
+                    battery_schema_hash_hex().unwrap(),
+                    "expected must be the current implementation hash"
+                );
+                assert_eq!(mismatch.actual, Some("0".repeat(64)));
             }
             other => panic!("expected Mismatch, got {other:?}"),
         }
@@ -549,11 +637,34 @@ mod tests {
 
     #[test]
     fn wrong_schema_id_is_rejected() {
-        let mut config = config();
+        let mut config = identified_config();
         config.schema_id = Some("mira-battery-feature-schema-v2".to_owned());
         match check_schema_identity(&config).unwrap() {
             SchemaIdentity::Mismatch(mismatch) => {
                 assert_eq!(mismatch.kind, SchemaMismatchKind::SchemaId);
+                assert_eq!(mismatch.expected, BATTERY_SCHEMA_ID);
+                assert_eq!(
+                    mismatch.actual,
+                    Some("mira-battery-feature-schema-v2".to_owned())
+                );
+            }
+            other => panic!("expected Mismatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn wrong_descriptor_hash_is_rejected() {
+        let mut config = identified_config();
+        config.model_descriptor_hash = Some("0".repeat(64));
+        match check_schema_identity(&config).unwrap() {
+            SchemaIdentity::Mismatch(mismatch) => {
+                assert_eq!(mismatch.kind, SchemaMismatchKind::ModelDescriptorHash);
+                assert_eq!(
+                    mismatch.expected,
+                    battery_model_descriptor_hash_hex(&config).unwrap(),
+                    "expected must be the current implementation descriptor hash"
+                );
+                assert_eq!(mismatch.actual, Some("0".repeat(64)));
             }
             other => panic!("expected Mismatch, got {other:?}"),
         }
@@ -562,11 +673,11 @@ mod tests {
     #[test]
     fn same_feature_count_but_different_order_is_rejected() {
         // feature_count 仍为 9，但 schema hash 不匹配 → 拒绝。
-        let mut config = config();
+        let mut config = identified_config();
         config.schema_hash = Some("0".repeat(64));
         assert!(matches!(
             check_schema_identity(&config).unwrap(),
-            SchemaIdentity::Mismatch(_)
+            SchemaIdentity::Mismatch(m) if m.kind == SchemaMismatchKind::SchemaHash
         ));
     }
 

@@ -40,10 +40,11 @@ stateful_handler_enabled    = false   # 阶段 5 状态化 handler（默认关�
 - 关闭：`robust_detection_enabled = false`。
 - 检测器只提供辅助信号（`anomaly_downweight` / 建议动作），**从不**删除数据或重置模型。
 
-### 2.3 状态化 handler
+### 2.3 状态化模型骨架
 
-- 关闭：`stateful_handler_enabled = false`。
-- 开启时仅尝试实验路径，handshake 失败自动回退到 IPC V2。
+- 关闭：`stateful_handler_enabled = false`（默认）。
+- 本阶段仅库内骨架，**未接入** IPC V3 / WIT v2 / host 双栈握手；不存在
+  "handshake 失败自动回退"的运行时路径。默认生产路径始终为 IPC V2。
 
 ### 2.4 legacy 模型兼容
 
@@ -54,12 +55,12 @@ stateful_handler_enabled    = false   # 阶段 5 状态化 handler（默认关�
 ## 3. 运行期回退链
 
 ```text
-Stateful Handler v2
-   ↓（关闭或 handshake 失败）
 Stateless IPC V2 Handler v1
    ↓（model 质量门不通过 / schema 不匹配 / handler 调用失败）
 确定性预测（Deterministic prediction）
 ```
+
+> 状态化模型骨架（阶段 5）尚未接入 IPC / runtime，因此不参与运行期回退链。
 
 结构化回退原因（`fallback_reason`）：
 
