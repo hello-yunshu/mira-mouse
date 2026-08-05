@@ -1,5 +1,9 @@
 {
   "featureCount": 9,
+  "schemaId": "mira-battery-feature-schema-v1",
+  "schemaHash": "c9f88d13189b747ed66b10b6e1490efe908c4d61a2cefff531e374f6482460e7",
+  "modelDescriptorHash": "53b757d06391be70066bb065ad3760ccfe46ffb8551e08fe61ef16fa7a5ee493",
+  "weightedLearningEnabled": false,
   "learningRate": 0.03,
   "l2": 0.001,
   "huberDelta": 5.0,

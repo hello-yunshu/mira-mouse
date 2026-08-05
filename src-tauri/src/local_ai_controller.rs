@@ -1178,6 +1178,10 @@ mod tests {
             validation_samples: 10,
             baseline_mae: Some(2.0),
             candidate_mae: Some(1.0),
+            weighted_mae: None,
+            recent_mae: None,
+            effective_sample_weight: None,
+            schema_status: None,
         }
     }
 

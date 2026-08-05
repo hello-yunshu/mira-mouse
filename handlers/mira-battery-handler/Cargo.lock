@@ -188,6 +188,8 @@ dependencies = [
  "chrono",
  "mira-protocol",
  "rill-ml",
+ "serde_json",
+ "sha2",
  "thiserror 2.0.19",
 ]
 
