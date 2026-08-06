@@ -25,6 +25,17 @@ import {
 import { friendlyUpdateError } from './update-errors';
 import { DEFAULT_LOCAL_AI_FEATURES, LOCAL_AI_FEATURE, localAiFeatureEnabled, setLocalAiFeature } from './localAi';
 import { LogPage } from './logs/LogPage';
+import {
+  ATTENTION_PRIORITY,
+  AttentionSurface,
+  attentionDesaturatedAccent,
+  attentionLocalAiInstalledKey,
+  attentionLocalAiUpdateKey,
+  attentionPluginInstalledKey,
+  attentionPluginUpdateKey,
+  useAttentionFeedback,
+  type AttentionBeamRequest,
+} from './attention';
 
 const DEFAULT_SETTINGS: AppSettings = {
   language: 'auto',
@@ -414,6 +425,103 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
     return () => clearTimeout(timer);
   }, [localAiUpdate.phase, localAiUpdate.error]);
 
+  // ── Attention Beam：插件 / 本地 AI 固定更新行（§5.7、§5.8、§11） ──────
+  // 只在真实的 updateAvailable 迁移（或安装完成）时播放一次；初次挂载时
+  // 已有状态不触发；多个插件可更新时只强调第一个新出现的更新行。
+  const pluginRowAttention = useAttentionFeedback('settings-plugin');
+  const localAiRowAttention = useAttentionFeedback('settings-local-ai');
+  const pluginRowAnnounce = pluginRowAttention.announce;
+  const localAiRowAnnounce = localAiRowAttention.announce;
+
+  const prevAvailablePluginsRef = useRef<string[] | undefined>(undefined);
+  const prevAvailableLocalAiRef = useRef<{ initialized: boolean; available: boolean; version?: string }>({ initialized: false, available: false });
+  const prevPluginPhaseRef = useRef<PluginUpdateState['phase']>('idle');
+  const prevLocalAiPhaseRef = useRef<LocalAiUpdateState['phase']>('idle');
+
+  useEffect(() => {
+    const available = pluginUpdate.updates
+      .filter((item) => item.updateAvailable && item.availableVersion)
+      .map((item) => `${item.pluginId}@${item.availableVersion}`);
+    if (prevAvailablePluginsRef.current === undefined) {
+      prevAvailablePluginsRef.current = available;
+      return;
+    }
+    const prev = prevAvailablePluginsRef.current;
+    prevAvailablePluginsRef.current = available;
+    const fresh = available.find((key) => !prev.includes(key));
+    if (fresh) {
+      const [pluginId, version] = fresh.split('@');
+      pluginRowAnnounce({
+        eventKey: attentionPluginUpdateKey(pluginId, String(version)),
+        scope: 'settings-plugin',
+        variant: 'line',
+        color: attentionDesaturatedAccent(),
+        durationMs: 1600,
+        strength: 0.18,
+        cycles: 1,
+        priority: ATTENTION_PRIORITY['update-available'],
+      });
+    }
+  }, [pluginUpdate, pluginRowAnnounce]);
+
+  useEffect(() => {
+    const item = localAiUpdate.updates.find((candidate) => candidate.component === 'bundle');
+    const available = Boolean(item?.updateAvailable && item?.availableVersion);
+    const version = available && item ? item.availableVersion : undefined;
+    const prev = prevAvailableLocalAiRef.current;
+    prevAvailableLocalAiRef.current = { initialized: true, available, version };
+    if (!prev.initialized) return;
+    if (available && (!prev.available || prev.version !== version)) {
+      localAiRowAnnounce({
+        eventKey: attentionLocalAiUpdateKey('bundle', String(version)),
+        scope: 'settings-local-ai',
+        variant: 'line',
+        color: attentionDesaturatedAccent(),
+        durationMs: 1600,
+        strength: 0.18,
+        cycles: 1,
+        priority: ATTENTION_PRIORITY['update-available'],
+      });
+    }
+  }, [localAiUpdate, localAiRowAnnounce]);
+
+  useEffect(() => {
+    const prev = prevPluginPhaseRef.current;
+    prevPluginPhaseRef.current = pluginUpdate.phase;
+    if (prev === 'installed' || pluginUpdate.phase !== 'installed') return;
+    if (pluginUpdate.lastInstalledPluginId && pluginUpdate.lastInstalledVersion) {
+      pluginRowAnnounce({
+        eventKey: attentionPluginInstalledKey(pluginUpdate.lastInstalledPluginId, pluginUpdate.lastInstalledVersion),
+        scope: 'settings-plugin',
+        variant: 'flash',
+        color: attentionDesaturatedAccent(),
+        durationMs: 950,
+        strength: 0.2,
+        cycles: 1,
+        priority: ATTENTION_PRIORITY['lighting-color-applied'],
+      });
+    }
+  }, [pluginUpdate, pluginRowAnnounce]);
+
+  useEffect(() => {
+    const prev = prevLocalAiPhaseRef.current;
+    prevLocalAiPhaseRef.current = localAiUpdate.phase;
+    if (prev === 'installed' || localAiUpdate.phase !== 'installed') return;
+    const bundleVersion = localAiUpdate.updates.find((candidate) => candidate.component === 'bundle')?.currentVersion ?? localAiStatus.runtimeVersion;
+    if (bundleVersion) {
+      localAiRowAnnounce({
+        eventKey: attentionLocalAiInstalledKey('bundle', bundleVersion),
+        scope: 'settings-local-ai',
+        variant: 'flash',
+        color: attentionDesaturatedAccent(),
+        durationMs: 950,
+        strength: 0.2,
+        cycles: 1,
+        priority: ATTENTION_PRIORITY['lighting-color-applied'],
+      });
+    }
+  }, [localAiUpdate, localAiStatus.runtimeVersion, localAiRowAnnounce]);
+
   useEffect(() => {
     onBatteryUsageSettingsChange?.({
       batteryHistoryEnabled: settings.batteryHistoryEnabled,
@@ -581,6 +689,26 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
       notifyError(t('notification.rollbackLocalAiFailed'), friendlyUpdateError(error));
     }
   }
+
+  // 固定更新行的光束归属：本地 AI 行只认 update:local-ai:bundle:*；
+  // 插件行只认它自己的 available / installed 事件键（其余更新行不发光）。
+  const localAiRowBeam = localAiRowAttention.beam && localAiRowAttention.beam.eventKey.startsWith('update:local-ai:bundle')
+    ? localAiRowAttention.beam
+    : null;
+  const pluginRowBeamFor = (pluginId: string): AttentionBeamRequest | null => {
+    const beam = pluginRowAttention.beam;
+    if (!beam) return null;
+    const updateItem = pluginUpdate.updates.find((item) => item.pluginId === pluginId);
+    if (updateItem?.updateAvailable && updateItem.availableVersion
+      && beam.eventKey === attentionPluginUpdateKey(pluginId, updateItem.availableVersion)) {
+      return beam;
+    }
+    if (pluginUpdate.lastInstalledPluginId === pluginId && pluginUpdate.lastInstalledVersion
+      && beam.eventKey === attentionPluginInstalledKey(pluginId, pluginUpdate.lastInstalledVersion)) {
+      return beam;
+    }
+    return null;
+  };
 
   if (subview === 'logs') {
     return <LogPage onBack={() => setSubview('main')} />;
@@ -928,12 +1056,12 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
                 {!localAiStatus.rollbackAvailable && <span className="badge">{t('settings.localAi.defaultBundled')}</span>}
               </div>
               {localAiUpdate.updates.find((item) => item.component === 'bundle')?.updateAvailable && (
-                <div className="plugin-update-row">
+                <AttentionSurface className="plugin-update-row" beam={localAiRowBeam}>
                   <span className="setting-hint">{t('settings.localAi.updatable', { version: localAiUpdate.updates.find((item) => item.component === 'bundle')?.availableVersion })}</span>
                   <button className="primary" disabled={localAiUpdate.phase === 'downloading'} onClick={() => void handleLocalAiInstall()}>
                     {localAiUpdate.phase === 'downloading' ? t('settings.localAi.updating') : t('settings.localAi.updateBundle')}
                   </button>
-                </div>
+                </AttentionSurface>
               )}
               {localAiUpdate.phase === 'downloading' && (
                 <div className="update-progress" aria-live="polite">
@@ -1009,7 +1137,7 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
                       {plugin.bundleByDefault && <span className="badge">{t('settings.pluginUpdate.defaultBundled')}</span>}
                     </div>
                     {pluginUpdates.find((item) => item.pluginId === plugin.pluginId)?.updateAvailable && (
-                      <div className="plugin-update-row">
+                      <AttentionSurface className="plugin-update-row" beam={pluginRowBeamFor(plugin.pluginId)}>
                         <span className="setting-hint">{t('settings.pluginUpdate.updatable', { version: pluginUpdates.find((item) => item.pluginId === plugin.pluginId)?.availableVersion })}</span>
                         <button
                           className="primary"
@@ -1018,7 +1146,7 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
                         >
                           {isInstallingThis ? t('settings.pluginUpdate.updating') : t('settings.pluginUpdate.update')}
                         </button>
-                      </div>
+                      </AttentionSurface>
                     )}
                     {isInstallingThis && (
                       <div className="update-progress" aria-live="polite">

@@ -1,0 +1,91 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later
+   Attention Beam —— 克制型一次性边缘光束（Mira 自有的精简实现）。
+   参考 border-beam 的边缘遮罩与运动思路，不引入外部依赖，不改宿主布局。 */
+
+.attention-beam {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border-radius: inherit;
+  overflow: hidden;
+  pointer-events: none;
+  opacity: var(--beam-o, 0.5);
+}
+
+.attention-beam__cycle {
+  position: absolute;
+  inset: 0;
+  display: block;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+}
+
+/* ===== line：沿边缘的一次性扫光（conic 楔形 + 环形遮罩，绕边一圈） ===== */
+.attention-beam--line .attention-beam__cycle {
+  background: conic-gradient(
+    from 0deg,
+    color-mix(in oklch, var(--beam-color, #ffffff) 70%, transparent) 0deg,
+    transparent 72deg
+  );
+  animation: attention-line-sweep var(--beam-duration, 1700ms) var(--motion-ease-standard, ease-in-out) both;
+}
+
+@keyframes attention-line-sweep {
+  0% { transform: rotate(0deg); opacity: 0; }
+  6% { opacity: 1; }
+  94% { opacity: 1; }
+  100% { transform: rotate(360deg); opacity: 0; }
+}
+
+/* ===== pulse-inner ===== */
+/* 两次呼吸（box-shadow 内亮 + 轻微缩放），结束后停止。 */
+.attention-beam--pulse-inner .attention-beam__cycle {
+  box-shadow:
+    inset 0 0 0 1px color-mix(in oklch, var(--beam-color, #ffffff) 85%, transparent),
+    inset 0 0 22px color-mix(in oklch, var(--beam-color, #ffffff) 42%, transparent);
+  animation: pulse-inner-breath var(--beam-duration, 2400ms) var(--motion-ease-out, ease-out) both;
+}
+
+@keyframes pulse-inner-breath {
+  0% { opacity: 0; transform: scale(0.985); }
+  16% { opacity: 1; }
+  55% { opacity: 0.45; }
+  100% { opacity: 0; transform: scale(1); }
+}
+
+/* ===== flash ===== */
+/* 一次性短内部亮边，不完整绕圈，不常驻。 */
+.attention-beam--flash .attention-beam__cycle {
+  box-shadow:
+    inset 0 0 0 1px color-mix(in oklch, var(--beam-color, #ffffff) 90%, transparent),
+    inset 0 0 26px color-mix(in oklch, var(--beam-color, #ffffff) 34%, transparent);
+  animation: flash-ring var(--beam-duration, 900ms) var(--motion-ease-out, ease-out) both;
+}
+
+@keyframes flash-ring {
+  0% { opacity: 0; }
+  12% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+/* ===== Reduced Motion ===== */
+/* 优先改成约 220ms 的静态边框淡入淡出；不得保留绕边移动动画。 */
+@media (prefers-reduced-motion: reduce) {
+  .attention-beam__cycle {
+    animation: attention-static-fade 220ms ease-in-out both !important;
+    animation-delay: 0ms !important;
+    animation-iteration-count: 1 !important;
+  }
+  .attention-beam--line .attention-beam__cycle {
+    background: transparent;
+    box-shadow: inset 0 0 0 1.5px color-mix(in oklch, var(--beam-color, #ffffff) 78%, transparent);
+  }
+}
+
+@keyframes attention-static-fade {
+  0% { opacity: 0; }
+  25% { opacity: 1; }
+  75% { opacity: 1; }
+  100% { opacity: 0; }
+}

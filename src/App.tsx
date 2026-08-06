@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useTransition } from 'react';
+import { useCallback, useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState, useTransition } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -64,10 +64,28 @@ import {
   simulateDemoMutation,
 } from './pluginAdapter';
 import { onAppNotification, notifyError, notifySuccess, type AppNotification } from './notify';
+import {
+  ATTENTION_PRIORITY,
+  AttentionBeamLayer,
+  AttentionSurface,
+  LightingAttention,
+  attentionAppRestartKey,
+  attentionAppUpdateKey,
+  attentionColorForZone,
+  attentionDesaturatedAccent,
+  attentionDeviceKey,
+  attentionLocalAiUpdateKey,
+  attentionPluginUpdateKey,
+  announceAttentionRequest,
+  reduceDeviceAttention,
+  useAttentionFeedback,
+  type AttentionBeamRequest,
+  type DeviceAttentionContext,
+} from './attention';
 import { useScrollFadeState } from './useScrollOverflow';
-import { relaunchAfterUpdate, startAutomaticAppUpdateCheck, recordUpdateReminderDismissed, recordUpdateReminderIgnored, remindInstalledUpdateOnShown } from './updater';
-import { startAutomaticPluginUpdateCheck } from './plugin-updater';
-import { startAutomaticLocalAiUpdateCheck } from './local-ai-updater';
+import { appUpdateState, relaunchAfterUpdate, startAutomaticAppUpdateCheck, recordUpdateReminderDismissed, recordUpdateReminderIgnored, remindInstalledUpdateOnShown } from './updater';
+import { pluginUpdateState, startAutomaticPluginUpdateCheck } from './plugin-updater';
+import { localAiUpdateState, startAutomaticLocalAiUpdateCheck } from './local-ai-updater';
 import { initUpdatePriorityCoordinator } from './update-priority';
 import { LOCAL_AI_FEATURE, localAiFeatureEnabled } from './localAi';
 import { segmentedIndicatorStyle } from './segmentedControl';
@@ -2073,6 +2091,9 @@ function ZoneRenderer({ capability, device, writeBusy, runMutation }: {
   // 灯光区域标题（鼠标灯光/接收器灯光）的淡入淡出状态机。
   // Hooks 必须在条件返回之前调用，所以 activeZone 在此安全派生。
   const activeZone = zones.length > 0 ? (zones.find((z) => z.id === activeZoneId) ?? zones[0]) : undefined;
+
+  // 灯光 Zone 的 Attention 表面：只渲染本 Zone 发生的真实状态迁移。
+  const zoneAttention = useAttentionFeedback(`lighting:${activeZone?.id ?? ''}`);
   const currentLabel = activeZone ? resolveLabelKey(activeZone.labelKey, device.pluginId) : '';
   const [displayedLabel, setDisplayedLabel] = useState(currentLabel);
   const [titlePhase, setTitlePhase] = useState<'in' | 'out' | 'waiting'>('waiting');
@@ -2165,6 +2186,15 @@ function ZoneRenderer({ capability, device, writeBusy, runMutation }: {
 
   return (
     <>
+      <LightingAttention
+        zoneId={activeZone.id}
+        enabled={zoneLightingEnabled(activeZone, device)}
+        color={zoneColor}
+        effectValue={(() => {
+          const effectField = activeZone.fields.find((field) => field.lightingRole === 'effect');
+          return effectField ? readPath(device, effectField.source) : undefined;
+        })()}
+      />
       {multipleZones && (
         <div
           className="lighting-sub-tabs segmented-slider"
@@ -2202,7 +2232,10 @@ function ZoneRenderer({ capability, device, writeBusy, runMutation }: {
         />
       )}
       <div className="lighting-sections" aria-label={i18n.t('dashboard.lightingGroups')}>
-        <div className={`lighting-group lighting-group-${activeZone.id}${compactDetailGrid ? ' is-compact' : ''}`}>
+        <AttentionSurface
+          className={`lighting-group lighting-group-${activeZone.id}${compactDetailGrid ? ' is-compact' : ''}`}
+          beam={zoneAttention.beam}
+        >
           <p className="lighting-group-title" data-title-phase={titlePhase}>{displayedLabel}</p>
           <div
             className={`lighting-rows${compactDetailGrid ? ' is-compact' : ''}`}
@@ -2223,7 +2256,7 @@ function ZoneRenderer({ capability, device, writeBusy, runMutation }: {
               </div>
             ))}
           </div>
-        </div>
+        </AttentionSurface>
       </div>
       {colorField && colorMutation && editingColorZoneId === activeZone.id && (
         <FieldEditModal
@@ -2915,6 +2948,8 @@ function Dashboard({
   const [writeBusy, setWriteBusy] = useState(false);
   const [editingField, setEditingField] = useState<{ capability: PluginCapability; field: PluginField } | null>(null);
   const [statusSwitchRestoreValues, setStatusSwitchRestoreValues] = useState<Record<string, unknown>>({});
+  // 设备 等待→就绪 / 断开→恢复 的一次性 Attention（渲染在控制台上）。
+  const deviceAttention = useAttentionFeedback('device:app');
   const forcedPreviewMessage = demoMode
     && new URLSearchParams(window.location.search).get('preview') === 'writing'
     ? t('dashboard.writing')
@@ -3676,6 +3711,7 @@ function Dashboard({
             sync={contextMotionSync}
           />
         </div>
+        {deviceAttention.beam && <AttentionBeamLayer active request={deviceAttention.beam} />}
         {visiblePreviewMessage && <p className="preview-message">{visiblePreviewMessage}</p>}
         {editingField && (
           <FieldEditModal
@@ -3733,6 +3769,78 @@ function Dashboard({
       )}
     </main>
   );
+}
+
+/** 把「更新语义」的应用内通知映射为通知浮层上的 Attention 请求（§5.4~5.6）。
+ *  用户当前正位于对应固定更新页面时返回 undefined —— 由固定更新行播放（§11 仲裁）。 */
+function resolveNotificationBeam(notification: AppNotification, currentView: View, currentSettingsTab: SettingsTab): AttentionBeamRequest | undefined {
+  switch (notification.action) {
+    case 'about-update': {
+      if (currentView === 'about') return undefined;
+      const state = appUpdateState();
+      if (state.phase !== 'available' || !state.version) return undefined;
+      return {
+        eventKey: attentionAppUpdateKey(state.version),
+        scope: 'notification:app',
+        variant: 'line',
+        color: attentionDesaturatedAccent(),
+        durationMs: 1650,
+        strength: 0.2,
+        cycles: 1,
+        delayMs: 200,
+        priority: ATTENTION_PRIORITY['update-available'],
+      };
+    }
+    case 'relaunch': {
+      if (currentView === 'about') return undefined;
+      const state = appUpdateState();
+      if (state.phase !== 'installed' || !state.version) return undefined;
+      return {
+        eventKey: attentionAppRestartKey(state.version),
+        scope: 'notification:app',
+        variant: 'pulse-inner',
+        color: attentionDesaturatedAccent(),
+        durationMs: 2400,
+        strength: 0.16,
+        cycles: 2,
+        priority: ATTENTION_PRIORITY['restart-required'],
+      };
+    }
+    case 'settings-plugin-update': {
+      if (currentView === 'settings' && currentSettingsTab === 'plugins') return undefined;
+      const info = pluginUpdateState().updates.find((item) => item.updateAvailable);
+      if (!info?.availableVersion) return undefined;
+      return {
+        eventKey: attentionPluginUpdateKey(info.pluginId, info.availableVersion),
+        scope: 'notification:app',
+        variant: 'line',
+        color: attentionDesaturatedAccent(),
+        durationMs: 1600,
+        strength: 0.18,
+        cycles: 1,
+        delayMs: 200,
+        priority: ATTENTION_PRIORITY['update-available'],
+      };
+    }
+    case 'settings-local-ai-update': {
+      if (currentView === 'settings' && currentSettingsTab === 'plugins') return undefined;
+      const info = localAiUpdateState().updates.find((item) => item.updateAvailable);
+      if (!info?.availableVersion) return undefined;
+      return {
+        eventKey: attentionLocalAiUpdateKey(info.component, info.availableVersion),
+        scope: 'notification:app',
+        variant: 'line',
+        color: attentionDesaturatedAccent(),
+        durationMs: 1600,
+        strength: 0.18,
+        cycles: 1,
+        delayMs: 200,
+        priority: ATTENTION_PRIORITY['update-available'],
+      };
+    }
+    default:
+      return undefined;
+  }
 }
 
 export default function App() {
@@ -3810,6 +3918,16 @@ export default function App() {
   }, []);
 
   useEffect(() => onAppNotification(setAppNotification), []);
+
+  // ── Attention Beam：通知浮层表面 ──────────────────────────────────────
+  const notificationAttention = useAttentionFeedback('notification:app');
+  const notificationAnnounce = notificationAttention.announce;
+  const handleAppNotification = useEffectEvent((nextNotification: AppNotification) => {
+    setAppNotification(nextNotification);
+    const beam = resolveNotificationBeam(nextNotification, view, settingsTab);
+    if (beam) notificationAnnounce(beam);
+  });
+  useEffect(() => onAppNotification(handleAppNotification), []);
 
   useEffect(() => {
     if (pureWeb) return;
@@ -3991,6 +4109,34 @@ export default function App() {
     () => connectedBatteryUsageTargets(deviceEntries),
     [deviceEntries],
   );
+
+  // ── Attention Beam：设备 等待→就绪 / 断开→恢复 ───────────────────────
+  // 只对真实状态迁移播放；启动即在线的设备不算事件，轮询读到相同状态不触发。
+  const deviceWatchRef = useRef<DeviceAttentionContext>({ previous: undefined, wasReady: false, cycle: 0 });
+  const deviceWatchStartedAtRef = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    if (deviceWatchStartedAtRef.current === undefined) {
+      deviceWatchStartedAtRef.current = Date.now();
+    }
+    const nextReady = device != null && device.mouseReady !== false;
+    const elapsedMs = Date.now() - deviceWatchStartedAtRef.current;
+    const outcome = reduceDeviceAttention(deviceWatchRef.current, nextReady, elapsedMs);
+    deviceWatchRef.current = { previous: nextReady, wasReady: outcome.wasReady, cycle: outcome.cycle };
+    if (!device || outcome.action === 'none') return;
+    const identity = String(device.name).trim().toLocaleLowerCase().replace(/\s+/g, '-');
+    const readyAction = outcome.action === 'ready';
+    const accent = declaredAccentColor(device);
+    announceAttentionRequest({
+      eventKey: attentionDeviceKey(readyAction ? 'ready' : 'reconnected', identity, outcome.cycle),
+      scope: 'device:app',
+      variant: 'line',
+      color: attentionColorForZone(accent ?? '#ffb3b3'),
+      durationMs: readyAction ? 1300 : 1100,
+      strength: readyAction ? 0.16 : 0.13,
+      cycles: 1,
+      priority: ATTENTION_PRIORITY[readyAction ? 'device-ready' : 'device-reconnected'],
+    });
+  }, [device]);
   useEffect(() => {
     if (!themeLoaded) return;
     applyTheme(theme, themeColor);
@@ -4057,6 +4203,7 @@ export default function App() {
               : undefined
           }
         >
+          {notificationAttention.beam && <AttentionBeamLayer active request={notificationAttention.beam} />}
           <div><strong>{appNotification.title}</strong>{appNotification.body && <p>{appNotification.body}</p>}</div>
           <button type="button" onClick={(event) => { event.stopPropagation(); if (appNotification.action === 'relaunch') recordUpdateReminderDismissed(); setAppNotification(undefined); }} aria-label={t('dashboard.closeNotification')}><X weight="bold" /></button>
         </aside>

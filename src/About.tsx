@@ -16,6 +16,14 @@ import {
   relaunchAfterUpdate,
   type AppUpdateState,
 } from './updater';
+import {
+  ATTENTION_PRIORITY,
+  AttentionBeamLayer,
+  attentionAppRestartKey,
+  attentionAppUpdateKey,
+  attentionDesaturatedAccent,
+  useAttentionFeedback,
+} from './attention';
 
 export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0 }: { onBack: () => void; previewMode?: boolean; focusUpdateToken?: number }) {
   const { t } = useTranslation();
@@ -58,6 +66,41 @@ export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0 }:
   }, [previewMode, t]);
 
   useEffect(() => onAppUpdateState(setUpdate), []);
+
+  // Attention Beam：固定更新状态卡（§5.7）。只在相位真实迁移到
+  // available（绕边扫光一次）或 installed（等待重启双脉冲）时播放；
+  // 初次挂载时已有的状态不触发，与通知共享同一 eventKey 仲裁。
+  const aboutAttention = useAttentionFeedback('about-update');
+  const aboutAnnounce = aboutAttention.announce;
+  const prevUpdatePhaseRef = useRef<AppUpdateState['phase']>('idle');
+  useEffect(() => {
+    const prev = prevUpdatePhaseRef.current;
+    prevUpdatePhaseRef.current = update.phase;
+    if (!prev || prev === update.phase || !update.version) return;
+    if (update.phase === 'available') {
+      aboutAnnounce({
+        eventKey: attentionAppUpdateKey(update.version),
+        scope: 'about-update',
+        variant: 'line',
+        color: attentionDesaturatedAccent(),
+        durationMs: 1650,
+        strength: 0.2,
+        cycles: 1,
+        priority: ATTENTION_PRIORITY['update-available'],
+      });
+    } else if (update.phase === 'installed') {
+      aboutAnnounce({
+        eventKey: attentionAppRestartKey(update.version),
+        scope: 'about-update',
+        variant: 'pulse-inner',
+        color: attentionDesaturatedAccent(),
+        durationMs: 2400,
+        strength: 0.16,
+        cycles: 2,
+        priority: ATTENTION_PRIORITY['restart-required'],
+      });
+    }
+  }, [update.phase, update.version, aboutAnnounce]);
 
   useEffect(() => {
     if (focusUpdateToken === 0) return;
@@ -206,7 +249,8 @@ export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0 }:
         </section>
       ) : null}
 
-      <section id="about-update-section" className="card about-section" tabIndex={-1}>
+      <section id="about-update-section" className="card about-section" tabIndex={-1} style={aboutAttention.beam ? { position: 'relative' } : undefined}>
+        {aboutAttention.beam && <AttentionBeamLayer active request={aboutAttention.beam} />}
         <div className="card-title"><h2>{t('about.section.checkUpdate')}</h2></div>
         <div className="settings-action-body">
           <div className="settings-action-copy">
