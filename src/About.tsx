@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { useEffect, useRef, useState } from 'react';
+import { ArrowClockwise } from '@phosphor-icons/react';
 import { invoke } from '@tauri-apps/api/core';
 import { useTranslation } from 'react-i18next';
 import { ExternalLink } from './ExternalLink';
@@ -269,7 +270,7 @@ export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0 }:
           {info.updaterActive && (
             <div className="contact-links align-end">
               <button className="secondary mira-activity-button" onClick={checkForUpdates} disabled={manualCheckBusy || update.phase === 'checking' || update.phase === 'downloading'}>
-                <MiraInlineActivity active={manualCheckBusy} activity="checking-app-update" />
+                <MiraInlineActivity active={manualCheckBusy} activity="checking-app-update" fallback={<ArrowClockwise weight="regular" />} />
                 <span>{update.phase === 'checking' ? t('about.updateChecking') : t('about.updateCheck')}</span>
               </button>
               {update.phase === 'up-to-date' && <span className="save-badge">{t('about.updateUpToDate')}</span>}

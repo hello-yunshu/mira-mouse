@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { ThinkingOrb } from 'thinking-orbs';
 import { useTranslation } from 'react-i18next';
 import {
@@ -10,10 +10,11 @@ import {
 import { useDelayedActivity } from './useDelayedActivity';
 import {
   attentionScopeForActivity,
-  beginActivity,
-  endActivity,
+  registerVisibleActivity,
+  unregisterVisibleActivity,
   useActiveBeamForScope,
   useActivityExitHint,
+  type ActivityRegistrationToken,
   type ActivityScope,
 } from './activityCoordinator';
 
@@ -60,18 +61,20 @@ export function MiraInlineActivity({
   // 渲染层兜底仲裁：同一 scope 已有 Beam 在播放时不渲染 Orb。
   const beamActive = useActiveBeamForScope(orbScope);
   const showOrb = visible && !beamActive;
+  // 组件级注册令牌：StrictMode 双挂载与重挂载复用同一 token，同 scope 的
+  // 多个组件互不覆盖，注销到最后一个时 scope 才算不可见。
+  const [token] = useState<ActivityRegistrationToken>(
+    () => Symbol('mira-inline-activity'),
+  );
 
   useEffect(() => {
     if (!orbScope) return;
-    if (showOrb) beginActivity(orbScope);
-    else endActivity(orbScope);
-  }, [orbScope, showOrb]);
-
-  // 清理：卸载时注销，避免残留导致后续 announce 被判定“有可见 Orb”。
-  useEffect(() => {
-    if (!orbScope) return;
-    return () => endActivity(orbScope);
-  }, [orbScope]);
+    if (showOrb) registerVisibleActivity(orbScope, token);
+    // 清理覆盖 scope 切换与卸载：上一轮已注册的令牌在这里同步注销。
+    return () => {
+      if (showOrb) unregisterVisibleActivity(orbScope, token);
+    };
+  }, [orbScope, showOrb, token]);
 
   if (!showOrb && !reserveSpace && fallback === undefined) return null;
 

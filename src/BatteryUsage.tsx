@@ -1531,14 +1531,10 @@ export function BatteryUsageModal({
                       <Trash weight="regular" /> {t('batteryUsage.clearHistory')}
                     </button>
                     <button className="action-btn" onClick={() => handleExport('json')} disabled={exportingFormat !== null}>
-                      {exportingFormat === 'json'
-                        ? <MiraInlineActivity active activity="exporting-battery-history" announce />
-                        : <Download weight="regular" />} {t('batteryUsage.exportJson')}
+                      <MiraInlineActivity active={exportingFormat === 'json'} activity="exporting-battery-history" announce fallback={<Download weight="regular" />} /> {t('batteryUsage.exportJson')}
                     </button>
                     <button className="action-btn" onClick={() => handleExport('csv')} disabled={exportingFormat !== null}>
-                      {exportingFormat === 'csv'
-                        ? <MiraInlineActivity active activity="exporting-battery-history" announce />
-                        : <Download weight="regular" />} {t('batteryUsage.exportCsv')}
+                      <MiraInlineActivity active={exportingFormat === 'csv'} activity="exporting-battery-history" announce fallback={<Download weight="regular" />} /> {t('batteryUsage.exportCsv')}
                     </button>
                   </>
                 )}

@@ -13,24 +13,27 @@ import {
 } from './activityCatalog';
 import {
   attentionScopeForActivity,
-  beginActivity,
-  endActivity,
+  registerVisibleActivity,
+  unregisterVisibleActivity,
   useActiveBeamForScope,
   useActivityExitHint,
+  type ActivityRegistrationToken,
 } from './activityCoordinator';
 
 /**
- * DOM 兼容兜底：仅当未提供显式业务状态时使用 MutationObserver 扫描。
- * 显式状态（App 传入的 activity）为第一优先级。
+ * DOM 兼容兜底：仅当未提供显式业务状态时才启用 MutationObserver 扫描。
+ * 显式状态（App 传入的 activity）为第一优先级，显式模式下不监听整个
+ * document.body。
  */
-function useDetectedGlobalActivity(): MiraGlobalActivity {
+function useDetectedGlobalActivity(enabled: boolean): MiraGlobalActivity {
   const [activity, setActivity] = useState<MiraGlobalActivity>(() => (
-    typeof document === 'undefined'
+    !enabled || typeof document === 'undefined'
       ? null
       : resolveGlobalMiraActivity(document)
   ));
 
   useEffect(() => {
+    if (!enabled) return;
     if (typeof document === 'undefined' || !document.body) return;
     if (typeof MutationObserver === 'undefined') return;
 
@@ -56,14 +59,15 @@ function useDetectedGlobalActivity(): MiraGlobalActivity {
       observer.disconnect();
       window.cancelAnimationFrame(frame);
     };
-  }, []);
+  }, [enabled]);
 
   return activity;
 }
 
 /**
  * 全局 64px Orb 的可见状态：延迟出现、最短可见、同 scope 完成事件出现时
- * 立即退出（跳过最短可见尾段）。
+ * 立即退出（跳过最短可见尾段）。被强制退出后，在业务状态真正结束（变为
+ * null 或换成另一种活动）之前不再回弹。
  * 所有 setState 都发生在定时器回调里，避免 set-state-in-effect。
  */
 function useDisplayedGlobalActivity(
@@ -71,12 +75,11 @@ function useDisplayedGlobalActivity(
   exitHint: number,
 ): MiraGlobalActivity {
   // 初始不跟随检测值：显式业务状态也必须经过 300ms 延迟出现在先，
-  // 否则 App 一挂载就闪现 Orb（P0-3 第 1 条）。
+  // 否则 App 一挂载就闪现 Orb。
   const [displayed, setDisplayed] = useState<MiraGlobalActivity>(null);
   const visibleSinceRef = useRef(0);
   const lastExitHintRef = useRef(0);
-  // 被同 scope 完成事件强制退出后，在业务状态真正结束（变为 null 或换成
-  // 另一种活动）之前不再回弹。
+  // 被同 scope 完成事件强制退出后，在业务状态真正结束之前不再回弹。
   const suppressedValueRef = useRef<MiraGlobalActivity>(null);
 
   useEffect(() => {
@@ -113,12 +116,10 @@ function useDisplayedGlobalActivity(
   return displayed;
 }
 
-export type MiraDeviceActivity = Exclude<MiraGlobalActivity, 'battery-analysis'>;
-
 export interface MiraActivityOverlayProps {
   /**
-   * App 显式计算的全局业务状态（第一优先级）。未提供时回退到 DOM 检测
-   * （电量弹窗仍始终走 DOM 判定，因为它覆盖在 Dashboard 之上）。
+   * App 显式计算得到的全局业务状态（第一优先级）。未提供该属性时才允许
+   * DOM 兜底检测；显式 null 表示“当前没有活动”，不会被 DOM 标志覆盖。
    */
   activity?: MiraGlobalActivity | null;
   /** 电量功能真实启用状态，用于区分电量分析文案。 */
@@ -130,8 +131,9 @@ export function MiraActivityOverlay({
   batteryAnalysisEnabled = false,
 }: MiraActivityOverlayProps) {
   const { i18n } = useTranslation();
-  const detectedDom = useDetectedGlobalActivity();
-  const detected = deviceActivity ?? detectedDom;
+  const hasExplicitActivity = deviceActivity !== undefined;
+  const detectedDom = useDetectedGlobalActivity(!hasExplicitActivity);
+  const detected = hasExplicitActivity ? deviceActivity : detectedDom;
   const detectedScope = detected ? attentionScopeForActivity(detected) : null;
   const exitHint = useActivityExitHint(detectedScope);
   const displayed = useDisplayedGlobalActivity(detected, exitHint);
@@ -139,17 +141,19 @@ export function MiraActivityOverlay({
   // 渲染层兜底仲裁：同一 scope 已有 Beam 播放时不显示全局 Orb。
   const beamActive = useActiveBeamForScope(displayedScope);
   const showOrb = displayed !== null && !beamActive;
+  // 与 Inline 组件一致：以组件级 token 注册当前显示的 Orb。
+  const [token] = useState<ActivityRegistrationToken>(
+    () => Symbol('mira-activity-overlay'),
+  );
 
   useEffect(() => {
     if (!displayedScope) return;
-    if (showOrb) beginActivity(displayedScope);
-    else endActivity(displayedScope);
-  }, [displayedScope, showOrb]);
-
-  useEffect(() => {
-    if (!displayedScope) return;
-    return () => endActivity(displayedScope);
-  }, [displayedScope]);
+    if (showOrb) registerVisibleActivity(displayedScope, token);
+    // 清理覆盖 scope 切换与卸载：上一轮已注册的令牌在这里同步注销。
+    return () => {
+      if (showOrb) unregisterVisibleActivity(displayedScope, token);
+    };
+  }, [displayedScope, showOrb, token]);
 
   if (!showOrb) return null;
 

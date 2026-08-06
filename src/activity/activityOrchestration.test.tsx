@@ -7,8 +7,12 @@ import { MiraActivityOverlay } from './MiraActivityOverlay';
 import { MiraInlineActivity } from './MiraInlineActivity';
 import {
   announceAfterOrbExit,
+  bumpActivityExitHint,
   isActivityVisible,
+  registerVisibleActivity,
   resetActivityCoordinatorForTests,
+  unregisterVisibleActivity,
+  waitForActivityExit,
 } from './activityCoordinator';
 import { announceAttentionRequest, resetAttentionBusForTests } from '../attention/attentionCore';
 import type { AttentionBeamRequest } from '../attention/attentionTypes';
@@ -168,5 +172,91 @@ describe('MiraActivityOverlay 生命周期仲裁（P0-3）', () => {
 
     act(() => { vi.advanceTimersByTime(200); });
     expect(screen.queryByTestId('thinking-orb')).not.toBeInTheDocument();
+  });
+
+  it('11. 同 scope 多实例：最后一个注销才判定退出，Beam 等待真实退出', async () => {
+    const first = render(<MiraInlineActivity active activity="checking-app-update" />);
+    const second = render(<MiraInlineActivity active activity="checking-app-update" />);
+    act(() => { vi.advanceTimersByTime(350); });
+    expect(isActivityVisible('about-update')).toBe(true);
+
+    // 注销其中一个，另一个仍可见 → scope 仍不可判定为退出。
+    first.unmount();
+    expect(isActivityVisible('about-update')).toBe(true);
+
+    const announce = vi.fn(() => true);
+    act(() => {
+      void announceAfterOrbExit('about-update', announce, request('app-update-1', 'about-update'));
+    });
+    expect(announce).not.toHaveBeenCalled();
+
+    // 最后一个实例注销后，等待中的 Beam 才提交。
+    second.unmount();
+    expect(isActivityVisible('about-update')).toBe(false);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(announce).toHaveBeenCalledTimes(1);
+  });
+
+  it('12. 重挂载新实例不被上一轮退出提示污染（delta exit hint）', () => {
+    const first = render(<MiraInlineActivity active activity="checking-app-update" />);
+    act(() => { vi.advanceTimersByTime(300); });
+    expect(screen.getByTestId('thinking-orb')).toBeInTheDocument();
+
+    // 让当前实例退出（提示历史 +1），然后在实例仍在挂载时完成退出。
+    act(() => { bumpActivityExitHint('about-update'); });
+    act(() => { vi.advanceTimersByTime(50); });
+    expect(screen.queryByTestId('thinking-orb')).not.toBeInTheDocument();
+    first.unmount();
+
+    // 新实例挂载：历史累计的退出提示必须以“挂载前基线”看待，
+    // 不能把上一轮历史当作新事件而整轮抑制。
+    render(<MiraInlineActivity active activity="checking-app-update" />);
+    act(() => { vi.advanceTimersByTime(300); });
+    expect(screen.getByTestId('thinking-orb')).toBeInTheDocument();
+  });
+
+  it('13. 不可见时 announce/等待保持同步语义（already-hidden）', async () => {
+    const announce = vi.fn(() => true);
+    act(() => {
+      void announceAfterOrbExit('device:app', announce, request('ready-1', 'device:app'));
+    });
+    expect(announce).toHaveBeenCalledTimes(1);
+    await expect(waitForActivityExit('device:app')).resolves.toBe('already-hidden');
+  });
+
+  it('14. 注销不发生的 scope 用超时兜底，不提交可能过期的 Beam', async () => {
+    const token = Symbol('stuck-orb');
+    registerVisibleActivity('device:app', token);
+    const announce = vi.fn(() => true);
+    act(() => {
+      void announceAfterOrbExit('device:app', announce, request('ready-1', 'device:app'));
+    });
+    expect(announce).not.toHaveBeenCalled();
+    await act(async () => { vi.advanceTimersByTime(1001); });
+    // 超时不提交：可能过期、会与 Orb 长时间重叠的 Beam 不值得播放。
+    expect(announce).not.toHaveBeenCalled();
+    unregisterVisibleActivity('device:app', token);
+    expect(isActivityVisible('device:app')).toBe(false);
+  });
+
+  it('15. 显式 null 不被 DOM 兜底覆盖；未提供 prop 时才允许 DOM 检测', () => {
+    const marker = document.createElement('div');
+    marker.className = 'dashboard is-initializing';
+    document.body.appendChild(marker);
+    try {
+      const explicit = render(<MiraActivityOverlay activity={null} />);
+      act(() => { vi.advanceTimersByTime(350); });
+      expect(screen.queryByTestId('thinking-orb')).not.toBeInTheDocument();
+      expect(screen.queryByRole('status')).not.toBeInTheDocument();
+      explicit.unmount();
+
+      render(<MiraActivityOverlay />);
+      act(() => { vi.advanceTimersByTime(350); });
+      expect(screen.getByTestId('thinking-orb')).toBeInTheDocument();
+    } finally {
+      marker.remove();
+    }
   });
 });
