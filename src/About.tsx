@@ -16,6 +16,7 @@ import {
   relaunchAfterUpdate,
   type AppUpdateState,
 } from './updater';
+import { MiraInlineActivity } from './activity';
 import {
   ATTENTION_PRIORITY,
   AttentionBeamLayer,
@@ -262,8 +263,9 @@ export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0 }:
           </div>
           {info.updaterActive && (
             <div className="contact-links align-end">
-              <button className="secondary" onClick={checkForUpdates} disabled={update.phase === 'checking' || update.phase === 'downloading'}>
-                {update.phase === 'checking' ? t('about.updateChecking') : t('about.updateCheck')}
+              <button className="secondary mira-activity-button" onClick={checkForUpdates} disabled={update.phase === 'checking' || update.phase === 'downloading'}>
+                <MiraInlineActivity active={update.phase === 'checking'} activity="checking-app-update" />
+                <span>{update.phase === 'checking' ? t('about.updateChecking') : t('about.updateCheck')}</span>
               </button>
               {update.phase === 'up-to-date' && <span className="save-badge">{t('about.updateUpToDate')}</span>}
             </div>

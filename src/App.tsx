@@ -96,6 +96,7 @@ import { initUpdatePriorityCoordinator } from './update-priority';
 import { LOCAL_AI_FEATURE, localAiFeatureEnabled } from './localAi';
 import { segmentedIndicatorStyle } from './segmentedControl';
 import { Modal, OverlayPortal, useHasOpenModal } from './overlay';
+import { MiraInlineActivity } from './activity';
 import './styles.css';
 
 type View = 'dashboard' | 'settings' | 'about';
@@ -2464,6 +2465,7 @@ function ReadStatusBadge({ status }: { status?: ReadStatus }) {
 function DeviceDetails({ device, deviceKey, onClose }: { device: DeviceState; deviceKey: string; onClose: () => void }) {
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'copying'>('idle');
   const [diagCopyState, setDiagCopyState] = useState<'idle' | 'copied' | 'copying'>('idle');
+  const [refreshingDetails, setRefreshingDetails] = useState(false);
   const [protoDiagActive, setProtoDiagActive] = useState(false);
   const [protoDiagError, setProtoDiagError] = useState<string | null>(null);
   const [includePayload, setIncludePayload] = useState(false);
@@ -2552,8 +2554,15 @@ function DeviceDetails({ device, deviceKey, onClose }: { device: DeviceState; de
     }).catch(() => setCopyState('idle'));
   }, [device]);
 
-  const handleRefresh = useCallback(() => {
-    invoke('device_refresh').catch(() => {});
+  const handleRefresh = useCallback(async () => {
+    setRefreshingDetails(true);
+    try {
+      await invoke('device_refresh');
+    } catch {
+      // 保持原行为：刷新失败不覆盖已有读数，也不新增重复通知。
+    } finally {
+      setRefreshingDetails(false);
+    }
   }, []);
 
   const handleCopyDiagnostics = useCallback(() => {
@@ -2622,14 +2631,20 @@ function DeviceDetails({ device, deviceKey, onClose }: { device: DeviceState; de
       </header>
       <p className="details-note">{i18n.t('dashboard.detailsNote')}</p>
       <div className="details-actions">
-        <button className="details-action-btn" onClick={handleRefresh} title={i18n.t('dashboard.refreshAll')}>
-          <Timer weight="regular" /> {i18n.t('dashboard.refreshAll')}
+        <button className="details-action-btn" onClick={() => void handleRefresh()} title={i18n.t('dashboard.refreshAll')} disabled={refreshingDetails}>
+          {refreshingDetails
+            ? <MiraInlineActivity active activity="refreshing-device-details" announce />
+            : <Timer weight="regular" />} {i18n.t('dashboard.refreshAll')}
         </button>
-        <button className="details-action-btn" onClick={handleCopyAll} title={i18n.t('dashboard.copyAllReadings')}>
-          {copyState === 'copied' ? '✓' : <ReadCvLogo weight="regular" />} {i18n.t('dashboard.copyAllReadings')}
+        <button className="details-action-btn" onClick={handleCopyAll} title={i18n.t('dashboard.copyAllReadings')} disabled={copyState === 'copying'}>
+          {copyState === 'copying'
+            ? <MiraInlineActivity active activity="copying-readings" announce />
+            : copyState === 'copied' ? '✓' : <ReadCvLogo weight="regular" />} {i18n.t('dashboard.copyAllReadings')}
         </button>
-        <button className="details-action-btn" onClick={handleCopyDiagnostics} title={i18n.t('dashboard.copyDeviceDiagnostics')}>
-          {diagCopyState === 'copied' ? '✓' : <Info weight="regular" />} {i18n.t('dashboard.copyDeviceDiagnostics')}
+        <button className="details-action-btn" onClick={handleCopyDiagnostics} title={i18n.t('dashboard.copyDeviceDiagnostics')} disabled={diagCopyState === 'copying'}>
+          {diagCopyState === 'copying'
+            ? <MiraInlineActivity active activity="copying-device-diagnostics" announce />
+            : diagCopyState === 'copied' ? '✓' : <Info weight="regular" />} {i18n.t('dashboard.copyDeviceDiagnostics')}
         </button>
       </div>
       <div className="protocol-diagnostic-toggle">
@@ -3779,7 +3794,12 @@ function Dashboard({
           />
         </div>
         {deviceAttention.beam && <AttentionBeamLayer active request={deviceAttention.beam} />}
-        {visiblePreviewMessage && <p className="preview-message">{visiblePreviewMessage}</p>}
+        {visiblePreviewMessage && (
+          <p className="preview-message mira-process-message">
+            <MiraInlineActivity active={writeBusy} activity="applying-settings" reserveSpace={false} />
+            <span>{visiblePreviewMessage}</span>
+          </p>
+        )}
         {editingField && (
           <FieldEditModal
             field={editingField.field}

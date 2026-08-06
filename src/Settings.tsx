@@ -25,6 +25,7 @@ import {
 import { friendlyUpdateError } from './update-errors';
 import { DEFAULT_LOCAL_AI_FEATURES, LOCAL_AI_FEATURE, localAiFeatureEnabled, setLocalAiFeature } from './localAi';
 import { LogPage } from './logs/LogPage';
+import { MiraInlineActivity } from './activity';
 import {
   ATTENTION_PRIORITY,
   AttentionSurface,
@@ -183,6 +184,12 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
   const [discovered, setDiscovered] = useState<DiscoveredDevice[]>([]);
   const [saved, setSaved] = useState(false);
   const [confirmingClearBattery, setConfirmingClearBattery] = useState(false);
+  const [deviceScanBusy, setDeviceScanBusy] = useState(false);
+  const [diagnosticsExportBusy, setDiagnosticsExportBusy] = useState(false);
+  const [configExportBusy, setConfigExportBusy] = useState(false);
+  const [configImportBusy, setConfigImportBusy] = useState(false);
+  const [batteryExportBusy, setBatteryExportBusy] = useState<'json' | 'csv' | null>(null);
+  const [localAiRollbackBusy, setLocalAiRollbackBusy] = useState(false);
   const [subview, setSubview] = useState<'main' | 'logs'>('main');
   const [tabState, setTabState] = useState<{ tab: SettingsTab; focusToken: number }>(() => ({
     tab: focusPluginUpdateToken > 0 || focusLocalAiUpdateToken > 0 ? 'plugins' : initialTab,
@@ -583,8 +590,13 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
   }
 
   async function handleExportDiagnostics() {
-    const result = await exportDiagnostics();
-    if (result !== undefined) setDiagnostics(result);
+    setDiagnosticsExportBusy(true);
+    try {
+      const result = await exportDiagnostics();
+      if (result !== undefined) setDiagnostics(result);
+    } finally {
+      setDiagnosticsExportBusy(false);
+    }
   }
 
   // #11 配置导出：通过系统文件选择器指定保存路径。
@@ -596,10 +608,13 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
         filters: [{ name: t('settings.config.filterName'), extensions: ['json'] }],
       });
       if (!path) return;
+      setConfigExportBusy(true);
       await invoke('device_config_export', { path });
       notifyInfo(t('notification.exportSuccess'), t('notification.exportSuccessBody', { path }));
     } catch (error) {
       notifyError(t('notification.exportFailed'), String(error));
+    } finally {
+      setConfigExportBusy(false);
     }
   }
 
@@ -612,17 +627,25 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
         multiple: false,
       });
       if (!selected || typeof selected !== 'string') return;
+      setConfigImportBusy(true);
       await invoke('device_config_import', { path: selected });
       notifyInfo(t('notification.importSuccess'), t('notification.importSuccessBody'));
     } catch (error) {
       notifyError(t('notification.importFailed'), String(error));
+    } finally {
+      setConfigImportBusy(false);
     }
   }
 
-  function scanDevices() {
-    invoke<DiscoveredDevice[]>('discover_devices')
-      .then(setDiscovered)
-      .catch((err) => notifyError(t('notification.scanFailed'), String(err)));
+  async function scanDevices() {
+    setDeviceScanBusy(true);
+    try {
+      setDiscovered(await invoke<DiscoveredDevice[]>('discover_devices'));
+    } catch (err) {
+      notifyError(t('notification.scanFailed'), String(err));
+    } finally {
+      setDeviceScanBusy(false);
+    }
   }
 
   // 电量历史清除
@@ -652,10 +675,13 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
         filters: [{ name: format.toUpperCase(), extensions: [ext] }],
       });
       if (!path) return;
+      setBatteryExportBusy(format);
       await invoke('battery_history_export', { format, path });
       notifyInfo(t('batteryUsage.exportDone'), '');
     } catch (err) {
       notifyError(t('batteryUsage.exportFailed'), String(err));
+    } finally {
+      setBatteryExportBusy(null);
     }
   }
 
@@ -699,11 +725,14 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
 
   async function handleLocalAiRollback() {
     if (previewMode) return;
+    setLocalAiRollbackBusy(true);
     try {
       const nextStatus = await rollbackLocalAiUpdate();
       if (nextStatus) setLocalAiStatus(nextStatus);
     } catch (error) {
       notifyError(t('notification.rollbackLocalAiFailed'), friendlyUpdateError(error));
+    } finally {
+      setLocalAiRollbackBusy(false);
     }
   }
 
@@ -925,11 +954,13 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
                   <button className="action-btn" onClick={() => setConfirmingClearBattery(true)}>
                     {t('batteryUsage.clearHistory')}
                   </button>
-                  <button className="action-btn" onClick={() => handleExportBatteryHistory('json')}>
-                    {t('batteryUsage.exportJson')}
+                  <button className="action-btn mira-activity-button" onClick={() => handleExportBatteryHistory('json')} disabled={batteryExportBusy !== null}>
+                    <MiraInlineActivity active={batteryExportBusy === 'json'} activity="exporting-battery-history" />
+                    <span>{t('batteryUsage.exportJson')}</span>
                   </button>
-                  <button className="action-btn" onClick={() => handleExportBatteryHistory('csv')}>
-                    {t('batteryUsage.exportCsv')}
+                  <button className="action-btn mira-activity-button" onClick={() => handleExportBatteryHistory('csv')} disabled={batteryExportBusy !== null}>
+                    <MiraInlineActivity active={batteryExportBusy === 'csv'} activity="exporting-battery-history" />
+                    <span>{t('batteryUsage.exportCsv')}</span>
                   </button>
                 </>
               )}
@@ -1014,8 +1045,14 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
             <div className="settings-action-body">
               <p className="setting-hint">{t('settings.config.hint')}</p>
               <div className="contact-links align-end">
-                <button className="secondary" onClick={() => void handleExportConfig()} disabled={previewMode}>{t('settings.config.export')}</button>
-                <button className="secondary" onClick={() => void handleImportConfig()} disabled={previewMode}>{t('settings.config.import')}</button>
+                <button className="secondary mira-activity-button" onClick={() => void handleExportConfig()} disabled={previewMode || configExportBusy || configImportBusy}>
+                  <MiraInlineActivity active={configExportBusy} activity="exporting-device-config" />
+                  <span>{t('settings.config.export')}</span>
+                </button>
+                <button className="secondary mira-activity-button" onClick={() => void handleImportConfig()} disabled={previewMode || configExportBusy || configImportBusy}>
+                  <MiraInlineActivity active={configImportBusy} activity="importing-device-config" />
+                  <span>{t('settings.config.import')}</span>
+                </button>
               </div>
             </div>
           </section>
@@ -1047,11 +1084,15 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
           </SettingRow>
           <div className="contact-links plugin-update-actions align-end">
             <button
-              className="secondary"
+              className="secondary mira-activity-button"
               onClick={() => void checkLocalAiUpdates()}
               disabled={previewMode || localAiUpdate.phase === 'checking' || localAiUpdate.phase === 'downloading'}
             >
-              {localAiUpdate.phase === 'checking' ? t('settings.localAi.checking') : t('settings.localAi.checkUpdates')}
+              <MiraInlineActivity
+                active={localAiUpdate.phase === 'checking' && !localAiRollbackBusy}
+                activity="checking-local-ai-updates"
+              />
+              <span>{localAiUpdate.phase === 'checking' ? t('settings.localAi.checking') : t('settings.localAi.checkUpdates')}</span>
             </button>
             {localAiStatus.ready && <span className="save-badge">{t('settings.localAi.runtimeReady')}</span>}
           </div>
@@ -1105,8 +1146,9 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
                       <span className="setting-hint">v{localAiStatus.previousVersion}</span>
                     </div>
                   )}
-                  <button className="secondary" disabled={localAiUpdate.phase === 'checking'} onClick={() => void handleLocalAiRollback()}>
-                    {localAiUpdate.phase === 'checking' ? t('settings.localAi.rollingBack') : t('settings.localAi.rollbackBundle')}
+                  <button className="secondary mira-activity-button" disabled={localAiUpdate.phase === 'checking'} onClick={() => void handleLocalAiRollback()}>
+                    <MiraInlineActivity active={localAiRollbackBusy} activity="restoring-local-ai" />
+                    <span>{localAiUpdate.phase === 'checking' ? t('settings.localAi.rollingBack') : t('settings.localAi.rollbackBundle')}</span>
                   </button>
                 </div>
               )}
@@ -1125,8 +1167,9 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
             <Toggle checked={settings.automaticPluginUpdateChecks} onChange={(v) => update({ automaticPluginUpdateChecks: v })} label={t('settings.pluginUpdateCheck.label')} />
           </SettingRow>
           <div className="contact-links plugin-update-actions align-end">
-            <button className="secondary" onClick={() => void checkPluginUpdates()} disabled={previewMode || pluginUpdatesChecking || pluginUpdate.phase === 'downloading'}>
-              {pluginUpdatesChecking ? t('settings.pluginUpdate.checking') : t('settings.pluginUpdate.check')}
+            <button className="secondary mira-activity-button" onClick={() => void checkPluginUpdates()} disabled={previewMode || pluginUpdatesChecking || pluginUpdate.phase === 'downloading'}>
+              <MiraInlineActivity active={pluginUpdatesChecking} activity="checking-plugin-updates" />
+              <span>{pluginUpdatesChecking ? t('settings.pluginUpdate.checking') : t('settings.pluginUpdate.check')}</span>
             </button>
             {pluginUpdates.length > 0 && pluginUpdates.every((item) => !item.updateAvailable) && <span className="save-badge">{t('settings.pluginUpdate.allLatest')}</span>}
           </div>
@@ -1201,10 +1244,16 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
             <Toggle checked={true} onChange={() => {}} label={t('settings.privacy.telemetryLabel')} disabled showOnWhenDisabled />
           </SettingRow>
           <SettingRow title={t('settings.privacy.scanLabel')} hint={t('settings.privacy.scanHint')}>
-            <button className="secondary" onClick={scanDevices} disabled={previewMode}>{t('settings.privacy.scanButton')}</button>
+            <button className="secondary mira-activity-button" onClick={() => void scanDevices()} disabled={previewMode || deviceScanBusy}>
+              <MiraInlineActivity active={deviceScanBusy} activity="scanning-devices" />
+              <span>{t('settings.privacy.scanButton')}</span>
+            </button>
           </SettingRow>
           <SettingRow title={t('settings.privacy.diagnosticsLabel')} hint={t('settings.privacy.diagnosticsHint')}>
-            <button className="secondary" onClick={handleExportDiagnostics} disabled={previewMode}>{t('settings.privacy.diagnosticsButton')}</button>
+            <button className="secondary mira-activity-button" onClick={() => void handleExportDiagnostics()} disabled={previewMode || diagnosticsExportBusy}>
+              <MiraInlineActivity active={diagnosticsExportBusy} activity="exporting-diagnostics" />
+              <span>{t('settings.privacy.diagnosticsButton')}</span>
+            </button>
           </SettingRow>
           {discovered.length > 0 && (
             <div className="plugin-list">

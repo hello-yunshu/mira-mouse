@@ -21,6 +21,7 @@ import { segmentedIndicatorStyle } from './segmentedControl';
 import { Modal } from './overlay';
 import { Tooltip } from './Tooltip';
 import { useScrollFadeState } from './useScrollOverflow';
+import { MiraInlineActivity } from './activity';
 
 function isPureWebPreview(): boolean {
   return !('__TAURI_INTERNALS__' in window);
@@ -1158,6 +1159,7 @@ export function BatteryUsageModal({
   const [responses, setResponses] = useState<Partial<Record<BatteryHistoryRange, BatteryHistoryResponse>>>({});
   const response = responses[range] ?? null;
   const [loading, setLoading] = useState(false);
+  const [exportingFormat, setExportingFormat] = useState<'json' | 'csv' | null>(null);
   const [confirmingClear, setConfirmingClear] = useState(false);
   const [loadedHistoryEnabled, setLoadedHistoryEnabled] = useState(true);
   const [loadedAiAnalysisEnabled, setLoadedAiAnalysisEnabled] = useState(false);
@@ -1346,6 +1348,7 @@ export function BatteryUsageModal({
     try {
       const ext = format === 'csv' ? 'csv' : 'json';
       if (pureWeb) {
+        setExportingFormat(format);
         let content: string;
         let mime: string;
         if (format === 'csv') {
@@ -1376,12 +1379,15 @@ export function BatteryUsageModal({
         filters: [{ name: format.toUpperCase(), extensions: [ext] }],
       });
       if (filePath) {
+        setExportingFormat(format);
         // 后端写入文件：battery_history_export 接收 path 参数时直接写盘
         await invoke<string>('battery_history_export', { format, path: filePath });
         notifySuccess(t('batteryUsage.exportDone'));
       }
     } catch (err) {
       notifyError(t('batteryUsage.exportFailed'), String(err));
+    } finally {
+      setExportingFormat(null);
     }
   }, [pureWeb, response, t]);
 
@@ -1516,11 +1522,15 @@ export function BatteryUsageModal({
                     <button className="action-btn" onClick={() => setConfirmingClear(true)}>
                       <Trash weight="regular" /> {t('batteryUsage.clearHistory')}
                     </button>
-                    <button className="action-btn" onClick={() => handleExport('json')}>
-                      <Download weight="regular" /> {t('batteryUsage.exportJson')}
+                    <button className="action-btn" onClick={() => handleExport('json')} disabled={exportingFormat !== null}>
+                      {exportingFormat === 'json'
+                        ? <MiraInlineActivity active activity="exporting-battery-history" announce />
+                        : <Download weight="regular" />} {t('batteryUsage.exportJson')}
                     </button>
-                    <button className="action-btn" onClick={() => handleExport('csv')}>
-                      <Download weight="regular" /> {t('batteryUsage.exportCsv')}
+                    <button className="action-btn" onClick={() => handleExport('csv')} disabled={exportingFormat !== null}>
+                      {exportingFormat === 'csv'
+                        ? <MiraInlineActivity active activity="exporting-battery-history" announce />
+                        : <Download weight="regular" />} {t('batteryUsage.exportCsv')}
                     </button>
                   </>
                 )}
