@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 export type MiraActivityKind =
+  | 'awaiting-mouse'
   | 'device-initializing'
   | 'battery-analysis'
   | 'applying-settings'
@@ -33,6 +34,7 @@ export interface MiraActivitySpec {
 }
 
 const ACTIVITY_SPECS: Record<MiraActivityKind, MiraActivitySpec> = {
+  'awaiting-mouse': { state: 'connecting', size: 64, speed: 1, layer: 'global' },
   'device-initializing': { state: 'connecting', size: 64, speed: 1, layer: 'global' },
   'battery-analysis': { state: 'solving', size: 64, speed: 0.9, layer: 'global' },
   'applying-settings': { state: 'working', size: 20, speed: 1, layer: 'inline' },
@@ -50,9 +52,11 @@ const ACTIVITY_SPECS: Record<MiraActivityKind, MiraActivitySpec> = {
   'restoring-local-ai': { state: 'connecting', size: 20, speed: 0.9, layer: 'inline' },
 };
 
-const ZH_LABELS: Record<MiraActivityKind, string> = {
+const ZH_LABELS: Record<MiraActivityKind | 'battery-analysis-with-ai', string> = {
+  'awaiting-mouse': '正在等待鼠标就位…',
   'device-initializing': '正在识别并读取鼠标…',
-  'battery-analysis': '正在整理电量记录并生成本地分析…',
+  'battery-analysis': '正在整理电量记录…',
+  'battery-analysis-with-ai': '正在整理电量记录并生成本地分析…',
   'applying-settings': '正在应用设备设置…',
   'scanning-devices': '正在扫描设备…',
   'checking-app-update': '正在检查应用更新…',
@@ -68,9 +72,11 @@ const ZH_LABELS: Record<MiraActivityKind, string> = {
   'restoring-local-ai': '正在恢复本地 AI 组件…',
 };
 
-const EN_LABELS: Record<MiraActivityKind, string> = {
+const EN_LABELS: Record<MiraActivityKind | 'battery-analysis-with-ai', string> = {
+  'awaiting-mouse': 'Waiting for the mouse…',
   'device-initializing': 'Discovering and reading the mouse…',
-  'battery-analysis': 'Preparing battery history and local analysis…',
+  'battery-analysis': 'Preparing battery history…',
+  'battery-analysis-with-ai': 'Preparing battery history and local analysis…',
   'applying-settings': 'Applying device settings…',
   'scanning-devices': 'Scanning for devices…',
   'checking-app-update': 'Checking for application updates…',
@@ -96,21 +102,31 @@ export function miraActivitySpec(activity: MiraActivityKind): MiraActivitySpec {
 export function miraActivityLabel(
   activity: MiraActivityKind,
   language: string | undefined,
+  options: { aiAnalysisEnabled?: boolean } = {},
 ): string {
-  return (language ?? '').toLowerCase().startsWith('zh')
-    ? ZH_LABELS[activity]
-    : EN_LABELS[activity];
+  const isZh = (language ?? '').toLowerCase().startsWith('zh');
+  const key = activity === 'battery-analysis' && options.aiAnalysisEnabled
+    ? 'battery-analysis-with-ai'
+    : activity;
+  return isZh ? ZH_LABELS[key] : EN_LABELS[key];
 }
 
+/** 全局 64px Orb 的业务状态集合，由 App 显式计算并传入。 */
+export type MiraGlobalActivity =
+  | 'awaiting-mouse'
+  | 'device-initializing'
+  | 'battery-analysis'
+  | null;
+
 /**
- * P0 全局状态只从 Mira 已有、稳定的业务 DOM 标志推导。
- *
+ * 兼容兜底：从 Mira 已有的、稳定的业务 DOM 标志推导全局状态。
+ * 显式业务状态为第一优先级；仅在未提供显式状态时使用本函数。
  * 电量弹窗覆盖 Dashboard，因此优先判定电量流程；弹窗出现状态条或空态后，
  * 说明业务结果已就绪，不能继续显示 Orb。
  */
 export function resolveGlobalMiraActivity(
   root: ParentNode = document,
-): MiraActivityKind | null {
+): MiraGlobalActivity {
   const batteryModal = root.querySelector<HTMLElement>('.battery-usage-modal');
   if (batteryModal) {
     const ready = batteryModal.querySelector(

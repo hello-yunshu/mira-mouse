@@ -25,7 +25,7 @@ import {
 import { friendlyUpdateError } from './update-errors';
 import { DEFAULT_LOCAL_AI_FEATURES, LOCAL_AI_FEATURE, localAiFeatureEnabled, setLocalAiFeature } from './localAi';
 import { LogPage } from './logs/LogPage';
-import { MiraInlineActivity } from './activity';
+import { MiraInlineActivity, announceAfterOrbExit } from './activity';
 import {
   ATTENTION_PRIORITY,
   AttentionSurface,
@@ -190,6 +190,9 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
   const [configImportBusy, setConfigImportBusy] = useState(false);
   const [batteryExportBusy, setBatteryExportBusy] = useState<'json' | 'csv' | null>(null);
   const [localAiRollbackBusy, setLocalAiRollbackBusy] = useState(false);
+  // 手动检查的局部 busy：与自动后台检查解耦，避免自动检查时页面出现 Orb。
+  const [pluginCheckBusy, setPluginCheckBusy] = useState(false);
+  const [localAiCheckBusy, setLocalAiCheckBusy] = useState(false);
   const [subview, setSubview] = useState<'main' | 'logs'>('main');
   const [tabState, setTabState] = useState<{ tab: SettingsTab; focusToken: number }>(() => ({
     tab: focusPluginUpdateToken > 0 || focusLocalAiUpdateToken > 0 ? 'plugins' : initialTab,
@@ -464,7 +467,7 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
     const fresh = available.find((key) => !prev.includes(key));
     if (fresh && resolveUpdateAttentionTarget('plugin', { view: 'settings', settingsTab: displayedTab }) === 'settings-plugin') {
       const [pluginId, version] = fresh.split('@');
-      pluginRowAnnounce({
+      announceAfterOrbExit('settings-plugin', pluginRowAnnounce, {
         eventKey: attentionPluginUpdateKey(pluginId, String(version)),
         scope: 'settings-plugin',
         variant: 'line',
@@ -486,7 +489,7 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
     if (!prev.initialized) return;
     if (available && (!prev.available || prev.version !== version)
       && resolveUpdateAttentionTarget('local-ai', { view: 'settings', settingsTab: displayedTab }) === 'settings-local-ai') {
-      localAiRowAnnounce({
+      announceAfterOrbExit('settings-local-ai', localAiRowAnnounce, {
         eventKey: attentionLocalAiUpdateKey('bundle', String(version)),
         scope: 'settings-local-ai',
         variant: 'line',
@@ -510,7 +513,7 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
     const target = resolveUpdateAttentionTarget('plugin', { view: 'settings', settingsTab: displayedTab });
     if (target !== 'settings-plugin') return;
     if (pluginUpdate.lastInstalledPluginId && pluginUpdate.lastInstalledVersion) {
-      pluginRowAnnounce({
+      announceAfterOrbExit('settings-plugin', pluginRowAnnounce, {
         eventKey: attentionPluginInstalledKey(pluginUpdate.lastInstalledPluginId, pluginUpdate.lastInstalledVersion),
         scope: 'settings-plugin',
         variant: 'flash',
@@ -533,7 +536,7 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
     if (target !== 'settings-local-ai') return;
     const bundleVersion = localAiUpdate.updates.find((candidate) => candidate.component === 'bundle')?.currentVersion ?? localAiStatus.runtimeVersion;
     if (bundleVersion) {
-      localAiRowAnnounce({
+      announceAfterOrbExit('settings-local-ai', localAiRowAnnounce, {
         eventKey: attentionLocalAiInstalledKey('bundle', bundleVersion),
         scope: 'settings-local-ai',
         variant: 'flash',
@@ -687,10 +690,13 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
 
   async function checkPluginUpdates() {
     if (previewMode) return;
+    setPluginCheckBusy(true);
     try {
       await checkForPluginUpdates();
     } catch (error) {
       notifyError(t('notification.checkPluginUpdateFailed'), friendlyUpdateError(error));
+    } finally {
+      setPluginCheckBusy(false);
     }
   }
 
@@ -707,10 +713,13 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
 
   async function checkLocalAiUpdates() {
     if (previewMode) return;
+    setLocalAiCheckBusy(true);
     try {
       await checkForLocalAiUpdates();
     } catch (error) {
       notifyError(t('notification.checkLocalAiUpdateFailed'), friendlyUpdateError(error));
+    } finally {
+      setLocalAiCheckBusy(false);
     }
   }
 
@@ -1086,10 +1095,10 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
             <button
               className="secondary mira-activity-button"
               onClick={() => void checkLocalAiUpdates()}
-              disabled={previewMode || localAiUpdate.phase === 'checking' || localAiUpdate.phase === 'downloading'}
+              disabled={previewMode || localAiCheckBusy || localAiUpdate.phase === 'checking' || localAiUpdate.phase === 'downloading'}
             >
               <MiraInlineActivity
-                active={localAiUpdate.phase === 'checking' && !localAiRollbackBusy}
+                active={localAiCheckBusy}
                 activity="checking-local-ai-updates"
               />
               <span>{localAiUpdate.phase === 'checking' ? t('settings.localAi.checking') : t('settings.localAi.checkUpdates')}</span>
@@ -1167,8 +1176,8 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
             <Toggle checked={settings.automaticPluginUpdateChecks} onChange={(v) => update({ automaticPluginUpdateChecks: v })} label={t('settings.pluginUpdateCheck.label')} />
           </SettingRow>
           <div className="contact-links plugin-update-actions align-end">
-            <button className="secondary mira-activity-button" onClick={() => void checkPluginUpdates()} disabled={previewMode || pluginUpdatesChecking || pluginUpdate.phase === 'downloading'}>
-              <MiraInlineActivity active={pluginUpdatesChecking} activity="checking-plugin-updates" />
+            <button className="secondary mira-activity-button" onClick={() => void checkPluginUpdates()} disabled={previewMode || pluginCheckBusy || pluginUpdatesChecking || pluginUpdate.phase === 'downloading'}>
+              <MiraInlineActivity active={pluginCheckBusy} activity="checking-plugin-updates" />
               <span>{pluginUpdatesChecking ? t('settings.pluginUpdate.checking') : t('settings.pluginUpdate.check')}</span>
             </button>
             {pluginUpdates.length > 0 && pluginUpdates.every((item) => !item.updateAvailable) && <span className="save-badge">{t('settings.pluginUpdate.allLatest')}</span>}

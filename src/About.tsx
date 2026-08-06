@@ -16,7 +16,7 @@ import {
   relaunchAfterUpdate,
   type AppUpdateState,
 } from './updater';
-import { MiraInlineActivity } from './activity';
+import { MiraInlineActivity, announceAfterOrbExit } from './activity';
 import {
   ATTENTION_PRIORITY,
   AttentionBeamLayer,
@@ -54,6 +54,8 @@ export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0 }:
   const [info, setInfo] = useState<AboutInfo | null>(previewMode ? PREVIEW_INFO : null);
   const [error, setError] = useState<string>('');
   const [update, setUpdate] = useState<AppUpdateState>(appUpdateState());
+  // 手动检查的局部 busy：与自动后台检查解耦，避免自动检查时页面出现 Orb。
+  const [manualCheckBusy, setManualCheckBusy] = useState(false);
 
   useEffect(() => {
     if (previewMode) return;
@@ -79,7 +81,7 @@ export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0 }:
     prevUpdatePhaseRef.current = update.phase;
     if (prev === undefined || prev === update.phase || !update.version) return;
     if (update.phase === 'available') {
-      aboutAnnounce({
+      announceAfterOrbExit('about-update', aboutAnnounce, {
         eventKey: attentionAppUpdateKey(update.version),
         scope: 'about-update',
         variant: 'line',
@@ -90,7 +92,7 @@ export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0 }:
         priority: ATTENTION_PRIORITY['update-available'],
       });
     } else if (update.phase === 'installed') {
-      aboutAnnounce({
+      announceAfterOrbExit('about-update', aboutAnnounce, {
         eventKey: attentionAppRestartKey(update.version),
         scope: 'about-update',
         variant: 'pulse-inner',
@@ -112,10 +114,13 @@ export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0 }:
 
   async function checkForUpdates() {
     if (!info?.updaterActive) return;
+    setManualCheckBusy(true);
     try {
       await checkForAppUpdate();
     } catch (err) {
       notifyError(t('notification.checkUpdateFailed'), friendlyUpdateError(err));
+    } finally {
+      setManualCheckBusy(false);
     }
   }
 
@@ -263,8 +268,8 @@ export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0 }:
           </div>
           {info.updaterActive && (
             <div className="contact-links align-end">
-              <button className="secondary mira-activity-button" onClick={checkForUpdates} disabled={update.phase === 'checking' || update.phase === 'downloading'}>
-                <MiraInlineActivity active={update.phase === 'checking'} activity="checking-app-update" />
+              <button className="secondary mira-activity-button" onClick={checkForUpdates} disabled={manualCheckBusy || update.phase === 'checking' || update.phase === 'downloading'}>
+                <MiraInlineActivity active={manualCheckBusy} activity="checking-app-update" />
                 <span>{update.phase === 'checking' ? t('about.updateChecking') : t('about.updateCheck')}</span>
               </button>
               {update.phase === 'up-to-date' && <span className="save-badge">{t('about.updateUpToDate')}</span>}

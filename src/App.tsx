@@ -96,7 +96,7 @@ import { initUpdatePriorityCoordinator } from './update-priority';
 import { LOCAL_AI_FEATURE, localAiFeatureEnabled } from './localAi';
 import { segmentedIndicatorStyle } from './segmentedControl';
 import { Modal, OverlayPortal, useHasOpenModal } from './overlay';
-import { MiraInlineActivity } from './activity';
+import { MiraInlineActivity, MiraActivityOverlay, announceAfterOrbExit } from './activity';
 import './styles.css';
 
 type View = 'dashboard' | 'settings' | 'about';
@@ -2537,6 +2537,11 @@ function DeviceDetails({ device, deviceKey, onClose }: { device: DeviceState; de
   }, [groups]);
 
   const handleCopyAll = useCallback(() => {
+    // Clipboard API 缺失时不得让状态永久停在 copying。
+    if (!navigator.clipboard) {
+      setCopyState('idle');
+      return;
+    }
     setCopyState('copying');
     const payload = {
       miraVersion: 'dev',
@@ -2548,7 +2553,7 @@ function DeviceDetails({ device, deviceKey, onClose }: { device: DeviceState; de
       readStatuses: device.readStatuses ?? {},
     };
     const text = JSON.stringify(payload, null, 2);
-    navigator.clipboard?.writeText(text).then(() => {
+    navigator.clipboard.writeText(text).then(() => {
       setCopyState('copied');
       setTimeout(() => setCopyState('idle'), 2000);
     }).catch(() => setCopyState('idle'));
@@ -2580,7 +2585,10 @@ function DeviceDetails({ device, deviceKey, onClose }: { device: DeviceState; de
     };
     // path 为空 → 仅返回 content，不写文件。
     invoke<{ content: string }>('log_export_device_diagnostics', { input, path: '' })
-      .then((outcome) => navigator.clipboard?.writeText(outcome.content))
+      .then((outcome) => {
+        if (!navigator.clipboard) throw new Error('clipboard unavailable');
+        return navigator.clipboard.writeText(outcome.content);
+      })
       .then(() => {
         setDiagCopyState('copied');
         setTimeout(() => setDiagCopyState('idle'), 2000);
@@ -2632,19 +2640,19 @@ function DeviceDetails({ device, deviceKey, onClose }: { device: DeviceState; de
       <p className="details-note">{i18n.t('dashboard.detailsNote')}</p>
       <div className="details-actions">
         <button className="details-action-btn" onClick={() => void handleRefresh()} title={i18n.t('dashboard.refreshAll')} disabled={refreshingDetails}>
-          {refreshingDetails
-            ? <MiraInlineActivity active activity="refreshing-device-details" announce />
-            : <Timer weight="regular" />} {i18n.t('dashboard.refreshAll')}
+          <MiraInlineActivity active={refreshingDetails} activity="refreshing-device-details" announce fallback={<Timer weight="regular" />} /> {i18n.t('dashboard.refreshAll')}
         </button>
         <button className="details-action-btn" onClick={handleCopyAll} title={i18n.t('dashboard.copyAllReadings')} disabled={copyState === 'copying'}>
-          {copyState === 'copying'
-            ? <MiraInlineActivity active activity="copying-readings" announce />
-            : copyState === 'copied' ? '✓' : <ReadCvLogo weight="regular" />} {i18n.t('dashboard.copyAllReadings')}
+          {copyState === 'copied'
+            ? '✓'
+            : <MiraInlineActivity active={copyState === 'copying'} activity="copying-readings" announce fallback={<ReadCvLogo weight="regular" />} />}
+          {i18n.t('dashboard.copyAllReadings')}
         </button>
         <button className="details-action-btn" onClick={handleCopyDiagnostics} title={i18n.t('dashboard.copyDeviceDiagnostics')} disabled={diagCopyState === 'copying'}>
-          {diagCopyState === 'copying'
-            ? <MiraInlineActivity active activity="copying-device-diagnostics" announce />
-            : diagCopyState === 'copied' ? '✓' : <Info weight="regular" />} {i18n.t('dashboard.copyDeviceDiagnostics')}
+          {diagCopyState === 'copied'
+            ? '✓'
+            : <MiraInlineActivity active={diagCopyState === 'copying'} activity="copying-device-diagnostics" announce fallback={<Info weight="regular" />} />}
+          {i18n.t('dashboard.copyDeviceDiagnostics')}
         </button>
       </div>
       <div className="protocol-diagnostic-toggle">
@@ -3961,6 +3969,7 @@ export default function App() {
   const [appNotificationAttentionEventKey, setAppNotificationAttentionEventKey] = useState<string>();
   const [showBatteryUsage, setShowBatteryUsage] = useState(false);
   const [batteryUsageSession, setBatteryUsageSession] = useState(0);
+  const [batteryUsageLoading, setBatteryUsageLoading] = useState(false);
   const [batteryUsageSettings, setBatteryUsageSettings] = useState<{ batteryHistoryEnabled: boolean; aiAnalysisEnabled: boolean } | undefined>(
     pureWeb ? { batteryHistoryEnabled: true, aiAnalysisEnabled: false } : undefined,
   );
@@ -4220,6 +4229,19 @@ export default function App() {
     () => connectedBatteryUsageTargets(deviceEntries),
     [deviceEntries],
   );
+  // 全局近程 Orb（MiraActivityOverlay）的显式设备状态：电量整理 → 等待鼠标 →
+  // 设备初始化。电量弹窗覆盖 Dashboard，优先于设备状态；其余情况仅在
+  // Dashboard 可见时表达，避免在其他视图弹出噪音 Orb。
+  const globalDeviceActivity = showBatteryUsage && batteryUsageLoading
+    ? 'battery-analysis' as const
+    : view === 'dashboard' && device
+      ? (device.mouseReady === false
+          ? 'awaiting-mouse' as const
+          : deviceRuntimePending(device)
+            ? 'device-initializing' as const
+            : null)
+      : null;
+  const batteryAnalysisEnabled = batteryUsageSettings?.aiAnalysisEnabled ?? false;
 
   // ── Attention Beam：设备 等待→就绪 / 断开→恢复 ───────────────────────
   // 只对真实状态迁移播放；启动即在线的设备不算事件，轮询读到相同状态不触发。
@@ -4236,7 +4258,7 @@ export default function App() {
       : lastDeviceIdentityRef.current;
     if (!identity) return;
     lastDeviceIdentityRef.current = identity;
-    const nextReady = device != null && device.mouseReady !== false;
+    const nextReady = device != null && device.mouseReady !== false && !deviceRuntimePending(device);
     const elapsedMs = Date.now() - deviceWatchStartedAtRef.current;
     const outcome = reduceDeviceAttentionByIdentity(deviceAttentionByKeyRef.current, identity, nextReady, elapsedMs);
     if (!device || outcome.action === 'none') return;
@@ -4245,7 +4267,9 @@ export default function App() {
     if (view !== 'dashboard') return;
     const readyAction = outcome.action === 'ready';
     const accent = declaredAccentColor(device);
-    announceAttentionRequest({
+    // 经协调层提交：同一设备 scope 仍有可见 Orb（等待/初始化）时先让 Orb
+    // 退出，再播放完成 Beam，避免同一事件 Orb 与 Beam 同时出现。
+    announceAfterOrbExit('device:app', announceAttentionRequest, {
       eventKey: attentionDeviceKey(readyAction ? 'ready' : 'reconnected', identity, outcome.cycle),
       scope: 'device:app',
       variant: 'line',
@@ -4263,6 +4287,10 @@ export default function App() {
 
   return <div className={`app-shell ${pureWeb ? 'web-preview' : ''} ${windowsPlatform ? 'platform-windows' : ''} ${macPlatform ? 'platform-macos' : ''} ${fallbackPlatform ? 'platform-fallback' : ''} ${windowsWebPreview ? 'windows-web-preview' : ''}`}>
     <AttentionBusController />
+    <MiraActivityOverlay
+      activity={globalDeviceActivity}
+      batteryAnalysisEnabled={batteryAnalysisEnabled}
+    />
     {windowsWebPreview && <WindowsPreviewControls />}
     {windowsPlatform && !windowsWebPreview && !pureWeb && <WindowsWindowControls />}
     {windowsPlatform && !windowsWebPreview && !pureWeb && <div className="windows-drag-strip" data-tauri-drag-region />}
@@ -4287,6 +4315,7 @@ export default function App() {
       key={batteryUsageSession}
       open={showBatteryUsage}
       onClose={() => setShowBatteryUsage(false)}
+      onLoadingChange={setBatteryUsageLoading}
       hasBattery={(device?.batteries.length ?? 0) > 0}
       batteryHistoryEnabled={batteryUsageSettings?.batteryHistoryEnabled}
       aiAnalysisEnabled={batteryUsageSettings?.aiAnalysisEnabled}

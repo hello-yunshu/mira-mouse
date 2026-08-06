@@ -2021,4 +2021,22 @@ describe('real device snapshot mapping', () => {
     // 6 个子块
     expect(gridSlots).toHaveLength(6);
   });
+
+  it('shows the connecting orb while awaiting the mouse (P0-2)', async () => {
+    const awaitingSnapshot: DeviceSnapshot = {
+      ...snapshot,
+      mouseReady: false,
+    };
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'settings_get') return Promise.resolve(settings);
+      if (command === 'device_snapshots') return Promise.resolve(entries(awaitingSnapshot));
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+
+    render(<App />);
+    await screen.findByRole('heading', { name: '等待鼠标就位' });
+    // 全局 Orb 由 App 显式传入设备状态，等待鼠标超过 300ms 后出现。
+    await waitFor(() => expect(document.querySelector('.mira-activity-overlay')).toBeInTheDocument(), { timeout: 1500 });
+    expect(document.querySelector('.mira-activity-overlay')).toHaveAttribute('data-mira-activity', 'awaiting-mouse');
+  });
 });

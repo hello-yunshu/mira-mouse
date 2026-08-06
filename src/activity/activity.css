@@ -74,6 +74,19 @@ button.mira-activity-button {
   opacity: 1;
 }
 
+/* fallback 图标在延迟出现期间（0–300ms）直接可见，避免按钮留白。 */
+.mira-inline-activity.has-fallback {
+  opacity: 1;
+}
+
+.mira-inline-activity-fallback {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  color: var(--muted, currentColor);
+}
+
 .mira-inline-activity canvas {
   display: block;
 }

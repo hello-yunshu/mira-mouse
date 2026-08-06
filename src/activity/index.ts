@@ -8,6 +8,13 @@ export {
 } from './MiraInlineActivity';
 export { useDelayedActivity } from './useDelayedActivity';
 export {
+  attentionScopeForActivity,
+  announceAfterOrbExit,
+  isActivityVisible,
+  waitForActivityExit,
+  type ActivityScope,
+} from './activityCoordinator';
+export {
   MIRA_ACTIVITY_MIN_VISIBLE_MS,
   MIRA_ACTIVITY_SHOW_DELAY_MS,
   miraActivityLabel,
@@ -15,5 +22,6 @@ export {
   resolveGlobalMiraActivity,
   type MiraActivityKind,
   type MiraActivitySpec,
+  type MiraGlobalActivity,
   type MiraOrbState,
 } from './activityCatalog';

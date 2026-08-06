@@ -1121,6 +1121,8 @@ export interface BatteryUsageModalProps {
   preferredDeviceName?: string;
   preferredComponentId?: string;
   demoMode?: boolean;
+  /** 电量数据加载状态上抛，供全局 Orb 显式判断「正在整理电量记录」。 */
+  onLoadingChange?: (loading: boolean) => void;
 }
 
 export interface BatteryUsageConnectedTarget {
@@ -1146,6 +1148,7 @@ export function BatteryUsageModal({
   preferredDeviceName,
   preferredComponentId,
   demoMode,
+  onLoadingChange,
 }: BatteryUsageModalProps) {
   const { t } = useTranslation();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -1168,6 +1171,11 @@ export function BatteryUsageModal({
   const pureWeb = isPureWebPreview() || demoMode === true;
   const historyEnabled = providedHistoryEnabled ?? loadedHistoryEnabled;
   const aiAnalysisEnabled = providedAiAnalysisEnabled ?? loadedAiAnalysisEnabled;
+
+  // 显式状态优先：把电量加载状态上抛给全局 Orb（prompt P0-2）。
+  useEffect(() => {
+    onLoadingChange?.(loading);
+  }, [loading, onLoadingChange]);
 
   useEffect(() => {
     if (
