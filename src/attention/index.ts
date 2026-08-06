@@ -4,6 +4,7 @@
 import './attention-beam.css';
 
 export { AttentionBeamLayer, type AttentionBeamLayerProps } from './AttentionBeamLayer';
+export { AttentionBusController } from './AttentionBusController';
 export { AttentionSurface, type AttentionSurfaceProps } from './AttentionSurface';
 export { useAttentionFeedback, type AttentionBehavior } from './useAttentionFeedback';
 export {
@@ -17,6 +18,12 @@ export {
   resetAttentionBusForTests,
   type AttentionBusState,
 } from './attentionCore';
+export {
+  ATTENTION_BEAM_TAIL_MS,
+  ATTENTION_REDUCED_MOTION_TOTAL_MS,
+  attentionRequestTotalMs,
+  prefersReducedAttentionMotion,
+} from './attentionTiming';
 export {
   registerLightingAttention,
   peekPendingLightingAttention,
@@ -47,6 +54,8 @@ export {
   attentionDesaturatedAccent,
   attentionNeutralColor,
   attentionIsDarkTheme,
+  normalizeHexColor,
+  normalizeComparableColor,
   reduceDeviceAttention,
   reduceDeviceAttentionByIdentity,
   resolveUpdateAttentionTarget,

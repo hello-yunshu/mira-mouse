@@ -2,7 +2,6 @@
 import { useCallback, useEffect, useReducer } from 'react';
 import {
   announceAttentionRequest,
-  finishActiveAttentionRequest,
   getAttentionBusState,
   onAttentionBusStateChange,
 } from './attentionCore';
@@ -12,24 +11,6 @@ export type AttentionBehavior = 'all' | 'lighting' | 'high';
 
 function isLightingEventKey(eventKey: string): boolean {
   return eventKey.startsWith('lighting:');
-}
-
-/** 光束自动结束的尾音（时长耗尽后再宽限的清理时间）。 */
-const BEAM_TAIL_MS = 140;
-
-/** Reduced Motion 下视觉改为约 220ms 静态淡入淡出后的等效总时长。 */
-const REDUCED_MOTION_FALLBACK_MS = 450;
-
-function prefersReducedMotion(): boolean {
-  return typeof window !== 'undefined'
-    && typeof window.matchMedia === 'function'
-    && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-}
-
-function beamTotalMs(request: AttentionBeamRequest): number {
-  // durationMs 已是视觉部分总时长（pulse-inner 的 cycle 时长 = durationMs / cycles），
-  // 不再乘以 cycles；这里只加延时与清理尾音。
-  return (request.delayMs ?? 0) + request.durationMs + BEAM_TAIL_MS;
 }
 
 /**
@@ -44,6 +25,10 @@ function beamTotalMs(request: AttentionBeamRequest): number {
  * - 同一个 surface 同一时刻最多渲染一个光束（全局单活跃仲裁）；
  * - behavior 用于组件层面的降级：'lighting' 只允许灯光类，「high」只允许
  *   更新 / 设备类。
+ *
+ * 本 Hook 不再管理请求结束：全局请求的生命周期由 App 根部常驻的
+ * AttentionBusController 统一管理。Surface 卸载 / 作用域切换不会改变
+ * 全局 active，也不会提前结束光束。
  */
 export function useAttentionFeedback(
   scope: string,
@@ -65,23 +50,6 @@ export function useAttentionFeedback(
 
   const active = getAttentionBusState().active;
   const beam = active && active.scope === scope ? active : null;
-
-  // 完成定时与异常清理（surface 卸载 / 作用域切换）：
-  // 只有本组件确实在渲染该光束时才负责结束它，且结束为幂等操作。
-  useEffect(() => {
-    if (!beam) return;
-    const total = prefersReducedMotion()
-      ? Math.min(REDUCED_MOTION_FALLBACK_MS, beamTotalMs(beam))
-      : beamTotalMs(beam);
-    const timer = window.setTimeout(() => finishActiveAttentionRequest(), total);
-    return () => {
-      window.clearTimeout(timer);
-      const currentActive = getAttentionBusState().active;
-      if (currentActive && currentActive.eventKey === beam.eventKey) {
-        finishActiveAttentionRequest();
-      }
-    };
-  }, [beam]);
 
   return { beam, announce };
 }

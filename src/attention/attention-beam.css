@@ -25,9 +25,8 @@
 /* ===== line：沿边缘的一次性扫掠（conic 楔形 + 真正环形遮罩，只亮边缘） =====
    双层 mask 只保留 1.5px 边缘环：content-box 外的 padding 区域可见，
    中心内容区（文字 / 按钮）完全透明，扫光不会覆盖卡片内容。
-   - WebKit（macOS WKWebView）使用 -webkit-mask-composite: exclude；
-   - Chromium（Windows WebView2）使用标准 mask-composite: exclude；
-   两种引擎都只支持 exclude 的“减去”语义，不引入跨平台差异。 */
+   macOS 13+（WebKit）prefixed 用 xor，Chromium/标准用 exclude（同语义）。
+   Reduced Motion 不再作为旧 macOS 兼容方案，只是无障碍降级。 */
 .attention-beam--line .attention-beam__cycle {
   padding: 1.5px;
   background: conic-gradient(
@@ -39,7 +38,7 @@
   -webkit-mask:
     linear-gradient(#000 0 0) content-box,
     linear-gradient(#000 0 0);
-  -webkit-mask-composite: exclude;
+  -webkit-mask-composite: xor;
 
   mask:
     linear-gradient(#000 0 0) content-box,
@@ -88,7 +87,8 @@
 }
 
 /* ===== Reduced Motion ===== */
-/* 优先改成约 220ms 的静态边框淡入淡出；不得保留绕边移动动画。 */
+/* 无障碍降级（不是旧 macOS 兼容方案）：约 220ms 的静态内边框淡入淡出；
+   完全清除 mask 与 conic 扫掠，不保留绕边移动动画。 */
 @media (prefers-reduced-motion: reduce) {
   .attention-beam__cycle {
     animation: attention-static-fade 220ms ease-in-out both !important;
@@ -96,7 +96,10 @@
     animation-iteration-count: 1 !important;
   }
   .attention-beam--line .attention-beam__cycle {
+    padding: 0;
     background: transparent;
+    -webkit-mask: none;
+    mask: none;
     box-shadow: inset 0 0 0 1.5px color-mix(in oklch, var(--beam-color, #ffffff) 78%, transparent);
   }
 }

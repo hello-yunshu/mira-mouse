@@ -14,6 +14,7 @@ import { announceAttentionRequest } from './attentionCore';
 import {
   ATTENTION_PRIORITY,
   attentionColorForZone,
+  normalizeComparableColor,
   type AttentionBeamRequest,
 } from './attentionTypes';
 
@@ -79,15 +80,21 @@ export function verifyLightingAttention(
   switch (pending.kind) {
     case 'power-on':
       return zoneState.enabled === true;
-    case 'color-applied':
-      return typeof pending.expectedValue === 'string' && zoneState.color === pending.expectedValue;
+    case 'color-applied': {
+      // 颜色按 Hex 等价比较（#f00 === #FF0000），格式 / 大小写变化仍算确认成功。
+      const expected = normalizeComparableColor(pending.expectedValue);
+      const actual = normalizeComparableColor(zoneState.color);
+      return expected !== undefined && actual !== undefined && expected === actual;
+    }
     case 'effect-applied':
       return zoneState.effectValue === pending.expectedValue;
   }
 }
 
 function lightingStateEqual(a: ZoneLightingState, b: ZoneLightingState): boolean {
-  return a.enabled === b.enabled && a.color === b.color && a.effectValue === b.effectValue;
+  return a.enabled === b.enabled
+    && normalizeComparableColor(a.color) === normalizeComparableColor(b.color)
+    && a.effectValue === b.effectValue;
 }
 
 /**

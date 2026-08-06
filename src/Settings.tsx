@@ -327,11 +327,14 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
   // 设置页卸载时通知父组件清除更新聚焦 token，避免下次进入时重复跳转和重复显示"已更新至"标签。
   useEffect(() => () => onSettingsExit?.(), [onSettingsExit]);
 
-  // 把当前激活的标签上抛给父组件，使设置页在卸载/重建（例如进入关于页再返回）
-  // 后能恢复到用户先前所在的标签，而不是每次都落回首个标签。
+  // 把当前「实际渲染」的标签上抛给父组件（不是用户点击后的目标标签）：
+  // 标签切换有约 130ms 过渡，displayedTab 只在退出动画结束后才变化；
+  // 父级据此做更新事件的可见性仲裁，避免过渡期间误判目标标签已可见。
+  // 同时使设置页在卸载/重建（例如进入关于页再返回）后能恢复到用户先前
+  // 所在的标签，而不是每次都落回首个标签。
   useEffect(() => {
-    onTabChange?.(tab);
-  }, [tab, onTabChange]);
+    onTabChange?.(displayedTab);
+  }, [displayedTab, onTabChange]);
 
   // tab 切换过渡：tab（目标）变化时先播放退出动画，动画结束后切换 displayedTab。
   // 新内容因 key 变化重新挂载，自动触发依次淡入。
@@ -489,10 +492,16 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
     }
   }, [localAiUpdate, localAiRowAnnounce, displayedTab]);
 
+  // 插件安装完成 Flash：只在 plugins 标签实际可见时提交（§7.1）。
+  // phase 已处于 installed 后不再重复尝试（其他依赖变化不触发重播）；
+  // 安装完成时不可见 → 不提交、不消费 eventKey、不占全局队列。
   useEffect(() => {
     const prev = prevPluginPhaseRef.current;
     prevPluginPhaseRef.current = pluginUpdate.phase;
-    if (prev === undefined || pluginUpdate.phase !== 'installed') return;
+    if (prev === undefined || prev === 'installed') return;
+    if (pluginUpdate.phase !== 'installed') return;
+    const target = resolveUpdateAttentionTarget('plugin', { view: 'settings', settingsTab: displayedTab });
+    if (target !== 'settings-plugin') return;
     if (pluginUpdate.lastInstalledPluginId && pluginUpdate.lastInstalledVersion) {
       pluginRowAnnounce({
         eventKey: attentionPluginInstalledKey(pluginUpdate.lastInstalledPluginId, pluginUpdate.lastInstalledVersion),
@@ -502,15 +511,19 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
         durationMs: 950,
         strength: 0.2,
         cycles: 1,
-        priority: ATTENTION_PRIORITY['lighting-color-applied'],
+        priority: ATTENTION_PRIORITY['update-installed'],
       });
     }
   }, [pluginUpdate, pluginRowAnnounce, displayedTab]);
 
+  // Local AI 安装完成 Flash：与插件相同门控（§7.2）。
   useEffect(() => {
     const prev = prevLocalAiPhaseRef.current;
     prevLocalAiPhaseRef.current = localAiUpdate.phase;
-    if (prev === undefined || localAiUpdate.phase !== 'installed') return;
+    if (prev === undefined || prev === 'installed') return;
+    if (localAiUpdate.phase !== 'installed') return;
+    const target = resolveUpdateAttentionTarget('local-ai', { view: 'settings', settingsTab: displayedTab });
+    if (target !== 'settings-local-ai') return;
     const bundleVersion = localAiUpdate.updates.find((candidate) => candidate.component === 'bundle')?.currentVersion ?? localAiStatus.runtimeVersion;
     if (bundleVersion) {
       localAiRowAnnounce({
@@ -521,7 +534,7 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
         durationMs: 950,
         strength: 0.2,
         cycles: 1,
-        priority: ATTENTION_PRIORITY['lighting-color-applied'],
+        priority: ATTENTION_PRIORITY['update-installed'],
       });
     }
   }, [localAiUpdate, localAiStatus.runtimeVersion, localAiRowAnnounce, displayedTab]);

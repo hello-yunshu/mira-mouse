@@ -67,6 +67,7 @@ import { onAppNotification, notifyError, notifySuccess, type AppNotification } f
 import {
   ATTENTION_PRIORITY,
   AttentionBeamLayer,
+  AttentionBusController,
   AttentionSurface,
   attentionAppRestartKey,
   attentionAppUpdateKey,
@@ -3925,8 +3926,9 @@ export default function App() {
   const [theme, setTheme] = useState<ThemeMode>('system');
   const [themeLoaded, setThemeLoaded] = useState(pureWeb);
   const [view, setView] = useState<View>('dashboard');
-  // 记住设置页上次所在的标签，使从关于页返回时恢复到原标签而非首个标签。
-  const [settingsTab, setSettingsTab] = useState<SettingsTab>('general');
+  // 设置页当前「实际可见」的标签（由 SettingsPage 在 130ms 切换过渡结束后上报，
+  // 不是用户点击的目标标签）。通知与固定更新行的可见性仲裁都以此为准。
+  const [visibleSettingsTab, setVisibleSettingsTab] = useState<SettingsTab>('general');
   const [aboutFocusToken, setAboutFocusToken] = useState(0);
   const [settingsPluginFocusToken, setSettingsPluginFocusToken] = useState(0);
   const [settingsLocalAiFocusToken, setSettingsLocalAiFocusToken] = useState(0);
@@ -3994,7 +3996,7 @@ export default function App() {
   const notificationAnnounce = notificationAttention.announce;
   const handleAppNotification = useEffectEvent((nextNotification: AppNotification) => {
     setAppNotification(nextNotification);
-    const beam = resolveNotificationBeam(nextNotification, view, settingsTab);
+    const beam = resolveNotificationBeam(nextNotification, view, visibleSettingsTab);
     if (beam) notificationAnnounce(beam);
   });
   useEffect(() => onAppNotification(handleAppNotification), []);
@@ -4199,6 +4201,9 @@ export default function App() {
     const elapsedMs = Date.now() - deviceWatchStartedAtRef.current;
     const outcome = reduceDeviceAttentionByIdentity(deviceAttentionByKeyRef.current, identity, nextReady, elapsedMs);
     if (!device || outcome.action === 'none') return;
+    // 状态机持续更新（等待→就绪 / 断开→恢复），但 Beam 只在 Dashboard 实际
+    // 可见时提交；事件发生时不可见 → 不播放 → 不补播（§5.1）。
+    if (view !== 'dashboard') return;
     const readyAction = outcome.action === 'ready';
     const accent = declaredAccentColor(device);
     announceAttentionRequest({
@@ -4211,13 +4216,14 @@ export default function App() {
       cycles: 1,
       priority: ATTENTION_PRIORITY[readyAction ? 'device-ready' : 'device-reconnected'],
     });
-  }, [device]);
+  }, [device, view]);
   useEffect(() => {
     if (!themeLoaded) return;
     applyTheme(theme, themeColor);
   }, [themeLoaded, theme, themeColor]);
 
   return <div className={`app-shell ${pureWeb ? 'web-preview' : ''} ${windowsPlatform ? 'platform-windows' : ''} ${macPlatform ? 'platform-macos' : ''} ${fallbackPlatform ? 'platform-fallback' : ''} ${windowsWebPreview ? 'windows-web-preview' : ''}`}>
+    <AttentionBusController />
     {windowsWebPreview && <WindowsPreviewControls />}
     {windowsPlatform && !windowsWebPreview && !pureWeb && <WindowsWindowControls />}
     {windowsPlatform && !windowsWebPreview && !pureWeb && <div className="windows-drag-strip" data-tauri-drag-region />}
@@ -4236,7 +4242,7 @@ export default function App() {
           ? <AwaitingMouseState deviceName={device.name} onRefresh={() => { setRefreshNonce((value) => value + 1); invoke('device_refresh').catch(() => {}); }} onOpenSettings={() => setView('settings')} />
           : <Dashboard device={device} deviceEntries={deviceEntries} onDeviceChange={setDevice} onDeviceSelect={selectDevice} onOpenBatteryUsage={openBatteryUsage} pluginLocaleRevision={pluginLocaleRevision} demoMode={demoMode} />
     )}
-    {view === 'settings' && <SettingsPage initialTab={settingsTab} onTabChange={setSettingsTab} previewMode={pureWeb} focusPluginUpdateToken={settingsPluginFocusToken} focusLocalAiUpdateToken={settingsLocalAiFocusToken} onSettingsExit={handleSettingsExit} onNavigateAbout={() => setView('about')} onOpenBatteryUsage={openBatteryUsage} onBatteryUsageSettingsChange={syncBatteryUsageSettings} onThemeChange={setTheme} pluginCapabilities={device?.pluginCapabilities ?? []} writableMutations={device?.writableMutations ?? []} />}
+    {view === 'settings' && <SettingsPage initialTab={visibleSettingsTab} onTabChange={setVisibleSettingsTab} previewMode={pureWeb} focusPluginUpdateToken={settingsPluginFocusToken} focusLocalAiUpdateToken={settingsLocalAiFocusToken} onSettingsExit={handleSettingsExit} onNavigateAbout={() => setView('about')} onOpenBatteryUsage={openBatteryUsage} onBatteryUsageSettingsChange={syncBatteryUsageSettings} onThemeChange={setTheme} pluginCapabilities={device?.pluginCapabilities ?? []} writableMutations={device?.writableMutations ?? []} />}
     {view === 'about' && <AboutPage previewMode={pureWeb} focusUpdateToken={aboutFocusToken} onBack={() => setView('settings')} />}
     <BatteryUsageModal
       key={batteryUsageSession}

@@ -83,6 +83,7 @@ export function resolveUpdateAttentionTarget(
 export const ATTENTION_PRIORITY = {
   'restart-required': 120,
   'update-available': 100,
+  'update-installed': 90,
   'lighting-color-applied': 85,
   'lighting-power-on': 75,
   'device-ready': 64,
@@ -135,22 +136,46 @@ export function attentionIsDarkTheme(): boolean {
     && window.matchMedia('(prefers-color-scheme: dark)').matches;
 }
 
-function hexToRgb01(hex: string): [r: number, g: number, b: number] | undefined {
-  const match = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(hex.trim());
+/**
+ * Hex 颜色标准化：#rgb / #rrggbb / 任意大小写 → 小写六位 #rrggbb。
+ * 无效值（非字符串 / 非合法 hex）返回 undefined。
+ */
+export function normalizeHexColor(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  const match = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(trimmed);
   if (!match) return undefined;
-  const value = Number.parseInt(match[1], 16);
-  const r = ((value >> 16) & 0xff) / 255;
-  const g = ((value >> 8) & 0xff) / 255;
-  const b = (value & 0xff) / 255;
-  if (match[1].length === 3) {
-    // #rgb → 展开为 #rrggbb 语义（16 倍增益）。
-    return [r * 17, g * 17, b * 17];
+  const raw = match[1].toLowerCase();
+  if (raw.length === 3) {
+    return `#${raw.split('').map((digit) => `${digit}${digit}`).join('')}`;
   }
-  return [r, g, b];
+  return `#${raw}`;
 }
 
-function isHexColor(value: string): boolean {
-  return /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(value.trim());
+/**
+ * 颜色比较标准化：Hex 展开并转小写；非 Hex CSS 字符串 trim 后原样保留；
+ * 空字符串返回 undefined。不引入完整 CSS 颜色解析器。
+ */
+export function normalizeComparableColor(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  return normalizeHexColor(trimmed) ?? trimmed;
+}
+
+/**
+ * Hex → RGB 01 分量。
+ * 先经 normalizeHexColor 展开为六位再按 24 位解析，三位 hex 不再做乘 17 修正。
+ */
+function hexToRgb01(value: string): [r: number, g: number, b: number] | undefined {
+  const normalized = normalizeHexColor(value);
+  if (!normalized) return undefined;
+  const numeric = Number.parseInt(normalized.slice(1), 16);
+  return [
+    ((numeric >> 16) & 0xff) / 255,
+    ((numeric >> 8) & 0xff) / 255,
+    (numeric & 0xff) / 255,
+  ];
 }
 
 /**
@@ -162,35 +187,35 @@ function isHexColor(value: string): boolean {
  * - 近黑：提亮至可见中性灰（不产生彩色）；
  * - 近白：压暗避免过亮（不产生彩色）；
  * - 灰色：保持低色度；
- * - 无效 / 非 hex 颜色：原样返回，不抛异常。
+ * - 无效 / 非 hex 颜色：trim 后原样返回，不抛异常。
  */
 export function attentionColorForZone(color: string, isDark = attentionIsDarkTheme()): string {
-  if (!isHexColor(color)) return color;
-  const hex = color.trim();
-  const rgb = hexToRgb01(hex);
-  if (!rgb) return color;
+  const normalized = normalizeHexColor(color);
+  if (!normalized) return color.trim();
+  const rgb = hexToRgb01(normalized);
+  if (!rgb) return normalized;
   const [r, g, b] = rgb;
   const max = Math.max(r, g, b);
   const min = Math.min(r, g, b);
   const chroma = max - min;
   if (max <= 0.14) {
     // 近黑：暗色主题直接给中性深灰，亮色主题混入白色提亮。
-    return isDark ? 'oklch(60% 0.01 0)' : `color-mix(in oklch, ${hex} 55%, white 45%)`;
+    return isDark ? 'oklch(60% 0.01 0)' : `color-mix(in oklch, ${normalized} 55%, white 45%)`;
   }
   if (min >= 0.86) {
     // 近白：暗色主题混入黑色压暗，亮色主题给中性浅灰。
-    return isDark ? `color-mix(in oklch, ${hex} 72%, black 28%)` : 'oklch(62% 0.01 0)';
+    return isDark ? `color-mix(in oklch, ${normalized} 72%, black 28%)` : 'oklch(62% 0.01 0)';
   }
   if (chroma < 0.05) {
     // 灰色：与黑白混合不产生色相，保持低色度。
     return isDark
-      ? `color-mix(in oklch, ${hex} 78%, white 22%)`
-      : `color-mix(in oklch, ${hex} 72%, black 28%)`;
+      ? `color-mix(in oklch, ${normalized} 78%, white 22%)`
+      : `color-mix(in oklch, ${normalized} 72%, black 28%)`;
   }
   // 普通彩色：色相完全由原色决定，仅做可见性微调。
   return isDark
-    ? `color-mix(in oklch, ${hex} 78%, white 22%)`
-    : `color-mix(in oklch, ${hex} 72%, black 28%)`;
+    ? `color-mix(in oklch, ${normalized} 78%, white 22%)`
+    : `color-mix(in oklch, ${normalized} 72%, black 28%)`;
 }
 
 /** 当前 Mira 主题的实际 --accent 值（hex 或 oklch）。 */

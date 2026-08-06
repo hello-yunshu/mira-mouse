@@ -17,6 +17,10 @@ import {
   type AttentionBeamRequest,
   type AttentionBeamVariant,
 } from './attentionTypes';
+import {
+  attentionRequestTotalMs,
+  prefersReducedAttentionMotion,
+} from './attentionTiming';
 
 export interface AttentionBeamLayerProps {
   active: boolean;
@@ -79,7 +83,12 @@ export function AttentionBeamLayer({
 
   useEffect(() => {
     finishedRef.current = false;
-    const total = effectiveDelay + effectiveDuration + 180;
+    // 与 AttentionBusController 共用统一时长：Layer 计时只负责视觉节点完成
+    // 与 onFinished，不推进全局总线。
+    const total = attentionRequestTotalMs(
+      { delayMs: effectiveDelay, durationMs: effectiveDuration },
+      prefersReducedAttentionMotion(),
+    );
     const timer = window.setTimeout(() => {
       if (!finishedRef.current) {
         finishedRef.current = true;

@@ -21,6 +21,8 @@ import {
   ATTENTION_PRIORITY,
   MAX_ATTENTION_QUEUE,
   attentionColorForZone,
+  normalizeComparableColor,
+  normalizeHexColor,
   reduceDeviceAttention,
   reduceDeviceAttentionByIdentity,
   resolveUpdateAttentionTarget,
@@ -28,6 +30,7 @@ import {
   type DeviceAttentionContext,
 } from './attentionTypes';
 import { AttentionBeamLayer } from './AttentionBeamLayer';
+import { AttentionBusController } from './AttentionBusController';
 import { useAttentionFeedback } from './useAttentionFeedback';
 import {
   attentionLightingMutationKey,
@@ -265,7 +268,8 @@ describe('useAttentionFeedback', () => {
     expect(result.current.announce(beam({ eventKey: 'update:plugin:p:1.2.3' }))).toBe(true);
   });
 
-  it('光束结束定时后自动 finish 并清空', () => {
+  it('全局结束计时器（Controller）到期后自动 finish 并清空', () => {
+    render(<AttentionBusController />);
     const { result } = renderHook(() => useAttentionFeedback('surface:auto'));
     act(() => { announceAttentionRequest(beam({ eventKey: 'auto-finish', scope: 'surface:auto', durationMs: 300, cycles: 1 })); });
     expect(result.current.beam?.eventKey).toBe('auto-finish');
@@ -275,6 +279,7 @@ describe('useAttentionFeedback', () => {
   });
 
   it('Reduced Motion 下按更短的静态淡入时长结束（不乘以 cycles）', () => {
+    render(<AttentionBusController />);
     const originalMatchMedia = window.matchMedia;
     window.matchMedia = vi.fn().mockImplementation((query: string) => ({
       matches: query.includes('prefers-reduced-motion'),
@@ -290,7 +295,7 @@ describe('useAttentionFeedback', () => {
       const { result } = renderHook(() => useAttentionFeedback('surface:rm'));
       act(() => { announceAttentionRequest(beam({ eventKey: 'rm', scope: 'surface:rm', durationMs: 2400, cycles: 2 })); });
       expect(result.current.beam?.eventKey).toBe('rm');
-      // Reduced Motion 结束时间 = min(450, 2400 + 140) = 450ms。
+      // Reduced Motion 结束时间 = min(450, 2400 + 180) = 450ms。
       act(() => vi.advanceTimersByTime(500));
       expect(result.current.beam).toBeNull();
       expect(getAttentionBusState().active).toBeNull();
@@ -386,17 +391,21 @@ describe('AttentionBeamLayer', () => {
   });
 });
 
-describe('line 变体环形遮罩（P0-1）', () => {
+describe('line 变体环形遮罩与 Mask（P0-1 / §10）', () => {
   it('双层 mask 只保留边缘，中心区域透明', () => {
     expect(beamCss).toContain('padding: 1.5px');
     expect(beamCss).toContain('mask-composite: exclude');
-    expect(beamCss).toContain('-webkit-mask-composite: exclude');
+    // macOS 13+ WKWebView：prefixed 用 xor（注意不是普通 exclude）。
+    expect(beamCss).toContain('-webkit-mask-composite: xor');
     expect(beamCss).toContain('linear-gradient(#000 0 0) content-box');
   });
 
-  it('Reduced Motion 下 line 不再使用绕边扫掠动画', () => {
+  it('Reduced Motion 下 line 清除 mask，只保留静态内边框淡入', () => {
     expect(beamCss).toContain('prefers-reduced-motion');
     expect(beamCss).toContain('attention-static-fade');
+    expect(beamCss).toContain('-webkit-mask: none');
+    expect(beamCss).toContain('mask: none');
+    expect(beamCss).toMatch(/inset\s+0\s+0\s+0\s+1\.5px/);
   });
 });
 
@@ -549,7 +558,87 @@ describe('attentionColorForZone（P0-3）', () => {
     expect(attentionColorForZone('transparent')).toBe('transparent');
   });
 
-  it('3 位 hex 支持', () => {
-    expect(attentionColorForZone('#f00', true)).toContain('#f00');
+  it('3 位 hex 归一化为六位后参与分类', () => {
+    expect(attentionColorForZone('#f00', true)).toBe(attentionColorForZone('#ff0000', true));
+    expect(attentionColorForZone('#f00', true)).toContain('#ff0000');
+  });
+});
+
+describe('颜色规范化（§11.4）', () => {
+  it('三位与六位 hex 产出完全一致的光束颜色', () => {
+    expect(attentionColorForZone('#fff', true)).toBe(attentionColorForZone('#ffffff', true));
+    expect(attentionColorForZone('#000', false)).toBe(attentionColorForZone('#000000', false));
+    expect(attentionColorForZone('#888', true)).toBe(attentionColorForZone('#888888', true));
+    expect(attentionColorForZone('#f00', false)).toBe(attentionColorForZone('#ff0000', false));
+  });
+
+  it('normalizeHexColor：展开、转小写、无效值 undefined', () => {
+    expect(normalizeHexColor('#F00')).toBe('#ff0000');
+    expect(normalizeHexColor('#AbCdEf')).toBe('#abcdef');
+    expect(normalizeHexColor('#ffffff')).toBe('#ffffff');
+    expect(normalizeHexColor(' #123AbC ')).toBe('#123abc');
+    expect(normalizeHexColor('invalid')).toBeUndefined();
+    expect(normalizeHexColor('red')).toBeUndefined();
+    expect(normalizeHexColor('')).toBeUndefined();
+    expect(normalizeHexColor(123)).toBeUndefined();
+    expect(normalizeHexColor(undefined)).toBeUndefined();
+  });
+
+  it('normalizeComparableColor：hex 等价、非 hex trim 保留、空串 undefined', () => {
+    expect(normalizeComparableColor('#F00')).toBe('#ff0000');
+    expect(normalizeComparableColor(' red ')).toBe('red');
+    expect(normalizeComparableColor('')).toBeUndefined();
+    expect(normalizeComparableColor('   ')).toBeUndefined();
+    expect(normalizeComparableColor(undefined)).toBeUndefined();
+  });
+});
+
+describe('灯光颜色确认等价比较（§11.5）', () => {
+  it('expected=#f00 / actual=#FF0000 → 确认成功并播放', () => {
+    const mutationId = registerLightingAttention('zone-a', 'color-applied', '#f00');
+    const played = confirmPendingLightingAttention(mutationId, {
+      before: zoneState({ color: '#000000' }),
+      after: zoneState({ color: '#FF0000' }),
+    });
+    expect(played).toBe(true);
+    expect(getAttentionBusState().active?.eventKey).toBe(attentionLightingMutationKey('zone-a', 'color', '#f00', mutationId));
+  });
+
+  it('before=#F00 / after=#ff0000 → 格式变化不算真实变化，不播放', () => {
+    const mutationId = registerLightingAttention('zone-a', 'color-applied', '#ff0000');
+    const played = confirmPendingLightingAttention(mutationId, {
+      before: zoneState({ color: '#F00' }),
+      after: zoneState({ color: '#ff0000' }),
+    });
+    expect(played).toBe(false);
+    expect(getAttentionBusState().active).toBeNull();
+  });
+
+  it('before=#ff0000 / after=#00ff00 → 实际变化，播放', () => {
+    const mutationId = registerLightingAttention('zone-a', 'color-applied', '#00ff00');
+    const played = confirmPendingLightingAttention(mutationId, {
+      before: zoneState({ color: '#ff0000' }),
+      after: zoneState({ color: '#00ff00' }),
+    });
+    expect(played).toBe(true);
+  });
+
+  it('expected=red / actual=red → 非 hex 但严格相等，确认成功', () => {
+    const mutationId = registerLightingAttention('zone-a', 'color-applied', 'red');
+    const played = confirmPendingLightingAttention(mutationId, {
+      before: zoneState({ color: 'blue' }),
+      after: zoneState({ color: 'red' }),
+    });
+    expect(played).toBe(true);
+  });
+
+  it('expected=red / actual=RED → 非 hex 保持严格语义，不自动相等', () => {
+    const mutationId = registerLightingAttention('zone-a', 'color-applied', 'red');
+    const played = confirmPendingLightingAttention(mutationId, {
+      before: zoneState({ color: 'blue' }),
+      after: zoneState({ color: 'RED' }),
+    });
+    expect(played).toBe(false);
+    expect(getAttentionBusState().active).toBeNull();
   });
 });
