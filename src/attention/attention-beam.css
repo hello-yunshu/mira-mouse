@@ -17,17 +17,35 @@
   inset: 0;
   display: block;
   border-radius: inherit;
+  box-sizing: border-box;
   pointer-events: none;
   opacity: 0;
 }
 
-/* ===== line：沿边缘的一次性扫光（conic 楔形 + 环形遮罩，绕边一圈） ===== */
+/* ===== line：沿边缘的一次性扫掠（conic 楔形 + 真正环形遮罩，只亮边缘） =====
+   双层 mask 只保留 1.5px 边缘环：content-box 外的 padding 区域可见，
+   中心内容区（文字 / 按钮）完全透明，扫光不会覆盖卡片内容。
+   - WebKit（macOS WKWebView）使用 -webkit-mask-composite: exclude；
+   - Chromium（Windows WebView2）使用标准 mask-composite: exclude；
+   两种引擎都只支持 exclude 的“减去”语义，不引入跨平台差异。 */
 .attention-beam--line .attention-beam__cycle {
+  padding: 1.5px;
   background: conic-gradient(
     from 0deg,
     color-mix(in oklch, var(--beam-color, #ffffff) 70%, transparent) 0deg,
     transparent 72deg
   );
+
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: exclude;
+
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+
   animation: attention-line-sweep var(--beam-duration, 1700ms) var(--motion-ease-standard, ease-in-out) both;
 }
 

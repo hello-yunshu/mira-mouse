@@ -27,7 +27,9 @@ function prefersReducedMotion(): boolean {
 }
 
 function beamTotalMs(request: AttentionBeamRequest): number {
-  return (request.delayMs ?? 0) + request.durationMs * request.cycles + BEAM_TAIL_MS;
+  // durationMs 已是视觉部分总时长（pulse-inner 的 cycle 时长 = durationMs / cycles），
+  // 不再乘以 cycles；这里只加延时与清理尾音。
+  return (request.delayMs ?? 0) + request.durationMs + BEAM_TAIL_MS;
 }
 
 /**

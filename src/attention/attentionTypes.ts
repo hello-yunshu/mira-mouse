@@ -32,14 +32,52 @@ export interface AttentionBeamRequest {
   priority: number;
 }
 
-/** HID mutation 的成功语义（保持最小兼容；仅当确需读取 runMutation 结果时使用）。 */
-export type MutationResult = { ok: true } | { ok: false; error: unknown };
-
 /** 全局同一时刻可保留的排队光束上限；超出按优先级丢弃队尾。 */
 export const MAX_ATTENTION_QUEUE = 8;
 
 /** 设备就绪宽限期：应用启动后极短时间内发现设备在线不算“等待→就绪事件”。 */
 export const DEVICE_READY_STARTUP_GRACE_MS = 2500;
+
+// ─── 更新类事件的仲裁入口（P0-2） ────────────────────────────────────────
+// 更新事件只有一个目标能消费：固定更新区域当前可见 → 固定区域播放；
+// 否则 → 通知浮层播放。调用方（App / Settings / About）都走这一个纯函数，
+// 避免“不可见固定行先消费、通知被会话去重拒绝”的竞态。
+
+export type AttentionView = 'dashboard' | 'settings' | 'about';
+
+export type UpdateAttentionTarget =
+  | 'notification'
+  | 'settings-plugin'
+  | 'settings-local-ai'
+  | 'about'
+  | 'none';
+
+export type UpdateAttentionKind = 'app' | 'plugin' | 'local-ai';
+
+export interface UpdateAttentionContext {
+  view: AttentionView;
+  /** 设置页当前显示标签；非设置页时可不传。 */
+  settingsTab?: string;
+}
+
+/** 解析一次更新事件应归属哪个可见目标。规则见 §十一：固定区域可见优先于通知。 */
+export function resolveUpdateAttentionTarget(
+  kind: UpdateAttentionKind,
+  context: UpdateAttentionContext,
+): UpdateAttentionTarget {
+  switch (kind) {
+    case 'app':
+      return context.view === 'about' ? 'about' : 'notification';
+    case 'plugin':
+      return context.view === 'settings' && context.settingsTab === 'plugins'
+        ? 'settings-plugin'
+        : 'notification';
+    case 'local-ai':
+      return context.view === 'settings' && context.settingsTab === 'plugins'
+        ? 'settings-local-ai'
+        : 'notification';
+  }
+}
 
 // ─── 事件优先级（越大越优先播放） ─────────────────────────────────────────
 export const ATTENTION_PRIORITY = {
@@ -54,10 +92,6 @@ export const ATTENTION_PRIORITY = {
 
 // ─── 事件键构造器（与 §九 保持一致；:installed 后缀是本实现为
 //     安装完成短闪新增的稳定键，pulse-inner 重启态也是稳定键） ────────────
-export function attentionLightingKey(zoneId: string, kind: 'power' | 'color' | 'effect', value: string): string {
-  return `lighting:${zoneId}:${kind}:${value}`;
-}
-
 export function attentionAppUpdateKey(version: string): string {
   return `update:app:mira:${version}`;
 }
@@ -102,47 +136,61 @@ export function attentionIsDarkTheme(): boolean {
 }
 
 function hexToRgb01(hex: string): [r: number, g: number, b: number] | undefined {
-  const match = /^#([0-9a-f]{6})$/i.exec(hex.trim());
+  const match = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(hex.trim());
   if (!match) return undefined;
   const value = Number.parseInt(match[1], 16);
-  return [((value >> 16) & 0xff) / 255, ((value >> 8) & 0xff) / 255, (value & 0xff) / 255];
+  const r = ((value >> 16) & 0xff) / 255;
+  const g = ((value >> 8) & 0xff) / 255;
+  const b = (value & 0xff) / 255;
+  if (match[1].length === 3) {
+    // #rgb → 展开为 #rrggbb 语义（16 倍增益）。
+    return [r * 17, g * 17, b * 17];
+  }
+  return [r, g, b];
 }
 
-function rgb01ToOklch(r: number, g: number, b: number): { l: number; c: number; h: number } {
-  const rl = Math.cbrt(r);
-  const gl = Math.cbrt(g);
-  const bl = Math.cbrt(b);
-  const l = 0.4122214708 * rl + 0.5363325363 * gl + 0.0514459929 * bl;
-  const m = 0.2119034982 * rl + 0.6806995451 * gl + 0.1073969566 * bl;
-  const s = 0.0883024619 * rl + 0.2817188376 * gl + 0.6299787005 * bl;
-  const l_ = 0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s;
-  const m_ = 1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s;
-  const s_ = 0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s;
-  const lp = l_ - 0.5;
-  const mp = m_ - 0.5;
-  const sp = s_ - 0.5;
-  const c = Math.sqrt(lp * lp + mp * mp + sp * sp);
-  const h = (Math.atan2(sp, lp) * 180) / Math.PI + 180;
-  return { l: l_, c, h: ((h % 360) + 360) % 360 };
+function isHexColor(value: string): boolean {
+  return /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(value.trim());
 }
 
 /**
  * 灯光 Zone 的实际颜色 → 光束显示色。
- * 只修正 UI 可见性，绝不改变用户设备的实际灯光颜色。
- * 极端暗色校正：红调压低彩度避免刺眼；黑色/近黑提亮至可见下限。
+ *
+ * 不做完整颜色空间数学换算：浏览器负责 color-mix 的色彩处理，保留原色相。
+ * 只做必要的可见性修正，绝不改变用户设备的实际灯光颜色：
+ * - 普通彩色：按主题混合白/黑微调亮度，色相保持；
+ * - 近黑：提亮至可见中性灰（不产生彩色）；
+ * - 近白：压暗避免过亮（不产生彩色）；
+ * - 灰色：保持低色度；
+ * - 无效 / 非 hex 颜色：原样返回，不抛异常。
  */
 export function attentionColorForZone(color: string, isDark = attentionIsDarkTheme()): string {
-  const rgb = hexToRgb01(color);
+  if (!isHexColor(color)) return color;
+  const hex = color.trim();
+  const rgb = hexToRgb01(hex);
   if (!rgb) return color;
-  const { l, c, h } = rgb01ToOklch(rgb[0], rgb[1], rgb[2]);
-  const isRedHue = h < 25 || h > 315;
-  const targetL = isDark
-    ? Math.min(86, Math.max(62, 64 + (l - 0.5) * 20))
-    : Math.min(70, Math.max(55, 60 + (l - 0.5) * 16));
-  const chromaMult = isDark ? (isRedHue ? 0.55 : 0.75) : (isRedHue ? 0.45 : 0.62);
-  const cap = isDark ? (isRedHue ? 0.09 : 0.13) : (isRedHue ? 0.07 : 0.1);
-  const beamC = Math.min(Math.max(c * chromaMult, 0.015), cap);
-  return `oklch(${targetL.toFixed(1)}% ${beamC.toFixed(3)} ${h.toFixed(0)})`;
+  const [r, g, b] = rgb;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const chroma = max - min;
+  if (max <= 0.14) {
+    // 近黑：暗色主题直接给中性深灰，亮色主题混入白色提亮。
+    return isDark ? 'oklch(60% 0.01 0)' : `color-mix(in oklch, ${hex} 55%, white 45%)`;
+  }
+  if (min >= 0.86) {
+    // 近白：暗色主题混入黑色压暗，亮色主题给中性浅灰。
+    return isDark ? `color-mix(in oklch, ${hex} 72%, black 28%)` : 'oklch(62% 0.01 0)';
+  }
+  if (chroma < 0.05) {
+    // 灰色：与黑白混合不产生色相，保持低色度。
+    return isDark
+      ? `color-mix(in oklch, ${hex} 78%, white 22%)`
+      : `color-mix(in oklch, ${hex} 72%, black 28%)`;
+  }
+  // 普通彩色：色相完全由原色决定，仅做可见性微调。
+  return isDark
+    ? `color-mix(in oklch, ${hex} 78%, white 22%)`
+    : `color-mix(in oklch, ${hex} 72%, black 28%)`;
 }
 
 /** 当前 Mira 主题的实际 --accent 值（hex 或 oklch）。 */
@@ -211,4 +259,22 @@ export function reduceDeviceAttention(
   }
   // 就绪 → 断开：累计周期序号，供重连时使用。
   return { action: 'none', wasReady: true, cycle: prev.cycle + 1 };
+}
+
+/**
+ * 按稳定设备身份隔离的多设备状态机入口（P1-4）。
+ * 每个身份（deviceKey / 插件+family）维护独立的 previous / wasReady / cycle，
+ * 切换设备、同名设备、一个离线设备切到另一个在线设备都不会互相继承状态。
+ * 返回的 outcome 与 reduceDeviceAttention 相同，并已写回该身份的上下文。
+ */
+export function reduceDeviceAttentionByIdentity(
+  contexts: Map<string, DeviceAttentionContext>,
+  identity: string,
+  nextReady: boolean,
+  elapsedMs: number,
+): DeviceAttentionOutcome {
+  const prev = contexts.get(identity) ?? { previous: undefined, wasReady: false, cycle: 0 };
+  const outcome = reduceDeviceAttention(prev, nextReady, elapsedMs);
+  contexts.set(identity, { previous: nextReady, wasReady: outcome.wasReady, cycle: outcome.cycle });
+  return outcome;
 }

@@ -72,11 +72,11 @@ export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0 }:
   // 初次挂载时已有的状态不触发，与通知共享同一 eventKey 仲裁。
   const aboutAttention = useAttentionFeedback('about-update');
   const aboutAnnounce = aboutAttention.announce;
-  const prevUpdatePhaseRef = useRef<AppUpdateState['phase']>('idle');
+  const prevUpdatePhaseRef = useRef<AppUpdateState['phase'] | undefined>(undefined);
   useEffect(() => {
     const prev = prevUpdatePhaseRef.current;
     prevUpdatePhaseRef.current = update.phase;
-    if (!prev || prev === update.phase || !update.version) return;
+    if (prev === undefined || prev === update.phase || !update.version) return;
     if (update.phase === 'available') {
       aboutAnnounce({
         eventKey: attentionAppUpdateKey(update.version),

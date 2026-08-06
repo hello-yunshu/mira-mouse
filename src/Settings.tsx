@@ -33,6 +33,7 @@ import {
   attentionLocalAiUpdateKey,
   attentionPluginInstalledKey,
   attentionPluginUpdateKey,
+  resolveUpdateAttentionTarget,
   useAttentionFeedback,
   type AttentionBeamRequest,
 } from './attention';
@@ -428,6 +429,8 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
   // ── Attention Beam：插件 / 本地 AI 固定更新行（§5.7、§5.8、§11） ──────
   // 只在真实的 updateAvailable 迁移（或安装完成）时播放一次；初次挂载时
   // 已有状态不触发；多个插件可更新时只强调第一个新出现的更新行。
+  // 固定行只在 plugins 标签实际可见时才有权 announce；其余情况交给通知浮层
+  // 消费（仲裁见 attentionTypes.resolveUpdateAttentionTarget，P0-2）。
   const pluginRowAttention = useAttentionFeedback('settings-plugin');
   const localAiRowAttention = useAttentionFeedback('settings-local-ai');
   const pluginRowAnnounce = pluginRowAttention.announce;
@@ -435,8 +438,8 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
 
   const prevAvailablePluginsRef = useRef<string[] | undefined>(undefined);
   const prevAvailableLocalAiRef = useRef<{ initialized: boolean; available: boolean; version?: string }>({ initialized: false, available: false });
-  const prevPluginPhaseRef = useRef<PluginUpdateState['phase']>('idle');
-  const prevLocalAiPhaseRef = useRef<LocalAiUpdateState['phase']>('idle');
+  const prevPluginPhaseRef = useRef<PluginUpdateState['phase'] | undefined>(undefined);
+  const prevLocalAiPhaseRef = useRef<LocalAiUpdateState['phase'] | undefined>(undefined);
 
   useEffect(() => {
     const available = pluginUpdate.updates
@@ -449,7 +452,7 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
     const prev = prevAvailablePluginsRef.current;
     prevAvailablePluginsRef.current = available;
     const fresh = available.find((key) => !prev.includes(key));
-    if (fresh) {
+    if (fresh && resolveUpdateAttentionTarget('plugin', { view: 'settings', settingsTab: displayedTab }) === 'settings-plugin') {
       const [pluginId, version] = fresh.split('@');
       pluginRowAnnounce({
         eventKey: attentionPluginUpdateKey(pluginId, String(version)),
@@ -462,7 +465,7 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
         priority: ATTENTION_PRIORITY['update-available'],
       });
     }
-  }, [pluginUpdate, pluginRowAnnounce]);
+  }, [pluginUpdate, pluginRowAnnounce, displayedTab]);
 
   useEffect(() => {
     const item = localAiUpdate.updates.find((candidate) => candidate.component === 'bundle');
@@ -471,7 +474,8 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
     const prev = prevAvailableLocalAiRef.current;
     prevAvailableLocalAiRef.current = { initialized: true, available, version };
     if (!prev.initialized) return;
-    if (available && (!prev.available || prev.version !== version)) {
+    if (available && (!prev.available || prev.version !== version)
+      && resolveUpdateAttentionTarget('local-ai', { view: 'settings', settingsTab: displayedTab }) === 'settings-local-ai') {
       localAiRowAnnounce({
         eventKey: attentionLocalAiUpdateKey('bundle', String(version)),
         scope: 'settings-local-ai',
@@ -483,12 +487,12 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
         priority: ATTENTION_PRIORITY['update-available'],
       });
     }
-  }, [localAiUpdate, localAiRowAnnounce]);
+  }, [localAiUpdate, localAiRowAnnounce, displayedTab]);
 
   useEffect(() => {
     const prev = prevPluginPhaseRef.current;
     prevPluginPhaseRef.current = pluginUpdate.phase;
-    if (prev === 'installed' || pluginUpdate.phase !== 'installed') return;
+    if (prev === undefined || pluginUpdate.phase !== 'installed') return;
     if (pluginUpdate.lastInstalledPluginId && pluginUpdate.lastInstalledVersion) {
       pluginRowAnnounce({
         eventKey: attentionPluginInstalledKey(pluginUpdate.lastInstalledPluginId, pluginUpdate.lastInstalledVersion),
@@ -501,12 +505,12 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
         priority: ATTENTION_PRIORITY['lighting-color-applied'],
       });
     }
-  }, [pluginUpdate, pluginRowAnnounce]);
+  }, [pluginUpdate, pluginRowAnnounce, displayedTab]);
 
   useEffect(() => {
     const prev = prevLocalAiPhaseRef.current;
     prevLocalAiPhaseRef.current = localAiUpdate.phase;
-    if (prev === 'installed' || localAiUpdate.phase !== 'installed') return;
+    if (prev === undefined || localAiUpdate.phase !== 'installed') return;
     const bundleVersion = localAiUpdate.updates.find((candidate) => candidate.component === 'bundle')?.currentVersion ?? localAiStatus.runtimeVersion;
     if (bundleVersion) {
       localAiRowAnnounce({
@@ -520,7 +524,7 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
         priority: ATTENTION_PRIORITY['lighting-color-applied'],
       });
     }
-  }, [localAiUpdate, localAiStatus.runtimeVersion, localAiRowAnnounce]);
+  }, [localAiUpdate, localAiStatus.runtimeVersion, localAiRowAnnounce, displayedTab]);
 
   useEffect(() => {
     onBatteryUsageSettingsChange?.({

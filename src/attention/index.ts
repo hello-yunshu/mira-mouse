@@ -5,7 +5,6 @@ import './attention-beam.css';
 
 export { AttentionBeamLayer, type AttentionBeamLayerProps } from './AttentionBeamLayer';
 export { AttentionSurface, type AttentionSurfaceProps } from './AttentionSurface';
-export { LightingAttention } from './LightingAttention';
 export { useAttentionFeedback, type AttentionBehavior } from './useAttentionFeedback';
 export {
   announceAttentionRequest,
@@ -19,10 +18,23 @@ export {
   type AttentionBusState,
 } from './attentionCore';
 export {
+  registerLightingAttention,
+  peekPendingLightingAttention,
+  takePendingLightingAttention,
+  clearPendingLightingAttention,
+  confirmPendingLightingAttention,
+  resetPendingLightingAttentionForTests,
+  attentionLightingMutationKey,
+  lightingAttentionRequest,
+  type LightingAttentionKind,
+  type LightingKeyKind,
+  type PendingLightingAttention,
+  type ZoneLightingState,
+} from './attentionLighting';
+export {
   MAX_ATTENTION_QUEUE,
   DEVICE_READY_STARTUP_GRACE_MS,
   ATTENTION_PRIORITY,
-  attentionLightingKey,
   attentionAppUpdateKey,
   attentionAppRestartKey,
   attentionPluginUpdateKey,
@@ -36,9 +48,14 @@ export {
   attentionNeutralColor,
   attentionIsDarkTheme,
   reduceDeviceAttention,
+  reduceDeviceAttentionByIdentity,
+  resolveUpdateAttentionTarget,
   type AttentionBeamRequest,
   type AttentionBeamVariant,
-  type MutationResult,
   type DeviceAttentionContext,
   type DeviceAttentionOutcome,
+  type AttentionView,
+  type UpdateAttentionTarget,
+  type UpdateAttentionKind,
+  type UpdateAttentionContext,
 } from './attentionTypes';

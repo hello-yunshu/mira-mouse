@@ -68,7 +68,6 @@ import {
   ATTENTION_PRIORITY,
   AttentionBeamLayer,
   AttentionSurface,
-  LightingAttention,
   attentionAppRestartKey,
   attentionAppUpdateKey,
   attentionColorForZone,
@@ -77,10 +76,16 @@ import {
   attentionLocalAiUpdateKey,
   attentionPluginUpdateKey,
   announceAttentionRequest,
-  reduceDeviceAttention,
+  clearPendingLightingAttention,
+  confirmPendingLightingAttention,
+  peekPendingLightingAttention,
+  reduceDeviceAttentionByIdentity,
+  registerLightingAttention,
+  resolveUpdateAttentionTarget,
   useAttentionFeedback,
   type AttentionBeamRequest,
   type DeviceAttentionContext,
+  type ZoneLightingState,
 } from './attention';
 import { useScrollFadeState } from './useScrollOverflow';
 import { appUpdateState, relaunchAfterUpdate, startAutomaticAppUpdateCheck, recordUpdateReminderDismissed, recordUpdateReminderIgnored, remindInstalledUpdateOnShown } from './updater';
@@ -895,6 +900,48 @@ function declaredAccentColor(device: DeviceState): string | undefined {
   return undefined;
 }
 
+/** 按 zone id 从设备插件声明中定位 Zone（跨 capability 查找）。 */
+function findZoneById(deviceState: DeviceState, zoneId: string): PluginZone | undefined {
+  for (const capability of deviceState.pluginCapabilities) {
+    const zone = (capability.metadata.zones ?? []).find((candidate) => candidate.id === zoneId);
+    if (zone) return zone;
+  }
+  return undefined;
+}
+
+/** 提取 Zone 的灯光可读状态，供 Mutation 成功后的目标值确认使用。 */
+function extractZoneLightingState(zone: PluginZone, deviceState: DeviceState): ZoneLightingState {
+  const effectField = zone.fields.find((field) => field.lightingRole === 'effect');
+  return {
+    enabled: zoneLightingEnabled(zone, deviceState),
+    color: zonePrimaryColor(zone, deviceState),
+    effectValue: effectField ? readPath(deviceState, effectField.source) : undefined,
+  };
+}
+
+/** 灯光 Mutation 成功后的确认入口：pending 存在时校验目标值并播放（P1-2）。 */
+function confirmLightingMutation(attentionId: number | undefined, before: DeviceState, after: DeviceState): void {
+  if (attentionId === undefined) return;
+  const pending = peekPendingLightingAttention(attentionId);
+  if (!pending) return;
+  const zoneStateOf = (deviceState: DeviceState): ZoneLightingState | undefined => {
+    const zone = findZoneById(deviceState, pending.zoneId);
+    return zone ? extractZoneLightingState(zone, deviceState) : undefined;
+  };
+  confirmPendingLightingAttention(attentionId, {
+    before: zoneStateOf(before),
+    after: zoneStateOf(after),
+  });
+}
+
+/** 稳定设备身份：优先 deviceKey，其次插件 ID + family，最后才是显示名。 */
+function stableDeviceIdentity(device: DeviceState, entries: DeviceSnapshotEntry[]): string {
+  const entry = selectedDeviceEntry(entries);
+  if (entry?.deviceKey) return entry.deviceKey;
+  if (device.pluginId) return `${device.pluginId}:${device.family ?? ''}`;
+  return String(device.name).trim().toLocaleLowerCase().replace(/\s+/g, '-');
+}
+
 function capabilityRuntimePending(capability: PluginCapability): boolean {
   return capability.metadata._miraRuntimePending === true;
 }
@@ -1171,12 +1218,17 @@ function FieldEditModal({ field, device, writeBusy, onClose, onApply, title, cur
   );
 }
 
+/// 统一字段写入口。第三个可选参数是灯光 Mutation 的 pending 登记 id（P1-2），
+/// 成功返回快照后由 runMutation 统一校验并播放灯光 Beam。
+type RunMutation = (mutation: string, params: Record<string, unknown>, attentionId?: number) => Promise<void>;
+
 /// 开关字段（inline-toggle + field.switch）。跟踪上次非 off 值用于恢复。
-function SwitchField({ field, device, writeBusy, runMutation }: {
+function SwitchField({ field, device, writeBusy, runMutation, attentionZoneId }: {
   field: PluginField;
   device: DeviceState;
   writeBusy: boolean;
-  runMutation: (mutation: string, params: Record<string, unknown>) => Promise<void>;
+  runMutation: RunMutation;
+  attentionZoneId?: string;
 }) {
   const sw = field.switch;
   const label = resolveFieldLabel(field, device, device.pluginId);
@@ -1199,7 +1251,12 @@ function SwitchField({ field, device, writeBusy, runMutation }: {
     if (!mutation) return;
     const nextValue = resolveSwitchNextValue(field, device, restoreRef.current);
     if (nextValue !== undefined) {
-      void runMutation(mutation, resolveFieldMutationParams(field, device, nextValue));
+      // 灯光 Zone 的开关在「关 → 开」时登记 power-on 反馈；关闭不反馈。
+      let attentionId: number | undefined;
+      if (attentionZoneId && !resolveSwitchState(field, device)) {
+        attentionId = registerLightingAttention(attentionZoneId, 'power-on', nextValue);
+      }
+      void runMutation(mutation, resolveFieldMutationParams(field, device, nextValue), attentionId);
     }
   };
 
@@ -1272,11 +1329,13 @@ function InlineRangeSlider({ range, value, disabled, format, onChange }: {
 }
 
 /// 按 field.editor 渲染字段控件。声明式，不含字段级特殊分支。
-function FieldRenderer({ field, device, writeBusy, runMutation }: {
+/// attentionZoneId 存在时表示该字段属于灯光 Zone（P1-2：成功写入才反馈）。
+function FieldRenderer({ field, device, writeBusy, runMutation, attentionZoneId }: {
   field: PluginField;
   device: DeviceState;
   writeBusy: boolean;
-  runMutation: (mutation: string, params: Record<string, unknown>) => Promise<void>;
+  runMutation: RunMutation;
+  attentionZoneId?: string;
 }) {
   const [editing, setEditing] = useState(false);
 
@@ -1295,7 +1354,7 @@ function FieldRenderer({ field, device, writeBusy, runMutation }: {
   switch (field.editor) {
     case 'inline-toggle':
       if (field.switch) {
-        return <SwitchField field={field} device={device} writeBusy={writeBusy} runMutation={runMutation} />;
+        return <SwitchField field={field} device={device} writeBusy={writeBusy} runMutation={runMutation} attentionZoneId={attentionZoneId} />;
       }
       return (
         <>
@@ -1333,7 +1392,14 @@ function FieldRenderer({ field, device, writeBusy, runMutation }: {
                 className={value === option.value ? 'active' : ''}
                 aria-pressed={value === option.value}
                 disabled={!writable}
-                onClick={() => mutation && applyMutation(mutation, resolveFieldMutationParams(field, device, option.value))}
+                onClick={() => {
+                  if (!mutation) return;
+                  // 灯光 Zone 的 effect 字段：写入前登记，成功确认后反馈。
+                  const attentionId = attentionZoneId && field.lightingRole === 'effect'
+                    ? registerLightingAttention(attentionZoneId, 'effect-applied', option.value)
+                    : undefined;
+                  void runMutation(mutation, resolveFieldMutationParams(field, device, option.value), attentionId);
+                }}
               >{resolveLabelKey(option.labelKey, device.pluginId)}</button>
             ))}
           </div>
@@ -1445,7 +1511,7 @@ function MetricField({ capability, field, device, writeBusy, runMutation }: {
   field: PluginField;
   device: DeviceState;
   writeBusy: boolean;
-  runMutation: (mutation: string, params: Record<string, unknown>) => Promise<void>;
+  runMutation: RunMutation;
 }) {
   const [editing, setEditing] = useState(false);
   const mutation = resolveMutation(field.mutation, device.writableMutations);
@@ -1503,7 +1569,7 @@ function GenericFieldControl({ field, device, writeBusy, runMutation }: {
   field: PluginField;
   device: DeviceState;
   writeBusy: boolean;
-  runMutation: (mutation: string, params: Record<string, unknown>) => Promise<void>;
+  runMutation: RunMutation;
 }) {
   const [editing, setEditing] = useState(false);
   const restoreRef = useRef<unknown>(undefined);
@@ -1625,7 +1691,7 @@ function GenericCapabilityControl({ capability, device, writeBusy, runMutation }
   capability: PluginCapability;
   device: DeviceState;
   writeBusy: boolean;
-  runMutation: (mutation: string, params: Record<string, unknown>) => Promise<void>;
+  runMutation: RunMutation;
 }) {
   const fields = (capability.metadata.fields ?? []).filter((field) => fieldHasReportedValue(field, device));
   const label = resolveLabelKey(capability.labelKey, device.pluginId);
@@ -1655,7 +1721,7 @@ function StageLayout({ capability, device, writeBusy, runMutation }: {
   capability: PluginCapability;
   device: DeviceState;
   writeBusy: boolean;
-  runMutation: (mutation: string, params: Record<string, unknown>) => Promise<void>;
+  runMutation: RunMutation;
 }) {
   const layout = resolveStageLayout(capability);
   const [editingStage, setEditingStage] = useState<number | null>(null);
@@ -1797,7 +1863,7 @@ function AdvancedSettingsModal({ groups, device, writeBusy, onClose, onEditField
   writeBusy: boolean;
   onClose: () => void;
   onEditField: (capability: PluginCapability, field: PluginField) => void;
-  runMutation: (mutation: string, params: Record<string, unknown>) => Promise<void>;
+  runMutation: RunMutation;
 }) {
   const sectionLabel = (section: NonNullable<PluginField['advancedSection']>): string => {
     const key = `advancedSettings.section.${section}`;
@@ -2082,7 +2148,7 @@ function ZoneRenderer({ capability, device, writeBusy, runMutation }: {
   capability: PluginCapability;
   device: DeviceState;
   writeBusy: boolean;
-  runMutation: (mutation: string, params: Record<string, unknown>) => Promise<void>;
+  runMutation: RunMutation;
 }) {
   const zones = resolveZones(capability, device);
   const [activeZoneId, setActiveZoneId] = useState<string>('');
@@ -2186,15 +2252,6 @@ function ZoneRenderer({ capability, device, writeBusy, runMutation }: {
 
   return (
     <>
-      <LightingAttention
-        zoneId={activeZone.id}
-        enabled={zoneLightingEnabled(activeZone, device)}
-        color={zoneColor}
-        effectValue={(() => {
-          const effectField = activeZone.fields.find((field) => field.lightingRole === 'effect');
-          return effectField ? readPath(device, effectField.source) : undefined;
-        })()}
-      />
       {multipleZones && (
         <div
           className="lighting-sub-tabs segmented-slider"
@@ -2252,6 +2309,7 @@ function ZoneRenderer({ capability, device, writeBusy, runMutation }: {
                   device={device}
                   writeBusy={writeBusy}
                   runMutation={runMutation}
+                  attentionZoneId={activeZone.id}
                 />
               </div>
             ))}
@@ -2266,7 +2324,9 @@ function ZoneRenderer({ capability, device, writeBusy, runMutation }: {
           writeBusy={writeBusy}
           onClose={() => setEditingColorZoneId(undefined)}
           onApply={(value) => {
-            void runMutation(colorMutation, resolveFieldMutationParams(colorField, device, value));
+            // 灯光 Zone 的颜色写入：写入前登记，runMutation 成功并确认目标值后反馈。
+            const attentionId = registerLightingAttention(activeZone.id, 'color-applied', value);
+            void runMutation(colorMutation, resolveFieldMutationParams(colorField, device, value), attentionId);
             setEditingColorZoneId(undefined);
           }}
         />
@@ -2334,7 +2394,7 @@ function CapabilityRouter({ capability, device, writeBusy, runMutation }: {
   capability: PluginCapability;
   device: DeviceState;
   writeBusy: boolean;
-  runMutation: (mutation: string, params: Record<string, unknown>) => Promise<void>;
+  runMutation: RunMutation;
 }) {
   if (capability.control === 'DpiStages') {
     return (
@@ -3004,10 +3064,12 @@ function Dashboard({
     };
   }, []);
 
-  const runMutation = async (
+  const runMutation: RunMutation = async (
     mutation: string,
     params: Record<string, unknown>,
+    attentionId?: number,
   ) => {
+    const beforeDevice = device;
     setWriteBusy(true);
     setPreviewMessage(i18n.t('dashboard.writing'));
     try {
@@ -3018,13 +3080,17 @@ function Dashboard({
         onDeviceChange(nextDevice);
         setPreviewMessage('');
         notifySuccess(i18n.t('dashboard.writeConfirmed'));
+        confirmLightingMutation(attentionId, beforeDevice, nextDevice);
         return;
       }
       const snapshot = await invoke<DeviceSnapshot>('device_mutate', { mutation, params });
-      onDeviceChange(snapshotToState(snapshot));
+      const nextDevice = snapshotToState(snapshot);
+      onDeviceChange(nextDevice);
       setPreviewMessage('');
       notifySuccess(i18n.t('dashboard.writeConfirmed'));
+      confirmLightingMutation(attentionId, beforeDevice, nextDevice);
     } catch (error) {
+      if (attentionId !== undefined) clearPendingLightingAttention(attentionId);
       setPreviewMessage('');
       const errorString = String(error);
       if (errorString.includes('is not available on this device')) {
@@ -3772,11 +3838,15 @@ function Dashboard({
 }
 
 /** 把「更新语义」的应用内通知映射为通知浮层上的 Attention 请求（§5.4~5.6）。
- *  用户当前正位于对应固定更新页面时返回 undefined —— 由固定更新行播放（§11 仲裁）。 */
+ *  目标归属由 resolveUpdateAttentionTarget 裁决：固定更新区域当前可见时返回
+ *  undefined —— 由固定更新行播放（§11 仲裁），保证同一事件只有一个目标消费。 */
 function resolveNotificationBeam(notification: AppNotification, currentView: View, currentSettingsTab: SettingsTab): AttentionBeamRequest | undefined {
+  const target = (kind: 'app' | 'plugin' | 'local-ai') =>
+    resolveUpdateAttentionTarget(kind, { view: currentView, settingsTab: currentSettingsTab });
+
   switch (notification.action) {
     case 'about-update': {
-      if (currentView === 'about') return undefined;
+      if (target('app') !== 'notification') return undefined;
       const state = appUpdateState();
       if (state.phase !== 'available' || !state.version) return undefined;
       return {
@@ -3792,7 +3862,7 @@ function resolveNotificationBeam(notification: AppNotification, currentView: Vie
       };
     }
     case 'relaunch': {
-      if (currentView === 'about') return undefined;
+      if (target('app') !== 'notification') return undefined;
       const state = appUpdateState();
       if (state.phase !== 'installed' || !state.version) return undefined;
       return {
@@ -3807,7 +3877,7 @@ function resolveNotificationBeam(notification: AppNotification, currentView: Vie
       };
     }
     case 'settings-plugin-update': {
-      if (currentView === 'settings' && currentSettingsTab === 'plugins') return undefined;
+      if (target('plugin') !== 'notification') return undefined;
       const info = pluginUpdateState().updates.find((item) => item.updateAvailable);
       if (!info?.availableVersion) return undefined;
       return {
@@ -3823,7 +3893,7 @@ function resolveNotificationBeam(notification: AppNotification, currentView: Vie
       };
     }
     case 'settings-local-ai-update': {
-      if (currentView === 'settings' && currentSettingsTab === 'plugins') return undefined;
+      if (target('local-ai') !== 'notification') return undefined;
       const info = localAiUpdateState().updates.find((item) => item.updateAvailable);
       if (!info?.availableVersion) return undefined;
       return {
@@ -3917,9 +3987,9 @@ export default function App() {
     setSettingsLocalAiFocusToken(0);
   }, []);
 
-  useEffect(() => onAppNotification(setAppNotification), []);
-
   // ── Attention Beam：通知浮层表面 ──────────────────────────────────────
+  // 只保留统一入口 onAppNotification(handleAppNotification)：每条通知只处理
+  // 一次，Beam 判断与状态更新在同一个入口（P2-1）。
   const notificationAttention = useAttentionFeedback('notification:app');
   const notificationAnnounce = notificationAttention.announce;
   const handleAppNotification = useEffectEvent((nextNotification: AppNotification) => {
@@ -4112,18 +4182,23 @@ export default function App() {
 
   // ── Attention Beam：设备 等待→就绪 / 断开→恢复 ───────────────────────
   // 只对真实状态迁移播放；启动即在线的设备不算事件，轮询读到相同状态不触发。
-  const deviceWatchRef = useRef<DeviceAttentionContext>({ previous: undefined, wasReady: false, cycle: 0 });
+  // 每个稳定设备身份（deviceKey）独立维护状态机，多设备/同名设备互不影响（P1-4）。
+  const deviceAttentionByKeyRef = useRef<Map<string, DeviceAttentionContext>>(new Map());
+  const lastDeviceIdentityRef = useRef<string | undefined>(undefined);
   const deviceWatchStartedAtRef = useRef<number | undefined>(undefined);
   useEffect(() => {
     if (deviceWatchStartedAtRef.current === undefined) {
       deviceWatchStartedAtRef.current = Date.now();
     }
+    const identity = device
+      ? stableDeviceIdentity(device, deviceEntriesRef.current)
+      : lastDeviceIdentityRef.current;
+    if (!identity) return;
+    lastDeviceIdentityRef.current = identity;
     const nextReady = device != null && device.mouseReady !== false;
     const elapsedMs = Date.now() - deviceWatchStartedAtRef.current;
-    const outcome = reduceDeviceAttention(deviceWatchRef.current, nextReady, elapsedMs);
-    deviceWatchRef.current = { previous: nextReady, wasReady: outcome.wasReady, cycle: outcome.cycle };
+    const outcome = reduceDeviceAttentionByIdentity(deviceAttentionByKeyRef.current, identity, nextReady, elapsedMs);
     if (!device || outcome.action === 'none') return;
-    const identity = String(device.name).trim().toLocaleLowerCase().replace(/\s+/g, '-');
     const readyAction = outcome.action === 'ready';
     const accent = declaredAccentColor(device);
     announceAttentionRequest({

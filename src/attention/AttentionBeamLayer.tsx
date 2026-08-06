@@ -57,8 +57,12 @@ export function AttentionBeamLayer({
   const effectiveStrength = request?.strength ?? strength;
   const effectiveDelay = request?.delayMs ?? delayMs;
   const effectiveRadius = request?.radius ?? radius;
-  // 禁止无限循环：line / flash 固定 1 次；pulse-inner 上限 2 次。
-  const cycleCount = Math.max(1, Math.min(2, Math.round(request?.cycles ?? cycles)));
+  // durationMs 是视觉部分总时长；line / flash 固定 1 次，pulse-inner 最多 2 次。
+  // 每个 cycle 的时长 = durationMs / cycleCount，总时长 = durationMs（不再乘以次数）。
+  const cycleCount = effectiveVariant === 'pulse-inner'
+    ? Math.min(2, Math.max(1, Math.round(request?.cycles ?? cycles)))
+    : 1;
+  const cycleDuration = effectiveDuration / cycleCount;
   const eventKeyValue = request?.eventKey ?? eventKey ?? '';
 
   const isDark = attentionIsDarkTheme();
@@ -75,7 +79,7 @@ export function AttentionBeamLayer({
 
   useEffect(() => {
     finishedRef.current = false;
-    const total = effectiveDelay + effectiveDuration * cycleCount + 180;
+    const total = effectiveDelay + effectiveDuration + 180;
     const timer = window.setTimeout(() => {
       if (!finishedRef.current) {
         finishedRef.current = true;
@@ -91,7 +95,7 @@ export function AttentionBeamLayer({
   if (!active || finishedKey !== null) return null;
 
   const cycleStyle = (index: number): CSSProperties => ({
-    animationDelay: `${effectiveDelay + index * effectiveDuration}ms`,
+    animationDelay: `${effectiveDelay + index * cycleDuration}ms`,
   });
 
   return (
@@ -102,7 +106,7 @@ export function AttentionBeamLayer({
       style={{
         '--beam-color': effectiveColor,
         '--beam-o': String(beamOpacity),
-        '--beam-duration': `${effectiveDuration}ms`,
+        '--beam-duration': `${cycleDuration}ms`,
         borderRadius: effectiveRadius ?? 'inherit',
       } as CSSProperties}
       aria-hidden="true"
