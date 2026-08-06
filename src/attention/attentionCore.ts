@@ -69,13 +69,36 @@ export function hasAttentionEventPlayedOnce(eventKey: string): boolean {
  * 提交一条光束请求。返回是否真正排队/播放：
  * - 窗口不可见（document.hidden）时拒绝，且返回窗口后不补播（§4.3）；
  * - 同一 eventKey 一次会话只入队一次（§九）；
- * - 当前已有活跃光束时按优先级进入排队。
+ * - 只有请求真实进入 active / pending 才写入会话去重键，并返回 true；
+ * - 队列已满时被裁掉的新请求：返回 false、不写 sessionKey、不 emit（§P1）；
+ * - 高优先级新请求挤掉旧 pending 时，被挤掉的旧请求释放 sessionKey，
+ *   之后允许重新提交（它没有真正播放，也没有继续排队）。
  */
 export function announceAttentionRequest(request: AttentionBeamRequest): boolean {
   if (typeof document !== 'undefined' && document.hidden) return false;
   if (sessionKeys.has(request.eventKey)) return false;
+
+  const previous = busState;
+  const next = attentionBusReduce(previous, { type: 'announce', request });
+
+  const accepted =
+    next.active?.eventKey === request.eventKey
+    || next.pending.some((item) => item.eventKey === request.eventKey);
+
+  if (!accepted) return false;
+
+  // 请求真实进入 active / pending 后才记录。
   sessionKeys.set(request.eventKey, 1);
-  busState = attentionBusReduce(busState, { type: 'announce', request });
+
+  // 被高优先级请求挤掉的旧 pending 不应继续伪装成「已播放」。
+  const retainedPendingKeys = new Set(next.pending.map((item) => item.eventKey));
+  for (const oldPending of previous.pending) {
+    if (!retainedPendingKeys.has(oldPending.eventKey)) {
+      sessionKeys.delete(oldPending.eventKey);
+    }
+  }
+
+  busState = next;
   emit();
   return true;
 }

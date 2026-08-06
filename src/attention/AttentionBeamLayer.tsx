@@ -82,6 +82,11 @@ export function AttentionBeamLayer({
   }
 
   useEffect(() => {
+    // inactive 时不启动完成计时器：不渲染时不应在稍后触发 onFinished（P2-1）。
+    if (!active) {
+      finishedRef.current = false;
+      return;
+    }
     finishedRef.current = false;
     // 与 AttentionBusController 共用统一时长：Layer 计时只负责视觉节点完成
     // 与 onFinished，不推进全局总线。
@@ -99,7 +104,7 @@ export function AttentionBeamLayer({
     return () => {
       window.clearTimeout(timer);
     };
-  }, [active, eventKeyValue, effectiveDelay, effectiveDuration, cycleCount, onFinished]);
+  }, [active, eventKeyValue, effectiveDelay, effectiveDuration, onFinished]);
 
   if (!active || finishedKey !== null) return null;
 

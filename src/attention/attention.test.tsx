@@ -15,6 +15,7 @@ import {
   finishActiveAttentionRequest,
   getAttentionBusState,
   hasAttentionEventPlayedOnce,
+  onAttentionBusStateChange,
   resetAttentionBusForTests,
 } from './attentionCore';
 import {
@@ -46,6 +47,38 @@ import {
   type ZoneLightingState,
 } from './attentionLighting';
 const beamCss = readFileSync(join(import.meta.dirname, 'attention-beam.css'), 'utf8');
+
+/** 提取 CSS 中某条规则（选择器到匹配的右花括号）的完整文本，供精确断言。 */
+function extractRule(css: string, selector: string): string {
+  const start = css.indexOf(`${selector} {`);
+  expect(start).toBeGreaterThan(-1);
+  const open = css.indexOf('{', start);
+  let depth = 0;
+  for (let index = open; index < css.length; index += 1) {
+    if (css[index] === '{') depth += 1;
+    else if (css[index] === '}') {
+      depth -= 1;
+      if (depth === 0) return css.slice(start, index + 1);
+    }
+  }
+  return '';
+}
+
+/** 提取 @keyframes 块（到匹配的右花括号）的完整文本。 */
+function extractKeyframes(css: string, name: string): string {
+  const start = css.indexOf(`@keyframes ${name}`);
+  expect(start).toBeGreaterThan(-1);
+  const open = css.indexOf('{', start);
+  let depth = 0;
+  for (let index = open; index < css.length; index += 1) {
+    if (css[index] === '{') depth += 1;
+    else if (css[index] === '}') {
+      depth -= 1;
+      if (depth === 0) return css.slice(start, index + 1);
+    }
+  }
+  return '';
+}
 
 function beam(overrides: Partial<AttentionBeamRequest> = {}): AttentionBeamRequest {
   return {
@@ -146,6 +179,68 @@ describe('attentionBusReduce 纯归约', () => {
     const after = attentionBusReduce(withPending, { type: 'finish' });
     expect(after.active?.eventKey).toBe('second');
     expect(after.pending).toEqual([]);
+  });
+});
+
+describe('队列已满时的 accepted 与 sessionKey 语义（P1）', () => {
+  it('队尾被裁掉的低优先级新请求：返回 false、不写 sessionKey、不 emit、状态不变', () => {
+    const listener = vi.fn();
+    const unsubscribe = onAttentionBusStateChange(listener);
+    try {
+      announceAttentionRequest(beam({ eventKey: 'full-active', priority: 100 }));
+      const queue = Array.from({ length: MAX_ATTENTION_QUEUE }, (_, index) =>
+        beam({ eventKey: `full-${index}`, priority: 90 - index }));
+      for (const item of queue) announceAttentionRequest(item);
+      expect(getAttentionBusState().pending).toHaveLength(MAX_ATTENTION_QUEUE);
+
+      listener.mockClear();
+      const before = getAttentionBusState();
+      const dropped = beam({ eventKey: 'full-dropped', priority: 1 });
+      expect(announceAttentionRequest(dropped)).toBe(false);
+      // 被裁掉请求不写入会话去重键：以后仍可重试。
+      expect(hasAttentionEventPlayedOnce('full-dropped')).toBe(false);
+      // active/pending 完全不变，且不触发订阅者（无意义 emit）。
+      expect(getAttentionBusState()).toBe(before);
+      expect(listener).not.toHaveBeenCalled();
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it('高优先级新请求挤掉低优先级旧 pending：返回 true、写入新 key、释放被挤掉 key', () => {
+    announceAttentionRequest(beam({ eventKey: 'preempt-active', priority: 100 }));
+    const queue = Array.from({ length: MAX_ATTENTION_QUEUE }, (_, index) =>
+      beam({ eventKey: `preempt-${index}`, priority: 90 - index }));
+    for (const item of queue) {
+      expect(announceAttentionRequest(item)).toBe(true);
+      expect(hasAttentionEventPlayedOnce(item.eventKey)).toBe(true);
+    }
+    // 队尾 preempt-7（priority 83）会被挤掉。
+    const evicted = queue[queue.length - 1];
+    const incoming = beam({ eventKey: 'preempt-incoming', priority: 99 });
+    expect(announceAttentionRequest(incoming)).toBe(true);
+    expect(hasAttentionEventPlayedOnce('preempt-incoming')).toBe(true);
+    const state = getAttentionBusState();
+    expect(state.pending.some((item) => item.eventKey === 'preempt-incoming')).toBe(true);
+    expect(state.pending.some((item) => item.eventKey === evicted.eventKey)).toBe(false);
+    // 被挤掉的旧请求释放 sessionKey，active 不被抢占。
+    expect(hasAttentionEventPlayedOnce(evicted.eventKey)).toBe(false);
+    expect(state.active?.eventKey).toBe('preempt-active');
+  });
+
+  it('被挤掉请求在队列腾出位置后可重新提交', () => {
+    announceAttentionRequest(beam({ eventKey: 'retry-active', priority: 100 }));
+    const queue = Array.from({ length: MAX_ATTENTION_QUEUE }, (_, index) =>
+      beam({ eventKey: `retry-${index}`, priority: 90 - index }));
+    for (const item of queue) announceAttentionRequest(item);
+    const evicted = queue[queue.length - 1];
+    announceAttentionRequest(beam({ eventKey: 'retry-incoming', priority: 99 }));
+    expect(hasAttentionEventPlayedOnce(evicted.eventKey)).toBe(false);
+    // 当前 active 结束 → pending 推进，队列腾出一个位置。
+    finishActiveAttentionRequest();
+    expect(announceAttentionRequest(evicted)).toBe(true);
+    expect(hasAttentionEventPlayedOnce(evicted.eventKey)).toBe(true);
+    expect(getAttentionBusState().pending.some((item) => item.eventKey === evicted.eventKey)).toBe(true);
   });
 });
 
@@ -389,15 +484,73 @@ describe('AttentionBeamLayer', () => {
     expect(container.querySelector('.attention-beam')).not.toBeNull();
     expect(container.querySelector('[data-event-key="layer-2"]')).not.toBeNull();
   });
+
+  it('P2-1：active=false 挂载不启动完成 Timer，active 后才正常播放并按期完成', () => {
+    const onFinished = vi.fn();
+    const request = beam({ eventKey: 'inactive-start', durationMs: 300, cycles: 1 });
+    const { rerender, container } = render(
+      <AttentionBeamLayer active={false} request={request} onFinished={onFinished} />,
+    );
+    expect(container.querySelector('.attention-beam')).toBeNull();
+    // 远超完整 duration（300ms + 尾音）也不回调：inactive 时没有 Timer。
+    act(() => vi.advanceTimersByTime(5000));
+    expect(onFinished).not.toHaveBeenCalled();
+    // finishedKey 未被消费：切换 active 后 Beam 正常渲染。
+    rerender(<AttentionBeamLayer active request={request} onFinished={onFinished} />);
+    expect(container.querySelector('.attention-beam')).not.toBeNull();
+    expect(container.querySelector('[data-event-key="inactive-start"]')).not.toBeNull();
+    // 到完整总时长后才完成。
+    act(() => vi.advanceTimersByTime(700));
+    expect(onFinished).toHaveBeenCalledTimes(1);
+    rerender(<AttentionBeamLayer active request={request} onFinished={onFinished} />);
+    expect(container.querySelector('.attention-beam')).toBeNull();
+  });
+
+  it('P2-1：active=true 播放中切换 false 会清理旧 Timer，inactive 态不调用 onFinished', () => {
+    const onFinished = vi.fn();
+    const request = beam({ eventKey: 'inactive-flip', durationMs: 100, cycles: 1 });
+    const { rerender } = render(<AttentionBeamLayer active request={request} onFinished={onFinished} />);
+    // 播放中途切到 inactive：旧 Timer 被清理。
+    act(() => vi.advanceTimersByTime(100));
+    rerender(<AttentionBeamLayer active={false} request={request} onFinished={onFinished} />);
+    expect(onFinished).not.toHaveBeenCalled();
+    // 即使时间走完，也不会在 inactive 状态补回调。
+    act(() => vi.advanceTimersByTime(5000));
+    expect(onFinished).not.toHaveBeenCalled();
+  });
 });
 
 describe('line 变体环形遮罩与 Mask（P0-1 / §10）', () => {
+  it('注册 --attention-beam-angle，conic 从该角度扫掠', () => {
+    expect(beamCss).toMatch(/@property\s+--attention-beam-angle\s*\{/);
+    expect(beamCss).toContain('syntax: "<angle>"');
+    const lineRule = extractRule(beamCss, '.attention-beam--line .attention-beam__cycle');
+    expect(lineRule).toContain('from var(--attention-beam-angle)');
+  });
+
   it('双层 mask 只保留边缘，中心区域透明', () => {
-    expect(beamCss).toContain('padding: 1.5px');
-    expect(beamCss).toContain('mask-composite: exclude');
-    // macOS 13+ WKWebView：prefixed 用 xor（注意不是普通 exclude）。
-    expect(beamCss).toContain('-webkit-mask-composite: xor');
-    expect(beamCss).toContain('linear-gradient(#000 0 0) content-box');
+    const lineRule = extractRule(beamCss, '.attention-beam--line .attention-beam__cycle');
+    expect(lineRule).toContain('padding: 1.5px');
+    // macOS 13.1+ WKWebView：prefixed 用 xor（注意不是普通 exclude）。
+    expect(lineRule).toContain('-webkit-mask-composite: xor');
+    expect(lineRule).toContain('mask-composite: exclude');
+    expect(lineRule).toContain('linear-gradient(#000 0 0) content-box');
+  });
+
+  it('attention-line-sweep 只动画角度与透明度，从 0deg 到 360deg', () => {
+    const keyframes = extractKeyframes(beamCss, 'attention-line-sweep');
+    expect(keyframes).toContain('--attention-beam-angle: 0deg');
+    expect(keyframes).toContain('--attention-beam-angle: 360deg');
+    expect(keyframes).toContain('opacity: 0');
+    expect(keyframes).toContain('opacity: 1');
+  });
+
+  it('line 不再旋转整个 cycle：规则与 keyframes 均无 transform', () => {
+    const lineRule = extractRule(beamCss, '.attention-beam--line .attention-beam__cycle');
+    expect(lineRule).not.toContain('transform');
+    expect(extractKeyframes(beamCss, 'attention-line-sweep')).not.toContain('transform');
+    // 其他变体合法的轻微缩放不受影响。
+    expect(extractKeyframes(beamCss, 'pulse-inner-breath')).toContain('transform: scale');
   });
 
   it('Reduced Motion 下 line 清除 mask，只保留静态内边框淡入', () => {
@@ -406,6 +559,8 @@ describe('line 变体环形遮罩与 Mask（P0-1 / §10）', () => {
     expect(beamCss).toContain('-webkit-mask: none');
     expect(beamCss).toContain('mask: none');
     expect(beamCss).toMatch(/inset\s+0\s+0\s+0\s+1\.5px/);
+    const reducedSection = beamCss.slice(beamCss.indexOf('prefers-reduced-motion'));
+    expect(reducedSection).toContain('background: transparent');
   });
 });
 
@@ -441,6 +596,18 @@ describe('灯光 Mutation 关联（P1-2）', () => {
     });
     expect(played).toBe(false);
     expect(getAttentionBusState().active).toBeNull();
+  });
+
+  it('P2-2：窗口隐藏（document.hidden）时确认成功仍返回 false，不播放', () => {
+    vi.spyOn(document, 'hidden', 'get').mockReturnValue(true);
+    const mutationId = registerLightingAttention('zone-a', 'color-applied', '#00ff00');
+    const played = confirmPendingLightingAttention(mutationId, {
+      before: zoneState({ color: '#ff0000' }),
+      after: zoneState({ color: '#00ff00' }),
+    });
+    expect(played).toBe(false);
+    expect(getAttentionBusState().active).toBeNull();
+    vi.restoreAllMocks();
   });
 
   it('自动状态变化（无登记）不播放', () => {

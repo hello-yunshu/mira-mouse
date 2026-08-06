@@ -103,6 +103,9 @@ function lightingStateEqual(a: ZoneLightingState, b: ZoneLightingState): boolean
  * - 目标值未确认（verify 失败）→ 不播放；
  * - 前后状态完全一致（设备没有实际变化）→ 不播放；
  * - 通过后按 mutationId 事件键播放，同一操作可重复反馈。
+ *
+ * 返回值准确表示「确认写入成功 && 请求真实播放/入队」。窗口隐藏、会话去重
+ * 拒绝或队列已被裁掉时返回 false，调用方不能认为确认成功就必然播放（P2-2）。
  */
 export function confirmPendingLightingAttention(
   attentionId: number | undefined,
@@ -113,8 +116,15 @@ export function confirmPendingLightingAttention(
   if (!pending) return false;
   if (!zoneStates.after || !verifyLightingAttention(pending, zoneStates.after)) return false;
   if (zoneStates.before && lightingStateEqual(zoneStates.before, zoneStates.after)) return false;
-  announceAttentionRequest(lightingAttentionRequest(pending.kind, pending.zoneId, String(pending.expectedValue), pending.id, zoneStates.after.color));
-  return true;
+  return announceAttentionRequest(
+    lightingAttentionRequest(
+      pending.kind,
+      pending.zoneId,
+      String(pending.expectedValue),
+      pending.id,
+      zoneStates.after.color,
+    ),
+  );
 }
 
 // ─── 事件键（mutationId 后缀：同一会话的重复操作仍可反馈） ────────────────

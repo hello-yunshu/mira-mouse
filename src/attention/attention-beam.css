@@ -23,14 +23,24 @@
 }
 
 /* ===== line：沿边缘的一次性扫掠（conic 楔形 + 真正环形遮罩，只亮边缘） =====
+   几何与 Mask 固定不动：矩形 cycle 不再旋转，光束角度由可动画的自定义
+   属性 --attention-beam-angle 驱动 conic-gradient，光束沿固定卡片边缘流动，
+   长方形卡片不会出现倾斜、形变或四角裁切。
    双层 mask 只保留 1.5px 边缘环：content-box 外的 padding 区域可见，
    中心内容区（文字 / 按钮）完全透明，扫光不会覆盖卡片内容。
-   macOS 13+（WebKit）prefixed 用 xor，Chromium/标准用 exclude（同语义）。
+   macOS 13.1+（WebKit）prefixed 用 xor，Chromium/标准用 exclude（同语义）。
    Reduced Motion 不再作为旧 macOS 兼容方案，只是无障碍降级。 */
+@property --attention-beam-angle {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+
 .attention-beam--line .attention-beam__cycle {
   padding: 1.5px;
+
   background: conic-gradient(
-    from 0deg,
+    from var(--attention-beam-angle),
     color-mix(in oklch, var(--beam-color, #ffffff) 70%, transparent) 0deg,
     transparent 72deg
   );
@@ -49,10 +59,16 @@
 }
 
 @keyframes attention-line-sweep {
-  0% { transform: rotate(0deg); opacity: 0; }
+  0% {
+    --attention-beam-angle: 0deg;
+    opacity: 0;
+  }
   6% { opacity: 1; }
   94% { opacity: 1; }
-  100% { transform: rotate(360deg); opacity: 0; }
+  100% {
+    --attention-beam-angle: 360deg;
+    opacity: 0;
+  }
 }
 
 /* ===== pulse-inner ===== */

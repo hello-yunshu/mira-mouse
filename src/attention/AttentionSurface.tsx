@@ -20,7 +20,8 @@ export interface AttentionSurfaceProps extends Omit<HTMLAttributes<HTMLDivElemen
   style?: CSSProperties;
   /** 当前应渲染在本表面上的光束；null 表示不渲染。 */
   beam?: AttentionBeamRequest | null;
-  /** Beam 视觉结束后回调（仅用于展示层的完成语义；结束仲裁由 hook 负责）。 */
+  /** Beam 视觉结束后回调（仅用于展示层；视觉结束回调只属于展示层，
+   *  全局请求生命周期与 pending 队列推进由 AttentionBusController 负责）。 */
   onBeamFinished?: () => void;
 }
 

@@ -3935,6 +3935,10 @@ export default function App() {
   const [demoMode, setDemoMode] = useState(pureWeb);
   const [refreshNonce, setRefreshNonce] = useState(0);
   const [appNotification, setAppNotification] = useState<AppNotification>();
+  // 与当前具体通知绑定的 Beam eventKey：只允许绑定「announce 真正入队/播放」
+  // 的事件键，普通成功/错误通知不会有 Beam。通知替换时旧更新 Beam 不会
+  // 套到新通知卡片上（P1-3）。
+  const [appNotificationAttentionEventKey, setAppNotificationAttentionEventKey] = useState<string>();
   const [showBatteryUsage, setShowBatteryUsage] = useState(false);
   const [batteryUsageSession, setBatteryUsageSession] = useState(0);
   const [batteryUsageSettings, setBatteryUsageSettings] = useState<{ batteryHistoryEnabled: boolean; aiAnalysisEnabled: boolean } | undefined>(
@@ -3991,15 +3995,30 @@ export default function App() {
 
   // ── Attention Beam：通知浮层表面 ──────────────────────────────────────
   // 只保留统一入口 onAppNotification(handleAppNotification)：每条通知只处理
-  // 一次，Beam 判断与状态更新在同一个入口（P2-1）。
+  // 一次，Beam 判断、announce 结果与状态更新在同一个入口（P2-1 / P1-3）。
   const notificationAttention = useAttentionFeedback('notification:app');
   const notificationAnnounce = notificationAttention.announce;
   const handleAppNotification = useEffectEvent((nextNotification: AppNotification) => {
-    setAppNotification(nextNotification);
     const beam = resolveNotificationBeam(nextNotification, view, visibleSettingsTab);
-    if (beam) notificationAnnounce(beam);
+    const accepted = beam ? notificationAnnounce(beam) : false;
+    setAppNotification(nextNotification);
+    setAppNotificationAttentionEventKey(accepted ? beam?.eventKey : undefined);
   });
   useEffect(() => onAppNotification(handleAppNotification), []);
+
+  // 所有通知消失路径（自动超时 / 关闭按钮 / Relaunch 点击）统一清理，并同步
+  // 解除 Beam eventKey 绑定，避免残留键把旧 Beam 渲染到后续通知上。
+  const clearAppNotification = useCallback(() => {
+    setAppNotification(undefined);
+    setAppNotificationAttentionEventKey(undefined);
+  }, []);
+
+  // 渲染前再做一次 eventKey 匹配：总线里仍活跃的旧 Beam 不会显示在
+  // 与它无关的新通知卡片上（P1-3）。
+  const visibleNotificationBeam =
+    notificationAttention.beam?.eventKey === appNotificationAttentionEventKey
+      ? notificationAttention.beam
+      : null;
 
   useEffect(() => {
     if (pureWeb) return;
@@ -4053,10 +4072,10 @@ export default function App() {
     const isRelaunchReminder = appNotification.action === 'relaunch';
     const timeout = window.setTimeout(() => {
       if (isRelaunchReminder) recordUpdateReminderIgnored();
-      setAppNotification(undefined);
+      clearAppNotification();
     }, 6000);
     return () => window.clearTimeout(timeout);
-  }, [appNotification]);
+  }, [appNotification, clearAppNotification]);
 
   useEffect(() => {
     if (pureWeb) return;
@@ -4275,7 +4294,7 @@ export default function App() {
                       ? openBatteryUsage
                       : appNotification.action === 'relaunch'
                         ? () => {
-                          setAppNotification(undefined);
+                          clearAppNotification();
                           void relaunchAfterUpdate().catch((err) => {
                             notifyError(t('notification.relaunchFailed'), String(err));
                           });
@@ -4284,9 +4303,14 @@ export default function App() {
               : undefined
           }
         >
-          {notificationAttention.beam && <AttentionBeamLayer active request={notificationAttention.beam} />}
+          {visibleNotificationBeam && (
+            <AttentionBeamLayer
+              active
+              request={visibleNotificationBeam}
+            />
+          )}
           <div><strong>{appNotification.title}</strong>{appNotification.body && <p>{appNotification.body}</p>}</div>
-          <button type="button" onClick={(event) => { event.stopPropagation(); if (appNotification.action === 'relaunch') recordUpdateReminderDismissed(); setAppNotification(undefined); }} aria-label={t('dashboard.closeNotification')}><X weight="bold" /></button>
+          <button type="button" onClick={(event) => { event.stopPropagation(); if (appNotification.action === 'relaunch') recordUpdateReminderDismissed(); clearAppNotification(); }} aria-label={t('dashboard.closeNotification')}><X weight="bold" /></button>
         </aside>
       </OverlayPortal>
     )}
