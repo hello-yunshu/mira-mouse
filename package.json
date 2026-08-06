@@ -15,6 +15,7 @@
     "version:print": "node scripts/app-version.mjs",
     "sync:version": "node scripts/sync-version.mjs",
     "sync:version:check": "node scripts/sync-version.mjs --check",
+    "check:version-bump": "node scripts/check-local-ai-version-bump.mjs",
     "typecheck": "tsc -b --pretty false",
     "test": "vitest run",
     "lint": "eslint .",
