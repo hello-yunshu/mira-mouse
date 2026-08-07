@@ -6,6 +6,7 @@ import './attention-beam.css';
 export { AttentionBeamLayer, type AttentionBeamLayerProps } from './AttentionBeamLayer';
 export { AttentionBusController } from './AttentionBusController';
 export { AttentionSurface, type AttentionSurfaceProps } from './AttentionSurface';
+export { detectAttentionVisualSupport, type AttentionVisualSupport } from './attentionSupport';
 export { useAttentionFeedback, type AttentionBehavior } from './useAttentionFeedback';
 export {
   announceAttentionRequest,

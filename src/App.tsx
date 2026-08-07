@@ -79,6 +79,7 @@ import {
   announceAttentionRequest,
   clearPendingLightingAttention,
   confirmPendingLightingAttention,
+  detectAttentionVisualSupport,
   peekPendingLightingAttention,
   reduceDeviceAttentionByIdentity,
   registerLightingAttention,
@@ -4280,6 +4281,30 @@ export default function App() {
       priority: ATTENTION_PRIORITY[readyAction ? 'device-ready' : 'device-reconnected'],
     });
   }, [device, view]);
+  // 只检测一次：按 WebView 能力挂载根节点类，Attention Beam CSS 据此切换完整实现与降级。
+  useEffect(() => {
+    const support = detectAttentionVisualSupport();
+    const root = document.documentElement;
+
+    root.classList.toggle(
+      'attention-full-line-supported',
+      support.fullLineBeam,
+    );
+
+    root.classList.toggle(
+      'attention-color-mix-supported',
+      support.colorMix,
+    );
+
+    return () => {
+      root.classList.remove(
+        'attention-full-line-supported',
+      );
+      root.classList.remove(
+        'attention-color-mix-supported',
+      );
+    };
+  }, []);
   useEffect(() => {
     if (!themeLoaded) return;
     applyTheme(theme, themeColor);

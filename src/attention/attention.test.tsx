@@ -48,17 +48,21 @@ import {
 } from './attentionLighting';
 const beamCss = readFileSync(join(import.meta.dirname, 'attention-beam.css'), 'utf8');
 
-/** 提取 CSS 中某条规则（选择器到匹配的右花括号）的完整文本，供精确断言。 */
+/** 提取 CSS 中某条规则（选择器到匹配的右花括号）的完整文本，供精确断言。
+ * 选择器中的空格统一按 \s+ 匹配，允许源码换行。 */
 function extractRule(css: string, selector: string): string {
-  const start = css.indexOf(`${selector} {`);
-  expect(start).toBeGreaterThan(-1);
-  const open = css.indexOf('{', start);
+  const pattern = new RegExp(
+    selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+'),
+  );
+  const match = pattern.exec(css);
+  expect(match).not.toBeNull();
+  const open = css.indexOf('{', match!.index);
   let depth = 0;
   for (let index = open; index < css.length; index += 1) {
     if (css[index] === '{') depth += 1;
     else if (css[index] === '}') {
       depth -= 1;
-      if (depth === 0) return css.slice(start, index + 1);
+      if (depth === 0) return css.slice(match!.index, index + 1);
     }
   }
   return '';
@@ -521,20 +525,38 @@ describe('AttentionBeamLayer', () => {
 });
 
 describe('line 变体环形遮罩与 Mask（P0-1 / §10）', () => {
+  it('默认（旧 WebView）Line = 静态内边框淡入，不依赖 mask', () => {
+    const lineRule = extractRule(beamCss, '.attention-beam--line .attention-beam__cycle');
+    expect(lineRule).toContain('animation');
+    expect(lineRule).toContain('attention-static-fade');
+    expect(lineRule).toContain('box-shadow');
+    expect(lineRule).toContain('var(--beam-color, #ffffff)');
+    expect(lineRule).toContain('background: transparent');
+    expect(lineRule).not.toContain('-webkit-mask');
+    expect(lineRule).not.toContain('mask');
+    expect(lineRule).not.toContain('color-mix');
+    expect(lineRule).not.toContain('conic-gradient');
+  });
+
+  it('现代 full line 由根类门控，依赖 @property + mask + color-mix', () => {
+    expect(beamCss).toContain('attention-full-line-supported');
+    expect(beamCss).toContain('attention-color-mix-supported');
+  });
+
   it('注册 --attention-beam-angle，conic 从该角度扫掠', () => {
     expect(beamCss).toMatch(/@property\s+--attention-beam-angle\s*\{/);
     expect(beamCss).toContain('syntax: "<angle>"');
-    const lineRule = extractRule(beamCss, '.attention-beam--line .attention-beam__cycle');
-    expect(lineRule).toContain('from var(--attention-beam-angle)');
+    const modernLineRule = extractRule(beamCss, 'html.attention-full-line-supported .attention-beam--line .attention-beam__cycle');
+    expect(modernLineRule).toContain('from var(--attention-beam-angle)');
   });
 
   it('双层 mask 只保留边缘，中心区域透明', () => {
-    const lineRule = extractRule(beamCss, '.attention-beam--line .attention-beam__cycle');
-    expect(lineRule).toContain('padding: 1.5px');
-    // macOS 13.1+ WKWebView：prefixed 用 xor（注意不是普通 exclude）。
-    expect(lineRule).toContain('-webkit-mask-composite: xor');
-    expect(lineRule).toContain('mask-composite: exclude');
-    expect(lineRule).toContain('linear-gradient(#000 0 0) content-box');
+    const modernLineRule = extractRule(beamCss, 'html.attention-full-line-supported .attention-beam--line .attention-beam__cycle');
+    expect(modernLineRule).toContain('padding: 1.5px');
+    // macOS 13.3+ WKWebView：prefixed 用 xor（注意不是普通 exclude）。
+    expect(modernLineRule).toContain('-webkit-mask-composite: xor');
+    expect(modernLineRule).toContain('mask-composite: exclude');
+    expect(modernLineRule).toContain('linear-gradient(#000 0 0) content-box');
   });
 
   it('attention-line-sweep 只动画角度与透明度，从 0deg 到 360deg', () => {
@@ -545,9 +567,9 @@ describe('line 变体环形遮罩与 Mask（P0-1 / §10）', () => {
     expect(keyframes).toContain('opacity: 1');
   });
 
-  it('line 不再旋转整个 cycle：规则与 keyframes 均无 transform', () => {
-    const lineRule = extractRule(beamCss, '.attention-beam--line .attention-beam__cycle');
-    expect(lineRule).not.toContain('transform');
+  it('line 不再旋转整个 cycle：现代规则与 keyframes 均无 transform', () => {
+    const modernLineRule = extractRule(beamCss, 'html.attention-full-line-supported .attention-beam--line .attention-beam__cycle');
+    expect(modernLineRule).not.toContain('transform');
     expect(extractKeyframes(beamCss, 'attention-line-sweep')).not.toContain('transform');
     // 其他变体合法的轻微缩放不受影响。
     expect(extractKeyframes(beamCss, 'pulse-inner-breath')).toContain('transform: scale');
@@ -561,6 +583,21 @@ describe('line 变体环形遮罩与 Mask（P0-1 / §10）', () => {
     expect(beamCss).toMatch(/inset\s+0\s+0\s+0\s+1\.5px/);
     const reducedSection = beamCss.slice(beamCss.indexOf('prefers-reduced-motion'));
     expect(reducedSection).toContain('background: transparent');
+  });
+
+  it('Pulse / Flash 默认声明为普通颜色，color-mix 仅作 modern 覆盖', () => {
+    const pulseRule = extractRule(beamCss, '.attention-beam--pulse-inner .attention-beam__cycle');
+    expect(pulseRule).toContain('var(--beam-color, #ffffff)');
+    expect(pulseRule).not.toContain('color-mix');
+    const flashRule = extractRule(beamCss, '.attention-beam--flash .attention-beam__cycle');
+    expect(flashRule).toContain('var(--beam-color, #ffffff)');
+    expect(flashRule).not.toContain('color-mix');
+  });
+
+  it('modern color-mix 覆盖存在（Pulse / Flash）', () => {
+    expect(beamCss).toContain('html.attention-color-mix-supported');
+    expect(beamCss).toContain('color-mix(in oklch, var(--beam-color, #ffffff) 85%, transparent)');
+    expect(beamCss).toContain('color-mix(in oklch, var(--beam-color, #ffffff) 90%, transparent)');
   });
 });
 
@@ -698,25 +735,25 @@ describe('灯光 Mutation 关联（P1-2）', () => {
 });
 
 describe('attentionColorForZone（P0-3）', () => {
-  it('红/绿/蓝输出保留原色相（以原 hex 参与 color-mix，浏览器负责色相）', () => {
-    expect(attentionColorForZone('#ff0000', true)).toContain('#ff0000');
-    expect(attentionColorForZone('#00ff00', true)).toContain('#00ff00');
-    expect(attentionColorForZone('#0000ff', false)).toContain('#0000ff');
+  it('红/绿/蓝输出保留原色相（直接返回原 hex，不引入 color-mix）', () => {
+    expect(attentionColorForZone('#ff0000', true)).toBe('#ff0000');
+    expect(attentionColorForZone('#00ff00', true)).toBe('#00ff00');
+    expect(attentionColorForZone('#0000ff', false)).toBe('#0000ff');
   });
 
   it('黑色不产生明显彩色', () => {
-    expect(attentionColorForZone('#000000', true)).toBe('oklch(60% 0.01 0)');
-    expect(attentionColorForZone('#000000', false)).toBe('color-mix(in oklch, #000000 55%, white 45%)');
+    expect(attentionColorForZone('#000000', true)).toBe('#8f8f8f');
+    expect(attentionColorForZone('#000000', false)).toBe('#5f5f5f');
   });
 
   it('白色不产生明显彩色', () => {
-    expect(attentionColorForZone('#ffffff', true)).toBe('color-mix(in oklch, #ffffff 72%, black 28%)');
-    expect(attentionColorForZone('#ffffff', false)).toBe('oklch(62% 0.01 0)');
+    expect(attentionColorForZone('#ffffff', true)).toBe('#b8b8b8');
+    expect(attentionColorForZone('#ffffff', false)).toBe('#666666');
   });
 
   it('灰色保持低色度', () => {
-    expect(attentionColorForZone('#808080', true)).toContain('#808080');
-    expect(attentionColorForZone('#808080', false)).toContain('#808080');
+    expect(attentionColorForZone('#808080', true)).toBe('#a0a0a0');
+    expect(attentionColorForZone('#808080', false)).toBe('#686868');
   });
 
   it('无效颜色原样返回，不抛异常', () => {

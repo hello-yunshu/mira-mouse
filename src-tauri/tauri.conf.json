@@ -66,7 +66,7 @@
       }
     ],
     "macOS": {
-      "minimumSystemVersion": "13.1",
+      "minimumSystemVersion": "13.3",
       "signingIdentity": "-",
       "entitlements": "Entitlements.plist",
       "dmg": {

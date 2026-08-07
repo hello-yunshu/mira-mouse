@@ -181,12 +181,13 @@ function hexToRgb01(value: string): [r: number, g: number, b: number] | undefine
 /**
  * 灯光 Zone 的实际颜色 → 光束显示色。
  *
- * 不做完整颜色空间数学换算：浏览器负责 color-mix 的色彩处理，保留原色相。
- * 只做必要的可见性修正，绝不改变用户设备的实际灯光颜色：
- * - 普通彩色：按主题混合白/黑微调亮度，色相保持；
+ * 只返回普通 CSS 颜色（#rrggbb 或安全字面名称），绝不返回 color-mix：
+ * 旧 WebView 不支持 color-mix 时，CSS fallback 仍能生效；混色交给
+ * CSS 层的 modern override。绝不改变用户设备的实际灯光颜色：
  * - 近黑：提亮至可见中性灰（不产生彩色）；
  * - 近白：压暗避免过亮（不产生彩色）；
  * - 灰色：保持低色度；
+ * - 普通彩色：原样返回，色相完全由原色决定；
  * - 无效 / 非 hex 颜色：trim 后原样返回，不抛异常。
  */
 export function attentionColorForZone(color: string, isDark = attentionIsDarkTheme()): string {
@@ -199,23 +200,19 @@ export function attentionColorForZone(color: string, isDark = attentionIsDarkThe
   const min = Math.min(r, g, b);
   const chroma = max - min;
   if (max <= 0.14) {
-    // 近黑：暗色主题直接给中性深灰，亮色主题混入白色提亮。
-    return isDark ? 'oklch(60% 0.01 0)' : `color-mix(in oklch, ${normalized} 55%, white 45%)`;
+    // 近黑：暗色主题给中性深灰，亮色主题给中性浅灰（不产生彩色）。
+    return isDark ? '#8f8f8f' : '#5f5f5f';
   }
   if (min >= 0.86) {
-    // 近白：暗色主题混入黑色压暗，亮色主题给中性浅灰。
-    return isDark ? `color-mix(in oklch, ${normalized} 72%, black 28%)` : 'oklch(62% 0.01 0)';
+    // 近白：暗色主题给中性浅灰，亮色主题给中性中灰。
+    return isDark ? '#b8b8b8' : '#666666';
   }
   if (chroma < 0.05) {
-    // 灰色：与黑白混合不产生色相，保持低色度。
-    return isDark
-      ? `color-mix(in oklch, ${normalized} 78%, white 22%)`
-      : `color-mix(in oklch, ${normalized} 72%, black 28%)`;
+    // 灰色：保持低色度，不引入额外色相。
+    return isDark ? '#a0a0a0' : '#686868';
   }
-  // 普通彩色：色相完全由原色决定，仅做可见性微调。
-  return isDark
-    ? `color-mix(in oklch, ${normalized} 78%, white 22%)`
-    : `color-mix(in oklch, ${normalized} 72%, black 28%)`;
+  // 普通彩色：色相完全由原色决定，原样返回。
+  return normalized;
 }
 
 /** 当前 Mira 主题的实际 --accent 值（hex 或 oklch）。 */
@@ -227,14 +224,36 @@ export function attentionAccentColor(): string {
   return value ? value : DEFAULT_ACCENT;
 }
 
-/** 更新类事件：当前 Accent 的降饱和版本（§8.2 第 3 级）。 */
+/** 更新类事件：当前 Accent 的降饱和版本（§8.2 第 3 级）。
+ * 只返回普通 CSS 颜色，绝不返回 color-mix：旧 WebView 下 CSS fallback 依旧生效，
+ * 混色视觉留给 CSS 层 modern override。Accent 为 hex 时按比例向灰混合；
+ * 非 hex（如 oklch 现代主题色）原样保留——它本身即是安全的普通 CSS 颜色。 */
 export function attentionDesaturatedAccent(): string {
-  return `color-mix(in oklch, ${attentionAccentColor()}, #8a8a8a 30%)`;
+  const accent = attentionAccentColor();
+  const normalized = normalizeHexColor(accent);
+  return normalized ? mixHexTowardGray(normalized, 0.3) : accent;
 }
 
-/** 无可用颜色时的低强度中性色（§8.2 第 4 级）。 */
+/** 无可用颜色时的低强度中性色（§8.2 第 4 级）。同样只返回普通安全颜色。 */
 export function attentionNeutralColor(): string {
-  return `color-mix(in oklch, ${attentionAccentColor()}, #8a8a8a 55%)`;
+  const accent = attentionAccentColor();
+  const normalized = normalizeHexColor(accent);
+  return normalized ? mixHexTowardGray(normalized, 0.55) : accent;
+}
+
+/**
+ * 把 #rrggbb 按比例向中性灰混合（无任何外部颜色库）。
+ * amount 越大越接近灰。仅用于把最终产物控制在普通 hex，
+ * 不在 TS 层发出 color-mix。
+ */
+function mixHexTowardGray(hex: string, toward: number): string {
+  const rgb = hexToRgb01(hex);
+  if (!rgb) return hex;
+  const [r, g, b] = rgb.map((channel) => {
+    const gray = 0.5;
+    return Math.round((channel + (gray - channel) * toward) * 255);
+  });
+  return `#${[r, g, b].map((channel) => channel.toString(16).padStart(2, '0')).join('')}`;
 }
 
 // ─── 设备就绪 / 重连状态机（纯函数，便于测试） ─────────────────────────────
