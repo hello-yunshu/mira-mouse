@@ -338,7 +338,7 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
   useEffect(() => () => onSettingsExit?.(), [onSettingsExit]);
 
   // 把当前「实际渲染」的标签上抛给父组件（不是用户点击后的目标标签）：
-  // 标签切换有约 130ms 过渡，displayedTab 只在退出动画结束后才变化；
+  // 标签切换有约 180ms 过渡，displayedTab 只在退出动画结束后才变化；
   // 父级据此做更新事件的可见性仲裁，避免过渡期间误判目标标签已可见。
   // 同时使设置页在卸载/重建（例如进入关于页再返回）后能恢复到用户先前
   // 所在的标签，而不是每次都落回首个标签。
@@ -357,7 +357,7 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
     exitTimer.current = window.setTimeout(() => {
       setDisplayedTab(tab);
       setExiting(false);
-    }, 130);
+    }, 180);
     return () => {
       cancelAnimationFrame(raf);
       window.clearTimeout(exitTimer.current);

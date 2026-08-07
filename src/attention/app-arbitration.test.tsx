@@ -62,7 +62,7 @@ describe('settings tab transition visibility arbitration (App level)', () => {
     render(<App />);
     fireEvent.click(screen.getByRole('button', { name: '设置' }));
     fireEvent.click(screen.getByRole('button', { name: '插件' }));
-    await act(async () => { await sleep(170); });
+    await act(async () => { await sleep(210); });
 
     invokeMock.mockImplementation((command: string) => {
       if (command === 'plugin_updates_check') return Promise.resolve([pluginInfo('mira-amaster', '2.1.0')]);
