@@ -16,6 +16,15 @@ import {
   relaunchAfterUpdate,
   type AppUpdateState,
 } from './updater';
+import { MiraInlineActivity, announceAfterOrbExit } from './activity';
+import {
+  ATTENTION_PRIORITY,
+  AttentionBeamLayer,
+  attentionAppRestartKey,
+  attentionAppUpdateKey,
+  attentionDesaturatedAccent,
+  useAttentionFeedback,
+} from './attention';
 
 export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0 }: { onBack: () => void; previewMode?: boolean; focusUpdateToken?: number }) {
   const { t } = useTranslation();
@@ -45,6 +54,8 @@ export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0 }:
   const [info, setInfo] = useState<AboutInfo | null>(previewMode ? PREVIEW_INFO : null);
   const [error, setError] = useState<string>('');
   const [update, setUpdate] = useState<AppUpdateState>(appUpdateState());
+  // 手动检查的局部 busy：与自动后台检查解耦，避免自动检查时页面出现 Orb。
+  const [manualCheckBusy, setManualCheckBusy] = useState(false);
 
   useEffect(() => {
     if (previewMode) return;
@@ -59,6 +70,41 @@ export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0 }:
 
   useEffect(() => onAppUpdateState(setUpdate), []);
 
+  // Attention Beam：固定更新状态卡（§5.7）。只在相位真实迁移到
+  // available（绕边扫光一次）或 installed（等待重启双脉冲）时播放；
+  // 初次挂载时已有的状态不触发，与通知共享同一 eventKey 仲裁。
+  const aboutAttention = useAttentionFeedback('about-update');
+  const aboutAnnounce = aboutAttention.announce;
+  const prevUpdatePhaseRef = useRef<AppUpdateState['phase'] | undefined>(undefined);
+  useEffect(() => {
+    const prev = prevUpdatePhaseRef.current;
+    prevUpdatePhaseRef.current = update.phase;
+    if (prev === undefined || prev === update.phase || !update.version) return;
+    if (update.phase === 'available') {
+      announceAfterOrbExit('about-update', aboutAnnounce, {
+        eventKey: attentionAppUpdateKey(update.version),
+        scope: 'about-update',
+        variant: 'line',
+        color: attentionDesaturatedAccent(),
+        durationMs: 1650,
+        strength: 0.2,
+        cycles: 1,
+        priority: ATTENTION_PRIORITY['update-available'],
+      });
+    } else if (update.phase === 'installed') {
+      announceAfterOrbExit('about-update', aboutAnnounce, {
+        eventKey: attentionAppRestartKey(update.version),
+        scope: 'about-update',
+        variant: 'pulse-inner',
+        color: attentionDesaturatedAccent(),
+        durationMs: 2400,
+        strength: 0.16,
+        cycles: 2,
+        priority: ATTENTION_PRIORITY['restart-required'],
+      });
+    }
+  }, [update.phase, update.version, aboutAnnounce]);
+
   useEffect(() => {
     if (focusUpdateToken === 0) return;
     const target = document.getElementById('about-update-section');
@@ -68,10 +114,13 @@ export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0 }:
 
   async function checkForUpdates() {
     if (!info?.updaterActive) return;
+    setManualCheckBusy(true);
     try {
       await checkForAppUpdate();
     } catch (err) {
       notifyError(t('notification.checkUpdateFailed'), friendlyUpdateError(err));
+    } finally {
+      setManualCheckBusy(false);
     }
   }
 
@@ -206,7 +255,8 @@ export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0 }:
         </section>
       ) : null}
 
-      <section id="about-update-section" className="card about-section" tabIndex={-1}>
+      <section id="about-update-section" className="card about-section" tabIndex={-1} style={aboutAttention.beam ? { position: 'relative' } : undefined}>
+        {aboutAttention.beam && <AttentionBeamLayer active request={aboutAttention.beam} />}
         <div className="card-title"><h2>{t('about.section.checkUpdate')}</h2></div>
         <div className="settings-action-body">
           <div className="settings-action-copy">
@@ -218,8 +268,9 @@ export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0 }:
           </div>
           {info.updaterActive && (
             <div className="contact-links align-end">
-              <button className="secondary" onClick={checkForUpdates} disabled={update.phase === 'checking' || update.phase === 'downloading'}>
-                {update.phase === 'checking' ? t('about.updateChecking') : t('about.updateCheck')}
+              <button className="secondary mira-activity-button" onClick={checkForUpdates} disabled={manualCheckBusy || update.phase === 'checking' || update.phase === 'downloading'}>
+                <MiraInlineActivity active={manualCheckBusy} activity="checking-app-update" layout="overlay" />
+                <span>{update.phase === 'checking' ? t('about.updateChecking') : t('about.updateCheck')}</span>
               </button>
               {update.phase === 'up-to-date' && <span className="save-badge">{t('about.updateUpToDate')}</span>}
             </div>

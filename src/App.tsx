@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useTransition } from 'react';
+import { useCallback, useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState, useTransition } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -64,14 +64,40 @@ import {
   simulateDemoMutation,
 } from './pluginAdapter';
 import { onAppNotification, notifyError, notifySuccess, type AppNotification } from './notify';
+import {
+  ATTENTION_PRIORITY,
+  AttentionBeamLayer,
+  AttentionBusController,
+  AttentionSurface,
+  attentionAppRestartKey,
+  attentionAppUpdateKey,
+  attentionColorForZone,
+  attentionDesaturatedAccent,
+  attentionDeviceKey,
+  attentionLocalAiUpdateKey,
+  attentionPluginUpdateKey,
+  announceAttentionRequest,
+  clearPendingLightingAttention,
+  confirmPendingLightingAttention,
+  detectAttentionVisualSupport,
+  peekPendingLightingAttention,
+  reduceDeviceAttentionByIdentity,
+  registerLightingAttention,
+  resolveUpdateAttentionTarget,
+  useAttentionFeedback,
+  type AttentionBeamRequest,
+  type DeviceAttentionContext,
+  type ZoneLightingState,
+} from './attention';
 import { useScrollFadeState } from './useScrollOverflow';
-import { relaunchAfterUpdate, startAutomaticAppUpdateCheck, recordUpdateReminderDismissed, recordUpdateReminderIgnored, remindInstalledUpdateOnShown } from './updater';
-import { startAutomaticPluginUpdateCheck } from './plugin-updater';
-import { startAutomaticLocalAiUpdateCheck } from './local-ai-updater';
+import { appUpdateState, relaunchAfterUpdate, startAutomaticAppUpdateCheck, recordUpdateReminderDismissed, recordUpdateReminderIgnored, remindInstalledUpdateOnShown } from './updater';
+import { pluginUpdateState, startAutomaticPluginUpdateCheck } from './plugin-updater';
+import { localAiUpdateState, startAutomaticLocalAiUpdateCheck } from './local-ai-updater';
 import { initUpdatePriorityCoordinator } from './update-priority';
 import { LOCAL_AI_FEATURE, localAiFeatureEnabled } from './localAi';
 import { segmentedIndicatorStyle } from './segmentedControl';
 import { Modal, OverlayPortal, useHasOpenModal } from './overlay';
+import { MiraInlineActivity, MiraActivityOverlay, announceAfterOrbExit } from './activity';
 import './styles.css';
 
 type View = 'dashboard' | 'settings' | 'about';
@@ -877,6 +903,48 @@ function declaredAccentColor(device: DeviceState): string | undefined {
   return undefined;
 }
 
+/** 按 zone id 从设备插件声明中定位 Zone（跨 capability 查找）。 */
+function findZoneById(deviceState: DeviceState, zoneId: string): PluginZone | undefined {
+  for (const capability of deviceState.pluginCapabilities) {
+    const zone = (capability.metadata.zones ?? []).find((candidate) => candidate.id === zoneId);
+    if (zone) return zone;
+  }
+  return undefined;
+}
+
+/** 提取 Zone 的灯光可读状态，供 Mutation 成功后的目标值确认使用。 */
+function extractZoneLightingState(zone: PluginZone, deviceState: DeviceState): ZoneLightingState {
+  const effectField = zone.fields.find((field) => field.lightingRole === 'effect');
+  return {
+    enabled: zoneLightingEnabled(zone, deviceState),
+    color: zonePrimaryColor(zone, deviceState),
+    effectValue: effectField ? readPath(deviceState, effectField.source) : undefined,
+  };
+}
+
+/** 灯光 Mutation 成功后的确认入口：pending 存在时校验目标值并播放（P1-2）。 */
+function confirmLightingMutation(attentionId: number | undefined, before: DeviceState, after: DeviceState): void {
+  if (attentionId === undefined) return;
+  const pending = peekPendingLightingAttention(attentionId);
+  if (!pending) return;
+  const zoneStateOf = (deviceState: DeviceState): ZoneLightingState | undefined => {
+    const zone = findZoneById(deviceState, pending.zoneId);
+    return zone ? extractZoneLightingState(zone, deviceState) : undefined;
+  };
+  confirmPendingLightingAttention(attentionId, {
+    before: zoneStateOf(before),
+    after: zoneStateOf(after),
+  });
+}
+
+/** 稳定设备身份：优先 deviceKey，其次插件 ID + family，最后才是显示名。 */
+function stableDeviceIdentity(device: DeviceState, entries: DeviceSnapshotEntry[]): string {
+  const entry = selectedDeviceEntry(entries);
+  if (entry?.deviceKey) return entry.deviceKey;
+  if (device.pluginId) return `${device.pluginId}:${device.family ?? ''}`;
+  return String(device.name).trim().toLocaleLowerCase().replace(/\s+/g, '-');
+}
+
 function capabilityRuntimePending(capability: PluginCapability): boolean {
   return capability.metadata._miraRuntimePending === true;
 }
@@ -1153,12 +1221,17 @@ function FieldEditModal({ field, device, writeBusy, onClose, onApply, title, cur
   );
 }
 
+/// 统一字段写入口。第三个可选参数是灯光 Mutation 的 pending 登记 id（P1-2），
+/// 成功返回快照后由 runMutation 统一校验并播放灯光 Beam。
+type RunMutation = (mutation: string, params: Record<string, unknown>, attentionId?: number) => Promise<void>;
+
 /// 开关字段（inline-toggle + field.switch）。跟踪上次非 off 值用于恢复。
-function SwitchField({ field, device, writeBusy, runMutation }: {
+function SwitchField({ field, device, writeBusy, runMutation, attentionZoneId }: {
   field: PluginField;
   device: DeviceState;
   writeBusy: boolean;
-  runMutation: (mutation: string, params: Record<string, unknown>) => Promise<void>;
+  runMutation: RunMutation;
+  attentionZoneId?: string;
 }) {
   const sw = field.switch;
   const label = resolveFieldLabel(field, device, device.pluginId);
@@ -1181,7 +1254,12 @@ function SwitchField({ field, device, writeBusy, runMutation }: {
     if (!mutation) return;
     const nextValue = resolveSwitchNextValue(field, device, restoreRef.current);
     if (nextValue !== undefined) {
-      void runMutation(mutation, resolveFieldMutationParams(field, device, nextValue));
+      // 灯光 Zone 的开关在「关 → 开」时登记 power-on 反馈；关闭不反馈。
+      let attentionId: number | undefined;
+      if (attentionZoneId && !resolveSwitchState(field, device)) {
+        attentionId = registerLightingAttention(attentionZoneId, 'power-on', nextValue);
+      }
+      void runMutation(mutation, resolveFieldMutationParams(field, device, nextValue), attentionId);
     }
   };
 
@@ -1254,11 +1332,13 @@ function InlineRangeSlider({ range, value, disabled, format, onChange }: {
 }
 
 /// 按 field.editor 渲染字段控件。声明式，不含字段级特殊分支。
-function FieldRenderer({ field, device, writeBusy, runMutation }: {
+/// attentionZoneId 存在时表示该字段属于灯光 Zone（P1-2：成功写入才反馈）。
+function FieldRenderer({ field, device, writeBusy, runMutation, attentionZoneId }: {
   field: PluginField;
   device: DeviceState;
   writeBusy: boolean;
-  runMutation: (mutation: string, params: Record<string, unknown>) => Promise<void>;
+  runMutation: RunMutation;
+  attentionZoneId?: string;
 }) {
   const [editing, setEditing] = useState(false);
 
@@ -1277,7 +1357,7 @@ function FieldRenderer({ field, device, writeBusy, runMutation }: {
   switch (field.editor) {
     case 'inline-toggle':
       if (field.switch) {
-        return <SwitchField field={field} device={device} writeBusy={writeBusy} runMutation={runMutation} />;
+        return <SwitchField field={field} device={device} writeBusy={writeBusy} runMutation={runMutation} attentionZoneId={attentionZoneId} />;
       }
       return (
         <>
@@ -1315,7 +1395,14 @@ function FieldRenderer({ field, device, writeBusy, runMutation }: {
                 className={value === option.value ? 'active' : ''}
                 aria-pressed={value === option.value}
                 disabled={!writable}
-                onClick={() => mutation && applyMutation(mutation, resolveFieldMutationParams(field, device, option.value))}
+                onClick={() => {
+                  if (!mutation) return;
+                  // 灯光 Zone 的 effect 字段：写入前登记，成功确认后反馈。
+                  const attentionId = attentionZoneId && field.lightingRole === 'effect'
+                    ? registerLightingAttention(attentionZoneId, 'effect-applied', option.value)
+                    : undefined;
+                  void runMutation(mutation, resolveFieldMutationParams(field, device, option.value), attentionId);
+                }}
               >{resolveLabelKey(option.labelKey, device.pluginId)}</button>
             ))}
           </div>
@@ -1427,7 +1514,7 @@ function MetricField({ capability, field, device, writeBusy, runMutation }: {
   field: PluginField;
   device: DeviceState;
   writeBusy: boolean;
-  runMutation: (mutation: string, params: Record<string, unknown>) => Promise<void>;
+  runMutation: RunMutation;
 }) {
   const [editing, setEditing] = useState(false);
   const mutation = resolveMutation(field.mutation, device.writableMutations);
@@ -1485,7 +1572,7 @@ function GenericFieldControl({ field, device, writeBusy, runMutation }: {
   field: PluginField;
   device: DeviceState;
   writeBusy: boolean;
-  runMutation: (mutation: string, params: Record<string, unknown>) => Promise<void>;
+  runMutation: RunMutation;
 }) {
   const [editing, setEditing] = useState(false);
   const restoreRef = useRef<unknown>(undefined);
@@ -1607,7 +1694,7 @@ function GenericCapabilityControl({ capability, device, writeBusy, runMutation }
   capability: PluginCapability;
   device: DeviceState;
   writeBusy: boolean;
-  runMutation: (mutation: string, params: Record<string, unknown>) => Promise<void>;
+  runMutation: RunMutation;
 }) {
   const fields = (capability.metadata.fields ?? []).filter((field) => fieldHasReportedValue(field, device));
   const label = resolveLabelKey(capability.labelKey, device.pluginId);
@@ -1637,7 +1724,7 @@ function StageLayout({ capability, device, writeBusy, runMutation }: {
   capability: PluginCapability;
   device: DeviceState;
   writeBusy: boolean;
-  runMutation: (mutation: string, params: Record<string, unknown>) => Promise<void>;
+  runMutation: RunMutation;
 }) {
   const layout = resolveStageLayout(capability);
   const [editingStage, setEditingStage] = useState<number | null>(null);
@@ -1779,7 +1866,7 @@ function AdvancedSettingsModal({ groups, device, writeBusy, onClose, onEditField
   writeBusy: boolean;
   onClose: () => void;
   onEditField: (capability: PluginCapability, field: PluginField) => void;
-  runMutation: (mutation: string, params: Record<string, unknown>) => Promise<void>;
+  runMutation: RunMutation;
 }) {
   const sectionLabel = (section: NonNullable<PluginField['advancedSection']>): string => {
     const key = `advancedSettings.section.${section}`;
@@ -2064,7 +2151,7 @@ function ZoneRenderer({ capability, device, writeBusy, runMutation }: {
   capability: PluginCapability;
   device: DeviceState;
   writeBusy: boolean;
-  runMutation: (mutation: string, params: Record<string, unknown>) => Promise<void>;
+  runMutation: RunMutation;
 }) {
   const zones = resolveZones(capability, device);
   const [activeZoneId, setActiveZoneId] = useState<string>('');
@@ -2073,6 +2160,9 @@ function ZoneRenderer({ capability, device, writeBusy, runMutation }: {
   // 灯光区域标题（鼠标灯光/接收器灯光）的淡入淡出状态机。
   // Hooks 必须在条件返回之前调用，所以 activeZone 在此安全派生。
   const activeZone = zones.length > 0 ? (zones.find((z) => z.id === activeZoneId) ?? zones[0]) : undefined;
+
+  // 灯光 Zone 的 Attention 表面：只渲染本 Zone 发生的真实状态迁移。
+  const zoneAttention = useAttentionFeedback(`lighting:${activeZone?.id ?? ''}`);
   const currentLabel = activeZone ? resolveLabelKey(activeZone.labelKey, device.pluginId) : '';
   const [displayedLabel, setDisplayedLabel] = useState(currentLabel);
   const [titlePhase, setTitlePhase] = useState<'in' | 'out' | 'waiting'>('waiting');
@@ -2202,7 +2292,10 @@ function ZoneRenderer({ capability, device, writeBusy, runMutation }: {
         />
       )}
       <div className="lighting-sections" aria-label={i18n.t('dashboard.lightingGroups')}>
-        <div className={`lighting-group lighting-group-${activeZone.id}${compactDetailGrid ? ' is-compact' : ''}`}>
+        <AttentionSurface
+          className={`lighting-group lighting-group-${activeZone.id}${compactDetailGrid ? ' is-compact' : ''}`}
+          beam={zoneAttention.beam}
+        >
           <p className="lighting-group-title" data-title-phase={titlePhase}>{displayedLabel}</p>
           <div
             className={`lighting-rows${compactDetailGrid ? ' is-compact' : ''}`}
@@ -2219,11 +2312,12 @@ function ZoneRenderer({ capability, device, writeBusy, runMutation }: {
                   device={device}
                   writeBusy={writeBusy}
                   runMutation={runMutation}
+                  attentionZoneId={activeZone.id}
                 />
               </div>
             ))}
           </div>
-        </div>
+        </AttentionSurface>
       </div>
       {colorField && colorMutation && editingColorZoneId === activeZone.id && (
         <FieldEditModal
@@ -2233,7 +2327,9 @@ function ZoneRenderer({ capability, device, writeBusy, runMutation }: {
           writeBusy={writeBusy}
           onClose={() => setEditingColorZoneId(undefined)}
           onApply={(value) => {
-            void runMutation(colorMutation, resolveFieldMutationParams(colorField, device, value));
+            // 灯光 Zone 的颜色写入：写入前登记，runMutation 成功并确认目标值后反馈。
+            const attentionId = registerLightingAttention(activeZone.id, 'color-applied', value);
+            void runMutation(colorMutation, resolveFieldMutationParams(colorField, device, value), attentionId);
             setEditingColorZoneId(undefined);
           }}
         />
@@ -2301,7 +2397,7 @@ function CapabilityRouter({ capability, device, writeBusy, runMutation }: {
   capability: PluginCapability;
   device: DeviceState;
   writeBusy: boolean;
-  runMutation: (mutation: string, params: Record<string, unknown>) => Promise<void>;
+  runMutation: RunMutation;
 }) {
   if (capability.control === 'DpiStages') {
     return (
@@ -2370,6 +2466,7 @@ function ReadStatusBadge({ status }: { status?: ReadStatus }) {
 function DeviceDetails({ device, deviceKey, onClose }: { device: DeviceState; deviceKey: string; onClose: () => void }) {
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'copying'>('idle');
   const [diagCopyState, setDiagCopyState] = useState<'idle' | 'copied' | 'copying'>('idle');
+  const [refreshingDetails, setRefreshingDetails] = useState(false);
   const [protoDiagActive, setProtoDiagActive] = useState(false);
   const [protoDiagError, setProtoDiagError] = useState<string | null>(null);
   const [includePayload, setIncludePayload] = useState(false);
@@ -2441,6 +2538,11 @@ function DeviceDetails({ device, deviceKey, onClose }: { device: DeviceState; de
   }, [groups]);
 
   const handleCopyAll = useCallback(() => {
+    // Clipboard API 缺失时不得让状态永久停在 copying。
+    if (!navigator.clipboard) {
+      setCopyState('idle');
+      return;
+    }
     setCopyState('copying');
     const payload = {
       miraVersion: 'dev',
@@ -2452,14 +2554,21 @@ function DeviceDetails({ device, deviceKey, onClose }: { device: DeviceState; de
       readStatuses: device.readStatuses ?? {},
     };
     const text = JSON.stringify(payload, null, 2);
-    navigator.clipboard?.writeText(text).then(() => {
+    navigator.clipboard.writeText(text).then(() => {
       setCopyState('copied');
       setTimeout(() => setCopyState('idle'), 2000);
     }).catch(() => setCopyState('idle'));
   }, [device]);
 
-  const handleRefresh = useCallback(() => {
-    invoke('device_refresh').catch(() => {});
+  const handleRefresh = useCallback(async () => {
+    setRefreshingDetails(true);
+    try {
+      await invoke('device_refresh');
+    } catch {
+      // 保持原行为：刷新失败不覆盖已有读数，也不新增重复通知。
+    } finally {
+      setRefreshingDetails(false);
+    }
   }, []);
 
   const handleCopyDiagnostics = useCallback(() => {
@@ -2477,7 +2586,10 @@ function DeviceDetails({ device, deviceKey, onClose }: { device: DeviceState; de
     };
     // path 为空 → 仅返回 content，不写文件。
     invoke<{ content: string }>('log_export_device_diagnostics', { input, path: '' })
-      .then((outcome) => navigator.clipboard?.writeText(outcome.content))
+      .then((outcome) => {
+        if (!navigator.clipboard) throw new Error('clipboard unavailable');
+        return navigator.clipboard.writeText(outcome.content);
+      })
       .then(() => {
         setDiagCopyState('copied');
         setTimeout(() => setDiagCopyState('idle'), 2000);
@@ -2528,14 +2640,20 @@ function DeviceDetails({ device, deviceKey, onClose }: { device: DeviceState; de
       </header>
       <p className="details-note">{i18n.t('dashboard.detailsNote')}</p>
       <div className="details-actions">
-        <button className="details-action-btn" onClick={handleRefresh} title={i18n.t('dashboard.refreshAll')}>
-          <Timer weight="regular" /> {i18n.t('dashboard.refreshAll')}
+        <button className="details-action-btn" onClick={() => void handleRefresh()} title={i18n.t('dashboard.refreshAll')} disabled={refreshingDetails}>
+          <MiraInlineActivity active={refreshingDetails} activity="refreshing-device-details" announce fallback={<Timer weight="regular" />} /> {i18n.t('dashboard.refreshAll')}
         </button>
-        <button className="details-action-btn" onClick={handleCopyAll} title={i18n.t('dashboard.copyAllReadings')}>
-          {copyState === 'copied' ? '✓' : <ReadCvLogo weight="regular" />} {i18n.t('dashboard.copyAllReadings')}
+        <button className="details-action-btn" onClick={handleCopyAll} title={i18n.t('dashboard.copyAllReadings')} disabled={copyState === 'copying'}>
+          {copyState === 'copied'
+            ? '✓'
+            : <MiraInlineActivity active={copyState === 'copying'} activity="copying-readings" announce fallback={<ReadCvLogo weight="regular" />} />}
+          {i18n.t('dashboard.copyAllReadings')}
         </button>
-        <button className="details-action-btn" onClick={handleCopyDiagnostics} title={i18n.t('dashboard.copyDeviceDiagnostics')}>
-          {diagCopyState === 'copied' ? '✓' : <Info weight="regular" />} {i18n.t('dashboard.copyDeviceDiagnostics')}
+        <button className="details-action-btn" onClick={handleCopyDiagnostics} title={i18n.t('dashboard.copyDeviceDiagnostics')} disabled={diagCopyState === 'copying'}>
+          {diagCopyState === 'copied'
+            ? '✓'
+            : <MiraInlineActivity active={diagCopyState === 'copying'} activity="copying-device-diagnostics" announce fallback={<Info weight="regular" />} />}
+          {i18n.t('dashboard.copyDeviceDiagnostics')}
         </button>
       </div>
       <div className="protocol-diagnostic-toggle">
@@ -2915,6 +3033,8 @@ function Dashboard({
   const [writeBusy, setWriteBusy] = useState(false);
   const [editingField, setEditingField] = useState<{ capability: PluginCapability; field: PluginField } | null>(null);
   const [statusSwitchRestoreValues, setStatusSwitchRestoreValues] = useState<Record<string, unknown>>({});
+  // 设备 等待→就绪 / 断开→恢复 的一次性 Attention（渲染在控制台上）。
+  const deviceAttention = useAttentionFeedback('device:app');
   const forcedPreviewMessage = demoMode
     && new URLSearchParams(window.location.search).get('preview') === 'writing'
     ? t('dashboard.writing')
@@ -2969,10 +3089,12 @@ function Dashboard({
     };
   }, []);
 
-  const runMutation = async (
+  const runMutation: RunMutation = async (
     mutation: string,
     params: Record<string, unknown>,
+    attentionId?: number,
   ) => {
+    const beforeDevice = device;
     setWriteBusy(true);
     setPreviewMessage(i18n.t('dashboard.writing'));
     try {
@@ -2983,13 +3105,17 @@ function Dashboard({
         onDeviceChange(nextDevice);
         setPreviewMessage('');
         notifySuccess(i18n.t('dashboard.writeConfirmed'));
+        confirmLightingMutation(attentionId, beforeDevice, nextDevice);
         return;
       }
       const snapshot = await invoke<DeviceSnapshot>('device_mutate', { mutation, params });
-      onDeviceChange(snapshotToState(snapshot));
+      const nextDevice = snapshotToState(snapshot);
+      onDeviceChange(nextDevice);
       setPreviewMessage('');
       notifySuccess(i18n.t('dashboard.writeConfirmed'));
+      confirmLightingMutation(attentionId, beforeDevice, nextDevice);
     } catch (error) {
+      if (attentionId !== undefined) clearPendingLightingAttention(attentionId);
       setPreviewMessage('');
       const errorString = String(error);
       if (errorString.includes('is not available on this device')) {
@@ -3676,7 +3802,13 @@ function Dashboard({
             sync={contextMotionSync}
           />
         </div>
-        {visiblePreviewMessage && <p className="preview-message">{visiblePreviewMessage}</p>}
+        {deviceAttention.beam && <AttentionBeamLayer active request={deviceAttention.beam} />}
+        {visiblePreviewMessage && (
+          <p className="preview-message mira-process-message">
+            <MiraInlineActivity active={writeBusy} activity="applying-settings" reserveSpace={false} />
+            <span>{visiblePreviewMessage}</span>
+          </p>
+        )}
         {editingField && (
           <FieldEditModal
             field={editingField.field}
@@ -3735,6 +3867,82 @@ function Dashboard({
   );
 }
 
+/** 把「更新语义」的应用内通知映射为通知浮层上的 Attention 请求（§5.4~5.6）。
+ *  目标归属由 resolveUpdateAttentionTarget 裁决：固定更新区域当前可见时返回
+ *  undefined —— 由固定更新行播放（§11 仲裁），保证同一事件只有一个目标消费。 */
+function resolveNotificationBeam(notification: AppNotification, currentView: View, currentSettingsTab: SettingsTab): AttentionBeamRequest | undefined {
+  const target = (kind: 'app' | 'plugin' | 'local-ai') =>
+    resolveUpdateAttentionTarget(kind, { view: currentView, settingsTab: currentSettingsTab });
+
+  switch (notification.action) {
+    case 'about-update': {
+      if (target('app') !== 'notification') return undefined;
+      const state = appUpdateState();
+      if (state.phase !== 'available' || !state.version) return undefined;
+      return {
+        eventKey: attentionAppUpdateKey(state.version),
+        scope: 'notification:app',
+        variant: 'line',
+        color: attentionDesaturatedAccent(),
+        durationMs: 1650,
+        strength: 0.2,
+        cycles: 1,
+        delayMs: 200,
+        priority: ATTENTION_PRIORITY['update-available'],
+      };
+    }
+    case 'relaunch': {
+      if (target('app') !== 'notification') return undefined;
+      const state = appUpdateState();
+      if (state.phase !== 'installed' || !state.version) return undefined;
+      return {
+        eventKey: attentionAppRestartKey(state.version),
+        scope: 'notification:app',
+        variant: 'pulse-inner',
+        color: attentionDesaturatedAccent(),
+        durationMs: 2400,
+        strength: 0.16,
+        cycles: 2,
+        priority: ATTENTION_PRIORITY['restart-required'],
+      };
+    }
+    case 'settings-plugin-update': {
+      if (target('plugin') !== 'notification') return undefined;
+      const info = pluginUpdateState().updates.find((item) => item.updateAvailable);
+      if (!info?.availableVersion) return undefined;
+      return {
+        eventKey: attentionPluginUpdateKey(info.pluginId, info.availableVersion),
+        scope: 'notification:app',
+        variant: 'line',
+        color: attentionDesaturatedAccent(),
+        durationMs: 1600,
+        strength: 0.18,
+        cycles: 1,
+        delayMs: 200,
+        priority: ATTENTION_PRIORITY['update-available'],
+      };
+    }
+    case 'settings-local-ai-update': {
+      if (target('local-ai') !== 'notification') return undefined;
+      const info = localAiUpdateState().updates.find((item) => item.updateAvailable);
+      if (!info?.availableVersion) return undefined;
+      return {
+        eventKey: attentionLocalAiUpdateKey(info.component, info.availableVersion),
+        scope: 'notification:app',
+        variant: 'line',
+        color: attentionDesaturatedAccent(),
+        durationMs: 1600,
+        strength: 0.18,
+        cycles: 1,
+        delayMs: 200,
+        priority: ATTENTION_PRIORITY['update-available'],
+      };
+    }
+    default:
+      return undefined;
+  }
+}
+
 export default function App() {
   const { t } = useTranslation();
   const pureWeb = isPureWebPreview();
@@ -3747,16 +3955,22 @@ export default function App() {
   const [theme, setTheme] = useState<ThemeMode>('system');
   const [themeLoaded, setThemeLoaded] = useState(pureWeb);
   const [view, setView] = useState<View>('dashboard');
-  // 记住设置页上次所在的标签，使从关于页返回时恢复到原标签而非首个标签。
-  const [settingsTab, setSettingsTab] = useState<SettingsTab>('general');
+  // 设置页当前「实际可见」的标签（由 SettingsPage 在 130ms 切换过渡结束后上报，
+  // 不是用户点击的目标标签）。通知与固定更新行的可见性仲裁都以此为准。
+  const [visibleSettingsTab, setVisibleSettingsTab] = useState<SettingsTab>('general');
   const [aboutFocusToken, setAboutFocusToken] = useState(0);
   const [settingsPluginFocusToken, setSettingsPluginFocusToken] = useState(0);
   const [settingsLocalAiFocusToken, setSettingsLocalAiFocusToken] = useState(0);
   const [demoMode, setDemoMode] = useState(pureWeb);
   const [refreshNonce, setRefreshNonce] = useState(0);
   const [appNotification, setAppNotification] = useState<AppNotification>();
+  // 与当前具体通知绑定的 Beam eventKey：只允许绑定「announce 真正入队/播放」
+  // 的事件键，普通成功/错误通知不会有 Beam。通知替换时旧更新 Beam 不会
+  // 套到新通知卡片上（P1-3）。
+  const [appNotificationAttentionEventKey, setAppNotificationAttentionEventKey] = useState<string>();
   const [showBatteryUsage, setShowBatteryUsage] = useState(false);
   const [batteryUsageSession, setBatteryUsageSession] = useState(0);
+  const [batteryUsageLoading, setBatteryUsageLoading] = useState(false);
   const [batteryUsageSettings, setBatteryUsageSettings] = useState<{ batteryHistoryEnabled: boolean; aiAnalysisEnabled: boolean } | undefined>(
     pureWeb ? { batteryHistoryEnabled: true, aiAnalysisEnabled: false } : undefined,
   );
@@ -3809,7 +4023,32 @@ export default function App() {
     setSettingsLocalAiFocusToken(0);
   }, []);
 
-  useEffect(() => onAppNotification(setAppNotification), []);
+  // ── Attention Beam：通知浮层表面 ──────────────────────────────────────
+  // 只保留统一入口 onAppNotification(handleAppNotification)：每条通知只处理
+  // 一次，Beam 判断、announce 结果与状态更新在同一个入口（P2-1 / P1-3）。
+  const notificationAttention = useAttentionFeedback('notification:app');
+  const notificationAnnounce = notificationAttention.announce;
+  const handleAppNotification = useEffectEvent((nextNotification: AppNotification) => {
+    const beam = resolveNotificationBeam(nextNotification, view, visibleSettingsTab);
+    const accepted = beam ? notificationAnnounce(beam) : false;
+    setAppNotification(nextNotification);
+    setAppNotificationAttentionEventKey(accepted ? beam?.eventKey : undefined);
+  });
+  useEffect(() => onAppNotification(handleAppNotification), []);
+
+  // 所有通知消失路径（自动超时 / 关闭按钮 / Relaunch 点击）统一清理，并同步
+  // 解除 Beam eventKey 绑定，避免残留键把旧 Beam 渲染到后续通知上。
+  const clearAppNotification = useCallback(() => {
+    setAppNotification(undefined);
+    setAppNotificationAttentionEventKey(undefined);
+  }, []);
+
+  // 渲染前再做一次 eventKey 匹配：总线里仍活跃的旧 Beam 不会显示在
+  // 与它无关的新通知卡片上（P1-3）。
+  const visibleNotificationBeam =
+    notificationAttention.beam?.eventKey === appNotificationAttentionEventKey
+      ? notificationAttention.beam
+      : null;
 
   useEffect(() => {
     if (pureWeb) return;
@@ -3863,10 +4102,10 @@ export default function App() {
     const isRelaunchReminder = appNotification.action === 'relaunch';
     const timeout = window.setTimeout(() => {
       if (isRelaunchReminder) recordUpdateReminderIgnored();
-      setAppNotification(undefined);
+      clearAppNotification();
     }, 6000);
     return () => window.clearTimeout(timeout);
-  }, [appNotification]);
+  }, [appNotification, clearAppNotification]);
 
   useEffect(() => {
     if (pureWeb) return;
@@ -3991,12 +4230,92 @@ export default function App() {
     () => connectedBatteryUsageTargets(deviceEntries),
     [deviceEntries],
   );
+  // 全局近程 Orb（MiraActivityOverlay）的显式设备状态：电量整理 → 等待鼠标 →
+  // 设备初始化。电量弹窗覆盖 Dashboard，优先于设备状态；其余情况仅在
+  // Dashboard 可见时表达，避免在其他视图弹出噪音 Orb。
+  const globalDeviceActivity = showBatteryUsage && batteryUsageLoading
+    ? 'battery-analysis' as const
+    : view === 'dashboard' && device
+      ? (device.mouseReady === false
+          ? 'awaiting-mouse' as const
+          : deviceRuntimePending(device)
+            ? 'device-initializing' as const
+            : null)
+      : null;
+  const batteryAnalysisEnabled = batteryUsageSettings?.aiAnalysisEnabled ?? false;
+
+  // ── Attention Beam：设备 等待→就绪 / 断开→恢复 ───────────────────────
+  // 只对真实状态迁移播放；启动即在线的设备不算事件，轮询读到相同状态不触发。
+  // 每个稳定设备身份（deviceKey）独立维护状态机，多设备/同名设备互不影响（P1-4）。
+  const deviceAttentionByKeyRef = useRef<Map<string, DeviceAttentionContext>>(new Map());
+  const lastDeviceIdentityRef = useRef<string | undefined>(undefined);
+  const deviceWatchStartedAtRef = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    if (deviceWatchStartedAtRef.current === undefined) {
+      deviceWatchStartedAtRef.current = Date.now();
+    }
+    const identity = device
+      ? stableDeviceIdentity(device, deviceEntriesRef.current)
+      : lastDeviceIdentityRef.current;
+    if (!identity) return;
+    lastDeviceIdentityRef.current = identity;
+    const nextReady = device != null && device.mouseReady !== false && !deviceRuntimePending(device);
+    const elapsedMs = Date.now() - deviceWatchStartedAtRef.current;
+    const outcome = reduceDeviceAttentionByIdentity(deviceAttentionByKeyRef.current, identity, nextReady, elapsedMs);
+    if (!device || outcome.action === 'none') return;
+    // 状态机持续更新（等待→就绪 / 断开→恢复），但 Beam 只在 Dashboard 实际
+    // 可见时提交；事件发生时不可见 → 不播放 → 不补播（§5.1）。
+    if (view !== 'dashboard') return;
+    const readyAction = outcome.action === 'ready';
+    const accent = declaredAccentColor(device);
+    // 经协调层提交：同一设备 scope 仍有可见 Orb（等待/初始化）时先让 Orb
+    // 退出，再播放完成 Beam，避免同一事件 Orb 与 Beam 同时出现。
+    announceAfterOrbExit('device:app', announceAttentionRequest, {
+      eventKey: attentionDeviceKey(readyAction ? 'ready' : 'reconnected', identity, outcome.cycle),
+      scope: 'device:app',
+      variant: 'line',
+      color: attentionColorForZone(accent ?? '#ffb3b3'),
+      durationMs: readyAction ? 1300 : 1100,
+      strength: readyAction ? 0.16 : 0.13,
+      cycles: 1,
+      priority: ATTENTION_PRIORITY[readyAction ? 'device-ready' : 'device-reconnected'],
+    });
+  }, [device, view]);
+  // 只检测一次：按 WebView 能力挂载根节点类，Attention Beam CSS 据此切换完整实现与降级。
+  useEffect(() => {
+    const support = detectAttentionVisualSupport();
+    const root = document.documentElement;
+
+    root.classList.toggle(
+      'attention-full-line-supported',
+      support.fullLineBeam,
+    );
+
+    root.classList.toggle(
+      'attention-color-mix-supported',
+      support.colorMix,
+    );
+
+    return () => {
+      root.classList.remove(
+        'attention-full-line-supported',
+      );
+      root.classList.remove(
+        'attention-color-mix-supported',
+      );
+    };
+  }, []);
   useEffect(() => {
     if (!themeLoaded) return;
     applyTheme(theme, themeColor);
   }, [themeLoaded, theme, themeColor]);
 
   return <div className={`app-shell ${pureWeb ? 'web-preview' : ''} ${windowsPlatform ? 'platform-windows' : ''} ${macPlatform ? 'platform-macos' : ''} ${fallbackPlatform ? 'platform-fallback' : ''} ${windowsWebPreview ? 'windows-web-preview' : ''}`}>
+    <AttentionBusController />
+    <MiraActivityOverlay
+      activity={globalDeviceActivity}
+      batteryAnalysisEnabled={batteryAnalysisEnabled}
+    />
     {windowsWebPreview && <WindowsPreviewControls />}
     {windowsPlatform && !windowsWebPreview && !pureWeb && <WindowsWindowControls />}
     {windowsPlatform && !windowsWebPreview && !pureWeb && <div className="windows-drag-strip" data-tauri-drag-region />}
@@ -4015,12 +4334,13 @@ export default function App() {
           ? <AwaitingMouseState deviceName={device.name} onRefresh={() => { setRefreshNonce((value) => value + 1); invoke('device_refresh').catch(() => {}); }} onOpenSettings={() => setView('settings')} />
           : <Dashboard device={device} deviceEntries={deviceEntries} onDeviceChange={setDevice} onDeviceSelect={selectDevice} onOpenBatteryUsage={openBatteryUsage} pluginLocaleRevision={pluginLocaleRevision} demoMode={demoMode} />
     )}
-    {view === 'settings' && <SettingsPage initialTab={settingsTab} onTabChange={setSettingsTab} previewMode={pureWeb} focusPluginUpdateToken={settingsPluginFocusToken} focusLocalAiUpdateToken={settingsLocalAiFocusToken} onSettingsExit={handleSettingsExit} onNavigateAbout={() => setView('about')} onOpenBatteryUsage={openBatteryUsage} onBatteryUsageSettingsChange={syncBatteryUsageSettings} onThemeChange={setTheme} pluginCapabilities={device?.pluginCapabilities ?? []} writableMutations={device?.writableMutations ?? []} />}
+    {view === 'settings' && <SettingsPage initialTab={visibleSettingsTab} onTabChange={setVisibleSettingsTab} previewMode={pureWeb} focusPluginUpdateToken={settingsPluginFocusToken} focusLocalAiUpdateToken={settingsLocalAiFocusToken} onSettingsExit={handleSettingsExit} onNavigateAbout={() => setView('about')} onOpenBatteryUsage={openBatteryUsage} onBatteryUsageSettingsChange={syncBatteryUsageSettings} onThemeChange={setTheme} pluginCapabilities={device?.pluginCapabilities ?? []} writableMutations={device?.writableMutations ?? []} />}
     {view === 'about' && <AboutPage previewMode={pureWeb} focusUpdateToken={aboutFocusToken} onBack={() => setView('settings')} />}
     <BatteryUsageModal
       key={batteryUsageSession}
       open={showBatteryUsage}
       onClose={() => setShowBatteryUsage(false)}
+      onLoadingChange={setBatteryUsageLoading}
       hasBattery={(device?.batteries.length ?? 0) > 0}
       batteryHistoryEnabled={batteryUsageSettings?.batteryHistoryEnabled}
       aiAnalysisEnabled={batteryUsageSettings?.aiAnalysisEnabled}
@@ -4048,7 +4368,7 @@ export default function App() {
                       ? openBatteryUsage
                       : appNotification.action === 'relaunch'
                         ? () => {
-                          setAppNotification(undefined);
+                          clearAppNotification();
                           void relaunchAfterUpdate().catch((err) => {
                             notifyError(t('notification.relaunchFailed'), String(err));
                           });
@@ -4057,8 +4377,14 @@ export default function App() {
               : undefined
           }
         >
+          {visibleNotificationBeam && (
+            <AttentionBeamLayer
+              active
+              request={visibleNotificationBeam}
+            />
+          )}
           <div><strong>{appNotification.title}</strong>{appNotification.body && <p>{appNotification.body}</p>}</div>
-          <button type="button" onClick={(event) => { event.stopPropagation(); if (appNotification.action === 'relaunch') recordUpdateReminderDismissed(); setAppNotification(undefined); }} aria-label={t('dashboard.closeNotification')}><X weight="bold" /></button>
+          <button type="button" onClick={(event) => { event.stopPropagation(); if (appNotification.action === 'relaunch') recordUpdateReminderDismissed(); clearAppNotification(); }} aria-label={t('dashboard.closeNotification')}><X weight="bold" /></button>
         </aside>
       </OverlayPortal>
     )}

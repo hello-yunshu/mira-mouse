@@ -5,6 +5,14 @@ import App from './App';
 import { themeAccent } from './theme';
 import type { AppSettings, DeviceSnapshot, PluginFieldOption } from './types';
 
+// 这些测试关注设备快照到 DOM 的映射，不测试 Canvas 绘制。
+// 局部 mock thinking-orbs，避免 JSDOM 缺少 HTMLCanvasElement.getContext 的噪音。
+vi.mock('thinking-orbs', () => ({
+  ThinkingOrb: ({ state }: { state: string }) => (
+    <span data-testid="thinking-orb" data-state={state} />
+  ),
+}));
+
 const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }));
 
@@ -2020,5 +2028,23 @@ describe('real device snapshot mapping', () => {
     expect(uniqueLabels.size).toBe(labels.length);
     // 6 个子块
     expect(gridSlots).toHaveLength(6);
+  });
+
+  it('shows the connecting orb while awaiting the mouse (P0-2)', async () => {
+    const awaitingSnapshot: DeviceSnapshot = {
+      ...snapshot,
+      mouseReady: false,
+    };
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'settings_get') return Promise.resolve(settings);
+      if (command === 'device_snapshots') return Promise.resolve(entries(awaitingSnapshot));
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+
+    render(<App />);
+    await screen.findByRole('heading', { name: '等待鼠标就位' });
+    // 全局 Orb 由 App 显式传入设备状态，等待鼠标超过 300ms 后出现。
+    await waitFor(() => expect(document.querySelector('.mira-activity-overlay')).toBeInTheDocument(), { timeout: 1500 });
+    expect(document.querySelector('.mira-activity-overlay')).toHaveAttribute('data-mira-activity', 'awaiting-mouse');
   });
 });

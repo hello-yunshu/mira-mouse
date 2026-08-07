@@ -1,0 +1,190 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later
+   Attention Beam —— 克制型一次性边缘光束（Mira 自有的精简实现）。
+   参考 border-beam 的边缘遮罩与运动思路，不引入外部依赖，不改宿主布局。
+
+   跨 WebView 兼容策略：默认（旧 WebKitGTK / 旧 Chromium）只给「可见、不依赖
+   现代语法」的静态降级；仅当 html.attention-full-line-supported（CSS.registerProperty
+   + color-mix + mask-composite 全部可用）时才启用完整 conic 扫掠 Line。
+   color-mix 一律在普通颜色声明之后作为第二层覆盖，缺失时仍有可见边框。 */
+
+.attention-beam {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border-radius: inherit;
+  overflow: hidden;
+  pointer-events: none;
+  opacity: var(--beam-o, 0.5);
+}
+
+.attention-beam__cycle {
+  position: absolute;
+  inset: 0;
+  display: block;
+  border-radius: inherit;
+  box-sizing: border-box;
+  pointer-events: none;
+  opacity: 0;
+}
+
+/* ===== line：默认静态降级（不依赖 @property / mask / color-mix） =====
+   旧 WebKitGTK / 旧 Chromium 也能看到：静态普通颜色的内边框，
+   播放一次淡入淡出，无无限动画，无布局变化，不影响点击。 */
+.attention-beam--line .attention-beam__cycle {
+  padding: 0;
+  background: transparent;
+
+  box-shadow:
+    inset 0 0 0 1.5px
+    var(--beam-color, #ffffff);
+
+  animation:
+    attention-static-fade
+    450ms
+    ease-in-out
+    both;
+}
+
+/* ===== line：现代 WebView 完整扫掠 =====
+   几何与 Mask 固定不动：矩形 cycle 不再旋转，光束角度由可动画的自定义
+   属性 --attention-beam-angle 驱动 conic-gradient，光束沿固定卡片边缘流动，
+   长方形卡片不会出现倾斜、形变或四角裁切。
+   双层 mask 只保留 1.5px 边缘环：content-box 外的 padding 区域可见，
+   中心内容区（文字 / 按钮）完全透明，扫光不会覆盖卡片内容。
+   WebKit prefixed 用 xor，Chromium/标准用 exclude（同语义）。 */
+@property --attention-beam-angle {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+
+html.attention-full-line-supported
+.attention-beam--line
+.attention-beam__cycle {
+  padding: 1.5px;
+
+  background:
+    conic-gradient(
+      from var(--attention-beam-angle),
+      var(--beam-color, #ffffff) 0deg,
+      transparent 72deg
+    );
+
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+
+  box-shadow: none;
+
+  animation:
+    attention-line-sweep
+    var(--beam-duration, 1700ms)
+    var(--motion-ease-standard, ease-in-out)
+    both;
+}
+
+@keyframes attention-line-sweep {
+  0% {
+    --attention-beam-angle: 0deg;
+    opacity: 0;
+  }
+  6% { opacity: 1; }
+  94% { opacity: 1; }
+  100% {
+    --attention-beam-angle: 360deg;
+    opacity: 0;
+  }
+}
+
+/* ===== pulse-inner ===== */
+/* 两次呼吸（box-shadow 内亮 + 轻微缩放），结束后停止。默认先给普通颜色。 */
+.attention-beam--pulse-inner .attention-beam__cycle {
+  box-shadow:
+    inset 0 0 0 1px
+    var(--beam-color, #ffffff),
+    inset 0 0 22px
+    var(--beam-color, #ffffff);
+  animation: pulse-inner-breath var(--beam-duration, 2400ms) var(--motion-ease-out, ease-out) both;
+}
+
+html.attention-color-mix-supported
+  .attention-beam--pulse-inner
+  .attention-beam__cycle {
+  box-shadow:
+    inset 0 0 0 1px
+    color-mix(in oklch, var(--beam-color, #ffffff) 85%, transparent),
+    inset 0 0 22px
+    color-mix(in oklch, var(--beam-color, #ffffff) 42%, transparent);
+}
+
+@keyframes pulse-inner-breath {
+  0% { opacity: 0; transform: scale(0.985); }
+  16% { opacity: 1; }
+  55% { opacity: 0.45; }
+  100% { opacity: 0; transform: scale(1); }
+}
+
+/* ===== flash ===== */
+/* 一次性短内部亮边，不完整绕圈，不残留。默认先给普通颜色。 */
+.attention-beam--flash .attention-beam__cycle {
+  box-shadow:
+    inset 0 0 0 1px
+    var(--beam-color, #ffffff),
+    inset 0 0 26px
+    var(--beam-color, #ffffff);
+  animation: flash-ring var(--beam-duration, 900ms) var(--motion-ease-out, ease-out) both;
+}
+
+html.attention-color-mix-supported
+  .attention-beam--flash
+  .attention-beam__cycle {
+  box-shadow:
+    inset 0 0 0 1px
+    color-mix(in oklch, var(--beam-color, #ffffff) 90%, transparent),
+    inset 0 0 26px
+    color-mix(in oklch, var(--beam-color, #ffffff) 34%, transparent);
+}
+
+@keyframes flash-ring {
+  0% { opacity: 0; }
+  12% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+/* ===== Reduced Motion ===== */
+/* 无障碍降级：约 220ms 的静态内边框淡入淡出；清除 mask 与 conic 扫掠，
+   不保留绕边移动动画。普通颜色优先，color-mix 作为现代第二层覆盖。 */
+@media (prefers-reduced-motion: reduce) {
+  .attention-beam__cycle {
+    animation:
+      attention-static-fade
+      220ms
+      ease-in-out
+      both
+      !important;
+    animation-delay: 0ms !important;
+    animation-iteration-count: 1 !important;
+  }
+  .attention-beam--line .attention-beam__cycle {
+    padding: 0 !important;
+    background: transparent !important;
+    -webkit-mask: none !important;
+    mask: none !important;
+    box-shadow:
+      inset 0 0 0 1.5px
+      var(--beam-color, #ffffff) !important;
+  }
+}
+
+@keyframes attention-static-fade {
+  0% { opacity: 0; }
+  25% { opacity: 1; }
+  75% { opacity: 1; }
+  100% { opacity: 0; }
+}

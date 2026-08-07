@@ -1,0 +1,131 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+import { useEffect, useState } from 'react';
+import { ThinkingOrb } from 'thinking-orbs';
+import { useTranslation } from 'react-i18next';
+import {
+  miraActivityLabel,
+  miraActivitySpec,
+  type MiraActivityKind,
+} from './activityCatalog';
+import { useDelayedActivity } from './useDelayedActivity';
+import {
+  attentionScopeForActivity,
+  beginActivityTask,
+  registerVisibleActivity,
+  unregisterVisibleActivity,
+  useActiveBeamForScope,
+  useActivityExitHint,
+  type ActivityRegistrationToken,
+  type ActivityScope,
+} from './activityCoordinator';
+
+export interface MiraInlineActivityProps {
+  active: boolean;
+  activity: MiraActivityKind;
+  className?: string;
+  /**
+   * 按钮文案已经表达“正在……”时保持 false，避免屏幕阅读器重复播报。
+   * 图标单独承担状态表达时可设为 true。
+   */
+  announce?: boolean;
+  delayMs?: number;
+  minVisibleMs?: number;
+  /**
+   * 空闲与延迟出现期间（0–300ms）显示的图标。提供后空闲期不再保留
+   * 不可见的空槽，图标平滑替换成 Orb，结束后恢复图标。
+   */
+  fallback?: React.ReactNode;
+  /**
+   * 布局方式：
+   * - 'inline'：Orb 作为 flex item 与文字并排（原有 fallback 图标模式）；
+   * - 'overlay'：Orb 以 absolute 覆盖按钮文字起始区域，不参与外部宽度
+   *   计算。空闲与延迟期 DOM 不保留任何空槽，纯文本按钮恢复原视觉，
+   *   运行 app 不会出现宽度跳动。
+   */
+  layout?: 'inline' | 'overlay';
+  /** 与 Attention Beam 仲裁的作用域；没有对应完成事件时可省略。 */
+  scope?: ActivityScope;
+  /**
+   * Idle 时仍保留 20px 空槽，维持按钮宽度不变。
+   * 默认关闭：无原图标的按钮不再长期保留透明空白位。
+   */
+  reserveSpace?: boolean;
+}
+
+export function MiraInlineActivity({
+  active,
+  activity,
+  className,
+  announce = false,
+  delayMs,
+  minVisibleMs,
+  fallback,
+  layout = 'inline',
+  scope,
+  reserveSpace = false,
+}: MiraInlineActivityProps) {
+  const { i18n } = useTranslation();
+  const orbScope = scope ?? attentionScopeForActivity(activity);
+  const exitHint = useActivityExitHint(orbScope);
+  const visible = useDelayedActivity(active, delayMs, minVisibleMs, exitHint);
+  // 渲染层兜底仲裁：同一 scope 已有 Beam 在播放时不渲染 Orb。
+  const beamActive = useActiveBeamForScope(orbScope);
+  const showOrb = visible && !beamActive;
+  // 组件级注册令牌：StrictMode 双挂载与重挂载复用同一 token，同 scope 的
+  // 多个组件互不覆盖，注销到最后一个时 scope 才算不可见。
+  const [token] = useState<ActivityRegistrationToken>(
+    () => Symbol('mira-inline-activity'),
+  );
+
+  // 业务任务从第 0ms 开始（早于 Orb 300ms 可见），任务开始时递增代数，
+  // 供 announceAfterOrbExit 在等待期间判断是否已开始新一代任务。
+  useEffect(() => {
+    if (active && orbScope) beginActivityTask(orbScope);
+  }, [active, orbScope]);
+
+  useEffect(() => {
+    if (!orbScope) return;
+    if (showOrb) registerVisibleActivity(orbScope, token);
+    // 清理覆盖 scope 切换与卸载：上一轮已注册的令牌在这里同步注销。
+    return () => {
+      if (showOrb) unregisterVisibleActivity(orbScope, token);
+    };
+  }, [orbScope, showOrb, token]);
+
+  if (!showOrb && !reserveSpace && fallback === undefined) return null;
+
+  const spec = miraActivitySpec(activity);
+  const label = miraActivityLabel(
+    activity,
+    i18n.resolvedLanguage ?? i18n.language,
+  );
+
+  return (
+    <span
+      className={[
+        'mira-inline-activity',
+        showOrb ? 'is-visible' : 'is-waiting',
+        !showOrb && fallback !== undefined ? 'has-fallback' : null,
+        layout === 'overlay' ? 'mira-inline-activity--overlay' : null,
+        className,
+      ].filter(Boolean).join(' ')}
+      role={announce && showOrb ? 'status' : undefined}
+      aria-hidden={announce && showOrb ? undefined : 'true'}
+      aria-label={announce && showOrb ? label : undefined}
+    >
+      {showOrb ? (
+        <ThinkingOrb
+          state={spec.state}
+          size={spec.size}
+          speed={spec.speed}
+          theme="auto"
+          aria-hidden="true"
+        />
+      ) : fallback !== undefined ? (
+        <span className="mira-inline-activity-fallback" aria-hidden="true">
+          {fallback}
+        </span>
+      ) : undefined}
+    </span>
+  );
+}

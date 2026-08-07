@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { BatteryUsageModal } from './BatteryUsage';
 import type { BatteryHistoryResponse } from './types';
@@ -938,11 +938,133 @@ describe('BatteryUsageModal scroll fade (P0-D)', () => {
     expect(el.classList.contains('scroll-fade-bottom')).toBe(false);
     // 模拟 CSS height transition 结束：内容变高
     metrics.scrollHeight = 500;
-    // 派发 transitionend 事件（target 为容器内子元素）
+    // 派发 transition 事件（target 为容器内子元素）
     const content = document.querySelector('.battery-usage-scroll-content') as HTMLElement;
     const transitionEvent = new TransitionEvent('transitionend', { bubbles: true });
     Object.defineProperty(transitionEvent, 'target', { value: content, configurable: true });
     el.dispatchEvent(transitionEvent);
     await waitFor(() => expect(el.classList.contains('scroll-fade-bottom')).toBe(true), { timeout: 2000 });
+  });
+});
+
+// ─── onLoadingChange 生命周期（P0-1 收口）────────────────────────────────
+// 内部 loading 与对外 reportedLoading 分离：弹窗关闭、历史记录禁用、无电池
+// 支持时都不得向 App 错报全局 battery-analysis。
+describe('BatteryUsageModal onLoadingChange lifecycle', () => {
+  beforeEach(async () => {
+    invokeMock.mockReset();
+    await i18n.changeLanguage('zh-CN');
+  });
+
+  function pendingHistory() {
+    const resolvers: Array<(response: BatteryHistoryResponse) => void> = [];
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'settings_get') return Promise.resolve(settingsEnabled);
+      if (command === 'battery_history_get') {
+        return new Promise<BatteryHistoryResponse>((resolve) => {
+          resolvers.push(resolve);
+        });
+      }
+      return Promise.resolve(undefined);
+    });
+    return resolvers;
+  }
+
+  it('A. 请求 pending 时关闭：onLoadingChange 落到 false，settle 后不得重新上报 true', async () => {
+    const resolvers = pendingHistory();
+    const onLoadingChange = vi.fn();
+    const { rerender } = render(
+      <BatteryUsageModal open onClose={() => {}} hasBattery onLoadingChange={onLoadingChange} />,
+    );
+    await waitFor(() => expect(onLoadingChange).toHaveBeenLastCalledWith(true));
+
+    rerender(
+      <BatteryUsageModal open={false} onClose={() => {}} hasBattery onLoadingChange={onLoadingChange} />,
+    );
+    await waitFor(() => expect(onLoadingChange).toHaveBeenLastCalledWith(false));
+    const trueCountAtClose = onLoadingChange.mock.calls.filter(([v]) => v).length;
+
+    // 请求随后 settle：不得重新报告 true。
+    resolvers.forEach((resolve) => resolve(MOCK_BATTERY_HISTORY_24H));
+    await act(async () => { await Promise.resolve(); });
+    expect(onLoadingChange.mock.calls.filter(([v]) => v)).toHaveLength(trueCountAtClose);
+    expect(onLoadingChange).toHaveBeenLastCalledWith(false);
+  });
+
+  it('B. stale 后 history disabled 重新打开：不报告 loading / 不产生 battery-analysis', async () => {
+    pendingHistory();
+    const onLoadingChange = vi.fn();
+    const { rerender } = render(
+      <BatteryUsageModal open onClose={() => {}} hasBattery onLoadingChange={onLoadingChange} />,
+    );
+    await waitFor(() => expect(onLoadingChange).toHaveBeenLastCalledWith(true));
+
+    rerender(
+      <BatteryUsageModal open={false} onClose={() => {}} hasBattery onLoadingChange={onLoadingChange} />,
+    );
+    await waitFor(() => expect(onLoadingChange).toHaveBeenLastCalledWith(false));
+    const trueCountAtClose = onLoadingChange.mock.calls.filter(([v]) => v).length;
+
+    // 重新打开但历史记录已禁用：内部 loading 即使残留，对外也必须保持 false。
+    rerender(
+      <BatteryUsageModal
+        open
+        onClose={() => {}}
+        hasBattery
+        batteryHistoryEnabled={false}
+        aiAnalysisEnabled={false}
+        onLoadingChange={onLoadingChange}
+      />,
+    );
+    await act(async () => { await Promise.resolve(); });
+    expect(onLoadingChange.mock.calls.filter(([v]) => v)).toHaveLength(trueCountAtClose);
+    expect(onLoadingChange).toHaveBeenLastCalledWith(false);
+  });
+
+it('C. stale 后不支持电池重新打开：不重新上报', async () => {
+    pendingHistory();
+    const onLoadingChange = vi.fn();
+    const { rerender } = render(
+      <BatteryUsageModal open onClose={() => {}} hasBattery onLoadingChange={onLoadingChange} />,
+    );
+    await waitFor(() => expect(onLoadingChange).toHaveBeenLastCalledWith(true));
+
+    rerender(
+      <BatteryUsageModal open={false} onClose={() => {}} hasBattery onLoadingChange={onLoadingChange} />,
+    );
+    await waitFor(() => expect(onLoadingChange).toHaveBeenLastCalledWith(false));
+    const trueCountAtClose = onLoadingChange.mock.calls.filter(([v]) => v).length;
+
+    // 重新打开但无电池且非纯 Web：内部 loading 残留也不得上报。
+    rerender(
+      <BatteryUsageModal open onClose={() => {}} hasBattery={false} onLoadingChange={onLoadingChange} />,
+    );
+    await act(async () => { await Promise.resolve(); });
+    expect(onLoadingChange.mock.calls.filter(([v]) => v)).toHaveLength(trueCountAtClose);
+  });
+
+  it('D. 正常加载：start → true，settle → false', async () => {
+    mockInvoke({ response: MOCK_BATTERY_HISTORY_24H });
+    const onLoadingChange = vi.fn();
+    render(<BatteryUsageModal open onClose={() => {}} hasBattery onLoadingChange={onLoadingChange} />);
+    await waitFor(() => expect(onLoadingChange).toHaveBeenLastCalledWith(true));
+    await waitFor(() => expect(onLoadingChange).toHaveBeenLastCalledWith(false));
+    expect(onLoadingChange.mock.calls.filter(([v]) => v)).toHaveLength(1);
+  });
+
+  it('E. 单边失败（24h 成功 / 10d 失败）：settle 后仍为 false', async () => {
+    invokeMock.mockImplementation((cmd: string, payload?: { range?: string }) => {
+      if (cmd === 'settings_get') return Promise.resolve(settingsEnabled);
+      if (cmd === 'battery_history_get' && payload?.range === '10d') {
+        return Promise.reject(new Error('10d unavailable'));
+      }
+      if (cmd === 'battery_history_get') return Promise.resolve(MOCK_BATTERY_HISTORY_24H);
+      return Promise.resolve(undefined);
+    });
+    const onLoadingChange = vi.fn();
+    render(<BatteryUsageModal open onClose={() => {}} hasBattery onLoadingChange={onLoadingChange} />);
+    await waitFor(() => expect(onLoadingChange).toHaveBeenLastCalledWith(true));
+    await waitFor(() => expect(onLoadingChange).toHaveBeenLastCalledWith(false));
+    expect(onLoadingChange.mock.calls.filter(([v]) => v)).toHaveLength(1);
   });
 });
