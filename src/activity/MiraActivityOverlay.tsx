@@ -13,6 +13,7 @@ import {
 } from './activityCatalog';
 import {
   attentionScopeForActivity,
+  beginActivityTask,
   registerVisibleActivity,
   unregisterVisibleActivity,
   useActiveBeamForScope,
@@ -175,6 +176,13 @@ export function MiraActivityOverlay({
   const [token] = useState<ActivityRegistrationToken>(
     () => Symbol('mira-activity-overlay'),
   );
+
+  // 业务状态（detected）在第 0ms 开始（早于 Orb 300ms 可见），任务开始时
+  // 递增代数，供 announceAfterOrbExit 在等待期间判断是否已开始新一代任务。
+  useEffect(() => {
+    const scope = detected ? attentionScopeForActivity(detected) : null;
+    if (scope) beginActivityTask(scope);
+  }, [detected]);
 
   useEffect(() => {
     if (!coordinationScope) return;

@@ -15,7 +15,7 @@ import {
   unregisterVisibleActivity,
   waitForActivityExit,
 } from './activityCoordinator';
-import { announceAttentionRequest, resetAttentionBusForTests } from '../attention/attentionCore';
+import { announceAttentionRequest, finishActiveAttentionRequest, resetAttentionBusForTests } from '../attention/attentionCore';
 import type { AttentionBeamRequest } from '../attention/attentionTypes';
 import type { MiraActivityKind } from './activityCatalog';
 
@@ -472,5 +472,67 @@ describe('MiraActivityOverlay 生命周期仲裁（P0-3）', () => {
     // 第二轮依然立即退出（距出现仅约 50ms，未等完 420ms 尾段）并再次提交。
     expect(announce).toHaveBeenCalledTimes(2);
     expect(screen.queryByTestId('thinking-orb')).not.toBeInTheDocument();
+  });
+
+  it('25. 已 active 的旧完成 Beam 与新任务 B 并存：B 文案保留、Beam 结束后 B Orb 出现', () => {
+    // A 的完成 Beam 正在播放（同 scope）。
+    act(() => {
+      announceAttentionRequest(request('a-done-1', 'about-update'));
+    });
+    const { rerender } = render(
+      <button className="secondary mira-activity-button">
+        <MiraInlineActivity active activity="checking-app-update" layout="overlay" />
+        <span>检查更新</span>
+      </button>,
+    );
+    act(() => { vi.advanceTimersByTime(400); });
+    // B 的过程文案仍在；Beam active 期间 B 的 Orb 被渲染层抑制，但不永久。
+    expect(screen.getByText('检查更新')).toBeInTheDocument();
+    expect(screen.queryByTestId('thinking-orb')).not.toBeInTheDocument();
+
+    // 旧 Beam 结束：B 仍 active，Orb 立即恢复（无需重新等 300ms）。
+    act(() => {
+      finishActiveAttentionRequest();
+    });
+    act(() => { vi.advanceTimersByTime(0); });
+    expect(screen.getByTestId('thinking-orb')).toBeInTheDocument();
+    expect(screen.getByTestId('thinking-orb')).toHaveAttribute('data-state', 'searching');
+
+    // B 结束后正常退出，不残留。
+    rerender(
+      <button className="secondary mira-activity-button">
+        <MiraInlineActivity active={false} activity="checking-app-update" layout="overlay" />
+        <span>检查更新</span>
+      </button>,
+    );
+    act(() => { vi.advanceTimersByTime(500); });
+    expect(screen.queryByTestId('thinking-orb')).not.toBeInTheDocument();
+  });
+
+  it('26. A completion 微任务间隙中 B 已开始（仍在 300ms 延迟）：旧 completion 不晚到覆盖 B', async () => {
+    const announce = vi.fn(() => true);
+    const first = render(<MiraInlineActivity active activity="checking-app-update" />);
+    act(() => { vi.advanceTimersByTime(350); });
+    expect(screen.getByTestId('thinking-orb')).toBeInTheDocument();
+
+    // A 完成事件：等待 A 的 Orb 退出。
+    act(() => {
+      void announceAfterOrbExit('about-update', announce, request('a-done-1', 'about-update'));
+    });
+    act(() => { vi.advanceTimersByTime(0); });
+    expect(screen.queryByTestId('thinking-orb')).not.toBeInTheDocument();
+
+    // B 任务立即开始（同 scope），此时仍处于 300ms 延迟期（Orb 尚未出现）。
+    first.unmount();
+    render(<MiraInlineActivity active activity="checking-app-update" />);
+    // 冲刷微任务：A 的 completion continuation 在这里执行。
+    await act(async () => { await Promise.resolve(); });
+    // 期望契约：B 已真实开始，A 尚未提交的 completion 不应在之后覆盖 B。
+    expect(announce).not.toHaveBeenCalled();
+
+    // B 的过程语义不受影响：Orb 正常出现。
+    act(() => { vi.advanceTimersByTime(350); });
+    expect(screen.getByTestId('thinking-orb')).toBeInTheDocument();
+    expect(screen.getByTestId('thinking-orb')).toHaveAttribute('data-state', 'searching');
   });
 });

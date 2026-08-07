@@ -1172,10 +1172,22 @@ export function BatteryUsageModal({
   const historyEnabled = providedHistoryEnabled ?? loadedHistoryEnabled;
   const aiAnalysisEnabled = providedAiAnalysisEnabled ?? loadedAiAnalysisEnabled;
 
-  // 显式状态优先：把电量加载状态上抛给全局 Orb（prompt P0-2）。
+  // 将真实电量数据加载状态上抛给 App，
+  // 让全局 Activity 与 BatteryUsage 请求生命周期一致。
+  // 弹窗关闭、历史记录禁用或无电池支持时都不向 App 报全局 battery-analysis。
+  const canReportLoading = open && historyEnabled && (hasBattery || pureWeb);
+  const reportedLoading = canReportLoading && loading;
+
   useEffect(() => {
-    onLoadingChange?.(loading);
-  }, [loading, onLoadingChange]);
+    onLoadingChange?.(reportedLoading);
+  }, [onLoadingChange, reportedLoading]);
+
+  // 卸载时收尾，避免残留的 loading 状态污染父级全局 Activity。
+  useEffect(() => {
+    return () => {
+      onLoadingChange?.(false);
+    };
+  }, [onLoadingChange]);
 
   useEffect(() => {
     if (

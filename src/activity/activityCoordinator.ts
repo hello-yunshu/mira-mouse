@@ -59,6 +59,8 @@ export type ActivityRegistrationToken = symbol;
 
 /** scope → 仍可见的注册令牌集合；最后一个注销后该 scope 才不可见。 */
 const visibleTokens = new Map<ActivityScope, Set<ActivityRegistrationToken>>();
+/** 每个 scope 的任务代数：新一轮任务启动时递增，用于让过期完成事件失效。 */
+const taskEpochs = new Map<ActivityScope, number>();
 /** 每个 scope 的“立即退出”提示计数，供 Orb 组件跳过最短可见尾段。 */
 const hideHints = new Map<ActivityScope, number>();
 const hideListeners = new Set<() => void>();
@@ -101,9 +103,24 @@ export function unregisterVisibleActivity(
   emitVisibilityChange();
 }
 
-/** 该 scope 当前是否仍有一个可见 Orb。 */
+/** 该 scope 当前是否已有一个可见 Orb。 */
 export function isActivityVisible(scope: ActivityScope): boolean {
   return (visibleTokens.get(scope)?.size ?? 0) > 0;
+}
+
+/**
+ * 业务任务开始时递增该 scope 的任务代数（scope → task epoch）。
+ * 任务在第 0ms 开始，而 Orb 要等 300ms 才可见注册，因此在等待退出期间
+ * 仅凭“scope 是否可见”无法判断是否已经开始了更新一代任务。
+ * 代数变化即代表新一代替任已开始，旧任务尚未提交的 completion 应被丢弃。
+ */
+export function beginActivityTask(scope: ActivityScope): void {
+  taskEpochs.set(scope, (taskEpochs.get(scope) ?? 0) + 1);
+}
+
+/** 读取某 scope 当前的任务代数（未开始过为 0）。 */
+export function currentActivityTaskEpoch(scope: ActivityScope): number {
+  return taskEpochs.get(scope) ?? 0;
 }
 
 /** 该 scope 当前是否已有 Beam 在播放（渲染层兜底仲裁）。 */
@@ -208,20 +225,28 @@ export function announceAfterOrbExit(
     announce(request);
     return;
   }
+  // 记录等待开始时的代数。等待期间同 scope 若开始了新一代任务（代数前进），
+  // 说明旧任务的完成反馈已过期，不得提交这轮可能覆盖新任务过程语义的 Beam。
+  const epochAtWaitStart = currentActivityTaskEpoch(scope);
   void (async () => {
     const outcome = await waitForActivityExit(scope);
-    // 提交前再同步确认：wait 解析到 “exited” 之后的微任务间隙，同 scope
+    // 提交前再同步确认：wait 解析到 "exited" 之后的微任务间隙，同 scope
     // 可能已有新任务注册新 token（旧任务完成、新任务立刻开始）。此时不再
     // 提交旧任务的完成 Beam，避免新任务的 Orb 被过期完成反馈压制。
-    if (outcome === 'exited' && !isActivityVisible(scope)) {
+    if (
+      outcome === 'exited'
+      && !isActivityVisible(scope)
+      && currentActivityTaskEpoch(scope) === epochAtWaitStart
+    ) {
       announce(request);
     }
   })();
 }
 
-/** 仅测试使用：清空注册、提示、全部监听器（生产不调用）。 */
+/** 仅测试使用：清空注册、提示、代数与全部监听器（生产不调用）。 */
 export function resetActivityCoordinatorForTests(): void {
   visibleTokens.clear();
+  taskEpochs.clear();
   hideHints.clear();
   hideListeners.clear();
   visibilityListeners.clear();

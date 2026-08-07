@@ -5,6 +5,14 @@ import App from './App';
 import { themeAccent } from './theme';
 import type { AppSettings, DeviceSnapshot, PluginFieldOption } from './types';
 
+// 这些测试关注设备快照到 DOM 的映射，不测试 Canvas 绘制。
+// 局部 mock thinking-orbs，避免 JSDOM 缺少 HTMLCanvasElement.getContext 的噪音。
+vi.mock('thinking-orbs', () => ({
+  ThinkingOrb: ({ state }: { state: string }) => (
+    <span data-testid="thinking-orb" data-state={state} />
+  ),
+}));
+
 const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }));
 

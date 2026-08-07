@@ -10,6 +10,7 @@ import {
 import { useDelayedActivity } from './useDelayedActivity';
 import {
   attentionScopeForActivity,
+  beginActivityTask,
   registerVisibleActivity,
   unregisterVisibleActivity,
   useActiveBeamForScope,
@@ -75,6 +76,12 @@ export function MiraInlineActivity({
   const [token] = useState<ActivityRegistrationToken>(
     () => Symbol('mira-inline-activity'),
   );
+
+  // 业务任务从第 0ms 开始（早于 Orb 300ms 可见），任务开始时递增代数，
+  // 供 announceAfterOrbExit 在等待期间判断是否已开始新一代任务。
+  useEffect(() => {
+    if (active && orbScope) beginActivityTask(orbScope);
+  }, [active, orbScope]);
 
   useEffect(() => {
     if (!orbScope) return;
