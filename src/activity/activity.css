@@ -60,9 +60,9 @@ button.mira-activity-button {
   display: inline-flex;
 }
 
-/* overlay 布局：Orb 以 absolute 覆盖按钮文字起始区域，不参与外部宽度
-   计算；空闲与 0–300ms 延迟期 DOM 不保留任何空槽，纯文本按钮恢复原视觉，
-   任务出现与结束都不会引起按钮宽度跳动。 */
+/* overlay 布局：Orb 绝对居中覆盖按钮内容，不参与外部宽度计算；
+   空闲与 0–300ms 延迟期不渲染空槽，Orb 显示时仅视觉隐藏原文字，
+   因此按钮尺寸保持稳定。 */
 .mira-activity-button {
   position: relative;
 }
