@@ -134,7 +134,7 @@ describe('settings tab transition and update arbitration', () => {
     expect(getAttentionBusState().active).toBeNull();
     expect(hasAttentionEventPlayedOnce(attentionPluginUpdateKey('mira-amaster', '2.0.0'))).toBe(false);
 
-    await act(async () => { await sleep(160); });
+    await act(async () => { await sleep(210); });
     expect(onTabChange).toHaveBeenLastCalledWith('plugins');
     // 同一版本在过渡后才可见也不会“补强调”。
     expect(getAttentionBusState().active).toBeNull();
@@ -146,7 +146,7 @@ describe('settings tab transition and update arbitration', () => {
     await waitFor(() => expect(onTabChange).toHaveBeenLastCalledWith('general'));
 
     fireEvent.click(screen.getByRole('button', { name: '插件' }));
-    await act(async () => { await sleep(160); });
+    await act(async () => { await sleep(210); });
 
     emitPlugin({ phase: 'available', updates: [pluginInfo('mira-amaster', '2.1.0')], downloadedBytes: 0 });
 
@@ -171,7 +171,7 @@ describe('settings tab transition and update arbitration', () => {
     expect(getAttentionBusState().active).toBeNull();
     expect(hasAttentionEventPlayedOnce(attentionLocalAiUpdateKey('bundle', '1.2.0'))).toBe(false);
 
-    await act(async () => { await sleep(160); });
+    await act(async () => { await sleep(210); });
     expect(onTabChange).toHaveBeenLastCalledWith('plugins');
   });
 
@@ -213,7 +213,7 @@ describe('settings tab transition and update arbitration', () => {
     expect(hasAttentionEventPlayedOnce(attentionPluginInstalledKey('mira-amaster', '2.0.0'))).toBe(false);
 
     fireEvent.click(screen.getByRole('button', { name: '插件' }));
-    await act(async () => { await sleep(160); });
+    await act(async () => { await sleep(210); });
 
     // phase 已处于 installed，其他依赖变化不触发重播。
     emitPlugin({ phase: 'available', updates: [], downloadedBytes: 0 });

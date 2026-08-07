@@ -4406,6 +4406,19 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   to { opacity: 0; transform: translateY(calc(var(--motion-distance) * -1)); }
 }
 
+/* 顶部固定区（页头 / 子导航 / 工具栏）入场：仅淡入，不位移。
+   固定锚点保持稳定，不下滑也不跳动，避免与下方内容块的位移叠加造成「晃」。 */
+@keyframes mira-chrome-enter {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* 顶部固定区退场：仅淡出，不位移。 */
+@keyframes mira-chrome-exit {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
 /* 等级筛选 pill 标签切换动画：旧值上移淡出，新值从下方滑入 */
 @keyframes mira-pill-label-in {
   from { opacity: 0; transform: translateY(6px); }
@@ -4647,40 +4660,39 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
     mira-control-secondary-in 180ms var(--motion-ease-standard) var(--control-detail-delay, 165ms) both;
 }
 
+/* 设置 / 关于 / 日志三页统一动效：
+   - 顶部固定区（页头、子导航、日志工具栏）仅淡入淡出、不位移，锚点保持稳定；
+   - 下方内容块可位移入场，并依次错峰到达；
+   - 入场 / 退场时长在三个页面间保持一致。 */
 .settings-page > header,
 .settings-page > .sub-nav,
-.settings-scroll-content > .card,
-.settings-scroll-content > section,
 .about-page > header,
 .log-page > header,
-.log-page > .log-toolbar,
-.log-page > .log-list-wrapper {
-  animation: mira-section-enter 130ms var(--motion-ease-out) backwards;
+.log-page > .log-toolbar {
+  animation: mira-chrome-enter 140ms var(--motion-ease-standard) backwards;
 }
+
+.settings-scroll-content > .card,
+.settings-scroll-content > section,
+.log-page > .log-list-wrapper {
+  animation: mira-section-enter 180ms var(--motion-ease-out) backwards;
+}
+
 .settings-page > .sub-nav { animation-delay: 20ms; }
+.log-page > .log-toolbar { animation-delay: 20ms; }
+.log-page > .log-list-wrapper { animation-delay: 40ms; }
+
 .settings-scroll-content > .card:nth-of-type(1),
 .settings-scroll-content > section:nth-of-type(1) { animation-delay: 0ms; }
 .settings-scroll-content > .card:nth-of-type(2),
 .settings-scroll-content > section:nth-of-type(2) { animation-delay: 20ms; }
 .settings-scroll-content > .card:nth-of-type(n+3),
 .settings-scroll-content > section:nth-of-type(n+3) { animation-delay: 40ms; }
-.log-page > .log-toolbar { animation-delay: 20ms; }
-.log-page > .log-list-wrapper { animation-delay: 40ms; }
 
-/* 设置页 tab 切换：旧页所有块同时淡出，退出动画结束后新页块依次淡入 */
+/* 设置页 tab 切换：旧内容块同时淡出，退场结束后新块依次淡入 */
 .settings-scroll-content.is-exiting > .card,
 .settings-scroll-content.is-exiting > section {
-  animation: mira-section-exit 130ms var(--motion-ease-standard) both;
-}
-
-/* 关于页入场：位移和时长略大于设置页，弥补缺少 sub-nav 中间层导致的序列感不足 */
-.about-page {
-  --motion-distance: 10px;
-}
-.about-page > header,
-.about-page .settings-scroll-content > .card,
-.about-page .settings-scroll-content > section {
-  animation-duration: 200ms;
+  animation: mira-section-exit 180ms var(--motion-ease-standard) both;
 }
 
 .log-preview-hint {
