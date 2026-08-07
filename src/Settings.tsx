@@ -25,6 +25,19 @@ import {
 import { friendlyUpdateError } from './update-errors';
 import { DEFAULT_LOCAL_AI_FEATURES, LOCAL_AI_FEATURE, localAiFeatureEnabled, setLocalAiFeature } from './localAi';
 import { LogPage } from './logs/LogPage';
+import { MiraInlineActivity, announceAfterOrbExit } from './activity';
+import {
+  ATTENTION_PRIORITY,
+  AttentionSurface,
+  attentionDesaturatedAccent,
+  attentionLocalAiInstalledKey,
+  attentionLocalAiUpdateKey,
+  attentionPluginInstalledKey,
+  attentionPluginUpdateKey,
+  resolveUpdateAttentionTarget,
+  useAttentionFeedback,
+  type AttentionBeamRequest,
+} from './attention';
 
 const DEFAULT_SETTINGS: AppSettings = {
   language: 'auto',
@@ -171,6 +184,15 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
   const [discovered, setDiscovered] = useState<DiscoveredDevice[]>([]);
   const [saved, setSaved] = useState(false);
   const [confirmingClearBattery, setConfirmingClearBattery] = useState(false);
+  const [deviceScanBusy, setDeviceScanBusy] = useState(false);
+  const [diagnosticsExportBusy, setDiagnosticsExportBusy] = useState(false);
+  const [configExportBusy, setConfigExportBusy] = useState(false);
+  const [configImportBusy, setConfigImportBusy] = useState(false);
+  const [batteryExportBusy, setBatteryExportBusy] = useState<'json' | 'csv' | null>(null);
+  const [localAiRollbackBusy, setLocalAiRollbackBusy] = useState(false);
+  // 手动检查的局部 busy：与自动后台检查解耦，避免自动检查时页面出现 Orb。
+  const [pluginCheckBusy, setPluginCheckBusy] = useState(false);
+  const [localAiCheckBusy, setLocalAiCheckBusy] = useState(false);
   const [subview, setSubview] = useState<'main' | 'logs'>('main');
   const [tabState, setTabState] = useState<{ tab: SettingsTab; focusToken: number }>(() => ({
     tab: focusPluginUpdateToken > 0 || focusLocalAiUpdateToken > 0 ? 'plugins' : initialTab,
@@ -315,11 +337,14 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
   // 设置页卸载时通知父组件清除更新聚焦 token，避免下次进入时重复跳转和重复显示"已更新至"标签。
   useEffect(() => () => onSettingsExit?.(), [onSettingsExit]);
 
-  // 把当前激活的标签上抛给父组件，使设置页在卸载/重建（例如进入关于页再返回）
-  // 后能恢复到用户先前所在的标签，而不是每次都落回首个标签。
+  // 把当前「实际渲染」的标签上抛给父组件（不是用户点击后的目标标签）：
+  // 标签切换有约 130ms 过渡，displayedTab 只在退出动画结束后才变化；
+  // 父级据此做更新事件的可见性仲裁，避免过渡期间误判目标标签已可见。
+  // 同时使设置页在卸载/重建（例如进入关于页再返回）后能恢复到用户先前
+  // 所在的标签，而不是每次都落回首个标签。
   useEffect(() => {
-    onTabChange?.(tab);
-  }, [tab, onTabChange]);
+    onTabChange?.(displayedTab);
+  }, [displayedTab, onTabChange]);
 
   // tab 切换过渡：tab（目标）变化时先播放退出动画，动画结束后切换 displayedTab。
   // 新内容因 key 变化重新挂载，自动触发依次淡入。
@@ -414,6 +439,116 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
     return () => clearTimeout(timer);
   }, [localAiUpdate.phase, localAiUpdate.error]);
 
+  // ── Attention Beam：插件 / 本地 AI 固定更新行（§5.7、§5.8、§11） ──────
+  // 只在真实的 updateAvailable 迁移（或安装完成）时播放一次；初次挂载时
+  // 已有状态不触发；多个插件可更新时只强调第一个新出现的更新行。
+  // 固定行只在 plugins 标签实际可见时才有权 announce；其余情况交给通知浮层
+  // 消费（仲裁见 attentionTypes.resolveUpdateAttentionTarget，P0-2）。
+  const pluginRowAttention = useAttentionFeedback('settings-plugin');
+  const localAiRowAttention = useAttentionFeedback('settings-local-ai');
+  const pluginRowAnnounce = pluginRowAttention.announce;
+  const localAiRowAnnounce = localAiRowAttention.announce;
+
+  const prevAvailablePluginsRef = useRef<string[] | undefined>(undefined);
+  const prevAvailableLocalAiRef = useRef<{ initialized: boolean; available: boolean; version?: string }>({ initialized: false, available: false });
+  const prevPluginPhaseRef = useRef<PluginUpdateState['phase'] | undefined>(undefined);
+  const prevLocalAiPhaseRef = useRef<LocalAiUpdateState['phase'] | undefined>(undefined);
+
+  useEffect(() => {
+    const available = pluginUpdate.updates
+      .filter((item) => item.updateAvailable && item.availableVersion)
+      .map((item) => `${item.pluginId}@${item.availableVersion}`);
+    if (prevAvailablePluginsRef.current === undefined) {
+      prevAvailablePluginsRef.current = available;
+      return;
+    }
+    const prev = prevAvailablePluginsRef.current;
+    prevAvailablePluginsRef.current = available;
+    const fresh = available.find((key) => !prev.includes(key));
+    if (fresh && resolveUpdateAttentionTarget('plugin', { view: 'settings', settingsTab: displayedTab }) === 'settings-plugin') {
+      const [pluginId, version] = fresh.split('@');
+      announceAfterOrbExit('settings-plugin', pluginRowAnnounce, {
+        eventKey: attentionPluginUpdateKey(pluginId, String(version)),
+        scope: 'settings-plugin',
+        variant: 'line',
+        color: attentionDesaturatedAccent(),
+        durationMs: 1600,
+        strength: 0.18,
+        cycles: 1,
+        priority: ATTENTION_PRIORITY['update-available'],
+      });
+    }
+  }, [pluginUpdate, pluginRowAnnounce, displayedTab]);
+
+  useEffect(() => {
+    const item = localAiUpdate.updates.find((candidate) => candidate.component === 'bundle');
+    const available = Boolean(item?.updateAvailable && item?.availableVersion);
+    const version = available && item ? item.availableVersion : undefined;
+    const prev = prevAvailableLocalAiRef.current;
+    prevAvailableLocalAiRef.current = { initialized: true, available, version };
+    if (!prev.initialized) return;
+    if (available && (!prev.available || prev.version !== version)
+      && resolveUpdateAttentionTarget('local-ai', { view: 'settings', settingsTab: displayedTab }) === 'settings-local-ai') {
+      announceAfterOrbExit('settings-local-ai', localAiRowAnnounce, {
+        eventKey: attentionLocalAiUpdateKey('bundle', String(version)),
+        scope: 'settings-local-ai',
+        variant: 'line',
+        color: attentionDesaturatedAccent(),
+        durationMs: 1600,
+        strength: 0.18,
+        cycles: 1,
+        priority: ATTENTION_PRIORITY['update-available'],
+      });
+    }
+  }, [localAiUpdate, localAiRowAnnounce, displayedTab]);
+
+  // 插件安装完成 Flash：只在 plugins 标签实际可见时提交（§7.1）。
+  // phase 已处于 installed 后不再重复尝试（其他依赖变化不触发重播）；
+  // 安装完成时不可见 → 不提交、不消费 eventKey、不占全局队列。
+  useEffect(() => {
+    const prev = prevPluginPhaseRef.current;
+    prevPluginPhaseRef.current = pluginUpdate.phase;
+    if (prev === undefined || prev === 'installed') return;
+    if (pluginUpdate.phase !== 'installed') return;
+    const target = resolveUpdateAttentionTarget('plugin', { view: 'settings', settingsTab: displayedTab });
+    if (target !== 'settings-plugin') return;
+    if (pluginUpdate.lastInstalledPluginId && pluginUpdate.lastInstalledVersion) {
+      announceAfterOrbExit('settings-plugin', pluginRowAnnounce, {
+        eventKey: attentionPluginInstalledKey(pluginUpdate.lastInstalledPluginId, pluginUpdate.lastInstalledVersion),
+        scope: 'settings-plugin',
+        variant: 'flash',
+        color: attentionDesaturatedAccent(),
+        durationMs: 950,
+        strength: 0.2,
+        cycles: 1,
+        priority: ATTENTION_PRIORITY['update-installed'],
+      });
+    }
+  }, [pluginUpdate, pluginRowAnnounce, displayedTab]);
+
+  // Local AI 安装完成 Flash：与插件相同门控（§7.2）。
+  useEffect(() => {
+    const prev = prevLocalAiPhaseRef.current;
+    prevLocalAiPhaseRef.current = localAiUpdate.phase;
+    if (prev === undefined || prev === 'installed') return;
+    if (localAiUpdate.phase !== 'installed') return;
+    const target = resolveUpdateAttentionTarget('local-ai', { view: 'settings', settingsTab: displayedTab });
+    if (target !== 'settings-local-ai') return;
+    const bundleVersion = localAiUpdate.updates.find((candidate) => candidate.component === 'bundle')?.currentVersion ?? localAiStatus.runtimeVersion;
+    if (bundleVersion) {
+      announceAfterOrbExit('settings-local-ai', localAiRowAnnounce, {
+        eventKey: attentionLocalAiInstalledKey('bundle', bundleVersion),
+        scope: 'settings-local-ai',
+        variant: 'flash',
+        color: attentionDesaturatedAccent(),
+        durationMs: 950,
+        strength: 0.2,
+        cycles: 1,
+        priority: ATTENTION_PRIORITY['update-installed'],
+      });
+    }
+  }, [localAiUpdate, localAiStatus.runtimeVersion, localAiRowAnnounce, displayedTab]);
+
   useEffect(() => {
     onBatteryUsageSettingsChange?.({
       batteryHistoryEnabled: settings.batteryHistoryEnabled,
@@ -458,8 +593,13 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
   }
 
   async function handleExportDiagnostics() {
-    const result = await exportDiagnostics();
-    if (result !== undefined) setDiagnostics(result);
+    setDiagnosticsExportBusy(true);
+    try {
+      const result = await exportDiagnostics();
+      if (result !== undefined) setDiagnostics(result);
+    } finally {
+      setDiagnosticsExportBusy(false);
+    }
   }
 
   // #11 配置导出：通过系统文件选择器指定保存路径。
@@ -471,10 +611,13 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
         filters: [{ name: t('settings.config.filterName'), extensions: ['json'] }],
       });
       if (!path) return;
+      setConfigExportBusy(true);
       await invoke('device_config_export', { path });
       notifyInfo(t('notification.exportSuccess'), t('notification.exportSuccessBody', { path }));
     } catch (error) {
       notifyError(t('notification.exportFailed'), String(error));
+    } finally {
+      setConfigExportBusy(false);
     }
   }
 
@@ -487,17 +630,25 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
         multiple: false,
       });
       if (!selected || typeof selected !== 'string') return;
+      setConfigImportBusy(true);
       await invoke('device_config_import', { path: selected });
       notifyInfo(t('notification.importSuccess'), t('notification.importSuccessBody'));
     } catch (error) {
       notifyError(t('notification.importFailed'), String(error));
+    } finally {
+      setConfigImportBusy(false);
     }
   }
 
-  function scanDevices() {
-    invoke<DiscoveredDevice[]>('discover_devices')
-      .then(setDiscovered)
-      .catch((err) => notifyError(t('notification.scanFailed'), String(err)));
+  async function scanDevices() {
+    setDeviceScanBusy(true);
+    try {
+      setDiscovered(await invoke<DiscoveredDevice[]>('discover_devices'));
+    } catch (err) {
+      notifyError(t('notification.scanFailed'), String(err));
+    } finally {
+      setDeviceScanBusy(false);
+    }
   }
 
   // 电量历史清除
@@ -527,19 +678,25 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
         filters: [{ name: format.toUpperCase(), extensions: [ext] }],
       });
       if (!path) return;
+      setBatteryExportBusy(format);
       await invoke('battery_history_export', { format, path });
       notifyInfo(t('batteryUsage.exportDone'), '');
     } catch (err) {
       notifyError(t('batteryUsage.exportFailed'), String(err));
+    } finally {
+      setBatteryExportBusy(null);
     }
   }
 
   async function checkPluginUpdates() {
     if (previewMode) return;
+    setPluginCheckBusy(true);
     try {
       await checkForPluginUpdates();
     } catch (error) {
       notifyError(t('notification.checkPluginUpdateFailed'), friendlyUpdateError(error));
+    } finally {
+      setPluginCheckBusy(false);
     }
   }
 
@@ -556,10 +713,13 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
 
   async function checkLocalAiUpdates() {
     if (previewMode) return;
+    setLocalAiCheckBusy(true);
     try {
       await checkForLocalAiUpdates();
     } catch (error) {
       notifyError(t('notification.checkLocalAiUpdateFailed'), friendlyUpdateError(error));
+    } finally {
+      setLocalAiCheckBusy(false);
     }
   }
 
@@ -574,13 +734,36 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
 
   async function handleLocalAiRollback() {
     if (previewMode) return;
+    setLocalAiRollbackBusy(true);
     try {
       const nextStatus = await rollbackLocalAiUpdate();
       if (nextStatus) setLocalAiStatus(nextStatus);
     } catch (error) {
       notifyError(t('notification.rollbackLocalAiFailed'), friendlyUpdateError(error));
+    } finally {
+      setLocalAiRollbackBusy(false);
     }
   }
+
+  // 固定更新行的光束归属：本地 AI 行只认 update:local-ai:bundle:*；
+  // 插件行只认它自己的 available / installed 事件键（其余更新行不发光）。
+  const localAiRowBeam = localAiRowAttention.beam && localAiRowAttention.beam.eventKey.startsWith('update:local-ai:bundle')
+    ? localAiRowAttention.beam
+    : null;
+  const pluginRowBeamFor = (pluginId: string): AttentionBeamRequest | null => {
+    const beam = pluginRowAttention.beam;
+    if (!beam) return null;
+    const updateItem = pluginUpdate.updates.find((item) => item.pluginId === pluginId);
+    if (updateItem?.updateAvailable && updateItem.availableVersion
+      && beam.eventKey === attentionPluginUpdateKey(pluginId, updateItem.availableVersion)) {
+      return beam;
+    }
+    if (pluginUpdate.lastInstalledPluginId === pluginId && pluginUpdate.lastInstalledVersion
+      && beam.eventKey === attentionPluginInstalledKey(pluginId, pluginUpdate.lastInstalledVersion)) {
+      return beam;
+    }
+    return null;
+  };
 
   if (subview === 'logs') {
     return <LogPage onBack={() => setSubview('main')} />;
@@ -780,11 +963,13 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
                   <button className="action-btn" onClick={() => setConfirmingClearBattery(true)}>
                     {t('batteryUsage.clearHistory')}
                   </button>
-                  <button className="action-btn" onClick={() => handleExportBatteryHistory('json')}>
-                    {t('batteryUsage.exportJson')}
+                  <button className="action-btn mira-activity-button" onClick={() => handleExportBatteryHistory('json')} disabled={batteryExportBusy !== null}>
+                    <MiraInlineActivity active={batteryExportBusy === 'json'} activity="exporting-battery-history" layout="overlay" />
+                    <span>{t('batteryUsage.exportJson')}</span>
                   </button>
-                  <button className="action-btn" onClick={() => handleExportBatteryHistory('csv')}>
-                    {t('batteryUsage.exportCsv')}
+                  <button className="action-btn mira-activity-button" onClick={() => handleExportBatteryHistory('csv')} disabled={batteryExportBusy !== null}>
+                    <MiraInlineActivity active={batteryExportBusy === 'csv'} activity="exporting-battery-history" layout="overlay" />
+                    <span>{t('batteryUsage.exportCsv')}</span>
                   </button>
                 </>
               )}
@@ -869,8 +1054,14 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
             <div className="settings-action-body">
               <p className="setting-hint">{t('settings.config.hint')}</p>
               <div className="contact-links align-end">
-                <button className="secondary" onClick={() => void handleExportConfig()} disabled={previewMode}>{t('settings.config.export')}</button>
-                <button className="secondary" onClick={() => void handleImportConfig()} disabled={previewMode}>{t('settings.config.import')}</button>
+                <button className="secondary mira-activity-button" onClick={() => void handleExportConfig()} disabled={previewMode || configExportBusy || configImportBusy}>
+                  <MiraInlineActivity active={configExportBusy} activity="exporting-device-config" layout="overlay" />
+                  <span>{t('settings.config.export')}</span>
+                </button>
+                <button className="secondary mira-activity-button" onClick={() => void handleImportConfig()} disabled={previewMode || configExportBusy || configImportBusy}>
+                  <MiraInlineActivity active={configImportBusy} activity="importing-device-config" layout="overlay" />
+                  <span>{t('settings.config.import')}</span>
+                </button>
               </div>
             </div>
           </section>
@@ -902,11 +1093,16 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
           </SettingRow>
           <div className="contact-links plugin-update-actions align-end">
             <button
-              className="secondary"
+              className="secondary mira-activity-button"
               onClick={() => void checkLocalAiUpdates()}
-              disabled={previewMode || localAiUpdate.phase === 'checking' || localAiUpdate.phase === 'downloading'}
+              disabled={previewMode || localAiCheckBusy || localAiUpdate.phase === 'checking' || localAiUpdate.phase === 'downloading'}
             >
-              {localAiUpdate.phase === 'checking' ? t('settings.localAi.checking') : t('settings.localAi.checkUpdates')}
+              <MiraInlineActivity
+                active={localAiCheckBusy}
+                activity="checking-local-ai-updates"
+                layout="overlay"
+              />
+              <span>{localAiUpdate.phase === 'checking' ? t('settings.localAi.checking') : t('settings.localAi.checkUpdates')}</span>
             </button>
             {localAiStatus.ready && <span className="save-badge">{t('settings.localAi.runtimeReady')}</span>}
           </div>
@@ -928,12 +1124,12 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
                 {!localAiStatus.rollbackAvailable && <span className="badge">{t('settings.localAi.defaultBundled')}</span>}
               </div>
               {localAiUpdate.updates.find((item) => item.component === 'bundle')?.updateAvailable && (
-                <div className="plugin-update-row">
+                <AttentionSurface className="plugin-update-row" beam={localAiRowBeam}>
                   <span className="setting-hint">{t('settings.localAi.updatable', { version: localAiUpdate.updates.find((item) => item.component === 'bundle')?.availableVersion })}</span>
                   <button className="primary" disabled={localAiUpdate.phase === 'downloading'} onClick={() => void handleLocalAiInstall()}>
                     {localAiUpdate.phase === 'downloading' ? t('settings.localAi.updating') : t('settings.localAi.updateBundle')}
                   </button>
-                </div>
+                </AttentionSurface>
               )}
               {localAiUpdate.phase === 'downloading' && (
                 <div className="update-progress" aria-live="polite">
@@ -960,8 +1156,9 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
                       <span className="setting-hint">v{localAiStatus.previousVersion}</span>
                     </div>
                   )}
-                  <button className="secondary" disabled={localAiUpdate.phase === 'checking'} onClick={() => void handleLocalAiRollback()}>
-                    {localAiUpdate.phase === 'checking' ? t('settings.localAi.rollingBack') : t('settings.localAi.rollbackBundle')}
+                  <button className="secondary mira-activity-button" disabled={localAiUpdate.phase === 'checking'} onClick={() => void handleLocalAiRollback()}>
+                    <MiraInlineActivity active={localAiRollbackBusy} activity="restoring-local-ai" layout="overlay" />
+                    <span>{localAiUpdate.phase === 'checking' ? t('settings.localAi.rollingBack') : t('settings.localAi.rollbackBundle')}</span>
                   </button>
                 </div>
               )}
@@ -980,8 +1177,9 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
             <Toggle checked={settings.automaticPluginUpdateChecks} onChange={(v) => update({ automaticPluginUpdateChecks: v })} label={t('settings.pluginUpdateCheck.label')} />
           </SettingRow>
           <div className="contact-links plugin-update-actions align-end">
-            <button className="secondary" onClick={() => void checkPluginUpdates()} disabled={previewMode || pluginUpdatesChecking || pluginUpdate.phase === 'downloading'}>
-              {pluginUpdatesChecking ? t('settings.pluginUpdate.checking') : t('settings.pluginUpdate.check')}
+            <button className="secondary mira-activity-button" onClick={() => void checkPluginUpdates()} disabled={previewMode || pluginCheckBusy || pluginUpdatesChecking || pluginUpdate.phase === 'downloading'}>
+              <MiraInlineActivity active={pluginCheckBusy} activity="checking-plugin-updates" layout="overlay" />
+              <span>{pluginUpdatesChecking ? t('settings.pluginUpdate.checking') : t('settings.pluginUpdate.check')}</span>
             </button>
             {pluginUpdates.length > 0 && pluginUpdates.every((item) => !item.updateAvailable) && <span className="save-badge">{t('settings.pluginUpdate.allLatest')}</span>}
           </div>
@@ -1009,7 +1207,7 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
                       {plugin.bundleByDefault && <span className="badge">{t('settings.pluginUpdate.defaultBundled')}</span>}
                     </div>
                     {pluginUpdates.find((item) => item.pluginId === plugin.pluginId)?.updateAvailable && (
-                      <div className="plugin-update-row">
+                      <AttentionSurface className="plugin-update-row" beam={pluginRowBeamFor(plugin.pluginId)}>
                         <span className="setting-hint">{t('settings.pluginUpdate.updatable', { version: pluginUpdates.find((item) => item.pluginId === plugin.pluginId)?.availableVersion })}</span>
                         <button
                           className="primary"
@@ -1018,7 +1216,7 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
                         >
                           {isInstallingThis ? t('settings.pluginUpdate.updating') : t('settings.pluginUpdate.update')}
                         </button>
-                      </div>
+                      </AttentionSurface>
                     )}
                     {isInstallingThis && (
                       <div className="update-progress" aria-live="polite">
@@ -1056,10 +1254,16 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
             <Toggle checked={true} onChange={() => {}} label={t('settings.privacy.telemetryLabel')} disabled showOnWhenDisabled />
           </SettingRow>
           <SettingRow title={t('settings.privacy.scanLabel')} hint={t('settings.privacy.scanHint')}>
-            <button className="secondary" onClick={scanDevices} disabled={previewMode}>{t('settings.privacy.scanButton')}</button>
+            <button className="secondary mira-activity-button" onClick={() => void scanDevices()} disabled={previewMode || deviceScanBusy}>
+              <MiraInlineActivity active={deviceScanBusy} activity="scanning-devices" layout="overlay" />
+              <span>{t('settings.privacy.scanButton')}</span>
+            </button>
           </SettingRow>
           <SettingRow title={t('settings.privacy.diagnosticsLabel')} hint={t('settings.privacy.diagnosticsHint')}>
-            <button className="secondary" onClick={handleExportDiagnostics} disabled={previewMode}>{t('settings.privacy.diagnosticsButton')}</button>
+            <button className="secondary mira-activity-button" onClick={() => void handleExportDiagnostics()} disabled={previewMode || diagnosticsExportBusy}>
+              <MiraInlineActivity active={diagnosticsExportBusy} activity="exporting-diagnostics" layout="overlay" />
+              <span>{t('settings.privacy.diagnosticsButton')}</span>
+            </button>
           </SettingRow>
           {discovered.length > 0 && (
             <div className="plugin-list">

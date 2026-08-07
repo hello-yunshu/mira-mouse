@@ -8,3 +8,5 @@
 Mira 主应用依赖 `rill-runtime-protocol`（MIT），仅用于跨进程 JSON 约定；主应用本身不链接 RillML 推理引擎。通用 `rill-runtime` sidecar 来自 RillML，Mira 自有的沙箱化 WASM handler 使用 `rill-ml`（均为 MIT）。上游来源：<https://github.com/hello-yunshu/rill-ml>。
 
 Mira 通过 Tauri `externalBin` 打包启用 WASM 功能的通用 `rill-runtime`，并随应用携带独立签名的 `model.rillpack` 与 `handler.rillhandler`。三者可独立发布，客户端只在完整组合通过握手后原子激活。
+
+Thinking Orbs（`thinking-orbs` 0.2.0，MIT）仅用于设备初始化、手动检查、设备读写与导入导出中的短时过程反馈。Mira 通过精确版本锁定和 `package-lock.json` 固定实际分发内容；该组件不接触 HID、插件协议、文件内容、网络、模型或用户数据。上游来源：<https://github.com/Jakubantalik/thinking-orbs>。
