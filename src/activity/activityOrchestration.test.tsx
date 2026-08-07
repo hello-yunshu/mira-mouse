@@ -2,6 +2,7 @@
 // P0-3：Orb 与 Attention Beam 生命周期边界的关键集成测试。
 // mock 第三方视觉组件（thinking-orbs），不测试 Canvas 绘制。
 import { act, render, screen } from '@testing-library/react';
+import { StrictMode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MiraActivityOverlay } from './MiraActivityOverlay';
 import { MiraInlineActivity } from './MiraInlineActivity';
@@ -16,6 +17,7 @@ import {
 } from './activityCoordinator';
 import { announceAttentionRequest, resetAttentionBusForTests } from '../attention/attentionCore';
 import type { AttentionBeamRequest } from '../attention/attentionTypes';
+import type { MiraActivityKind } from './activityCatalog';
 
 vi.mock('thinking-orbs', () => ({
   ThinkingOrb: ({ state }: { state: string }) => (
@@ -258,5 +260,176 @@ describe('MiraActivityOverlay 生命周期仲裁（P0-3）', () => {
     } finally {
       marker.remove();
     }
+  });
+
+  it('16. device-initializing → null：Orb 立即退出，Beam 在 Orb 注销后提交', async () => {
+    const announce = vi.fn(() => {
+      // 提交瞬间 scope 必须已经没有可见 Orb（P0-4）。
+      expect(isActivityVisible('device:app')).toBe(false);
+      return true;
+    });
+    const { rerender } = render(<MiraActivityOverlay activity="device-initializing" />);
+    act(() => { vi.advanceTimersByTime(350); });
+    expect(screen.getByTestId('thinking-orb')).toBeInTheDocument();
+
+    // 业务状态变 null，但 Orb 仍处于最短可见尾段。
+    rerender(<MiraActivityOverlay activity={null} />);
+    act(() => { vi.advanceTimersByTime(50); });
+    expect(screen.getByTestId('thinking-orb')).toBeInTheDocument();
+
+    act(() => {
+      void announceAfterOrbExit('device:app', announce, request('ready-app-1', 'device:app'));
+    });
+    expect(announce).not.toHaveBeenCalled();
+    await act(async () => {
+      vi.advanceTimersByTime(100);
+      await Promise.resolve();
+    });
+    // 不等剩余最短可见尾段，Orb 先退出，Beam 随后提交。
+    expect(announce).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId('thinking-orb')).not.toBeInTheDocument();
+  });
+
+  it('17. awaiting-mouse → null：鼠标就绪后 Orb 立即退出再播 ready Beam', async () => {
+    const announce = vi.fn(() => true);
+    const { rerender } = render(<MiraActivityOverlay activity="awaiting-mouse" />);
+    act(() => { vi.advanceTimersByTime(350); });
+    expect(screen.getByTestId('thinking-orb')).toBeInTheDocument();
+
+    rerender(<MiraActivityOverlay activity={null} />);
+    act(() => {
+      void announceAfterOrbExit('device:app', announce, request('ready-mouse', 'device:app'));
+    });
+    expect(announce).not.toHaveBeenCalled();
+    await act(async () => {
+      vi.advanceTimersByTime(100);
+      await Promise.resolve();
+    });
+    expect(announce).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId('thinking-orb')).not.toBeInTheDocument();
+  });
+
+  it('18. activity=null 但无完成事件：仍遵守最短可见尾段', () => {
+    const { rerender } = render(<MiraActivityOverlay activity="device-initializing" />);
+    act(() => { vi.advanceTimersByTime(300); });
+    expect(screen.getByTestId('thinking-orb')).toBeInTheDocument();
+
+    rerender(<MiraActivityOverlay activity={null} />);
+    act(() => { vi.advanceTimersByTime(300); });
+    // 已显示 300ms（< 420ms），无 exit hint 时不得提前隐藏。
+    expect(screen.getByTestId('thinking-orb')).toBeInTheDocument();
+
+    act(() => { vi.advanceTimersByTime(200); });
+    expect(screen.queryByTestId('thinking-orb')).not.toBeInTheDocument();
+  });
+
+  it('19. 旧 token 注销后同 scope 新 token 已注册：旧 Beam 不提交且不补播', async () => {
+    const tokenA = Symbol('stale-task-a');
+    const tokenB = Symbol('new-task-b');
+    registerVisibleActivity('device:app', tokenA);
+    const announce = vi.fn(() => true);
+
+    act(() => {
+      void announceAfterOrbExit('device:app', announce, request('ready-stale', 'device:app'));
+    });
+    expect(announce).not.toHaveBeenCalled();
+
+    // 旧 token 注销 → wait 解析；promise continuation 执行前，同 scope
+    // 新任务注册新 token。
+    act(() => {
+      unregisterVisibleActivity('device:app', tokenA);
+      registerVisibleActivity('device:app', tokenB);
+    });
+    await act(async () => { await Promise.resolve(); });
+    expect(announce).not.toHaveBeenCalled();
+
+    // 新任务结束：旧 Beam 不会自动补播。
+    act(() => { unregisterVisibleActivity('device:app', tokenB); });
+    await act(async () => { await Promise.resolve(); });
+    expect(announce).not.toHaveBeenCalled();
+  });
+
+  it('20. 无新 token 时旧完成事件正常提交（对照组）', async () => {
+    const tokenA = Symbol('solo-task');
+    registerVisibleActivity('device:app', tokenA);
+    const announce = vi.fn(() => true);
+
+    act(() => {
+      void announceAfterOrbExit('device:app', announce, request('ready-solo', 'device:app'));
+    });
+    expect(announce).not.toHaveBeenCalled();
+
+    act(() => { unregisterVisibleActivity('device:app', tokenA); });
+    await act(async () => { await Promise.resolve(); });
+    expect(announce).toHaveBeenCalledTimes(1);
+    expect(isActivityVisible('device:app')).toBe(false);
+  });
+
+  it('21. fallback 图标 0–300ms 保持、Orb 出现替换、结束后恢复', () => {
+    const fallback = <span data-testid="download-icon" />;
+    const { rerender } = render(
+      <button className="action-btn">
+        <MiraInlineActivity active activity="exporting-battery-history" fallback={fallback} />
+        <span>导出</span>
+      </button>,
+    );
+    expect(screen.getByTestId('download-icon')).toBeInTheDocument();
+    expect(screen.queryByTestId('thinking-orb')).not.toBeInTheDocument();
+
+    act(() => { vi.advanceTimersByTime(350); });
+    expect(screen.queryByTestId('download-icon')).not.toBeInTheDocument();
+    expect(screen.getByTestId('thinking-orb')).toBeInTheDocument();
+
+    rerender(
+      <button className="action-btn">
+        <MiraInlineActivity active={false} activity="exporting-battery-history" fallback={fallback} />
+        <span>导出</span>
+      </button>,
+    );
+    act(() => { vi.advanceTimersByTime(500); });
+    expect(screen.queryByTestId('thinking-orb')).not.toBeInTheDocument();
+    expect(screen.getByTestId('download-icon')).toBeInTheDocument();
+  });
+
+  it.each<[MiraActivityKind, string]>([
+    ['checking-app-update', '检查更新'],
+    ['checking-plugin-updates', '检查插件更新'],
+    ['checking-local-ai-updates', '检查本地 AI 更新'],
+  ])('22. 纯文本按钮 overlay 布局（%s）：空闲与 0–300ms 无图标/空槽，Orb 结构正确，结束后恢复', (activity, label) => {
+    const { rerender } = render(
+      <button className="secondary mira-activity-button">
+        <MiraInlineActivity active activity={activity} layout="overlay" />
+        <span>{label}</span>
+      </button>,
+    );
+    expect(screen.queryByTestId('thinking-orb')).not.toBeInTheDocument();
+    expect(document.querySelector('.mira-inline-activity')).not.toBeInTheDocument();
+
+    act(() => { vi.advanceTimersByTime(350); });
+    expect(screen.getByTestId('thinking-orb')).toBeInTheDocument();
+    expect(document.querySelector('.mira-inline-activity')).toHaveClass('mira-inline-activity--overlay');
+
+    rerender(
+      <button className="secondary mira-activity-button">
+        <MiraInlineActivity active={false} activity={activity} layout="overlay" />
+        <span>{label}</span>
+      </button>,
+    );
+    act(() => { vi.advanceTimersByTime(500); });
+    expect(screen.queryByTestId('thinking-orb')).not.toBeInTheDocument();
+    expect(document.querySelector('.mira-inline-activity')).not.toBeInTheDocument();
+  });
+
+  it('23. StrictMode 双挂载卸载后 scope 无残留', () => {
+    const { unmount } = render(
+      <StrictMode>
+        <MiraInlineActivity active activity="checking-app-update" />
+      </StrictMode>,
+    );
+    act(() => { vi.advanceTimersByTime(350); });
+    expect(isActivityVisible('about-update')).toBe(true);
+
+    unmount();
+    expect(isActivityVisible('about-update')).toBe(false);
   });
 });

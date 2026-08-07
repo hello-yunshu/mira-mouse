@@ -18,6 +18,7 @@ import {
   useActiveBeamForScope,
   useActivityExitHint,
   type ActivityRegistrationToken,
+  type ActivityScope,
 } from './activityCoordinator';
 
 /**
@@ -65,18 +66,35 @@ function useDetectedGlobalActivity(enabled: boolean): MiraGlobalActivity {
 }
 
 /**
- * 全局 64px Orb 的可见状态：延迟出现、最短可见、同 scope 完成事件出现时
- * 立即退出（跳过最短可见尾段）。被强制退出后，在业务状态真正结束（变为
- * null 或换成另一种活动）之前不再回弹。
- * 所有 setState 都发生在定时器回调里，避免 set-state-in-effect。
+ * 全局 64px Orb 的可见状态与协调 scope。
+ *
+ * 协调 scope 的语义：业务状态（detected）已经变为 null 时，只要仍有一个
+ * 正在显示的 Orb（可能处于最短可见尾段），scope 就继续跟随 displayed 的
+ * 对应 scope，直到该 Orb 真实退出；否则同 scope 完成事件（Beam）发出的
+ * “立即退出”提示会失去订阅目标，Orb 只能自然等完 420ms 尾段，完成反馈被
+ * 无谓延迟。业务状态为 null 且没有任何 displayed Orb 时，scope 才真正归零。
+ *
+ * 可见状态语义：延迟出现、最短可见、同 scope 完成事件出现时立即退出
+ * （跳过最短可见尾段）。被强制退出后，在业务状态真正结束（变为 null 或
+ * 换成另一种活动）之前不再回弹。所有 setState 都发生在定时器回调里，
+ * 避免 set-state-in-effect。
  */
-function useDisplayedGlobalActivity(
+function useGlobalActivityCoordination(
   detected: MiraGlobalActivity,
-  exitHint: number,
-): MiraGlobalActivity {
+): {
+  displayed: MiraGlobalActivity;
+  coordinationScope: ActivityScope | null;
+} {
   // 初始不跟随检测值：显式业务状态也必须经过 300ms 延迟出现在先，
   // 否则 App 一挂载就闪现 Orb。
   const [displayed, setDisplayed] = useState<MiraGlobalActivity>(null);
+  const detectedScope = detected ? attentionScopeForActivity(detected) : null;
+  // displayed 是上一轮渲染的 state，本轮即可参与 scope 计算，无循环依赖。
+  const displayedScope = displayed
+    ? attentionScopeForActivity(displayed)
+    : null;
+  const coordinationScope = displayedScope ?? detectedScope;
+  const exitHint = useActivityExitHint(coordinationScope);
   const visibleSinceRef = useRef(0);
   const lastExitHintRef = useRef(0);
   // 被同 scope 完成事件强制退出后，在业务状态真正结束之前不再回弹。
@@ -113,7 +131,7 @@ function useDisplayedGlobalActivity(
     return () => window.clearTimeout(timer);
   }, [detected, displayed, exitHint]);
 
-  return displayed;
+  return { displayed, coordinationScope };
 }
 
 export interface MiraActivityOverlayProps {
@@ -134,12 +152,9 @@ export function MiraActivityOverlay({
   const hasExplicitActivity = deviceActivity !== undefined;
   const detectedDom = useDetectedGlobalActivity(!hasExplicitActivity);
   const detected = hasExplicitActivity ? deviceActivity : detectedDom;
-  const detectedScope = detected ? attentionScopeForActivity(detected) : null;
-  const exitHint = useActivityExitHint(detectedScope);
-  const displayed = useDisplayedGlobalActivity(detected, exitHint);
-  const displayedScope = displayed ? attentionScopeForActivity(displayed) : null;
+  const { displayed, coordinationScope } = useGlobalActivityCoordination(detected);
   // 渲染层兜底仲裁：同一 scope 已有 Beam 播放时不显示全局 Orb。
-  const beamActive = useActiveBeamForScope(displayedScope);
+  const beamActive = useActiveBeamForScope(coordinationScope);
   const showOrb = displayed !== null && !beamActive;
   // 与 Inline 组件一致：以组件级 token 注册当前显示的 Orb。
   const [token] = useState<ActivityRegistrationToken>(
@@ -147,13 +162,13 @@ export function MiraActivityOverlay({
   );
 
   useEffect(() => {
-    if (!displayedScope) return;
-    if (showOrb) registerVisibleActivity(displayedScope, token);
+    if (!coordinationScope) return;
+    if (showOrb) registerVisibleActivity(coordinationScope, token);
     // 清理覆盖 scope 切换与卸载：上一轮已注册的令牌在这里同步注销。
     return () => {
-      if (showOrb) unregisterVisibleActivity(displayedScope, token);
+      if (showOrb) unregisterVisibleActivity(coordinationScope, token);
     };
-  }, [displayedScope, showOrb, token]);
+  }, [coordinationScope, showOrb, token]);
 
   if (!showOrb) return null;
 

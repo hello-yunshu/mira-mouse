@@ -2,7 +2,7 @@
 import { useEffect, useEffectEvent, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useTranslation } from 'react-i18next';
-import { ArrowClockwise, ArrowCounterClockwise, ChartBar, Download, MagnifyingGlass, Upload } from '@phosphor-icons/react';
+import { ChartBar } from '@phosphor-icons/react';
 import type { AppSettings, BundledPluginInfo, AboutInfo, DiscoveredDevice, LocalAiStatus, PluginCapability, ThemeMode } from './types';
 import { Tooltip } from './Tooltip';
 import { notifyError, notifyInfo } from './notify';
@@ -964,11 +964,11 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
                     {t('batteryUsage.clearHistory')}
                   </button>
                   <button className="action-btn mira-activity-button" onClick={() => handleExportBatteryHistory('json')} disabled={batteryExportBusy !== null}>
-                    <MiraInlineActivity active={batteryExportBusy === 'json'} activity="exporting-battery-history" fallback={<Download weight="regular" />} />
+                    <MiraInlineActivity active={batteryExportBusy === 'json'} activity="exporting-battery-history" layout="overlay" />
                     <span>{t('batteryUsage.exportJson')}</span>
                   </button>
                   <button className="action-btn mira-activity-button" onClick={() => handleExportBatteryHistory('csv')} disabled={batteryExportBusy !== null}>
-                    <MiraInlineActivity active={batteryExportBusy === 'csv'} activity="exporting-battery-history" fallback={<Download weight="regular" />} />
+                    <MiraInlineActivity active={batteryExportBusy === 'csv'} activity="exporting-battery-history" layout="overlay" />
                     <span>{t('batteryUsage.exportCsv')}</span>
                   </button>
                 </>
@@ -1055,11 +1055,11 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
               <p className="setting-hint">{t('settings.config.hint')}</p>
               <div className="contact-links align-end">
                 <button className="secondary mira-activity-button" onClick={() => void handleExportConfig()} disabled={previewMode || configExportBusy || configImportBusy}>
-                  <MiraInlineActivity active={configExportBusy} activity="exporting-device-config" fallback={<Download weight="regular" />} />
+                  <MiraInlineActivity active={configExportBusy} activity="exporting-device-config" layout="overlay" />
                   <span>{t('settings.config.export')}</span>
                 </button>
                 <button className="secondary mira-activity-button" onClick={() => void handleImportConfig()} disabled={previewMode || configExportBusy || configImportBusy}>
-                  <MiraInlineActivity active={configImportBusy} activity="importing-device-config" fallback={<Upload weight="regular" />} />
+                  <MiraInlineActivity active={configImportBusy} activity="importing-device-config" layout="overlay" />
                   <span>{t('settings.config.import')}</span>
                 </button>
               </div>
@@ -1100,7 +1100,7 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
               <MiraInlineActivity
                 active={localAiCheckBusy}
                 activity="checking-local-ai-updates"
-                fallback={<ArrowClockwise weight="regular" />}
+                layout="overlay"
               />
               <span>{localAiUpdate.phase === 'checking' ? t('settings.localAi.checking') : t('settings.localAi.checkUpdates')}</span>
             </button>
@@ -1157,7 +1157,7 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
                     </div>
                   )}
                   <button className="secondary mira-activity-button" disabled={localAiUpdate.phase === 'checking'} onClick={() => void handleLocalAiRollback()}>
-                    <MiraInlineActivity active={localAiRollbackBusy} activity="restoring-local-ai" fallback={<ArrowCounterClockwise weight="regular" />} />
+                    <MiraInlineActivity active={localAiRollbackBusy} activity="restoring-local-ai" layout="overlay" />
                     <span>{localAiUpdate.phase === 'checking' ? t('settings.localAi.rollingBack') : t('settings.localAi.rollbackBundle')}</span>
                   </button>
                 </div>
@@ -1178,7 +1178,7 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
           </SettingRow>
           <div className="contact-links plugin-update-actions align-end">
             <button className="secondary mira-activity-button" onClick={() => void checkPluginUpdates()} disabled={previewMode || pluginCheckBusy || pluginUpdatesChecking || pluginUpdate.phase === 'downloading'}>
-              <MiraInlineActivity active={pluginCheckBusy} activity="checking-plugin-updates" fallback={<ArrowClockwise weight="regular" />} />
+              <MiraInlineActivity active={pluginCheckBusy} activity="checking-plugin-updates" layout="overlay" />
               <span>{pluginUpdatesChecking ? t('settings.pluginUpdate.checking') : t('settings.pluginUpdate.check')}</span>
             </button>
             {pluginUpdates.length > 0 && pluginUpdates.every((item) => !item.updateAvailable) && <span className="save-badge">{t('settings.pluginUpdate.allLatest')}</span>}
@@ -1255,13 +1255,13 @@ export function SettingsPage({ onNavigateAbout, onOpenBatteryUsage = () => {}, o
           </SettingRow>
           <SettingRow title={t('settings.privacy.scanLabel')} hint={t('settings.privacy.scanHint')}>
             <button className="secondary mira-activity-button" onClick={() => void scanDevices()} disabled={previewMode || deviceScanBusy}>
-              <MiraInlineActivity active={deviceScanBusy} activity="scanning-devices" fallback={<MagnifyingGlass weight="regular" />} />
+              <MiraInlineActivity active={deviceScanBusy} activity="scanning-devices" layout="overlay" />
               <span>{t('settings.privacy.scanButton')}</span>
             </button>
           </SettingRow>
           <SettingRow title={t('settings.privacy.diagnosticsLabel')} hint={t('settings.privacy.diagnosticsHint')}>
             <button className="secondary mira-activity-button" onClick={() => void handleExportDiagnostics()} disabled={previewMode || diagnosticsExportBusy}>
-              <MiraInlineActivity active={diagnosticsExportBusy} activity="exporting-diagnostics" fallback={<Download weight="regular" />} />
+              <MiraInlineActivity active={diagnosticsExportBusy} activity="exporting-diagnostics" layout="overlay" />
               <span>{t('settings.privacy.diagnosticsButton')}</span>
             </button>
           </SettingRow>

@@ -196,7 +196,8 @@ export async function waitForActivityExit(
  * 提交完成事件（Beam）的入口：同一 scope 有可见 Orb 时，先退出 Orb 再提交；
  * 没有 Orb 时同步提交，保证现有测试与调用方的同步语义不变。退出等待超时
  * 说明该 scope 的 Orb 仍在显示（任务可能尚未结束），不提交这轮可能过期的
- * Beam，避免制造 Orb 与 Beam 的长时间重叠。
+ * Beam，避免制造 Orb 与 Beam 的长时间重叠。Orb 退出后若同 scope 已有新
+ * 任务注册，同样不提交这轮 Beam（过期完成反馈）。
  */
 export function announceAfterOrbExit(
   scope: ActivityScope,
@@ -209,7 +210,12 @@ export function announceAfterOrbExit(
   }
   void (async () => {
     const outcome = await waitForActivityExit(scope);
-    if (outcome === 'exited') announce(request);
+    // 提交前再同步确认：wait 解析到 “exited” 之后的微任务间隙，同 scope
+    // 可能已有新任务注册新 token（旧任务完成、新任务立刻开始）。此时不再
+    // 提交旧任务的完成 Beam，避免新任务的 Orb 被过期完成反馈压制。
+    if (outcome === 'exited' && !isActivityVisible(scope)) {
+      announce(request);
+    }
   })();
 }
 

@@ -34,6 +34,14 @@ export interface MiraInlineActivityProps {
    * 不可见的空槽，图标平滑替换成 Orb，结束后恢复图标。
    */
   fallback?: React.ReactNode;
+  /**
+   * 布局方式：
+   * - 'inline'：Orb 作为 flex item 与文字并排（原有 fallback 图标模式）；
+   * - 'overlay'：Orb 以 absolute 覆盖按钮文字起始区域，不参与外部宽度
+   *   计算。空闲与延迟期 DOM 不保留任何空槽，纯文本按钮恢复原视觉，
+   *   运行 app 不会出现宽度跳动。
+   */
+  layout?: 'inline' | 'overlay';
   /** 与 Attention Beam 仲裁的作用域；没有对应完成事件时可省略。 */
   scope?: ActivityScope;
   /**
@@ -51,6 +59,7 @@ export function MiraInlineActivity({
   delayMs,
   minVisibleMs,
   fallback,
+  layout = 'inline',
   scope,
   reserveSpace = false,
 }: MiraInlineActivityProps) {
@@ -90,6 +99,7 @@ export function MiraInlineActivity({
         'mira-inline-activity',
         showOrb ? 'is-visible' : 'is-waiting',
         !showOrb && fallback !== undefined ? 'has-fallback' : null,
+        layout === 'overlay' ? 'mira-inline-activity--overlay' : null,
         className,
       ].filter(Boolean).join(' ')}
       role={announce && showOrb ? 'status' : undefined}
