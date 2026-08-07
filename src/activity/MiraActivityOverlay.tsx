@@ -93,15 +93,30 @@ function useGlobalActivityCoordination(
   const displayedScope = displayed
     ? attentionScopeForActivity(displayed)
     : null;
-  const coordinationScope = displayedScope ?? detectedScope;
+  // 有 displayed Activity 时完全尊重其自身 scope（即使是无注意力的 null）；
+  // 只有没有 displayed 时才回退到业务检测到的 scope。
+  const coordinationScope = displayed !== null
+    ? displayedScope
+    : detectedScope;
   const exitHint = useActivityExitHint(coordinationScope);
   const visibleSinceRef = useRef(0);
   const lastExitHintRef = useRef(0);
+  // 同一 scope 重新建立（null → 再次进入）时，退出提示相对基线要一起重置，
+  // 否则第二轮 ready 的增量 0→1 会被上一轮消费值 1 挡住，Orb 只能自然等完
+  // 最短可见尾段，完成反馈被无谓延迟。
+  const lastExitHintScopeRef = useRef<ActivityScope | null>(coordinationScope);
   // 被同 scope 完成事件强制退出后，在业务状态真正结束之前不再回弹。
   const suppressedValueRef = useRef<MiraGlobalActivity>(null);
 
   useEffect(() => {
     let timer = 0;
+
+    if (lastExitHintScopeRef.current !== coordinationScope) {
+      // scope 切换/重新建立时同步重置退出提示基线：`useActivityExitHint`
+      // 已在切换渲染返回 0，这里跟随重定基线，防止历史消费值挡掉新提示。
+      lastExitHintScopeRef.current = coordinationScope;
+      lastExitHintRef.current = exitHint;
+    }
 
     if (exitHint > lastExitHintRef.current) {
       lastExitHintRef.current = exitHint;
@@ -129,7 +144,7 @@ function useGlobalActivityCoordination(
     }
 
     return () => window.clearTimeout(timer);
-  }, [detected, displayed, exitHint]);
+  }, [detected, displayed, coordinationScope, exitHint]);
 
   return { displayed, coordinationScope };
 }

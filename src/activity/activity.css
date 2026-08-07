@@ -69,10 +69,16 @@ button.mira-activity-button {
 
 .mira-inline-activity--overlay {
   position: absolute;
-  inset-inline-start: 6px;
+  inset-inline-start: 50%;
   top: 50%;
-  translate: 0 -50%;
+  translate: -50% -50%;
   pointer-events: none;
+}
+
+/* Orb 真正出现（showOrb）时才渲染 overlay 元素；此时隐藏紧邻的文字，
+   保持按钮尺寸不变，文字节点仍留在 DOM 中继续贡献 accessible name。 */
+.mira-inline-activity--overlay + span {
+  opacity: 0;
 }
 
 .mira-inline-activity {

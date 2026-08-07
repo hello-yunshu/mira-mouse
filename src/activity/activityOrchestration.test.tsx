@@ -81,7 +81,7 @@ describe('MiraActivityOverlay 生命周期仲裁（P0-3）', () => {
       void announceAfterOrbExit('device:app', announce, request('ready-1', 'device:app'));
     });
     expect(announce).not.toHaveBeenCalled();
-    // 立即退出提示（0ms）+ rAF（~16ms）后，Orb 先退出，Beam 才提交。
+    // 立即退出提示后，Orb 先退出，Beam 才提交（Orb 真实注销后才提交完成反馈）。
     await act(async () => {
       vi.advanceTimersByTime(100);
       await Promise.resolve();
@@ -404,10 +404,13 @@ describe('MiraActivityOverlay 生命周期仲裁（P0-3）', () => {
     );
     expect(screen.queryByTestId('thinking-orb')).not.toBeInTheDocument();
     expect(document.querySelector('.mira-inline-activity')).not.toBeInTheDocument();
+    expect(screen.getByText(label)).toBeInTheDocument();
 
     act(() => { vi.advanceTimersByTime(350); });
     expect(screen.getByTestId('thinking-orb')).toBeInTheDocument();
     expect(document.querySelector('.mira-inline-activity')).toHaveClass('mira-inline-activity--overlay');
+    // 文字节点仍保留在 DOM（内存 opacity 隐藏），维持按钮宽度与 accessible name。
+    expect(screen.getByText(label)).toBeInTheDocument();
 
     rerender(
       <button className="secondary mira-activity-button">
@@ -418,6 +421,7 @@ describe('MiraActivityOverlay 生命周期仲裁（P0-3）', () => {
     act(() => { vi.advanceTimersByTime(500); });
     expect(screen.queryByTestId('thinking-orb')).not.toBeInTheDocument();
     expect(document.querySelector('.mira-inline-activity')).not.toBeInTheDocument();
+    expect(screen.getByText(label)).toBeInTheDocument();
   });
 
   it('23. StrictMode 双挂载卸载后 scope 无残留', () => {
@@ -431,5 +435,42 @@ describe('MiraActivityOverlay 生命周期仲裁（P0-3）', () => {
 
     unmount();
     expect(isActivityVisible('about-update')).toBe(false);
+  });
+
+  it('24. 连续两轮 device ready：第二轮 Orb 也立即退出，不等完剩余最短可见尾段', async () => {
+    const announce = vi.fn(() => true);
+    const { rerender } = render(<MiraActivityOverlay activity="device-initializing" />);
+
+    // 第一轮：ready 后 Orb 立即退出，Beam 提交一次。
+    act(() => { vi.advanceTimersByTime(350); });
+    expect(screen.getByTestId('thinking-orb')).toBeInTheDocument();
+    rerender(<MiraActivityOverlay activity={null} />);
+    act(() => {
+      void announceAfterOrbExit('device:app', announce, request('ready-1', 'device:app'));
+    });
+    expect(announce).not.toHaveBeenCalled();
+    await act(async () => {
+      vi.advanceTimersByTime(100);
+      await Promise.resolve();
+    });
+    expect(announce).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId('thinking-orb')).not.toBeInTheDocument();
+
+    // 第二轮：同一组件、同一协调层，scope 重新建立后退出提示基线一并重置。
+    rerender(<MiraActivityOverlay activity="device-initializing" />);
+    act(() => { vi.advanceTimersByTime(350); });
+    expect(screen.getByTestId('thinking-orb')).toBeInTheDocument();
+    rerender(<MiraActivityOverlay activity={null} />);
+    act(() => {
+      void announceAfterOrbExit('device:app', announce, request('ready-2', 'device:app'));
+    });
+    expect(announce).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      vi.advanceTimersByTime(100);
+      await Promise.resolve();
+    });
+    // 第二轮依然立即退出（距出现仅约 50ms，未等完 420ms 尾段）并再次提交。
+    expect(announce).toHaveBeenCalledTimes(2);
+    expect(screen.queryByTestId('thinking-orb')).not.toBeInTheDocument();
   });
 });
