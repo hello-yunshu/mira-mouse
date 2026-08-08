@@ -164,6 +164,13 @@ describe('MiraActivityOverlay 生命周期仲裁（P0-3）', () => {
     expect(screen.queryByTestId('thinking-orb')).not.toBeInTheDocument();
   });
 
+  it('9a. 显式 0ms 延迟的 Inline Orb 在首帧立即出现', () => {
+    render(
+      <MiraInlineActivity active activity="applying-settings" delayMs={0} />,
+    );
+    expect(screen.getByTestId('thinking-orb')).toHaveAttribute('data-state', 'working');
+  });
+
   it('10. 无 Beam 的普通任务仍满足 420ms 最短可见', () => {
     const { rerender } = render(<MiraInlineActivity active activity="scanning-devices" />);
     act(() => { vi.advanceTimersByTime(300); });

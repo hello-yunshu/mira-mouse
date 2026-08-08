@@ -51,6 +51,12 @@
     "switchDevice": "Switch mouse",
     "deviceCount": "{{count}} devices",
     "deviceBattery": "Device battery",
+    "batteryLearning": {
+      "status": "Learning",
+      "title": "Learning receiver battery",
+      "description": "After the battery returns to the mouse, Mira uses the mouse's direct reading to calibrate the receiver charging curve. Data stays on this device, and unreliable percentages stay hidden while learning.",
+      "confirm": "Got it"
+    },
     "deviceControl": "Device controls",
     "configurationTab": "Config",
     "deviceStatus": "Device status",

@@ -864,6 +864,7 @@ body:has(.platform-fallback:not(.web-preview)) {
   font-weight: 650;
 }
 .battery-meter {
+  position: relative;
   height: 5px;
   overflow: hidden;
   display: block;
@@ -879,6 +880,51 @@ body:has(.platform-fallback:not(.web-preview)) {
 }
 .battery-device.low .battery-meter-fill { background: linear-gradient(90deg, #ff9f9f, #ffc0a5); }
 .battery-device.charging .battery-meter-fill { background: linear-gradient(90deg, #8fc7ff, #9fe7c1); }
+.battery-device.estimated-charging .battery-meter-fill.confirmed {
+  min-width: 0;
+  opacity: .68;
+}
+.battery-device.estimated-charging .battery-meter-fill.uncertain {
+  position: absolute;
+  top: 0;
+  min-width: 0;
+  opacity: .28;
+  background: linear-gradient(90deg, #9fd4ff, #b7efd0 70%, transparent);
+}
+.battery-learning-trigger {
+  min-height: 22px;
+  padding: 2px 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  border-radius: 999px;
+  color: var(--muted);
+  background: rgb(127 120 140 / 10%);
+  font-size: 9px;
+  font-weight: 700;
+  box-shadow: none;
+}
+.battery-learning-trigger:hover {
+  color: var(--text);
+  background: rgb(127 120 140 / 16%);
+}
+.battery-learning-trigger svg { width: 10px; height: 10px; }
+.battery-learning-modal > section {
+  display: grid;
+  gap: 14px;
+}
+.battery-learning-modal header h3 { margin: 0; }
+.battery-learning-modal p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.65;
+}
+.battery-learning-modal footer {
+  display: flex;
+  justify-content: flex-end;
+}
 .battery-device.low .battery-level-icon,
 .battery-device.charging .battery-level-icon { color: var(--muted); }
 
@@ -1645,21 +1691,6 @@ body:has(.platform-fallback:not(.web-preview)) {
   z-index: 5;
   pointer-events: none;
 }
-.preview-message::before {
-  content: "";
-  width: 6px;
-  height: 6px;
-  flex: 0 0 6px;
-  border-radius: 999px;
-  background: var(--accent);
-  box-shadow: 0 0 0 4px color-mix(in oklch, var(--accent), transparent 82%);
-  animation: sync-pulse 1.2s ease-in-out infinite;
-}
-@keyframes sync-pulse {
-  0%, 100% { opacity: .42; transform: scale(.86); }
-  50% { opacity: 1; transform: scale(1); }
-}
-
 .mode-reading {
   gap: 2px;
   width: 100%;
@@ -4939,7 +4970,7 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   position: relative;
 }
 /* 设置 / 关于 / 日志共享固定页头文案槽。页内原文继续占位，保证按钮和内容
-   几何不变；可见标题独立做短距离交叉推切。 */
+   几何不变；可见标题只在固定位置交叉淡化。 */
 .page-persistent-copy {
   position: absolute;
   z-index: 2;
@@ -4963,37 +4994,20 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   grid-area: 1 / 1;
   justify-self: start;
   opacity: 1;
-  transform: translateY(0);
-  transition: transform 180ms var(--motion-ease-standard);
 }
 .page-persistent-title-face.is-current {
-  /* 旧标题先明确淡出；位移只作为很轻的方向提示。 */
-  transition:
-    opacity 110ms ease-in,
-    transform 180ms var(--motion-ease-standard);
+  transition: opacity 110ms ease-in;
 }
 .page-persistent-title-face.is-next {
   opacity: 0;
-  transform: translateY(2px);
   /* 新标题稍晚 40ms 接入，与旧标题保留短暂重叠，但不会出现透明空帧。 */
-  transition:
-    opacity 140ms ease-out 40ms,
-    transform 180ms var(--motion-ease-standard);
+  transition: opacity 140ms ease-out 40ms;
 }
-.page-persistent-title.direction-back .page-persistent-title-face.is-next {
-  transform: translateY(-2px);
-}
-.page-persistent-title.is-transitioning.direction-forward .page-persistent-title-face.is-current {
+.page-persistent-title.is-transitioning .page-persistent-title-face.is-current {
   opacity: 0;
-  transform: translateY(-2px);
-}
-.page-persistent-title.is-transitioning.direction-back .page-persistent-title-face.is-current {
-  opacity: 0;
-  transform: translateY(2px);
 }
 .page-persistent-title.is-transitioning .page-persistent-title-face.is-next {
   opacity: 1;
-  transform: translateY(0);
 }
 .page-swap:is([data-page-view="settings"], [data-page-view="about"], [data-page-view="logs"])
   .page-layer :is(.settings-page, .about-page) > header .eyebrow {

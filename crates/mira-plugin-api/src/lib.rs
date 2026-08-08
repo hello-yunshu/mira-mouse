@@ -766,7 +766,10 @@ fn valid_battery_history_policy(value: &serde_json::Value) -> bool {
     let Some(policy) = value.as_object() else {
         return false;
     };
-    if policy.len() != 1 {
+    if policy
+        .keys()
+        .any(|key| key != "validConnections" && key != "chargingEstimate")
+    {
         return false;
     }
     let Some(connections) = policy
@@ -779,11 +782,42 @@ fn valid_battery_history_policy(value: &serde_json::Value) -> bool {
         return false;
     }
     let mut unique = BTreeSet::new();
-    connections.iter().all(|connection| {
+    let connections_valid = connections.iter().all(|connection| {
         connection.as_str().is_some_and(|connection| {
             valid_binding_connection(connection) && unique.insert(connection)
         })
-    })
+    });
+    let charging_estimate_valid = policy.get("chargingEstimate").is_none_or(|value| {
+        let Some(estimate) = value.as_object() else {
+            return false;
+        };
+        if estimate.len() != 4
+            || estimate.get("mode").and_then(serde_json::Value::as_str) != Some("local-learning")
+            || !estimate
+                .get("componentId")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|value| !value.is_empty() && value.len() <= 160)
+            || !estimate
+                .get("groundTruthComponentId")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|value| !value.is_empty() && value.len() <= 160)
+        {
+            return false;
+        }
+        estimate
+            .get("families")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|families| {
+                !families.is_empty()
+                    && families.len() <= 8
+                    && families.iter().all(|family| {
+                        family
+                            .as_str()
+                            .is_some_and(|family| !family.is_empty() && family.len() <= 160)
+                    })
+            })
+    });
+    connections_valid && charging_estimate_valid
 }
 
 fn valid_declarative_options(value: &serde_json::Value) -> bool {
@@ -1833,7 +1867,13 @@ mod tests {
     #[test]
     fn validates_battery_history_connections_as_plugin_semantics() {
         assert!(valid_battery_history_policy(&serde_json::json!({
-            "validConnections": ["wireless", "bluetooth"]
+            "validConnections": ["wireless", "bluetooth"],
+            "chargingEstimate": {
+                "mode": "local-learning",
+                "componentId": "receiver",
+                "groundTruthComponentId": "mouse",
+                "families": ["protocol-a-receiver"]
+            }
         })));
         assert!(!valid_battery_history_policy(&serde_json::json!({
             "validConnections": ["receiver"]

@@ -51,6 +51,12 @@
     "switchDevice": "切换鼠标",
     "deviceCount": "{{count}} 台设备",
     "deviceBattery": "设备电量",
+    "batteryLearning": {
+      "status": "学习中",
+      "title": "接收器电量学习中",
+      "description": "Mira 会在电池换回鼠标后，用鼠标直读电量校准接收器的充电曲线。数据只保存在本机，学习期间不会显示不可靠的百分数。",
+      "confirm": "知道了"
+    },
     "deviceControl": "设备控制",
     "configurationTab": "配置",
     "deviceStatus": "设备状态",

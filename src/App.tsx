@@ -33,7 +33,7 @@ import { AboutPage } from './About';
 import { LogPage } from './logs/LogPage';
 import { BatteryUsageModal, type BatteryUsageConnectedTarget } from './BatteryUsage';
 import { BatteryLevelIcon } from './BatteryLevelIcon';
-import type { AboutInfo, AppSettings, DeviceSnapshot, DeviceSnapshotEntry, DeviceState, DpiStage, PluginCapability, PluginCapabilityPlacement, PluginField, PluginFieldFormat, PluginSummaryItem, PluginZone, RangeSpec, ReadStatus, ThemeMode } from './types';
+import type { AboutInfo, AppSettings, BatteryChargingEstimate, DeviceSnapshot, DeviceSnapshotEntry, DeviceState, DpiStage, PluginCapability, PluginCapabilityPlacement, PluginChargingEstimatePolicy, PluginField, PluginFieldFormat, PluginSummaryItem, PluginZone, RangeSpec, ReadStatus, ThemeMode } from './types';
 import { DetailValue } from './DetailValue';
 import {
   placementsFor,
@@ -72,22 +72,17 @@ import {
   AttentionSurface,
   attentionAppRestartKey,
   attentionAppUpdateKey,
-  attentionColorForZone,
   attentionDesaturatedAccent,
-  attentionDeviceKey,
   attentionLocalAiUpdateKey,
   attentionPluginUpdateKey,
-  announceAttentionRequest,
   clearPendingLightingAttention,
   confirmPendingLightingAttention,
   detectAttentionVisualSupport,
   peekPendingLightingAttention,
-  reduceDeviceAttentionByIdentity,
   registerLightingAttention,
   resolveUpdateAttentionTarget,
   useAttentionFeedback,
   type AttentionBeamRequest,
-  type DeviceAttentionContext,
   type ZoneLightingState,
 } from './attention';
 import { useScrollFadeState } from './useScrollOverflow';
@@ -98,7 +93,7 @@ import { initUpdatePriorityCoordinator } from './update-priority';
 import { LOCAL_AI_FEATURE, localAiFeatureEnabled } from './localAi';
 import { segmentedIndicatorStyle } from './segmentedControl';
 import { Modal, OverlayPortal, useHasOpenModal } from './overlay';
-import { MiraActivityButton, MiraInlineActivity, MiraActivityOverlay, announceAfterOrbExit } from './activity';
+import { MiraActivityButton, MiraInlineActivity, MiraActivityOverlay } from './activity';
 import './styles.css';
 
 type View = 'dashboard' | 'settings' | 'about' | 'logs';
@@ -280,22 +275,17 @@ function LiveValue({ text, className, style, duration = 160 }: {
   );
 }
 
-function pageTitleDirection(from: TitledView, to: TitledView): 'forward' | 'back' {
-  if (to === 'settings' && from !== 'settings') return 'back';
-  return 'forward';
-}
-
 /**
- * 设置 / 关于 / 日志共用的固定标题槽。文字在同一几何位置交叉推切，
- * 避免两个页面各自挂载 h1 时产生闪现、缩放或宽度位移。
+ * 设置 / 关于 / 日志共用的固定标题槽。文字只在同一几何位置交叉淡化，
+ * 避免两个页面各自挂载 h1 时产生闪现或位置跳动。
  */
 function PersistentPageTitle({ view, title }: { view: TitledView; title: string }) {
   const [currentValue, setCurrentValue] = useState(() => ({ view, title }));
   const [nextValue, setNextValue] = useState<{ view: TitledView; title: string }>();
-  const [direction, setDirection] = useState<'forward' | 'back'>('forward');
   const [transitioning, setTransitioning] = useState(false);
   const currentValueRef = useRef(currentValue);
   const transitionIdRef = useRef(0);
+  const transitioningRef = useRef(false);
 
   useEffect(() => {
     const transitionId = transitionIdRef.current + 1;
@@ -309,23 +299,35 @@ function PersistentPageTitle({ view, title }: { view: TitledView; title: string 
     if (displayedValue.view === view && displayedValue.title === title) {
       setNextValue(undefined);
       setTransitioning(false);
+      transitioningRef.current = false;
       return undefined;
     }
 
-    setDirection(pageTitleDirection(displayedValue.view, view));
+    // 快速连续切换时，不把半透明的旧标题先拉回再重播一轮动画；直接让当前
+    // 可见的目标层接管，避免偶发的明暗闪回和反向位移。
+    if (transitioningRef.current) {
+      currentValueRef.current = incomingValue;
+      setCurrentValue(incomingValue);
+      setNextValue(undefined);
+      setTransitioning(false);
+      transitioningRef.current = false;
+      return undefined;
+    }
+
     prepareFrame = window.requestAnimationFrame(() => {
       if (transitionIdRef.current !== transitionId) return;
       setNextValue(incomingValue);
-      setTransitioning(false);
       transitionFrame = window.requestAnimationFrame(() => {
         if (transitionIdRef.current !== transitionId) return;
         setTransitioning(true);
+        transitioningRef.current = true;
         commitTimeout = window.setTimeout(() => {
           if (transitionIdRef.current !== transitionId) return;
           currentValueRef.current = incomingValue;
           setCurrentValue(incomingValue);
           setNextValue(undefined);
           setTransitioning(false);
+          transitioningRef.current = false;
         }, 190);
       });
     });
@@ -339,7 +341,7 @@ function PersistentPageTitle({ view, title }: { view: TitledView; title: string 
 
   return (
     <h1
-      className={`page-persistent-title direction-${direction}${transitioning ? ' is-transitioning' : ''}`}
+      className={`page-persistent-title${transitioning ? ' is-transitioning' : ''}`}
       aria-hidden="true"
     >
       <span
@@ -769,6 +771,7 @@ function snapshotToState(snapshot: DeviceSnapshot): DeviceState {
     evidence: snapshot.evidence,
     readonly: snapshot.readonly ?? false,
     pluginId: snapshot.pluginId,
+    historyIdentity: snapshot.historyIdentity,
     updatedAt: now,
     readStatuses: snapshot.readStatuses,
     mouseReady: snapshot.mouseReady,
@@ -1083,21 +1086,6 @@ function confirmLightingMutation(attentionId: number | undefined, before: Device
     before: zoneStateOf(before),
     after: zoneStateOf(after),
   });
-}
-
-/**
- * 稳定设备身份：优先 deviceKey，其次插件声明的跨连接稳定身份
- * historyIdentity.group（与后端 snapshot_device_identity 同源），
- * 再次是插件 ID + family，最后才是显示名。
- * 不使用原始 HID path / serial 等敏感数据。
- */
-function stableDeviceIdentity(device: DeviceState, entries: DeviceSnapshotEntry[]): string {
-  const entry = selectedDeviceEntry(entries);
-  if (entry?.deviceKey) return entry.deviceKey;
-  const historyGroup = entry?.snapshot.historyIdentity?.group?.trim();
-  if (historyGroup) return `history:${historyGroup}`;
-  if (device.pluginId) return `${device.pluginId}:${device.family ?? ''}`;
-  return String(device.name).trim().toLocaleLowerCase().replace(/\s+/g, '-');
 }
 
 function capabilityRuntimePending(capability: PluginCapability): boolean {
@@ -3194,6 +3182,8 @@ function Dashboard({
   const [showDetails, setShowDetails] = useState(false);
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
   const [showBatteries, setShowBatteries] = useState(false);
+  const [showBatteryLearningInfo, setShowBatteryLearningInfo] = useState(false);
+  const [chargingEstimate, setChargingEstimate] = useState<BatteryChargingEstimate>();
   const [showDeviceSwitcher, setShowDeviceSwitcher] = useState(false);
   const batteryControlRef = useRef<HTMLDivElement>(null);
   const batteryPopoverRef = useRef<HTMLElement>(null);
@@ -3206,13 +3196,57 @@ function Dashboard({
   const [writeBusy, setWriteBusy] = useState(false);
   const [editingField, setEditingField] = useState<{ capability: PluginCapability; field: PluginField } | null>(null);
   const [statusSwitchRestoreValues, setStatusSwitchRestoreValues] = useState<Record<string, unknown>>({});
-  // 设备 等待→就绪 / 断开→恢复 的一次性 Attention（渲染在控制台上）。
-  const deviceAttention = useAttentionFeedback('device:app');
   const forcedPreviewMessage = demoMode
     && new URLSearchParams(window.location.search).get('preview') === 'writing'
     ? t('dashboard.writing')
     : '';
   const visiblePreviewMessage = previewMessage || forcedPreviewMessage;
+
+  const chargingEstimatePolicy = useMemo<PluginChargingEstimatePolicy | undefined>(() => {
+    const policy = device.pluginCapabilities
+      .find((capability) => capability.id === 'battery' && capability.available !== false)
+      ?.metadata.batteryHistory?.chargingEstimate;
+    if (!policy || policy.mode !== 'local-learning' || !device.family) return undefined;
+    return policy.families.includes(device.family) ? policy : undefined;
+  }, [device.family, device.pluginCapabilities]);
+  const chargingEstimateBattery = chargingEstimatePolicy
+    ? device.batteries.find((battery) => (
+      battery.id === chargingEstimatePolicy.componentId
+      && battery.charging
+      && battery.percentage > 0
+      && battery.percentage < 100
+    ))
+    : undefined;
+
+  useEffect(() => {
+    if (!chargingEstimatePolicy || !chargingEstimateBattery || !device.historyIdentity?.group) {
+      return undefined;
+    }
+    let cancelled = false;
+    const rawPercentage = chargingEstimateBattery.percentage;
+    invoke<BatteryChargingEstimate>('battery_charging_estimate_get', {
+      identityGroup: device.historyIdentity.group,
+      componentId: chargingEstimatePolicy.componentId,
+      groundTruthComponentId: chargingEstimatePolicy.groundTruthComponentId,
+      rawPercentage,
+    }).then((estimate) => {
+      if (!cancelled) setChargingEstimate(estimate);
+    }).catch(() => {
+      if (!cancelled) {
+        setChargingEstimate({
+          state: 'disabled',
+          lowerPercentage: Math.max(0, rawPercentage - 25),
+          upperPercentage: Math.min(100, rawPercentage + 25),
+          calibrationCount: 0,
+        });
+      }
+    });
+    return () => { cancelled = true; };
+  }, [
+    chargingEstimateBattery,
+    chargingEstimatePolicy,
+    device.historyIdentity?.group,
+  ]);
 
   const positionBatteryPopover = useCallback(() => {
     const anchor = batteryControlRef.current;
@@ -3828,20 +3862,65 @@ function Dashboard({
                   {device.batteries.map((battery) => {
                     const batteryLevel = Math.max(0, Math.min(100, battery.percentage));
                     const batteryTone = battery.charging ? 'charging' : batteryLevel <= 20 ? 'low' : 'normal';
+                    const usesChargingEstimate = battery.id === chargingEstimatePolicy?.componentId
+                      && battery.charging
+                      && battery.percentage > 0
+                      && battery.percentage < 100;
+                    const estimateState = usesChargingEstimate ? chargingEstimate?.state ?? 'disabled' : undefined;
+                    const estimateLower = usesChargingEstimate
+                      ? chargingEstimate?.lowerPercentage ?? Math.max(0, batteryLevel - 25)
+                      : batteryLevel;
+                    const estimateUpper = usesChargingEstimate
+                      ? chargingEstimate?.upperPercentage ?? Math.min(100, batteryLevel + 25)
+                      : batteryLevel;
                     return (
-                      <div key={battery.id} className={`battery-device ${batteryTone}`}>
-	                        <div className="battery-device-main">
-	                          <span className="battery-device-label">
-	                            <BatteryLevelIcon percentage={battery.percentage} charging={battery.charging} />
-	                            <span>{t(battery.label, { defaultValue: battery.label })}</span>
-	                          </span>
+
+                      <div
+                        key={battery.id}
+                        className={`battery-device ${batteryTone}${usesChargingEstimate ? ' estimated-charging' : ''}`}
+                      >
+                        <div className="battery-device-main">
+                          <span className="battery-device-label">
+                            <BatteryLevelIcon percentage={battery.percentage} charging={battery.charging} />
+                            <span>{t(battery.label, { defaultValue: battery.label })}</span>
+                          </span>
                           <span className="battery-device-value">
-                            <strong>{battery.percentage}%</strong>
-                            {battery.charging && <small>{t('common.charging')}</small>}
+                            {usesChargingEstimate ? (
+                              estimateState === 'learning' ? (
+                                <button
+                                  type="button"
+                                  className="battery-learning-trigger"
+                                  onClick={() => {
+                                    setShowBatteries(false);
+                                    setShowBatteryLearningInfo(true);
+                                  }}
+                                >
+                                  {t('dashboard.batteryLearning.status')}
+                                  <Info weight="bold" />
+                                </button>
+                              ) : (
+                                <small>{t('common.charging')}</small>
+                              )
+                            ) : (
+                              <>
+                                <strong>{battery.percentage}%</strong>
+                                {battery.charging && <small>{t('common.charging')}</small>}
+                              </>
+                            )}
                           </span>
                         </div>
-                        <span className="battery-meter" aria-hidden="true">
-                          <span className="battery-meter-fill" style={{ width: `${batteryLevel}%` }} />
+                        <span className={`battery-meter${usesChargingEstimate ? ' estimated' : ''}`} aria-hidden="true">
+                          {usesChargingEstimate ? (
+                            <>
+                              <span className="battery-meter-fill confirmed" style={{ width: `${estimateLower}%` }} />
+                              <span
+                                className="battery-meter-fill uncertain"
+                                style={{ left: `${estimateLower}%`, width: `${Math.max(0, estimateUpper - estimateLower)}%` }}
+                              />
+                            </>
+                          ) : (
+                            <span className="battery-meter-fill" style={{ width: `${batteryLevel}%` }} />
+                          )}
                         </span>
                       </div>
                     );
@@ -3861,6 +3940,24 @@ function Dashboard({
           </section>
         </OverlayPortal>
       )}
+      <Modal
+        open={showBatteryLearningInfo}
+        title={t('dashboard.batteryLearning.title')}
+        size="small"
+        className="battery-learning-modal"
+        backdropClassName="edit-modal-backdrop"
+        onClose={() => setShowBatteryLearningInfo(false)}
+      >
+        <section>
+          <header><h3>{t('dashboard.batteryLearning.title')}</h3></header>
+          <p>{t('dashboard.batteryLearning.description')}</p>
+          <footer>
+            <button type="button" onClick={() => setShowBatteryLearningInfo(false)}>
+              {t('dashboard.batteryLearning.confirm')}
+            </button>
+          </footer>
+        </section>
+      </Modal>
 
       <div
         className="control-tabs segmented-slider"
@@ -3975,10 +4072,14 @@ function Dashboard({
             sync={contextMotionSync}
           />
         </div>
-        {deviceAttention.beam && <AttentionBeamLayer active request={deviceAttention.beam} />}
         {visiblePreviewMessage && (
           <p className="preview-message mira-process-message">
-            <MiraInlineActivity active={writeBusy} activity="applying-settings" reserveSpace={false} />
+            <MiraInlineActivity
+              active={writeBusy || Boolean(forcedPreviewMessage)}
+              activity="applying-settings"
+              delayMs={0}
+              reserveSpace={false}
+            />
             <span>{visiblePreviewMessage}</span>
           </p>
         )}
@@ -4436,45 +4537,6 @@ export default function App() {
           : null)
     : null;
 
-  // ── Attention Beam：设备 等待→就绪 / 断开→恢复 ───────────────────────
-  // 只对真实状态迁移播放；启动即在线的设备不算事件，轮询读到相同状态不触发。
-  // 每个稳定设备身份（deviceKey）独立维护状态机，多设备/同名设备互不影响（P1-4）。
-  const deviceAttentionByKeyRef = useRef<Map<string, DeviceAttentionContext>>(new Map());
-  const lastDeviceIdentityRef = useRef<string | undefined>(undefined);
-  const deviceWatchStartedAtRef = useRef<number | undefined>(undefined);
-  useEffect(() => {
-    if (deviceWatchStartedAtRef.current === undefined) {
-      deviceWatchStartedAtRef.current = Date.now();
-    }
-    const identity = device
-      ? stableDeviceIdentity(device, deviceEntriesRef.current)
-      : lastDeviceIdentityRef.current;
-    if (!identity) return;
-    lastDeviceIdentityRef.current = identity;
-    const nextReady = device != null && device.mouseReady !== false && !deviceRuntimePending(device);
-    const elapsedMs = Date.now() - deviceWatchStartedAtRef.current;
-    const outcome = reduceDeviceAttentionByIdentity(deviceAttentionByKeyRef.current, identity, nextReady, elapsedMs);
-    if (!device || outcome.action === 'none') return;
-    // 状态机持续更新（等待→就绪 / 断开→恢复），但 Beam 只在 Dashboard 实际
-    // 可见时提交；事件发生时不可见 → 不播放 → 不补播（§5.1）。
-    if (view !== 'dashboard') return;
-    const readyAction = outcome.action === 'ready';
-    const accent = declaredAccentColor(device);
-    // 经协调层提交：同一设备 scope 仍有可见 Orb（等待/初始化）时先让 Orb
-    // 退出，再播放完成 Beam，避免同一事件 Orb 与 Beam 同时出现。
-    announceAfterOrbExit('device:app', announceAttentionRequest, {
-      eventKey: attentionDeviceKey(readyAction ? 'ready' : 'reconnected', identity, outcome.cycle),
-      scope: 'device:app',
-      variant: 'line',
-      color: attentionColorForZone(accent ?? '#ffb3b3'),
-      durationMs: readyAction ? 1300 : 1100,
-      // control-stage 明显大于普通更新行，需要更高的设备专用基准；浅色主题
-      // 仍会在渲染层自动收敛，避免退回到刺眼的实体描边。
-      strength: readyAction ? 0.66 : 0.60,
-      cycles: 1,
-      priority: ATTENTION_PRIORITY[readyAction ? 'device-ready' : 'device-reconnected'],
-    });
-  }, [device, view]);
   // 只检测一次：按 WebView 能力挂载根节点类，Attention Beam CSS 据此切换完整实现与降级。
   useEffect(() => {
     const support = detectAttentionVisualSupport();
