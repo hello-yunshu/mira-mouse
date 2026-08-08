@@ -155,6 +155,7 @@ describe('Logs page navigation and rendering', () => {
 
     // 日志页标题
     expect(await screen.findByRole('heading', { name: '日志与诊断' })).toBeInTheDocument();
+    expect(screen.queryByText('本地运行记录')).not.toBeInTheDocument();
     // 空状态显示
     expect(screen.getByText('没有符合条件的日志')).toBeInTheDocument();
 

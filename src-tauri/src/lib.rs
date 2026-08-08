@@ -639,6 +639,12 @@ struct DeviceBackoff {
     next_retry_at: Option<Instant>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DegradedFullRetryState {
+    Pending,
+    Attempted,
+}
+
 impl DeviceBackoff {
     /// 根据连续失败次数计算退避时间。
     /// 首次失败 60s，第二次 5min，第三次 15min，后续 30min 上限。
@@ -918,6 +924,9 @@ struct SessionState {
     /// 连续读取失败时增加退避时间，避免对休眠/离线设备的无效轮询。
     /// 重置事件：热插拔、用户刷新、窗口聚焦、系统恢复、mutation。
     backoff_state: Mutex<HashMap<String, DeviceBackoff>>,
+    /// 已对“可选步骤失败”的降级 Full 发起过一次受控重试的路径。
+    /// 完整 Full 或真实断开时清除；鼠标休眠造成的组件缺失不在此处立即重读。
+    degraded_full_retry_paths: Mutex<BTreeMap<String, DegradedFullRetryState>>,
     /// 每个已枚举设备的快照阶段。该状态独立于 UI 快照内容，避免用
     /// `plugin_capabilities.is_empty()` 猜测是否完成过 Full 读取。
     snapshot_readiness: Mutex<HashMap<String, SnapshotReadiness>>,
@@ -1162,6 +1171,7 @@ fn mark_wake_recovery_observation(
     inspection: &PackageInspection,
     connection: Connection,
     reading: &DeviceReading,
+    plan: ReadPlan,
 ) {
     let Some(contract) = wake_recovery_contract_for(inspection, connection) else {
         if let Ok(mut recovery) = state.wake_recovery.lock() {
@@ -1175,9 +1185,10 @@ fn mark_wake_recovery_observation(
     };
     let present = reading_has_recovery_component(reading, contract);
     let mut armed = false;
+    let mut recovered = false;
     if let Ok(mut recovery) = state.wake_recovery.lock() {
         if present {
-            recovery.armed_paths.remove(path);
+            recovered = recovery.armed_paths.remove(path);
             if recovery.armed_paths.is_empty() {
                 recovery.pending = None;
                 recovery.batches_started = 0;
@@ -1193,6 +1204,17 @@ fn mark_wake_recovery_observation(
     }
     if armed {
         try_schedule_wake_recovery(state);
+    }
+    // A Quick/BatteryOnly probe only proves that the plugin-declared target
+    // component is awake again. It does not rebuild the complete capability
+    // snapshot (DPI stages, supported polling rates, lighting fields, writable
+    // mutations, and other static/runtime-negotiated data). Schedule exactly
+    // one Full read on the missing -> present edge so a receiver-only snapshot
+    // cannot remain the authoritative dashboard state after the mouse wakes.
+    // If this observation already came from Full, it is complete and needs no
+    // redundant follow-up.
+    if recovered && plan != ReadPlan::Full {
+        request_refresh_with_plan(state, ReadPlan::Full);
     }
 }
 
@@ -2750,6 +2772,9 @@ fn clear_snapshots(state: &SessionState) {
     // 设备断开时清除退避状态，重连后不受历史失败影响。
     if let Ok(mut backoff) = state.backoff_state.lock() {
         backoff.clear();
+    }
+    if let Ok(mut retries) = state.degraded_full_retry_paths.lock() {
+        retries.clear();
     }
     if let Ok(mut recovery) = state.wake_recovery.lock() {
         *recovery = WakeRecoveryState::default();
@@ -5564,6 +5589,9 @@ mod night_mode_tests {
         )));
         assert!(!night_mode_snapshot_is_ready(Some(
             SnapshotReadiness::Quick
+        )));
+        assert!(!night_mode_snapshot_is_ready(Some(
+            SnapshotReadiness::DegradedFull
         )));
         assert!(night_mode_snapshot_is_ready(Some(SnapshotReadiness::Full)));
     }
@@ -9783,8 +9811,10 @@ fn battery_signature(snapshot: Option<&DeviceSnapshot>) -> Vec<(String, u8, bool
 
 /// 设备快照就绪程度：标识当前快照的完整性。
 ///
-/// 进阶顺序：Detected → Quick → Inventory → Full。派生 `Ord` 后此顺序即为
-/// 强度顺序，用于读取后只升不降地更新就绪级别。
+/// 进阶顺序：Detected → Quick → Inventory → DegradedFull → Full。
+/// `DegradedFull` 表示已尝试过一次 Full，但可选步骤失败或插件声明的
+/// 恢复组件仍缺失。它不能触发要求完整快照的功能，但也不会让后台
+/// 每 500ms 无上限重跑 Full；后续用户刷新或有界的唤醒恢复会再次尝试。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum SnapshotReadiness {
     /// 仅检测到设备存在，尚未读取任何协议状态。
@@ -9795,17 +9825,27 @@ enum SnapshotReadiness {
     /// 介于 Quick 与 Full 之间，仅由用户打开"全部读数"或显式请求触发。
     #[allow(dead_code)] // 由 UI Agent 在后续阶段按需写入
     Inventory,
+    /// Full 已执行，但结果是可使用的部分快照。
+    DegradedFull,
     /// 已读取完整状态和能力。
     Full,
 }
 
+fn needs_initial_full(readiness: SnapshotReadiness) -> bool {
+    matches!(
+        readiness,
+        SnapshotReadiness::Detected | SnapshotReadiness::Quick | SnapshotReadiness::Inventory
+    )
+}
+
 fn next_initial_read_plan(readiness: &HashMap<String, SnapshotReadiness>) -> Option<ReadPlan> {
-    // 后台初始补全只产生 Full（不产生 Inventory）：Inventory 读取不进入后台
-    // 轮询，仅由用户打开"全部读数"或显式 Tauri 命令触发。任何低于 Full 的
-    // 就绪级别（含 Inventory）都通过一次 Full 读取补全到 Full。
+    // 后台初始补全只产生 Full（不产生 Inventory）。已经尝试过
+    // Full 但降级的快照由有界唤醒恢复或显式刷新再试，不在初始循环
+    // 中紧密重读。
     readiness
         .values()
-        .any(|value| *value != SnapshotReadiness::Full)
+        .copied()
+        .any(needs_initial_full)
         .then_some(ReadPlan::Full)
 }
 
@@ -9814,13 +9854,106 @@ fn skip_already_complete_initial_read(
     device_path: &str,
     plan: ReadPlan,
 ) -> bool {
-    // 仅 Full 级别的设备被视为初始补全已完成；Inventory 级别仍需 Full 读取
-    // 补全（Inventory → Full），因此不跳过。
+    // Full 和 DegradedFull 都已消费过一次完整读取尝试。当其他设备仍需
+    // 初始补全时跳过它们，避免一台休眠鼠标拖着所有同伴重复 Full。
     plan == ReadPlan::Full
+        && readiness.values().copied().any(needs_initial_full)
         && readiness
-            .values()
-            .any(|value| *value != SnapshotReadiness::Full)
-        && readiness.get(device_path) == Some(&SnapshotReadiness::Full)
+            .get(device_path)
+            .is_some_and(|value| !needs_initial_full(*value))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FullSnapshotQuality {
+    Complete,
+    Degraded,
+}
+
+fn full_snapshot_quality(
+    inspection: &PackageInspection,
+    connection: Connection,
+    reading: &DeviceReading,
+) -> FullSnapshotQuality {
+    let has_failed_output = reading_has_failed_output(reading);
+    let recovery_component_missing = recovery_component_missing(inspection, connection, reading);
+
+    if has_failed_output || recovery_component_missing {
+        FullSnapshotQuality::Degraded
+    } else {
+        // Skipped/NotSupported are declared outcomes, not transport failures.
+        FullSnapshotQuality::Complete
+    }
+}
+
+fn reading_has_failed_output(reading: &DeviceReading) -> bool {
+    reading
+        .read_statuses
+        .values()
+        .any(|status| matches!(status, mira_plugin_runtime::ReadStatus::Failed(_)))
+}
+
+fn recovery_component_missing(
+    inspection: &PackageInspection,
+    connection: Connection,
+    reading: &DeviceReading,
+) -> bool {
+    wake_recovery_contract_for(inspection, connection)
+        .is_some_and(|contract| !reading_has_recovery_component(reading, contract))
+}
+
+fn update_degraded_full_retry(
+    state: &SessionState,
+    device_path: &str,
+    inspection: &PackageInspection,
+    connection: Connection,
+    reading: &DeviceReading,
+    quality: FullSnapshotQuality,
+) {
+    let Ok(mut retried_paths) = state.degraded_full_retry_paths.lock() else {
+        return;
+    };
+    match quality {
+        FullSnapshotQuality::Complete => {
+            retried_paths.remove(device_path);
+        }
+        FullSnapshotQuality::Degraded => {
+            // Retry a transient best-effort step failure once. A sleeping
+            // plugin-declared component is handled by the pointer-activity
+            // recovery budget instead, so it cannot trigger an eager Full.
+            if reading_has_failed_output(reading)
+                && !recovery_component_missing(inspection, connection, reading)
+                && !retried_paths.contains_key(device_path)
+            {
+                retried_paths.insert(device_path.to_string(), DegradedFullRetryState::Pending);
+                drop(retried_paths);
+                request_refresh_with_plan(state, ReadPlan::Full);
+            }
+        }
+    }
+}
+
+fn take_pending_degraded_full_retry(
+    state: &SessionState,
+    device_path: &str,
+    plan: ReadPlan,
+) -> bool {
+    if plan != ReadPlan::Full {
+        return false;
+    }
+    state
+        .degraded_full_retry_paths
+        .lock()
+        .ok()
+        .and_then(|mut retries| {
+            let retry = retries.get_mut(device_path)?;
+            if *retry == DegradedFullRetryState::Pending {
+                *retry = DegradedFullRetryState::Attempted;
+                Some(true)
+            } else {
+                Some(false)
+            }
+        })
+        .unwrap_or(false)
 }
 
 /// 部分快照补丁：用于合并不同读取计划的结果。
@@ -9869,8 +10002,11 @@ enum SnapshotPatch {
         /// Some(_) 时覆盖现有值；None 时保留现有值。
         mouse_ready: Option<bool>,
     },
-    /// Full 替换：完整替换快照。
-    Full(DeviceSnapshot),
+    /// Full 结果：完整结果替换快照，降级结果仅更新成功读到的字段。
+    Full {
+        snapshot: DeviceSnapshot,
+        quality: FullSnapshotQuality,
+    },
 }
 
 /// 按 id 合并 batteries 数组，实现鼠标电量的粘性缓存。
@@ -9901,24 +10037,62 @@ fn merge_batteries(
     merged
 }
 
-fn snapshot_has_recovery_component(
-    snapshot: &DeviceSnapshot,
-    contract: &mira_plugin_runtime::WakeRecoveryContract,
-) -> bool {
-    snapshot
-        .batteries
-        .iter()
-        .any(|battery| battery.id == contract.component_id)
+fn merge_plugin_capabilities_for_degraded_full(
+    existing: &[PluginCapability],
+    incoming: Vec<PluginCapability>,
+) -> Vec<PluginCapability> {
+    let mut merged = existing.to_vec();
+    for capability in incoming {
+        if let Some(slot) = merged
+            .iter_mut()
+            .find(|candidate| candidate.id == capability.id)
+        {
+            // A degraded read cannot prove that a previously available
+            // capability disappeared; missing dependency outputs can only make
+            // the recomputed availability less trustworthy. It may, however,
+            // positively discover a capability that was provisional before.
+            let was_available = slot.available;
+            *slot = capability;
+            slot.available |= was_available;
+        } else {
+            merged.push(capability);
+        }
+    }
+    merged
 }
 
-/// A Full read may still be partial when a wireless target sleeps behind an
-/// enumerated receiver. Preserve the last component-backed fields while
-/// accepting receiver fields from the new result. A true receiver disconnect
-/// still clears the entire snapshot through `DeviceReadOutcome::Clear`.
-fn merge_sleeping_full_snapshot(
+fn merge_writable_mutations_for_degraded_full(
+    existing: &[String],
+    incoming: Vec<String>,
+) -> Vec<String> {
+    let mut merged = existing.to_vec();
+    for mutation in incoming {
+        if !merged.contains(&mutation) {
+            merged.push(mutation);
+        }
+    }
+    merged
+}
+
+fn snapshots_are_merge_compatible(existing: &DeviceSnapshot, incoming: &DeviceSnapshot) -> bool {
+    existing.connection == incoming.connection
+        && existing.plugin_id == incoming.plugin_id
+        && existing.family == incoming.family
+}
+
+/// A best-effort Full read can return a useful but incomplete result when an
+/// optional step fails or a wireless target sleeps behind an enumerated
+/// receiver. Preserve last-known values only for the same plugin/family and
+/// connection, while accepting every value that the new read did produce.
+/// A complete Full remains authoritative and a connection/plugin change never
+/// inherits stale fields.
+fn merge_degraded_full_snapshot(
     existing: &DeviceSnapshot,
     mut incoming: DeviceSnapshot,
 ) -> DeviceSnapshot {
+    if !snapshots_are_merge_compatible(existing, &incoming) {
+        return incoming;
+    }
     incoming.batteries = merge_batteries(&existing.batteries, &incoming.batteries);
     if incoming.battery_percent.is_none() {
         incoming.battery_percent = existing.battery_percent;
@@ -9945,11 +10119,16 @@ fn merge_sleeping_full_snapshot(
     let mut capabilities = existing.capabilities.clone();
     merge_capability_patch(&mut capabilities, incoming.capabilities);
     incoming.capabilities = capabilities;
-    if incoming.plugin_capabilities.is_empty() {
-        incoming.plugin_capabilities = existing.plugin_capabilities.clone();
-    }
-    if incoming.writable_mutations.is_empty() {
-        incoming.writable_mutations = existing.writable_mutations.clone();
+    incoming.plugin_capabilities = merge_plugin_capabilities_for_degraded_full(
+        &existing.plugin_capabilities,
+        incoming.plugin_capabilities,
+    );
+    incoming.writable_mutations = merge_writable_mutations_for_degraded_full(
+        &existing.writable_mutations,
+        incoming.writable_mutations,
+    );
+    if incoming.mouse_ready.is_none() {
+        incoming.mouse_ready = existing.mouse_ready;
     }
     incoming
 }
@@ -9967,24 +10146,13 @@ fn apply_snapshot_patch(
     fallback_connection: Connection,
 ) -> DeviceSnapshot {
     match patch {
-        SnapshotPatch::Full(snapshot) => {
+        SnapshotPatch::Full { snapshot, quality } => {
             let Some(existing) = existing else {
                 return snapshot;
             };
-            let Some(contract) = wake_recovery_contract_for(inspection, snapshot.connection) else {
-                // 通用能力合并：Full 读取成功但偶发缺失的能力键（如个别步骤超时
-                // 被跳过、可选增强读取失败）保留上次值，避免能力面板（如灯光）
-                // 因单次读取中断而消失。品牌无关。
-                let mut capabilities = existing.capabilities.clone();
-                merge_capability_patch(&mut capabilities, snapshot.capabilities.clone());
-                let mut merged = snapshot;
-                merged.capabilities = capabilities;
-                return merged;
-            };
-            if snapshot_has_recovery_component(&snapshot, contract) {
-                snapshot
-            } else {
-                merge_sleeping_full_snapshot(existing, snapshot)
+            match quality {
+                FullSnapshotQuality::Complete => snapshot,
+                FullSnapshotQuality::Degraded => merge_degraded_full_snapshot(existing, snapshot),
             }
         }
         SnapshotPatch::Presence {
@@ -10200,6 +10368,24 @@ enum DeviceReadOutcome {
     },
 }
 
+fn retain_last_snapshot_for_failed_device(
+    state: &SessionState,
+    device_path: &str,
+    entries: &mut Vec<(String, DeviceSnapshot)>,
+) -> bool {
+    let snapshot = state
+        .last_snapshot
+        .lock()
+        .ok()
+        .and_then(|snapshots| snapshots.get(device_path).cloned());
+    if let Some(snapshot) = snapshot {
+        entries.push((device_path.to_string(), snapshot));
+        true
+    } else {
+        false
+    }
+}
+
 /// Read the device once, update the cached snapshot, and emit `device-updated`.
 /// Called by the background reader thread on every loop iteration (whether
 /// triggered by a signal or the fallback timeout).
@@ -10251,7 +10437,10 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
                 .find(|(inspection, _, _)| inspection.plugin_id == device.plugin_id)
             {
                 Some(triple) => triple,
-                None => continue,
+                None => {
+                    retain_last_snapshot_for_failed_device(&state, &device.path, &mut entries);
+                    continue;
+                }
             };
 
             let (connection, kind) = connection_kind(&device.connection);
@@ -10297,6 +10486,8 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
             // read, do not repeatedly rerun the expensive Full workflow on peers
             // that are already complete. A manual Full refresh still reaches all
             // devices once the initial-readiness set has settled.
+            let degraded_retry_pending =
+                take_pending_degraded_full_retry(&state, &device.path, plan);
             let already_complete = state
                 .snapshot_readiness
                 .lock()
@@ -10304,7 +10495,7 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
                 .is_some_and(|readiness| {
                     skip_already_complete_initial_read(&readiness, &device.path, plan)
                 });
-            if already_complete {
+            if already_complete && !degraded_retry_pending {
                 if let Some(snapshot) = state
                     .last_snapshot
                     .lock()
@@ -10331,6 +10522,7 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
                         device,
                         format!("parse protocol package: {error}"),
                     );
+                    retain_last_snapshot_for_failed_device(&state, &device.path, &mut entries);
                     continue;
                 }
             };
@@ -10341,7 +10533,7 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
                     .get(&device.path)
                     .is_some_and(|t| t.elapsed() < READ_DEBOUNCE_TTL)
             });
-            if cache_hit {
+            if cache_hit && !degraded_retry_pending {
                 if let Some(snapshot) = state
                     .last_snapshot
                     .lock()
@@ -10556,6 +10748,30 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
                         }
                     }
                     clear_device_read_error(&state, &device.path);
+                    let full_quality = (plan == ReadPlan::Full)
+                        .then(|| full_snapshot_quality(inspection, connection, &reading));
+                    if let Some(quality) = full_quality {
+                        update_degraded_full_retry(
+                            &state,
+                            &device.path,
+                            inspection,
+                            connection,
+                            &reading,
+                            quality,
+                        );
+                    }
+                    let next_readiness = if projection_valid {
+                        if plan == ReadPlan::Inventory {
+                            SnapshotReadiness::Inventory
+                        } else {
+                            SnapshotReadiness::Quick
+                        }
+                    } else {
+                        match full_quality.unwrap_or(FullSnapshotQuality::Degraded) {
+                            FullSnapshotQuality::Complete => SnapshotReadiness::Full,
+                            FullSnapshotQuality::Degraded => SnapshotReadiness::DegradedFull,
+                        }
+                    };
                     // Observe the raw protocol result before sticky snapshot
                     // merging. A missing plugin-declared component arms wake
                     // recovery even though the UI keeps its last known value.
@@ -10565,6 +10781,7 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
                         inspection,
                         connection,
                         &reading,
+                        plan,
                     );
                     // 读取成功：清除该设备的退避状态。
                     if let Ok(mut backoff) = state.backoff_state.lock() {
@@ -10722,57 +10939,61 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
                             .and_then(|map| map.get(&device.path).cloned());
                         apply_snapshot_patch(
                             existing.as_ref(),
-                            SnapshotPatch::Full(full_snapshot),
+                            SnapshotPatch::Full {
+                                snapshot: full_snapshot,
+                                quality: full_quality.unwrap_or(FullSnapshotQuality::Degraded),
+                            },
                             inspection,
                             device,
                             devices,
                             connection,
                         )
                     };
-                    if let Some((correlation_id, duration, recovered)) =
-                        complete_device_session_trace(&state, &device.path)
-                    {
-                        let event = if recovered {
-                            "device-session-recovered"
-                        } else {
-                            "device-session-ready"
-                        };
-                        let message = if recovered {
-                            "device session recovered; live readings restored"
-                        } else {
-                            "device session ready; live readings available"
-                        };
-                        let duration_ms = u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
-                        session_log_events.push(device_session_log_input(
-                            LogLevel::Info,
-                            event,
-                            message,
-                            correlation_id,
-                            DeviceSessionLogFields {
-                                device: snapshot.display_name.clone(),
-                                connection: snapshot_connection_value(snapshot.connection),
-                                duration_ms: Some(duration_ms),
-                                error_kind: None,
-                            },
-                        ));
+                    // A degraded Full is useful enough to publish, but it must
+                    // not close a pending session as "ready/recovered". The
+                    // later bounded/manual complete Full owns that transition.
+                    if next_readiness != SnapshotReadiness::DegradedFull {
+                        if let Some((correlation_id, duration, recovered)) =
+                            complete_device_session_trace(&state, &device.path)
+                        {
+                            let event = if recovered {
+                                "device-session-recovered"
+                            } else {
+                                "device-session-ready"
+                            };
+                            let message = if recovered {
+                                "device session recovered; live readings restored"
+                            } else {
+                                "device session ready; live readings available"
+                            };
+                            let duration_ms =
+                                u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
+                            session_log_events.push(device_session_log_input(
+                                LogLevel::Info,
+                                event,
+                                message,
+                                correlation_id,
+                                DeviceSessionLogFields {
+                                    device: snapshot.display_name.clone(),
+                                    connection: snapshot_connection_value(snapshot.connection),
+                                    duration_ms: Some(duration_ms),
+                                    error_kind: None,
+                                },
+                            ));
+                        }
                     }
                     if let Ok(mut readiness) = state.snapshot_readiness.lock() {
-                        let next = if projection_valid {
-                            SnapshotReadiness::Quick
-                        } else {
-                            SnapshotReadiness::Full
-                        };
                         readiness
                             .entry(device.path.clone())
                             .and_modify(|current| {
                                 // 只升不降：避免后续 Quick 读取把 Inventory/Full 级别
                                 // 降级为 Quick。Quick 不会高于 Inventory 或 Full，故
                                 // 已达 Inventory/Full 的快照保持不变。
-                                if next > *current {
-                                    *current = next;
+                                if next_readiness > *current {
+                                    *current = next_readiness;
                                 }
                             })
-                            .or_insert(next);
+                            .or_insert(next_readiness);
                     }
                     entries.push((device.path.clone(), snapshot));
                     fresh_paths.insert(device.path.clone());
@@ -10847,6 +11068,10 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
                         "[mira] background read failed for {}: {error}",
                         device.family
                     );
+                    // The path is still present in this enumeration pass. Keep
+                    // its last snapshot in the replacement map while another
+                    // device succeeds; only fresh_paths controls sampling.
+                    retain_last_snapshot_for_failed_device(&state, &device.path, &mut entries);
                 }
             }
         }
@@ -10914,6 +11139,9 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
                 cache.retain(|path, _| new_map.contains_key(path));
             }
             let connected_paths = new_map.keys().cloned().collect::<BTreeSet<_>>();
+            if let Ok(mut retries) = state.degraded_full_retry_paths.lock() {
+                retries.retain(|path, _| connected_paths.contains(path));
+            }
             retain_wake_recovery_paths(&state, &connected_paths);
             retain_device_session_paths(&state, &connected_paths);
             // 在存储前从 new_map 直接构建 entries，避免再次锁定 last_snapshot 克隆快照。
@@ -11184,11 +11412,7 @@ fn spawn_device_reader(app: AppHandle) {
                 .snapshot_readiness
                 .lock()
                 .ok()
-                .is_some_and(|readiness| {
-                    readiness
-                        .values()
-                        .any(|value| *value != SnapshotReadiness::Full)
-                });
+                .is_some_and(|readiness| readiness.values().copied().any(needs_initial_full));
             (connected, initializing)
         };
         let observing_quick = quick_observation_active(&state, visible, Instant::now());
@@ -15267,12 +15491,19 @@ mod read_plan_tests {
     }
 
     #[test]
-    fn detected_or_partial_snapshot_is_completed_with_one_full_read() {
+    fn initial_read_runs_once_but_does_not_spin_on_degraded_full() {
         let mut readiness = HashMap::from([("mouse".to_string(), SnapshotReadiness::Detected)]);
         assert_eq!(next_initial_read_plan(&readiness), Some(ReadPlan::Full));
 
         readiness.insert("mouse".to_string(), SnapshotReadiness::Quick);
         assert_eq!(next_initial_read_plan(&readiness), Some(ReadPlan::Full));
+
+        readiness.insert("mouse".to_string(), SnapshotReadiness::DegradedFull);
+        assert_eq!(
+            next_initial_read_plan(&readiness),
+            None,
+            "a degraded Full must wait for bounded wake recovery or explicit refresh"
+        );
 
         readiness.insert("mouse".to_string(), SnapshotReadiness::Full);
         assert_eq!(next_initial_read_plan(&readiness), None);
@@ -15299,6 +15530,16 @@ mod read_plan_tests {
             "ready",
             ReadPlan::Quick
         ));
+
+        let readiness = HashMap::from([
+            ("degraded".to_string(), SnapshotReadiness::DegradedFull),
+            ("new".to_string(), SnapshotReadiness::Detected),
+        ]);
+        assert!(skip_already_complete_initial_read(
+            &readiness,
+            "degraded",
+            ReadPlan::Full
+        ));
     }
 
     #[test]
@@ -15318,6 +15559,8 @@ mod read_plan_tests {
     #[test]
     fn snapshot_readiness_progresses_through_inventory() {
         assert!(SnapshotReadiness::Full > SnapshotReadiness::Inventory);
+        assert!(SnapshotReadiness::Full > SnapshotReadiness::DegradedFull);
+        assert!(SnapshotReadiness::DegradedFull > SnapshotReadiness::Inventory);
         assert!(SnapshotReadiness::Inventory > SnapshotReadiness::Quick);
         assert!(SnapshotReadiness::Quick > SnapshotReadiness::Detected);
     }
@@ -15668,6 +15911,169 @@ mod snapshot_patch_tests {
         }
     }
 
+    fn plugin_capability(id: &str, available: bool) -> PluginCapability {
+        PluginCapability {
+            id: id.into(),
+            control: "ReadOnlyValue".into(),
+            label_key: format!("capability.{id}"),
+            read_only: true,
+            placements: Vec::new(),
+            metadata: BTreeMap::new(),
+            available,
+            connections: None,
+            min_firmware: None,
+        }
+    }
+
+    #[test]
+    fn full_quality_distinguishes_declared_skips_from_degraded_results() {
+        let healthy = DeviceReading {
+            batteries: vec![battery("mouse", 64, false)],
+            read_statuses: BTreeMap::from([(
+                "unsupportedOptional".into(),
+                mira_plugin_runtime::ReadStatus::Skipped,
+            )]),
+            ..DeviceReading::default()
+        };
+        assert_eq!(
+            full_snapshot_quality(&mock_wake_inspection(), Connection::Wireless, &healthy),
+            FullSnapshotQuality::Complete,
+            "a declared skip is complete when the recovery component is present"
+        );
+
+        let sleeping = DeviceReading {
+            batteries: vec![battery("receiver", 100, false)],
+            read_statuses: healthy.read_statuses.clone(),
+            ..DeviceReading::default()
+        };
+        assert_eq!(
+            full_snapshot_quality(&mock_wake_inspection(), Connection::Wireless, &sleeping),
+            FullSnapshotQuality::Degraded
+        );
+
+        let failed = DeviceReading {
+            batteries: vec![battery("mouse", 64, false)],
+            read_statuses: BTreeMap::from([(
+                "mouseLighting".into(),
+                mira_plugin_runtime::ReadStatus::Failed("timeout".into()),
+            )]),
+            ..DeviceReading::default()
+        };
+        assert_eq!(
+            full_snapshot_quality(&mock_inspection(), Connection::Wireless, &failed),
+            FullSnapshotQuality::Degraded
+        );
+    }
+
+    #[test]
+    fn transient_degraded_full_retries_once_but_sleeping_mouse_does_not() {
+        let state = SessionState::default();
+        let failed = DeviceReading {
+            batteries: vec![battery("mouse", 64, false)],
+            read_statuses: BTreeMap::from([(
+                "mouseLighting".into(),
+                mira_plugin_runtime::ReadStatus::Failed("timeout".into()),
+            )]),
+            ..DeviceReading::default()
+        };
+        update_degraded_full_retry(
+            &state,
+            "failed-path",
+            &mock_wake_inspection(),
+            Connection::Wireless,
+            &failed,
+            FullSnapshotQuality::Degraded,
+        );
+        assert_eq!(
+            *state.forced_read_plan.lock().unwrap(),
+            Some(ReadPlan::Full)
+        );
+        assert!(take_pending_degraded_full_retry(
+            &state,
+            "failed-path",
+            ReadPlan::Full
+        ));
+        assert!(!take_pending_degraded_full_retry(
+            &state,
+            "failed-path",
+            ReadPlan::Full
+        ));
+
+        *state.forced_read_plan.lock().unwrap() = None;
+        update_degraded_full_retry(
+            &state,
+            "failed-path",
+            &mock_wake_inspection(),
+            Connection::Wireless,
+            &failed,
+            FullSnapshotQuality::Degraded,
+        );
+        assert_eq!(
+            *state.forced_read_plan.lock().unwrap(),
+            None,
+            "the same degraded episode must not schedule a second eager Full"
+        );
+
+        let sleeping = DeviceReading {
+            batteries: vec![battery("receiver", 100, false)],
+            ..DeviceReading::default()
+        };
+        update_degraded_full_retry(
+            &state,
+            "sleeping-path",
+            &mock_wake_inspection(),
+            Connection::Wireless,
+            &sleeping,
+            FullSnapshotQuality::Degraded,
+        );
+        assert_eq!(*state.forced_read_plan.lock().unwrap(), None);
+
+        update_degraded_full_retry(
+            &state,
+            "failed-path",
+            &mock_wake_inspection(),
+            Connection::Wireless,
+            &failed,
+            FullSnapshotQuality::Complete,
+        );
+        update_degraded_full_retry(
+            &state,
+            "failed-path",
+            &mock_wake_inspection(),
+            Connection::Wireless,
+            &failed,
+            FullSnapshotQuality::Degraded,
+        );
+        assert_eq!(
+            *state.forced_read_plan.lock().unwrap(),
+            Some(ReadPlan::Full),
+            "a later degradation after a complete Full starts a new one-retry episode"
+        );
+    }
+
+    #[test]
+    fn failed_device_keeps_its_last_snapshot_when_a_peer_succeeds() {
+        let state = SessionState::default();
+        state
+            .last_snapshot
+            .lock()
+            .unwrap()
+            .insert("failed-path".into(), snapshot_with_batteries(Vec::new()));
+        let mut entries = vec![(
+            "fresh-path".into(),
+            snapshot_with_batteries(vec![battery("mouse", 80, false)]),
+        )];
+
+        assert!(retain_last_snapshot_for_failed_device(
+            &state,
+            "failed-path",
+            &mut entries
+        ));
+        let map = entries.into_iter().collect::<BTreeMap<_, _>>();
+        assert!(map.contains_key("fresh-path"));
+        assert!(map.contains_key("failed-path"));
+    }
+
     #[test]
     fn merge_batteries_overrides_same_id() {
         let existing = vec![battery("mouse", 64, false), battery("receiver", 100, false)];
@@ -15877,7 +16283,10 @@ mod snapshot_patch_tests {
         let incoming = snapshot_with_batteries(vec![battery("receiver", 98, false)]);
         let result = apply_snapshot_patch(
             Some(&existing),
-            SnapshotPatch::Full(incoming),
+            SnapshotPatch::Full {
+                snapshot: incoming,
+                quality: FullSnapshotQuality::Degraded,
+            },
             &mock_wake_inspection(),
             &mock_device(),
             &mock_devices(),
@@ -15916,7 +16325,10 @@ mod snapshot_patch_tests {
         incoming.dpi = Some(3200);
         let result = apply_snapshot_patch(
             Some(&existing),
-            SnapshotPatch::Full(incoming),
+            SnapshotPatch::Full {
+                snapshot: incoming,
+                quality: FullSnapshotQuality::Complete,
+            },
             &mock_wake_inspection(),
             &mock_device(),
             &mock_devices(),
@@ -15953,7 +16365,10 @@ mod snapshot_patch_tests {
         )]);
         let result = apply_snapshot_patch(
             Some(&existing),
-            SnapshotPatch::Full(incoming),
+            SnapshotPatch::Full {
+                snapshot: incoming,
+                quality: FullSnapshotQuality::Degraded,
+            },
             &mock_inspection(),
             &mock_device(),
             &mock_devices(),
@@ -15979,6 +16394,121 @@ mod snapshot_patch_tests {
     }
 
     #[test]
+    fn degraded_full_preserves_all_last_known_parameter_surfaces() {
+        let mut existing = snapshot_with_batteries(vec![battery("mouse", 64, false)]);
+        existing.dpi = Some(1600);
+        existing.polling_rate_hz = Some(1000);
+        existing.profile = Some("2".into());
+        existing.confirmed_light_color = Some("#112233".into());
+        existing.capabilities = BTreeMap::from([(
+            "mouseLighting".into(),
+            serde_json::json!({"enabled": true, "color": "#112233"}),
+        )]);
+        existing.plugin_capabilities = vec![plugin_capability("mouse-lighting", true)];
+        existing.writable_mutations = vec!["set-mouse-lighting".into()];
+        existing.mouse_ready = Some(true);
+
+        let mut incoming = snapshot_with_batteries(vec![battery("mouse", 63, false)]);
+        incoming.capabilities = BTreeMap::from([(
+            "mouseLighting".into(),
+            serde_json::json!({"enabled": false}),
+        )]);
+        incoming.plugin_capabilities = vec![
+            plugin_capability("mouse-lighting", false),
+            plugin_capability("receiver-lighting", true),
+        ];
+        incoming.writable_mutations = vec!["set-receiver-lighting".into()];
+
+        let result = apply_snapshot_patch(
+            Some(&existing),
+            SnapshotPatch::Full {
+                snapshot: incoming,
+                quality: FullSnapshotQuality::Degraded,
+            },
+            &mock_wake_inspection(),
+            &mock_device(),
+            &mock_devices(),
+            Connection::Wireless,
+        );
+
+        assert_eq!(result.dpi, Some(1600));
+        assert_eq!(result.polling_rate_hz, Some(1000));
+        assert_eq!(result.profile.as_deref(), Some("2"));
+        assert_eq!(result.confirmed_light_color.as_deref(), Some("#112233"));
+        assert_eq!(
+            result
+                .capabilities
+                .get("mouseLighting")
+                .and_then(|value| value.get("color")),
+            Some(&serde_json::json!("#112233"))
+        );
+        assert_eq!(
+            result
+                .plugin_capabilities
+                .iter()
+                .find(|capability| capability.id == "mouse-lighting")
+                .map(|capability| capability.available),
+            Some(true)
+        );
+        assert!(result
+            .plugin_capabilities
+            .iter()
+            .any(|capability| capability.id == "receiver-lighting"));
+        assert_eq!(
+            result.writable_mutations,
+            vec!["set-mouse-lighting", "set-receiver-lighting"]
+        );
+        assert_eq!(result.mouse_ready, Some(true));
+    }
+
+    #[test]
+    fn complete_full_can_clear_stale_fields() {
+        let mut existing = snapshot_with_batteries(vec![battery("mouse", 64, false)]);
+        existing.dpi = Some(1600);
+        existing.capabilities =
+            BTreeMap::from([("mouseLighting".into(), serde_json::json!({"enabled": true}))]);
+
+        let incoming = snapshot_with_batteries(vec![battery("mouse", 63, false)]);
+        let result = apply_snapshot_patch(
+            Some(&existing),
+            SnapshotPatch::Full {
+                snapshot: incoming,
+                quality: FullSnapshotQuality::Complete,
+            },
+            &mock_wake_inspection(),
+            &mock_device(),
+            &mock_devices(),
+            Connection::Wireless,
+        );
+
+        assert_eq!(result.dpi, None);
+        assert!(result.capabilities.is_empty());
+    }
+
+    #[test]
+    fn degraded_full_does_not_inherit_across_connection_changes() {
+        let mut existing = snapshot_with_batteries(vec![battery("mouse", 64, false)]);
+        existing.dpi = Some(1600);
+
+        let mut incoming = snapshot_with_batteries(Vec::new());
+        incoming.connection = Connection::Bluetooth;
+        let result = apply_snapshot_patch(
+            Some(&existing),
+            SnapshotPatch::Full {
+                snapshot: incoming,
+                quality: FullSnapshotQuality::Degraded,
+            },
+            &mock_wake_inspection(),
+            &mock_device(),
+            &mock_devices(),
+            Connection::Bluetooth,
+        );
+
+        assert_eq!(result.connection, Connection::Bluetooth);
+        assert_eq!(result.dpi, None);
+    }
+
+    #[test]
     fn cold_start_receiver_only_read_arms_pointer_recovery() {
         let state = SessionState::default();
         let reading = DeviceReading {
@@ -15992,6 +16522,7 @@ mod snapshot_patch_tests {
             &mock_wake_inspection(),
             Connection::Wireless,
             &reading,
+            ReadPlan::Full,
         );
         note_system_pointer_activity(&state, pointer_activity::PointerActivity::Active);
 
@@ -16014,6 +16545,7 @@ mod snapshot_patch_tests {
             &inspection,
             Connection::Wireless,
             &sleeping,
+            ReadPlan::Full,
         );
         note_system_pointer_activity(&state, pointer_activity::PointerActivity::Active);
 
@@ -16028,11 +16560,52 @@ mod snapshot_patch_tests {
             &inspection,
             Connection::Wireless,
             &awake,
+            ReadPlan::Quick,
         );
 
         let recovery = state.wake_recovery.lock().unwrap();
         assert!(recovery.armed_paths.is_empty());
         assert!(recovery.pending.is_none());
+        drop(recovery);
+        assert_eq!(
+            *state.forced_read_plan.lock().unwrap(),
+            Some(ReadPlan::Full),
+            "Quick recovery must schedule one Full read to restore the complete mouse capability snapshot"
+        );
+    }
+
+    #[test]
+    fn full_mouse_recovery_does_not_schedule_redundant_full_read() {
+        let state = SessionState::default();
+        let inspection = mock_wake_inspection();
+        let sleeping = DeviceReading {
+            batteries: vec![battery("receiver", 100, false)],
+            ..DeviceReading::default()
+        };
+        mark_wake_recovery_observation(
+            &state,
+            "mock-path",
+            &inspection,
+            Connection::Wireless,
+            &sleeping,
+            ReadPlan::Full,
+        );
+
+        let awake = DeviceReading {
+            battery_percent: Some(62),
+            batteries: vec![battery("mouse", 62, false), battery("receiver", 100, false)],
+            ..DeviceReading::default()
+        };
+        mark_wake_recovery_observation(
+            &state,
+            "mock-path",
+            &inspection,
+            Connection::Wireless,
+            &awake,
+            ReadPlan::Full,
+        );
+
+        assert_eq!(*state.forced_read_plan.lock().unwrap(), None);
     }
 
     #[test]
@@ -16069,6 +16642,7 @@ mod snapshot_patch_tests {
             &mock_wake_inspection(),
             Connection::Wireless,
             &reading,
+            ReadPlan::Full,
         );
         note_system_pointer_activity(&state, pointer_activity::PointerActivity::Active);
         for _ in 0..=WAKE_RECOVERY_RETRY_DELAYS.len() {
@@ -16117,6 +16691,7 @@ mod snapshot_patch_tests {
             &mock_wake_inspection(),
             Connection::Wireless,
             &reading,
+            ReadPlan::Full,
         );
         assert!(state.wake_recovery.lock().unwrap().pending.is_some());
     }
@@ -16173,6 +16748,7 @@ mod snapshot_patch_tests {
             &mock_inspection(),
             Connection::Wireless,
             &reading,
+            ReadPlan::Full,
         );
         note_system_pointer_activity(&state, pointer_activity::PointerActivity::Active);
 

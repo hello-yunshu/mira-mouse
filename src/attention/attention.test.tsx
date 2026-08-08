@@ -444,6 +444,7 @@ describe('AttentionBeamLayer', () => {
   it('line 即使传入 cycles=2 也只渲染 1 个 cycle', () => {
     const { container } = render(<AttentionBeamLayer active request={beam({ variant: 'line', cycles: 2 })} />);
     expect(container.querySelectorAll('.attention-beam__cycle')).toHaveLength(1);
+    expect(container.querySelectorAll('.attention-beam__bloom')).toHaveLength(1);
   });
 
   it('flash 即使传入 cycles=2 也只渲染 1 个 cycle', () => {
@@ -552,11 +553,30 @@ describe('line 变体环形遮罩与 Mask（P0-1 / §10）', () => {
 
   it('双层 mask 只保留边缘，中心区域透明', () => {
     const modernLineRule = extractRule(beamCss, 'html.attention-full-line-supported .attention-beam--line .attention-beam__cycle');
-    expect(modernLineRule).toContain('padding: 1.5px');
+    expect(modernLineRule).toContain('padding: 2px');
     // macOS 13.3+ WKWebView：prefixed 用 xor（注意不是普通 exclude）。
     expect(modernLineRule).toContain('-webkit-mask-composite: xor');
     expect(modernLineRule).toContain('mask-composite: exclude');
     expect(modernLineRule).toContain('linear-gradient(#000 0 0) content-box');
+    // 不再用未遮罩的 ::after Bloom，避免光效铺进卡片内容区。
+    expect(beamCss).not.toContain('.attention-beam--line::after');
+  });
+
+  it('现代 Line 使用独立的环形 bloom 形成渐变光晕', () => {
+    const bloomRule = extractRule(beamCss, 'html.attention-full-line-supported .attention-beam--line .attention-beam__bloom');
+    expect(bloomRule).toContain('from var(--attention-beam-angle)');
+    expect(bloomRule).toContain('padding: 5px');
+    expect(bloomRule).toContain('-webkit-mask-composite: xor');
+    expect(bloomRule).toContain('mask-composite: exclude');
+    expect(bloomRule).toContain('filter: blur(4px)');
+    expect(bloomRule).toContain('attention-line-sweep');
+  });
+
+  it('现代 Line 的完整底环仅作路径提示，不形成深色实体框', () => {
+    const modernLineRule = extractRule(beamCss, 'html.attention-full-line-supported .attention-beam--line .attention-beam__cycle');
+    expect(modernLineRule).toContain('var(--beam-color, #ffffff) 6%');
+    expect(modernLineRule).toContain('var(--beam-color-2, var(--beam-color, #ffffff)) 6%');
+    expect(modernLineRule).not.toContain('var(--beam-color, #ffffff) 22%');
   });
 
   it('attention-line-sweep 只动画角度与透明度，从 0deg 到 360deg', () => {
@@ -583,6 +603,8 @@ describe('line 变体环形遮罩与 Mask（P0-1 / §10）', () => {
     expect(beamCss).toMatch(/inset\s+0\s+0\s+0\s+1\.5px/);
     const reducedSection = beamCss.slice(beamCss.indexOf('prefers-reduced-motion'));
     expect(reducedSection).toContain('background: transparent');
+    expect(reducedSection).toContain('.attention-beam__bloom');
+    expect(reducedSection).toContain('display: none !important');
   });
 
   it('Pulse / Flash 默认声明为普通颜色，color-mix 仅作 modern 覆盖', () => {
@@ -731,6 +753,76 @@ describe('灯光 Mutation 关联（P1-2）', () => {
     expect(peeked?.zoneId).toBe('zone-a');
     expect(takePendingLightingAttention(mutationId)).not.toBeNull();
     expect(takePendingLightingAttention(mutationId)).toBeNull();
+  });
+
+  it('并发隔离 A：两个登记互不覆盖，各自可读', () => {
+    const idA = registerLightingAttention('zone-a', 'power-on', true);
+    const idB = registerLightingAttention('zone-b', 'color-applied', '#00ff00');
+    expect(idB).toBeGreaterThan(idA);
+    expect(peekPendingLightingAttention(idA)?.zoneId).toBe('zone-a');
+    expect(peekPendingLightingAttention(idB)?.zoneId).toBe('zone-b');
+  });
+
+  it('并发隔离 B：消费 A 不影响 B', () => {
+    const idA = registerLightingAttention('zone-a', 'power-on', true);
+    const idB = registerLightingAttention('zone-b', 'color-applied', '#00ff00');
+    expect(takePendingLightingAttention(idA)?.zoneId).toBe('zone-a');
+    expect(peekPendingLightingAttention(idA)).toBeNull();
+    expect(peekPendingLightingAttention(idB)?.zoneId).toBe('zone-b');
+  });
+
+  it('并发隔离 C：清除 A 不影响 B', () => {
+    const idA = registerLightingAttention('zone-a', 'power-on', true);
+    const idB = registerLightingAttention('zone-b', 'color-applied', '#00ff00');
+    clearPendingLightingAttention(idA);
+    expect(takePendingLightingAttention(idA)).toBeNull();
+    expect(peekPendingLightingAttention(idB)?.zoneId).toBe('zone-b');
+  });
+
+  it('并发隔离 D：乱序完成按各自 mutationId 确认，不串 mutation', () => {
+    const idA = registerLightingAttention('zone-a', 'color-applied', '#ff0000');
+    const idB = registerLightingAttention('zone-b', 'color-applied', '#00ff00');
+    // B 先完成
+    const playedB = confirmPendingLightingAttention(idB, {
+      before: zoneState({ color: '#000000' }),
+      after: zoneState({ color: '#00ff00' }),
+    });
+    expect(playedB).toBe(true);
+    expect(getAttentionBusState().active?.scope).toBe('lighting:zone-b');
+    expect(getAttentionBusState().active?.eventKey).toBe(attentionLightingMutationKey('zone-b', 'color', '#00ff00', idB));
+    finishActiveAttentionRequest();
+    // A 后完成：仍可独立确认，不因 B 已消费而丢 Beam
+    const playedA = confirmPendingLightingAttention(idA, {
+      before: zoneState({ color: '#000000' }),
+      after: zoneState({ color: '#ff0000' }),
+    });
+    expect(playedA).toBe(true);
+    expect(getAttentionBusState().active?.scope).toBe('lighting:zone-a');
+    expect(getAttentionBusState().active?.eventKey).toBe(attentionLightingMutationKey('zone-a', 'color', '#ff0000', idA));
+    // 两者都只能消费一次
+    expect(takePendingLightingAttention(idA)).toBeNull();
+    expect(takePendingLightingAttention(idB)).toBeNull();
+  });
+
+  it('并发隔离 E：A 失败清除不影响 B 成功反馈', () => {
+    const idA = registerLightingAttention('zone-a', 'color-applied', '#ff0000');
+    const idB = registerLightingAttention('zone-b', 'color-applied', '#00ff00');
+    clearPendingLightingAttention(idA);
+    const playedB = confirmPendingLightingAttention(idB, {
+      before: zoneState({ color: '#000000' }),
+      after: zoneState({ color: '#00ff00' }),
+    });
+    expect(playedB).toBe(true);
+    expect(getAttentionBusState().active?.eventKey).toBe(attentionLightingMutationKey('zone-b', 'color', '#00ff00', idB));
+  });
+
+  it('并发隔离：reset 清空全部 pending 并重置计数', () => {
+    const idA = registerLightingAttention('zone-a', 'power-on', true);
+    registerLightingAttention('zone-b', 'power-on', true);
+    resetPendingLightingAttentionForTests();
+    expect(takePendingLightingAttention(idA)).toBeNull();
+    const nextId = registerLightingAttention('zone-a', 'power-on', true);
+    expect(nextId).toBe(1);
   });
 });
 

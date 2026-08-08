@@ -986,6 +986,7 @@ body:has(.platform-fallback:not(.web-preview)) {
   background: radial-gradient(circle at 42% 42%, color-mix(in oklch, var(--aura-color-1), #fff 10%) 0 18%, var(--aura-color-1) 42%, transparent 68%);
   opacity: .72;
   animation: aura-cloud-1 14s ease-in-out infinite;
+  animation-delay: var(--aura-phase-offset, 0ms);
 }
 .aura-cloud-2 {
   width: 58%; height: 62%; top: 2%; left: 37%;
@@ -993,6 +994,7 @@ body:has(.platform-fallback:not(.web-preview)) {
   background: radial-gradient(circle at 45% 48%, color-mix(in oklch, var(--aura-cloud-2-color), #fff 8%) 0 16%, var(--aura-cloud-2-color) 42%, transparent 66%);
   opacity: .62;
   animation: aura-cloud-2 18s ease-in-out infinite;
+  animation-delay: var(--aura-phase-offset, 0ms);
 }
 .aura-cloud-3 {
   width: 54%; height: 58%; top: 27%; left: 0;
@@ -1000,6 +1002,7 @@ body:has(.platform-fallback:not(.web-preview)) {
   background: radial-gradient(circle at 52% 56%, color-mix(in oklch, var(--aura-cloud-3-color), #fff 8%) 0 14%, var(--aura-cloud-3-color) 40%, transparent 66%);
   opacity: .58;
   animation: aura-cloud-3 16s ease-in-out infinite;
+  animation-delay: var(--aura-phase-offset, 0ms);
 }
 .aura-cloud-4 {
   width: 46%; height: 50%; top: 42%; left: 46%;
@@ -1008,6 +1011,7 @@ body:has(.platform-fallback:not(.web-preview)) {
   background: radial-gradient(circle at 34% 44%, var(--aura-cloud-4-color) 0 35%, transparent 68%);
   opacity: .44;
   animation: aura-cloud-4 20s ease-in-out infinite;
+  animation-delay: var(--aura-phase-offset, 0ms);
 }
 .aura-cloud-5 {
   width: 42%; height: 48%; top: 13%; left: -5%;
@@ -1016,6 +1020,7 @@ body:has(.platform-fallback:not(.web-preview)) {
   background: radial-gradient(circle at 58% 50%, var(--aura-cloud-5-color) 0 34%, transparent 68%);
   opacity: .40;
   animation: aura-cloud-5 22s ease-in-out infinite;
+  animation-delay: var(--aura-phase-offset, 0ms);
 }
 @keyframes aura-cloud-1 {
   0%, 100% { transform: translate(0, 0) scale(1) rotate(0deg); border-radius: 50% 55% 45% 60%; opacity: .55; }
@@ -1049,7 +1054,18 @@ body:has(.platform-fallback:not(.web-preview)) {
   82% { transform: translate(3px, -2px) scale(1.02) rotate(6deg); opacity: .38; }
 }
 
-/* 星星微闪 — 大小不一、位置随机、闪烁频率不同 */
+/* 星点保持各自的连续微闪相位；外层只在重新挂载时做一次柔和显现，
+   避免首帧正好落在高亮相位而突然亮起。 */
+.aura-stars {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  animation: aura-stars-reveal var(--motion-deliberate) var(--motion-ease-out) both;
+}
+@keyframes aura-stars-reveal {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
 .aura-star {
   position: absolute;
   width: 3px; height: 3px;
@@ -1060,12 +1076,12 @@ body:has(.platform-fallback:not(.web-preview)) {
   pointer-events: none;
   will-change: opacity, transform;
 }
-.aura-star-1 { top: 18%; left: 28%; width: 3px; height: 3px; animation: aura-twinkle 3.2s ease-in-out infinite; }
-.aura-star-2 { top: 45%; left: 72%; width: 2px; height: 2px; animation: aura-twinkle 2.6s ease-in-out .4s infinite; }
-.aura-star-3 { top: 68%; left: 22%; width: 4px; height: 4px; animation: aura-twinkle 4.1s ease-in-out .8s infinite; }
-.aura-star-4 { top: 12%; left: 60%; width: 2px; height: 2px; animation: aura-twinkle 3.5s ease-in-out 1.2s infinite; }
-.aura-star-5 { top: 78%; left: 55%; width: 3px; height: 3px; animation: aura-twinkle 2.9s ease-in-out .6s infinite; }
-.aura-star-6 { top: 35%; left: 12%; width: 2px; height: 2px; animation: aura-twinkle 3.8s ease-in-out 1.5s infinite; }
+.aura-star-1 { top: 18%; left: 28%; width: 3px; height: 3px; animation: aura-twinkle 3.2s ease-in-out infinite; animation-delay: var(--aura-phase-offset, 0ms); }
+.aura-star-2 { top: 45%; left: 72%; width: 2px; height: 2px; animation: aura-twinkle 2.6s ease-in-out infinite; animation-delay: calc(var(--aura-phase-offset, 0ms) + 400ms); }
+.aura-star-3 { top: 68%; left: 22%; width: 4px; height: 4px; animation: aura-twinkle 4.1s ease-in-out infinite; animation-delay: calc(var(--aura-phase-offset, 0ms) + 800ms); }
+.aura-star-4 { top: 12%; left: 60%; width: 2px; height: 2px; animation: aura-twinkle 3.5s ease-in-out infinite; animation-delay: calc(var(--aura-phase-offset, 0ms) + 1200ms); }
+.aura-star-5 { top: 78%; left: 55%; width: 3px; height: 3px; animation: aura-twinkle 2.9s ease-in-out infinite; animation-delay: calc(var(--aura-phase-offset, 0ms) + 600ms); }
+.aura-star-6 { top: 35%; left: 12%; width: 2px; height: 2px; animation: aura-twinkle 3.8s ease-in-out infinite; animation-delay: calc(var(--aura-phase-offset, 0ms) + 1500ms); }
 @keyframes aura-twinkle {
   0%, 100% { opacity: 0; transform: scale(.6); }
   40% { opacity: .9; transform: scale(1.2); }
@@ -1073,8 +1089,9 @@ body:has(.platform-fallback:not(.web-preview)) {
   80% { opacity: .3; transform: scale(.8); }
 }
 
-/* 窗口隐藏到托盘时暂停 Aura 动画，避免后台 GPU/CPU 消耗 */
+/* 窗口隐藏、最小化或页面不可见时暂停 Aura；恢复后从原合成帧继续。 */
 .device-aura.is-paused .aura-cloud,
+.device-aura.is-paused .aura-stars,
 .device-aura.is-paused .aura-star { animation-play-state: paused; }
 
 .control-tabs {
@@ -1131,6 +1148,7 @@ body:has(.platform-fallback:not(.web-preview)) {
 .control-stage {
   --control-stage-badge-row: 30px;
   position: relative;
+  border-radius: 16px;
   height: 224px;
   min-height: 224px;
   padding: 8px 10px 12px;
@@ -3097,9 +3115,6 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
 .about-section.donate-card { margin-top: 12px; }
 .about-section.donate-card .card-title { margin-bottom: 10px; padding-bottom: 10px; }
 .about-section.donate-card .setting-hint { margin-top: 6px; line-height: 1.65; }
-#about-update-section:focus,
-#settings-local-ai-section:focus,
-#settings-plugin-update-section:focus { outline: 3px solid var(--accent); outline-offset: 2px; }
 .update-details {
   margin-top: 8px;
   padding: 10px 12px;
@@ -3240,14 +3255,52 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
 .contact-links.align-end { justify-content: flex-end; }
 .logs-card .logs-card-actions { justify-content: flex-end; }
 
-/* Donate card — 支付宝蓝 + 微信绿右侧晕染 */
+/* Donate card — 保留原有的支付宝蓝 + 微信绿内部晕染。 */
+@property --donate-blue-x {
+  syntax: "<percentage>";
+  initial-value: 32%;
+  inherits: false;
+}
+@property --donate-blue-y {
+  syntax: "<percentage>";
+  initial-value: 32%;
+  inherits: false;
+}
+@property --donate-green-x {
+  syntax: "<percentage>";
+  initial-value: 70%;
+  inherits: false;
+}
+@property --donate-green-y {
+  syntax: "<percentage>";
+  initial-value: 68%;
+  inherits: false;
+}
+@property --donate-blue-radius {
+  syntax: "<percentage>";
+  initial-value: 55%;
+  inherits: false;
+}
+@property --donate-green-radius {
+  syntax: "<percentage>";
+  initial-value: 55%;
+  inherits: false;
+}
 .donate-card {
   position: relative;
-  overflow: hidden;
+  /* 用 overflow: clip 而非 hidden：clip 同样把装饰光晕裁进圆角内，但不会创建滚动容器，
+     避免 ::before 光晕撑大 scrollHeight 后，scrollIntoView / 交互让卡片内部滚动、裁切内容。 */
+  overflow: clip;
   background: var(--surface-bg);
   border: 1px solid var(--surface-border);
 }
 .donate-card::before {
+  --donate-blue-x: 32%;
+  --donate-blue-y: 32%;
+  --donate-green-x: 70%;
+  --donate-green-y: 68%;
+  --donate-blue-radius: 55%;
+  --donate-green-radius: 55%;
   content: "";
   position: absolute;
   top: -45%;
@@ -3255,20 +3308,213 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   width: 72%;
   height: 190%;
   background:
-    radial-gradient(circle at 32% 32%, rgb(22 119 255 / 16%), transparent 55%),
-    radial-gradient(circle at 70% 68%, rgb(7 193 96 / 16%), transparent 55%);
-  filter: blur(26px);
+    radial-gradient(circle at var(--donate-blue-x) var(--donate-blue-y), rgb(22 119 255 / 20%), transparent var(--donate-blue-radius)),
+    radial-gradient(circle at var(--donate-green-x) var(--donate-green-y), rgb(7 193 96 / 19%), transparent var(--donate-green-radius));
+  filter: blur(22px);
   pointer-events: none;
   z-index: 0;
+  /* 动画常驻、默认暂停：hover 只切换 play-state，因此离开时会停在当前相位，
+     再次进入则从同一帧继续。位置漂移叠加轻微大小呼吸，仍低于主界面 Aura。 */
+  animation: donate-aura-drift 12s ease-in-out infinite;
+  animation-play-state: paused;
 }
-.donate-card > * { position: relative; z-index: 1; }
+.donate-card:hover::before {
+  animation-play-state: running;
+}
+@keyframes donate-aura-drift {
+  0%, 100% {
+    --donate-blue-x: 32%;
+    --donate-blue-y: 32%;
+    --donate-green-x: 70%;
+    --donate-green-y: 68%;
+    --donate-blue-radius: 55%;
+    --donate-green-radius: 55%;
+  }
+  26% {
+    --donate-blue-x: 43%;
+    --donate-blue-y: 25%;
+    --donate-green-x: 62%;
+    --donate-green-y: 77%;
+    --donate-blue-radius: 63%;
+    --donate-green-radius: 50%;
+  }
+  54% {
+    --donate-blue-x: 23%;
+    --donate-blue-y: 42%;
+    --donate-green-x: 80%;
+    --donate-green-y: 58%;
+    --donate-blue-radius: 50%;
+    --donate-green-radius: 64%;
+  }
+  80% {
+    --donate-blue-x: 39%;
+    --donate-blue-y: 37%;
+    --donate-green-x: 65%;
+    --donate-green-y: 73%;
+    --donate-blue-radius: 60%;
+    --donate-green-radius: 53%;
+  }
+}
+.donate-card > :not(.donate-border-beam) { position: relative; z-index: 1; }
+
+/* 打赏块专用 Border Beam：沿用上游 border-beam 的分层生成方式。
+   - wrapper 只管理角度 / hover 生命周期；
+   - ::after 是 1px 低透明度 stroke；
+   - ::before 是独立 bloom：同样先裁成边缘环，再 blur 扩散。
+   卡片原有 ::before 蓝绿渐变继续负责 Mira 自己的内部氛围。 */
+@property --donate-beam-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: true;
+}
+.donate-border-beam {
+  --donate-beam-stroke-opacity: .16;
+  --donate-beam-bloom-opacity: .78;
+  --donate-beam-brightness: 1.45;
+  --donate-beam-saturation: 1.5;
+  --donate-beam-contrast-gradient: conic-gradient(
+    from var(--donate-beam-angle),
+    transparent 0%, transparent 54%,
+    rgb(0 0 0 / 8%) 57%,
+    rgb(0 0 0 / 20%) 60%,
+    rgb(0 0 0 / 40%) 63%,
+    rgb(0 0 0 / 55%) 66%,
+    rgb(0 0 0 / 40%) 69%,
+    rgb(0 0 0 / 20%) 72%,
+    rgb(0 0 0 / 8%) 75%,
+    transparent 78%, transparent 100%
+  );
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 2;
+  transition: opacity .22s ease;
+}
+.donate-card:hover > .donate-border-beam {
+  opacity: 1;
+  animation: donate-border-beam-spin 1960ms linear infinite;
+}
+
+/* 上游 rotate/md 的 stroke：固定的多点 radial-gradient 色层，通过旋转的
+   conic mask 暴露一段边缘；不是直接旋转一根纯色 conic 线。 */
+.donate-border-beam::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  padding: 1px;
+  border-radius: inherit;
+  background:
+    var(--donate-beam-contrast-gradient),
+    radial-gradient(ellipse 90px 40px at 33% -7.4%, rgb(47 172 220), transparent),
+    radial-gradient(ellipse 76px 35px at 12% -5%, rgb(37 137 244), transparent),
+    radial-gradient(ellipse 44px 76px at 2.1% 68.3%, rgb(7 193 96), transparent),
+    radial-gradient(ellipse 24px 40px at 2.1% 68.3%, rgb(47 172 220), transparent),
+    radial-gradient(ellipse 190px 34px at 74.4% 100%, rgb(7 193 96), transparent),
+    radial-gradient(ellipse 86px 28px at 55% 100%, rgb(37 137 244), transparent),
+    radial-gradient(ellipse 84px 34px at 93.9% 0%, rgb(7 193 96), transparent),
+    radial-gradient(ellipse 32px 50px at 100% 27.1%, rgb(37 137 244), transparent),
+    radial-gradient(ellipse 58px 56px at 100% 27.1%, rgb(47 172 220), transparent);
+  -webkit-mask:
+    conic-gradient(
+      from var(--donate-beam-angle),
+      transparent 0%, transparent 30%,
+      rgb(255 255 255 / 10%) 36%, rgb(255 255 255 / 35%) 44%,
+      #fff 52%, #fff 80%,
+      rgb(255 255 255 / 35%) 86%, rgb(255 255 255 / 10%) 92%,
+      transparent 95%, transparent 100%
+    ),
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  -webkit-mask-composite: source-in, xor;
+  mask:
+    conic-gradient(
+      from var(--donate-beam-angle),
+      transparent 0%, transparent 30%,
+      rgb(255 255 255 / 10%) 36%, rgb(255 255 255 / 35%) 44%,
+      #fff 52%, #fff 80%,
+      rgb(255 255 255 / 35%) 86%, rgb(255 255 255 / 10%) 92%,
+      transparent 95%, transparent 100%
+    ),
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  mask-composite: intersect, exclude;
+  opacity: var(--donate-beam-stroke-opacity);
+}
+
+/* 上游独立 bloom 层：保留它的窄亮头 + 长透明尾迹，再用环形 mask
+   和 blur 产生光晕。针对 Mira 的大卡片把 bloom 环稍微放宽；它与 stroke
+   共用同一个角度，因此不会脱节。 */
+.donate-border-beam::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  padding: 2px;
+  border-radius: inherit;
+  background: conic-gradient(
+    from var(--donate-beam-angle),
+    transparent 0%, transparent 55%,
+    rgb(7 193 96 / 8%) 59%,
+    rgb(7 193 96 / 34%) 62%,
+    rgb(75 218 174 / 76%) 65%,
+    rgb(183 235 255 / 96%) 67%,
+    rgb(82 169 255 / 88%) 69%,
+    rgb(37 137 244 / 44%) 73%,
+    rgb(37 137 244 / 10%) 78%,
+    transparent 84%, transparent 100%
+  );
+  -webkit-mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+  filter:
+    blur(4px)
+    brightness(var(--donate-beam-brightness))
+    saturate(var(--donate-beam-saturation));
+  opacity: var(--donate-beam-bloom-opacity);
+}
+@keyframes donate-border-beam-spin {
+  to { --donate-beam-angle: 360deg; }
+}
 .donate-card .contact-links { justify-content: flex-end; }
 :root[data-theme="dark"] .donate-card::before {
   background:
-    radial-gradient(circle at 32% 32%, rgb(22 119 255 / 24%), transparent 55%),
-    radial-gradient(circle at 70% 68%, rgb(7 193 96 / 24%), transparent 55%);
+    radial-gradient(circle at var(--donate-blue-x) var(--donate-blue-y), rgb(22 119 255 / 28%), transparent var(--donate-blue-radius)),
+    radial-gradient(circle at var(--donate-green-x) var(--donate-green-y), rgb(7 193 96 / 27%), transparent var(--donate-green-radius));
+}
+:root[data-theme="dark"] .donate-border-beam {
+  --donate-beam-stroke-opacity: .22;
+  --donate-beam-bloom-opacity: .54;
+  --donate-beam-brightness: 1.4;
+  --donate-beam-saturation: 1.2;
+  --donate-beam-contrast-gradient: conic-gradient(
+    from var(--donate-beam-angle),
+    transparent 0%, transparent 54%,
+    rgb(255 255 255 / 10%) 57%,
+    rgb(255 255 255 / 30%) 60%,
+    rgb(255 255 255 / 60%) 63%,
+    rgb(255 255 255 / 75%) 66%,
+    rgb(255 255 255 / 60%) 69%,
+    rgb(255 255 255 / 30%) 72%,
+    rgb(255 255 255 / 10%) 75%,
+    transparent 78%, transparent 100%
+  );
 }
 .donate-hint { margin-top: 6px; line-height: 1.7; }
+
+@media (prefers-reduced-motion: reduce) {
+  .donate-card::before {
+    animation: none !important;
+  }
+  .donate-card:hover > .donate-border-beam {
+    animation: none !important;
+  }
+}
 
 @media (max-height: 620px) {
   .control-stage {
@@ -3460,6 +3706,7 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
 
 /* 内容滚动区 */
 .battery-usage-scroll-region {
+  position: relative;
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -3468,6 +3715,14 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   padding-top: 4px;
 }
 .battery-usage-scroll-region::-webkit-scrollbar { display: none; }
+.battery-usage-scroll-region > .mira-embedded-activity {
+  position: absolute;
+  z-index: 3;
+  inset: 0;
+  min-height: 220px;
+  background: var(--glass-popup);
+  pointer-events: none;
+}
 .battery-usage-header h2 {
   margin: 0;
   font-size: 16px;
@@ -4397,17 +4652,24 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
 }
 
 @keyframes mira-section-enter {
-  from { opacity: 0; transform: translateY(var(--motion-distance)); }
-  to { opacity: 1; transform: translateY(0); }
+  from { opacity: 0; transform: translateY(var(--motion-distance)) scale(.99); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* 内容区首个子块：仅淡入 + 轻微缩放、不位移，与顶部固定区衔接更稳，
+   避免切换时首块位移造成跳跃感；后续块仍保留位移错峰。 */
+@keyframes mira-section-enter-leading {
+  from { opacity: 0; transform: scale(.99); }
+  to { opacity: 1; transform: scale(1); }
 }
 
 @keyframes mira-section-exit {
-  from { opacity: 1; transform: translateY(0); }
-  to { opacity: 0; transform: translateY(calc(var(--motion-distance) * -1)); }
+  from { opacity: 1; transform: translateY(0) scale(1); }
+  to { opacity: 0; transform: translateY(calc(var(--motion-distance) * -1)) scale(.99); }
 }
 
-/* 顶部固定区（页头 / 子导航 / 工具栏）入场：仅淡入，不位移。
-   固定锚点保持稳定，不下滑也不跳动，避免与下方内容块的位移叠加造成「晃」。 */
+/* 顶部固定区（页头 / 子导航 / 工具栏）只淡入。
+   不缩放固定锚点，避免左对齐标题随整个页头的中心缩放产生横向回摆。 */
 @keyframes mira-chrome-enter {
   from { opacity: 0; }
   to { opacity: 1; }
@@ -4415,6 +4677,13 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
 
 /* 顶部固定区退场：仅淡出，不位移。 */
 @keyframes mira-chrome-exit {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+/* 页面切换退场：旧页整体淡出，避免导航切换时内容瞬时消失造成「闪现」。
+   仅 opacity，不含 transform，避免创建 compositing layer 干扰毛玻璃。 */
+@keyframes mira-page-exit {
   from { opacity: 1; }
   to { opacity: 0; }
 }
@@ -4660,40 +4929,160 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
     mira-control-secondary-in 180ms var(--motion-ease-standard) var(--control-detail-delay, 165ms) both;
 }
 
+/* 页面切换容器：作为 app-shell 的 flex 子项占满剩余空间，
+   内部承载 dashboard / settings / about 页面。切换时两层交叉淡入淡出。 */
+.page-swap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+/* 设置 / 关于 / 日志共享固定页头文案槽。页内原文继续占位，保证按钮和内容
+   几何不变；可见标题独立做短距离交叉推切。 */
+.page-persistent-copy {
+  position: absolute;
+  z-index: 2;
+  top: 2vh;
+  left: 50%;
+  width: 100%;
+  max-width: 480px;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+.page-persistent-title {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  margin: 8px 0 10px;
+  font-size: 22px;
+  line-height: normal;
+  letter-spacing: -.04em;
+  animation: mira-chrome-enter 160ms var(--motion-ease-out) both;
+}
+.page-persistent-title-face {
+  grid-area: 1 / 1;
+  justify-self: start;
+  opacity: 1;
+  transform: translateY(0);
+  transition: transform 180ms var(--motion-ease-standard);
+}
+.page-persistent-title-face.is-current {
+  /* 旧标题先明确淡出；位移只作为很轻的方向提示。 */
+  transition:
+    opacity 110ms ease-in,
+    transform 180ms var(--motion-ease-standard);
+}
+.page-persistent-title-face.is-next {
+  opacity: 0;
+  transform: translateY(2px);
+  /* 新标题稍晚 40ms 接入，与旧标题保留短暂重叠，但不会出现透明空帧。 */
+  transition:
+    opacity 140ms ease-out 40ms,
+    transform 180ms var(--motion-ease-standard);
+}
+.page-persistent-title.direction-back .page-persistent-title-face.is-next {
+  transform: translateY(-2px);
+}
+.page-persistent-title.is-transitioning.direction-forward .page-persistent-title-face.is-current {
+  opacity: 0;
+  transform: translateY(-2px);
+}
+.page-persistent-title.is-transitioning.direction-back .page-persistent-title-face.is-current {
+  opacity: 0;
+  transform: translateY(2px);
+}
+.page-persistent-title.is-transitioning .page-persistent-title-face.is-next {
+  opacity: 1;
+  transform: translateY(0);
+}
+.page-swap:is([data-page-view="settings"], [data-page-view="about"], [data-page-view="logs"])
+  .page-layer :is(.settings-page, .about-page) > header .eyebrow {
+  visibility: hidden;
+}
+.page-swap:is([data-page-view="settings"], [data-page-view="about"], [data-page-view="logs"])
+  .page-layer :is(.settings-page, .about-page, .log-page) > header h1 {
+  opacity: 0;
+}
+/* 页面层：绝对定位占满容器，支持两层重叠做交叉过渡。
+   current 始终渲染目标页并淡入；leaving 仅在切换期间渲染旧页并整层淡出，
+   与目标页重叠，全程无透明空白，避免旧页消失瞬间的「闪现」。 */
+.page-layer {
+  position: absolute;
+  inset: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.page-layer-current { z-index: 0; }
+.page-layer-leaving {
+  z-index: 1;
+  pointer-events: none;
+  animation: mira-page-exit 180ms var(--motion-ease-standard) forwards;
+}
+/* 退场页是旧页在 leaving 层重新挂载的副本：抑制其内部入场动画，仅整层淡出，
+   避免二次入场造成闪烁。 */
+.page-layer-leaving * {
+  animation: none !important;
+}
+
 /* 设置 / 关于 / 日志三页统一动效：
-   - 顶部固定区（页头、子导航、日志工具栏）仅淡入淡出、不位移，锚点保持稳定；
-   - 下方内容块可位移入场，并依次错峰到达；
+   - 顶部固定区（页头、子导航、日志工具栏）仅淡入、不位移，锚点保持稳定；
+     子导航/工具栏错开稍晚跟随页头，形成「交叉出现」的层叠感；
+   - 下方内容块位移 + 淡入入场，并自上而下依次错峰到达；
    - 入场 / 退场时长在三个页面间保持一致。 */
 .settings-page > header,
 .settings-page > .sub-nav,
 .about-page > header,
 .log-page > header,
 .log-page > .log-toolbar {
-  animation: mira-chrome-enter 140ms var(--motion-ease-standard) backwards;
+  animation: mira-chrome-enter 160ms var(--motion-ease-out) both;
 }
 
 .settings-scroll-content > .card,
 .settings-scroll-content > section,
 .log-page > .log-list-wrapper {
-  animation: mira-section-enter 180ms var(--motion-ease-out) backwards;
+  animation: mira-section-enter 200ms var(--motion-ease-out) both;
 }
 
-.settings-page > .sub-nav { animation-delay: 20ms; }
-.log-page > .log-toolbar { animation-delay: 20ms; }
-.log-page > .log-list-wrapper { animation-delay: 40ms; }
-
+/* 首个子块不位移，仅淡入 + 轻微缩放，避免跳跃感 */
 .settings-scroll-content > .card:nth-of-type(1),
-.settings-scroll-content > section:nth-of-type(1) { animation-delay: 0ms; }
+.settings-scroll-content > section:nth-of-type(1) {
+  animation-name: mira-section-enter-leading;
+}
+
+.settings-page > .sub-nav,
+.log-page > .log-toolbar { animation-delay: 55ms; }
+
+.log-page > .log-list-wrapper { animation-delay: 70ms; }
+.settings-scroll-content > .card:nth-of-type(1),
+.settings-scroll-content > section:nth-of-type(1) { animation-delay: 70ms; }
 .settings-scroll-content > .card:nth-of-type(2),
-.settings-scroll-content > section:nth-of-type(2) { animation-delay: 20ms; }
-.settings-scroll-content > .card:nth-of-type(n+3),
-.settings-scroll-content > section:nth-of-type(n+3) { animation-delay: 40ms; }
+.settings-scroll-content > section:nth-of-type(2) { animation-delay: 120ms; }
+.settings-scroll-content > .card:nth-of-type(3),
+.settings-scroll-content > section:nth-of-type(3) { animation-delay: 170ms; }
+.settings-scroll-content > .card:nth-of-type(n+4),
+.settings-scroll-content > section:nth-of-type(n+4) { animation-delay: 200ms; }
 
 /* 设置页 tab 切换：旧内容块同时淡出，退场结束后新块依次淡入 */
 .settings-scroll-content.is-exiting > .card,
 .settings-scroll-content.is-exiting > section {
-  animation: mira-section-exit 180ms var(--motion-ease-standard) both;
+  animation: mira-section-exit 120ms var(--motion-ease-standard) both;
 }
+
+/* 设置页内容块入场：轻快档节奏（仅设置页，不影响关于/日志页与顶层页面切换）。
+   首块沿用不位移的 leading 入场，其余块错峰淡入。 */
+.settings-page .settings-scroll-content > .card,
+.settings-page .settings-scroll-content > section {
+  animation-duration: 150ms;
+}
+.settings-page .settings-scroll-content > .card:nth-of-type(1),
+.settings-page .settings-scroll-content > section:nth-of-type(1) { animation-delay: 50ms; }
+.settings-page .settings-scroll-content > .card:nth-of-type(2),
+.settings-page .settings-scroll-content > section:nth-of-type(2) { animation-delay: 90ms; }
+.settings-page .settings-scroll-content > .card:nth-of-type(3),
+.settings-page .settings-scroll-content > section:nth-of-type(3) { animation-delay: 130ms; }
+.settings-page .settings-scroll-content > .card:nth-of-type(n+4),
+.settings-page .settings-scroll-content > section:nth-of-type(n+4) { animation-delay: 160ms; }
 
 .log-preview-hint {
   margin: -2px 0 8px;
@@ -5052,6 +5441,17 @@ input[type="color"] {
   .control-stage-page.is-entering .plugin-control-reading > :is(svg, span) {
     animation: none !important;
   }
+  .settings-page > header,
+  .settings-page > .sub-nav,
+  .about-page > header,
+  .log-page > header,
+  .log-page > .log-toolbar,
+  .settings-scroll-content > .card,
+  .settings-scroll-content > section,
+  .log-page > .log-list-wrapper,
+  .page-layer-leaving {
+    animation: none !important;
+  }
   .live-value-current,
   .live-value-next,
   .dpi-stage-placeholders,
@@ -5151,8 +5551,8 @@ input[type="color"] {
 }
 .log-page::-webkit-scrollbar { display: none; }
 .log-page > header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; flex-shrink: 0; }
+.log-page > header .log-title-block { padding-top: 13px; }
 .log-page > header h1 { font-size: 22px; }
-.log-page > header .eyebrow { margin-bottom: 0; }
 .log-page > .setting-hint { flex-shrink: 0; }
 
 /* 工具栏：两行布局（统一搜索筛选条 + 控制与状态条）。 */

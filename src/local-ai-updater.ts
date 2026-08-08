@@ -9,9 +9,9 @@ import { notifyInfo } from './notify';
 import { createAutomaticUpdateScheduler } from './update-check-scheduler';
 import { isComponentUpdateNotificationSuppressed } from './update-priority';
 import { friendlyUpdateError } from './update-errors';
-import type { LocalAiInstallResult, LocalAiStatus, LocalAiUpdateInfo } from './types';
+import type { LocalAiComponent, LocalAiInstallResult, LocalAiStatus, LocalAiUpdateInfo } from './types';
 
-export type LocalAiUpdatePhase = 'idle' | 'checking' | 'up-to-date' | 'available' | 'downloading' | 'installed' | 'error';
+export type LocalAiUpdatePhase = 'idle' | 'checking' | 'rolling-back' | 'up-to-date' | 'available' | 'downloading' | 'installed' | 'error';
 
 export type LocalAiInstallStage = 'runtime' | 'model' | 'handler' | 'verifying' | 'activating';
 
@@ -21,6 +21,8 @@ export interface LocalAiUpdateState {
   downloadedBytes: number;
   totalBytes?: number;
   stage?: LocalAiInstallStage;
+  /** 最近一次安装实际更新的组件（用于安装完成后的徽章与光束）。 */
+  updatedComponents?: LocalAiComponent[];
   error?: string;
 }
 
@@ -43,6 +45,11 @@ function publish(next: LocalAiUpdateState): void {
 
 export function localAiUpdateState(): LocalAiUpdateState {
   return state;
+}
+
+/** 返回本地 AI 组件（runtime/model/handler）的用户可读标签。 */
+export function localAiComponentLabel(component: LocalAiComponent): string {
+  return i18n.t(`settings.localAi.component.${component}`);
 }
 
 export function onLocalAiUpdateState(listener: (next: LocalAiUpdateState) => void): () => void {
@@ -68,14 +75,18 @@ export async function checkForLocalAiUpdates(automatic = false): Promise<LocalAi
     publishCheckedUpdates(updates ?? []);
     const available = (updates ?? []).filter((item) => item.updateAvailable);
     if (automatic && available.length > 0) {
+      // 按组件逐一通知，避免把 runtime/model/handler 笼统地称为“本地 AI 引擎”。
       // 应用内 Toast 始终发出；系统级通知受主程序优先级协调层控制。
-      const title = i18n.t('notification.localAiUpdateFound.title');
-      const body = i18n.t('notification.localAiUpdateFound.body', {
-        version: available[0].availableVersion,
-      });
-      notifyInfo(title, body, 'settings-local-ai-update');
-      if (!isComponentUpdateNotificationSuppressed()) {
-        void invoke('show_update_notification', { title, body, action: 'settings-local-ai-update' }).catch(() => {});
+      for (const item of available) {
+        const title = i18n.t('notification.localAiUpdateFound.title');
+        const body = i18n.t('notification.localAiUpdateFound.body', {
+          component: localAiComponentLabel(item.component),
+          version: item.availableVersion,
+        });
+        notifyInfo(title, body, 'settings-local-ai-update');
+        if (!isComponentUpdateNotificationSuppressed()) {
+          void invoke('show_update_notification', { title, body, action: 'settings-local-ai-update' }).catch(() => {});
+        }
       }
     }
     return updates ?? [];
@@ -139,17 +150,24 @@ export async function installLocalAiUpdate(): Promise<LocalAiInstallResult> {
       progressUnlisten = undefined;
     }
     const nextStatus = await invoke<LocalAiStatus>('local_ai_status');
+    const updatedUpdates = state.updates.filter((item) => item.updateAvailable);
+    const updatedComponents = updatedUpdates.map((item) => item.component);
     publish({
       phase: 'installed',
-      updates: state.updates.map((item) => (item.component === 'bundle'
+      updates: state.updates.map((item) => (item.updateAvailable
         ? { ...item, currentVersion: item.availableVersion, updateAvailable: false }
         : item)),
+      updatedComponents,
       downloadedBytes: state.totalBytes ?? state.downloadedBytes,
       totalBytes: state.totalBytes,
       stage: 'activating',
     });
     const title = i18n.t('notification.localAiUpdateInstalled.title');
-    const body = i18n.t('notification.localAiUpdateInstalled.body', { version: result.version });
+    // 安装是整体事务，但按组件分别通知，避免笼统地称为“本地 AI 引擎”。
+    const updatedParts = updatedUpdates.map((item) => `${localAiComponentLabel(item.component)} v${item.availableVersion}`);
+    const body = i18n.t('notification.localAiUpdateInstalled.body', {
+      components: updatedParts.join('、'),
+    });
     // 应用内 toast 不带 action：用户已在设置页看到更新完成，带 action 会让 toast 可点击，
     // 点击后触发 openSettingsLocalAiUpdate → section focus，出现莫名的 focus outline。
     // 系统级通知保留 action，供不在应用内的用户点击跳转。
@@ -171,7 +189,7 @@ export async function installLocalAiUpdate(): Promise<LocalAiInstallResult> {
 
 export async function rollbackLocalAiUpdate(): Promise<LocalAiStatus> {
   if (state.phase === 'downloading') throw new Error('local AI update in progress');
-  publish({ ...state, phase: 'checking', error: undefined });
+  publish({ ...state, phase: 'rolling-back', error: undefined });
   try {
     const nextStatus = await invoke<LocalAiStatus>('local_ai_update_rollback', { component: 'bundle' });
     const updates = await invoke<LocalAiUpdateInfo[]>('local_ai_updates_check');

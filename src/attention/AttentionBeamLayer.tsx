@@ -125,6 +125,9 @@ export function AttentionBeamLayer({
       } as CSSProperties}
       aria-hidden="true"
     >
+      {effectiveVariant === 'line' && (
+        <span className="attention-beam__bloom" style={cycleStyle(0)} />
+      )}
       {Array.from({ length: cycleCount }, (_, index) => (
         <span key={index} className="attention-beam__cycle" style={cycleStyle(index)} />
       ))}

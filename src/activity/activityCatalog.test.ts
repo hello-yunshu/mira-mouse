@@ -11,7 +11,7 @@ afterEach(() => {
 });
 
 describe('activity catalog', () => {
-  it('uses large global orbs and restrained inline orbs', () => {
+  it('distinguishes global, embedded, and restrained inline orbs', () => {
     expect(miraActivitySpec('device-initializing')).toMatchObject({
       state: 'connecting',
       size: 64,
@@ -21,6 +21,11 @@ describe('activity catalog', () => {
       state: 'composing',
       size: 20,
       layer: 'inline',
+    });
+    expect(miraActivitySpec('battery-analysis')).toMatchObject({
+      state: 'solving',
+      size: 64,
+      layer: 'embedded',
     });
   });
 
@@ -38,27 +43,16 @@ describe('resolveGlobalMiraActivity', () => {
     expect(resolveGlobalMiraActivity(document)).toBe('device-initializing');
   });
 
-  it('prioritizes an unresolved battery modal over the covered dashboard', () => {
+  it('keeps the global detector device-only when a battery modal is open', () => {
     document.body.innerHTML = `
       <main class="dashboard is-initializing"></main>
       <div class="battery-usage-modal"></div>
     `;
-    expect(resolveGlobalMiraActivity(document)).toBe('battery-analysis');
+    expect(resolveGlobalMiraActivity(document)).toBe('device-initializing');
   });
 
-  it('stops when battery content or an empty state is ready', () => {
-    document.body.innerHTML = `
-      <div class="battery-usage-modal">
-        <div class="battery-status-strip-shell"></div>
-      </div>
-    `;
-    expect(resolveGlobalMiraActivity(document)).toBeNull();
-
-    document.body.innerHTML = `
-      <div class="battery-usage-modal">
-        <div class="battery-usage-empty"></div>
-      </div>
-    `;
+  it('never promotes a battery modal into a global glass activity card', () => {
+    document.body.innerHTML = '<div class="battery-usage-modal"></div>';
     expect(resolveGlobalMiraActivity(document)).toBeNull();
   });
 });

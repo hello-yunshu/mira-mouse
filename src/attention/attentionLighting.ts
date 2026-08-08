@@ -7,6 +7,11 @@
 // - runMutation 成功返回快照后由 confirmPendingLightingAttention 校验并播放；
 // - 失败时调用方 clearPendingLightingAttention，不播放。
 //
+// Pending 按唯一递增 mutationId 索引（Map，而非单一槽位）：
+// 多个灯光 mutation 可以各自独立登记、独立消费/清除/确认，互不影响，
+// 乱序完成也不会串 mutation。当前产品仍只允许一个写入操作同时执行，
+// 但 Attention 登记状态本身不再依赖该隐式串行假设。
+//
 // 事件键带有 mutationId：同一会话中「再次开启」「切回旧颜色/旧效果」仍能反馈，
 // 不再按值永久去重。更新类事件仍保留版本级会话去重。
 
@@ -35,7 +40,7 @@ export interface ZoneLightingState {
 }
 
 let nextLightingAttentionId = 0;
-let pendingLightingAttention: PendingLightingAttention | null = null;
+const pendingLightingAttentionById = new Map<number, PendingLightingAttention>();
 
 /** 灯光字段操作入口在调用 runMutation 前登记。返回 mutationId（事件键的一部分）。 */
 export function registerLightingAttention(
@@ -44,32 +49,32 @@ export function registerLightingAttention(
   expectedValue: unknown,
 ): number {
   nextLightingAttentionId += 1;
-  pendingLightingAttention = { id: nextLightingAttentionId, zoneId, kind, expectedValue };
+  pendingLightingAttentionById.set(nextLightingAttentionId, { id: nextLightingAttentionId, zoneId, kind, expectedValue });
   return nextLightingAttentionId;
 }
 
-/** 只读查看当前登记（不消费），供宿主在成功回调用 zoneId 提取前后状态。 */
+/** 只读查看指定 id 的登记（不消费），供宿主在成功回调用 zoneId 提取前后状态。 */
 export function peekPendingLightingAttention(id: number): PendingLightingAttention | null {
-  return pendingLightingAttention?.id === id ? pendingLightingAttention : null;
+  return pendingLightingAttentionById.get(id) ?? null;
 }
 
-/** 消费登记。返回 null 表示没有匹配的登记（或已被清除）。 */
+/** 消费指定 id 的登记。返回 null 表示没有匹配的登记（或已被清除）。 */
 export function takePendingLightingAttention(id: number): PendingLightingAttention | null {
-  if (pendingLightingAttention?.id !== id) return null;
-  const taken = pendingLightingAttention;
-  pendingLightingAttention = null;
+  const taken = pendingLightingAttentionById.get(id);
+  if (!taken) return null;
+  pendingLightingAttentionById.delete(id);
   return taken;
 }
 
-/** 失败时清除登记，保证不播放。 */
+/** 失败时清除指定 id 的登记，保证不播放。只影响该 mutation，不影响其他 pending。 */
 export function clearPendingLightingAttention(id: number): void {
-  if (pendingLightingAttention?.id === id) pendingLightingAttention = null;
+  pendingLightingAttentionById.delete(id);
 }
 
-/** 仅测试使用：清空 pending 登记（生产不调用）。 */
+/** 仅测试使用：清空全部 pending 登记并重置 mutationId 计数（生产不调用）。 */
 export function resetPendingLightingAttentionForTests(): void {
   nextLightingAttentionId = 0;
-  pendingLightingAttention = null;
+  pendingLightingAttentionById.clear();
 }
 
 /** Mutation 成功后的目标值确认：Zone 状态必须与期望一致才算“确认写入成功”。 */

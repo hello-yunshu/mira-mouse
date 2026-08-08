@@ -117,6 +117,11 @@ export function attentionLocalAiInstalledKey(componentId: string, version: strin
   return `update:local-ai:${componentId}:${version}:installed`;
 }
 
+/** 从通知跳转定位到某固定区块时的强调键（按跳转序号递增，保证每次跳转都播放一次）。 */
+export function attentionSectionFocusKey(sectionId: string, seq: number): string {
+  return `focus:section:${sectionId}:${seq}`;
+}
+
 export function attentionDeviceKey(kind: 'ready' | 'reconnected', identity: string, cycle: number): string {
   return `device-${kind}:${identity}:${cycle}`;
 }

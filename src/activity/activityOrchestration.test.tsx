@@ -5,6 +5,8 @@ import { act, render, screen } from '@testing-library/react';
 import { StrictMode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MiraActivityOverlay } from './MiraActivityOverlay';
+import { MiraActivityButton } from './MiraActivityButton';
+import { MiraEmbeddedActivity } from './MiraEmbeddedActivity';
 import { MiraInlineActivity } from './MiraInlineActivity';
 import {
   announceAfterOrbExit,
@@ -365,30 +367,39 @@ describe('MiraActivityOverlay 生命周期仲裁（P0-3）', () => {
     expect(isActivityVisible('device:app')).toBe(false);
   });
 
-  it('21. fallback 图标 0–300ms 保持、Orb 出现替换、结束后恢复', () => {
+  it('21. 带图标按钮 0–300ms 保持完整标签、Orb 出现替换、结束后恢复', () => {
     const fallback = <span data-testid="download-icon" />;
     const { rerender } = render(
-      <button className="action-btn">
-        <MiraInlineActivity active activity="exporting-battery-history" fallback={fallback} />
-        <span>导出</span>
-      </button>,
+      <MiraActivityButton
+        className="action-btn"
+        active
+        activity="exporting-battery-history"
+        leading={fallback}
+      >
+        导出
+      </MiraActivityButton>,
     );
     expect(screen.getByTestId('download-icon')).toBeInTheDocument();
     expect(screen.queryByTestId('thinking-orb')).not.toBeInTheDocument();
 
     act(() => { vi.advanceTimersByTime(350); });
-    expect(screen.queryByTestId('download-icon')).not.toBeInTheDocument();
     expect(screen.getByTestId('thinking-orb')).toBeInTheDocument();
+    expect(screen.getByText('导出')).toHaveClass('is-concealed');
 
     rerender(
-      <button className="action-btn">
-        <MiraInlineActivity active={false} activity="exporting-battery-history" fallback={fallback} />
-        <span>导出</span>
-      </button>,
+      <MiraActivityButton
+        className="action-btn"
+        active={false}
+        activity="exporting-battery-history"
+        leading={fallback}
+      >
+        导出
+      </MiraActivityButton>,
     );
     act(() => { vi.advanceTimersByTime(500); });
     expect(screen.queryByTestId('thinking-orb')).not.toBeInTheDocument();
     expect(screen.getByTestId('download-icon')).toBeInTheDocument();
+    expect(screen.getByText('导出')).not.toHaveClass('is-concealed');
   });
 
   it.each<[MiraActivityKind, string]>([
@@ -397,31 +408,46 @@ describe('MiraActivityOverlay 生命周期仲裁（P0-3）', () => {
     ['checking-local-ai-updates', '检查本地 AI 更新'],
   ])('22. 纯文本按钮 overlay 布局（%s）：空闲与 0–300ms 无图标/空槽，Orb 结构正确，结束后恢复', (activity, label) => {
     const { rerender } = render(
-      <button className="secondary mira-activity-button">
-        <MiraInlineActivity active activity={activity} layout="overlay" />
-        <span>{label}</span>
-      </button>,
+      <MiraActivityButton active activity={activity}>{label}</MiraActivityButton>,
     );
     expect(screen.queryByTestId('thinking-orb')).not.toBeInTheDocument();
     expect(document.querySelector('.mira-inline-activity')).not.toBeInTheDocument();
-    expect(screen.getByText(label)).toBeInTheDocument();
+    expect(screen.getByText(label)).not.toHaveClass('is-concealed');
 
     act(() => { vi.advanceTimersByTime(350); });
     expect(screen.getByTestId('thinking-orb')).toBeInTheDocument();
     expect(document.querySelector('.mira-inline-activity')).toHaveClass('mira-inline-activity--overlay');
-    // 文字节点仍保留在 DOM（内存 opacity 隐藏），维持按钮宽度与 accessible name。
-    expect(screen.getByText(label)).toBeInTheDocument();
+    // Orb 与原动作文字由同一组件同步切换：文字保留尺寸/accessible name，
+    // 但带明确隐藏类，绝不会出现二者同时可见的歧义帧。
+    expect(screen.getByText(label)).toHaveClass('is-concealed');
+    expect(screen.getByRole('button', { name: label })).toHaveAttribute('data-mira-processing', 'true');
+    expect(screen.getByRole('button', { name: label })).toHaveAttribute('aria-busy', 'true');
+    expect(screen.getByRole('button', { name: label })).toBeDisabled();
 
     rerender(
-      <button className="secondary mira-activity-button">
-        <MiraInlineActivity active={false} activity={activity} layout="overlay" />
-        <span>{label}</span>
-      </button>,
+      <MiraActivityButton active={false} activity={activity}>{label}</MiraActivityButton>,
     );
     act(() => { vi.advanceTimersByTime(500); });
     expect(screen.queryByTestId('thinking-orb')).not.toBeInTheDocument();
     expect(document.querySelector('.mira-inline-activity')).not.toBeInTheDocument();
-    expect(screen.getByText(label)).toBeInTheDocument();
+    expect(screen.getByText(label)).not.toHaveClass('is-concealed');
+    expect(screen.getByRole('button', { name: label })).not.toHaveAttribute('data-mira-processing');
+  });
+
+  it('22b. 电量分析 Orb 嵌入现有 Modal 表面，视觉上不重复显示动作文字', () => {
+    render(<MiraEmbeddedActivity active activity="battery-analysis" aiAnalysisEnabled />);
+    expect(screen.queryByTestId('thinking-orb')).not.toBeInTheDocument();
+
+    act(() => { vi.advanceTimersByTime(350); });
+
+    expect(screen.getByTestId('thinking-orb')).toHaveAttribute('data-state', 'solving');
+    expect(screen.getByRole('status')).toHaveAttribute(
+      'aria-label',
+      '正在整理电量记录并生成本地分析…',
+    );
+    expect(screen.queryByText('正在整理电量记录并生成本地分析…')).not.toBeInTheDocument();
+    expect(document.querySelector('.mira-activity-overlay')).not.toBeInTheDocument();
+    expect(document.querySelector('.mira-activity-card')).not.toBeInTheDocument();
   });
 
   it('23. StrictMode 双挂载卸载后 scope 无残留', () => {
@@ -480,10 +506,13 @@ describe('MiraActivityOverlay 生命周期仲裁（P0-3）', () => {
       announceAttentionRequest(request('a-done-1', 'about-update'));
     });
     const { rerender } = render(
-      <button className="secondary mira-activity-button">
-        <MiraInlineActivity active activity="checking-app-update" layout="overlay" />
-        <span>检查更新</span>
-      </button>,
+      <MiraActivityButton
+        className="secondary"
+        active
+        activity="checking-app-update"
+      >
+        检查更新
+      </MiraActivityButton>,
     );
     act(() => { vi.advanceTimersByTime(400); });
     // B 的过程文案仍在；Beam active 期间 B 的 Orb 被渲染层抑制，但不永久。
@@ -500,10 +529,13 @@ describe('MiraActivityOverlay 生命周期仲裁（P0-3）', () => {
 
     // B 结束后正常退出，不残留。
     rerender(
-      <button className="secondary mira-activity-button">
-        <MiraInlineActivity active={false} activity="checking-app-update" layout="overlay" />
-        <span>检查更新</span>
-      </button>,
+      <MiraActivityButton
+        className="secondary"
+        active={false}
+        activity="checking-app-update"
+      >
+        检查更新
+      </MiraActivityButton>,
     );
     act(() => { vi.advanceTimersByTime(500); });
     expect(screen.queryByTestId('thinking-orb')).not.toBeInTheDocument();

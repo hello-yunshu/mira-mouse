@@ -30,6 +30,7 @@ import { applyTheme, pastelDisplayColor } from './theme';
 import i18n, { applyLanguage, loadPluginLocales, resolveLabelKey } from './i18n';
 import { SettingsPage, type SettingsTab } from './Settings';
 import { AboutPage } from './About';
+import { LogPage } from './logs/LogPage';
 import { BatteryUsageModal, type BatteryUsageConnectedTarget } from './BatteryUsage';
 import { BatteryLevelIcon } from './BatteryLevelIcon';
 import type { AboutInfo, AppSettings, DeviceSnapshot, DeviceSnapshotEntry, DeviceState, DpiStage, PluginCapability, PluginCapabilityPlacement, PluginField, PluginFieldFormat, PluginSummaryItem, PluginZone, RangeSpec, ReadStatus, ThemeMode } from './types';
@@ -97,10 +98,11 @@ import { initUpdatePriorityCoordinator } from './update-priority';
 import { LOCAL_AI_FEATURE, localAiFeatureEnabled } from './localAi';
 import { segmentedIndicatorStyle } from './segmentedControl';
 import { Modal, OverlayPortal, useHasOpenModal } from './overlay';
-import { MiraInlineActivity, MiraActivityOverlay, announceAfterOrbExit } from './activity';
+import { MiraActivityButton, MiraInlineActivity, MiraActivityOverlay, announceAfterOrbExit } from './activity';
 import './styles.css';
 
-type View = 'dashboard' | 'settings' | 'about';
+type View = 'dashboard' | 'settings' | 'about' | 'logs';
+type TitledView = Exclude<View, 'dashboard'>;
 type ControlMode = string;
 
 type ControlPageKind = 'dpi' | 'segmented' | 'standard';
@@ -275,6 +277,84 @@ function LiveValue({ text, className, style, duration = 160 }: {
         <span className="live-value-next" style={nextValue.style} aria-hidden="true">{nextValue.text}</span>
       )}
     </strong>
+  );
+}
+
+function pageTitleDirection(from: TitledView, to: TitledView): 'forward' | 'back' {
+  if (to === 'settings' && from !== 'settings') return 'back';
+  return 'forward';
+}
+
+/**
+ * 设置 / 关于 / 日志共用的固定标题槽。文字在同一几何位置交叉推切，
+ * 避免两个页面各自挂载 h1 时产生闪现、缩放或宽度位移。
+ */
+function PersistentPageTitle({ view, title }: { view: TitledView; title: string }) {
+  const [currentValue, setCurrentValue] = useState(() => ({ view, title }));
+  const [nextValue, setNextValue] = useState<{ view: TitledView; title: string }>();
+  const [direction, setDirection] = useState<'forward' | 'back'>('forward');
+  const [transitioning, setTransitioning] = useState(false);
+  const currentValueRef = useRef(currentValue);
+  const transitionIdRef = useRef(0);
+
+  useEffect(() => {
+    const transitionId = transitionIdRef.current + 1;
+    transitionIdRef.current = transitionId;
+    const incomingValue = { view, title };
+    const displayedValue = currentValueRef.current;
+    let prepareFrame = 0;
+    let transitionFrame = 0;
+    let commitTimeout = 0;
+
+    if (displayedValue.view === view && displayedValue.title === title) {
+      setNextValue(undefined);
+      setTransitioning(false);
+      return undefined;
+    }
+
+    setDirection(pageTitleDirection(displayedValue.view, view));
+    prepareFrame = window.requestAnimationFrame(() => {
+      if (transitionIdRef.current !== transitionId) return;
+      setNextValue(incomingValue);
+      setTransitioning(false);
+      transitionFrame = window.requestAnimationFrame(() => {
+        if (transitionIdRef.current !== transitionId) return;
+        setTransitioning(true);
+        commitTimeout = window.setTimeout(() => {
+          if (transitionIdRef.current !== transitionId) return;
+          currentValueRef.current = incomingValue;
+          setCurrentValue(incomingValue);
+          setNextValue(undefined);
+          setTransitioning(false);
+        }, 190);
+      });
+    });
+
+    return () => {
+      window.cancelAnimationFrame(prepareFrame);
+      window.cancelAnimationFrame(transitionFrame);
+      window.clearTimeout(commitTimeout);
+    };
+  }, [title, view]);
+
+  return (
+    <h1
+      className={`page-persistent-title direction-${direction}${transitioning ? ' is-transitioning' : ''}`}
+      aria-hidden="true"
+    >
+      <span
+        key={`${currentValue.view}:${currentValue.title}`}
+        className="page-persistent-title-face is-current"
+        aria-hidden="true"
+      >{currentValue.title}</span>
+      {nextValue && (
+        <span
+          key={`${nextValue.view}:${nextValue.title}`}
+          className="page-persistent-title-face is-next"
+          aria-hidden="true"
+        >{nextValue.title}</span>
+      )}
+    </h1>
   );
 }
 
@@ -737,41 +817,109 @@ function connectedBatteryUsageTargets(entries: DeviceSnapshotEntry[]): BatteryUs
   return targets;
 }
 
+const auraTimelineStartedAt = typeof performance === 'undefined' ? 0 : performance.now();
+
+function auraPhaseOffset(): string {
+  if (typeof performance === 'undefined') return '0ms';
+  return `${-Math.max(0, Math.round(performance.now() - auraTimelineStartedAt))}ms`;
+}
+
+/**
+ * 页面退场层使用静态 HTML 快照。把 Aura 当前的合成帧写入快照，避免快照层
+ * 禁用动画后从任意运动相位跳回 0% 关键帧。
+ */
+function pageSnapshotHtml(root: HTMLElement): string {
+  const clone = root.cloneNode(true) as HTMLElement;
+  const selector = '[data-animation="realtime-deformation"] .aura-cloud, [data-animation="realtime-deformation"] .aura-stars, [data-animation="realtime-deformation"] .aura-star';
+  const sources = root.querySelectorAll<HTMLElement>(selector);
+  const targets = clone.querySelectorAll<HTMLElement>(selector);
+
+  sources.forEach((source, index) => {
+    const target = targets[index];
+    if (!target) return;
+    const frame = window.getComputedStyle(source);
+    target.style.animation = 'none';
+    target.style.transform = frame.transform;
+    target.style.opacity = frame.opacity;
+    target.style.borderRadius = frame.borderRadius;
+    target.style.willChange = 'auto';
+  });
+
+  return clone.innerHTML;
+}
+
 function DeviceAura({ color }: { color?: string }) {
   const [paused, setPaused] = useState(false);
+  const [phaseOffset] = useState(auraPhaseOffset);
 
   useEffect(() => {
     if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) return;
-    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    let syncId = 0;
+    const unlisteners: Array<() => void> = [];
     try {
       const win = getCurrentWindow();
-      win.isVisible().then(v => setPaused(!v)).catch(() => {});
-      win.onFocusChanged(({ payload: focused }) => {
-        if (focused) {
-          setPaused(false);
-        } else {
-          win.isVisible().then(v => setPaused(!v)).catch(() => {});
+      const syncPaused = () => {
+        const currentSyncId = ++syncId;
+        if (document.hidden) {
+          setPaused(true);
+          return;
         }
-      }).then((fn: () => void) => { unlisten = fn; }).catch(() => {});
+        Promise.all([win.isVisible(), win.isMinimized()])
+          .then(([visible, minimized]) => {
+            if (!disposed && currentSyncId === syncId) setPaused(!visible || minimized);
+          })
+          .catch(() => {});
+      };
+      const register = (promise: Promise<() => void>) => {
+        promise.then((unlisten) => {
+          if (disposed) unlisten();
+          else unlisteners.push(unlisten);
+        }).catch(() => {});
+      };
+      const onVisibilityChange = () => {
+        if (document.hidden) {
+          ++syncId;
+          setPaused(true);
+        } else {
+          syncPaused();
+        }
+      };
+
+      syncPaused();
+      register(win.onFocusChanged(() => syncPaused()));
+      // 最小化不等于不可见；macOS 尤其会保持 isVisible() === true。
+      // resize 是 focus 事件早于最小化状态落定时的第二个可靠同步点。
+      register(win.onResized(() => syncPaused()));
+      document.addEventListener('visibilitychange', onVisibilityChange);
+
+      return () => {
+        disposed = true;
+        ++syncId;
+        document.removeEventListener('visibilitychange', onVisibilityChange);
+        unlisteners.splice(0).forEach((unlisten) => unlisten());
+      };
     } catch {
       // 非 Tauri 环境忽略
     }
-    return () => { if (unlisten) unlisten(); };
+    return undefined;
   }, []);
 
   return (
-    <div className={`device-aura${paused ? ' is-paused' : ''}`} data-animation="realtime-deformation" style={{ '--device-color': color ?? '#b87ab0' } as React.CSSProperties} aria-hidden="true">
+    <div className={`device-aura${paused ? ' is-paused' : ''}`} data-animation="realtime-deformation" style={{ '--device-color': color ?? '#b87ab0', '--aura-phase-offset': phaseOffset } as React.CSSProperties} aria-hidden="true">
       <div className="aura-cloud aura-cloud-1" />
       <div className="aura-cloud aura-cloud-2" />
       <div className="aura-cloud aura-cloud-3" />
       <div className="aura-cloud aura-cloud-4" />
       <div className="aura-cloud aura-cloud-5" />
-      <div className="aura-star aura-star-1" />
-      <div className="aura-star aura-star-2" />
-      <div className="aura-star aura-star-3" />
-      <div className="aura-star aura-star-4" />
-      <div className="aura-star aura-star-5" />
-      <div className="aura-star aura-star-6" />
+      <div className="aura-stars">
+        <div className="aura-star aura-star-1" />
+        <div className="aura-star aura-star-2" />
+        <div className="aura-star aura-star-3" />
+        <div className="aura-star aura-star-4" />
+        <div className="aura-star aura-star-5" />
+        <div className="aura-star aura-star-6" />
+      </div>
     </div>
   );
 }
@@ -937,10 +1085,17 @@ function confirmLightingMutation(attentionId: number | undefined, before: Device
   });
 }
 
-/** 稳定设备身份：优先 deviceKey，其次插件 ID + family，最后才是显示名。 */
+/**
+ * 稳定设备身份：优先 deviceKey，其次插件声明的跨连接稳定身份
+ * historyIdentity.group（与后端 snapshot_device_identity 同源），
+ * 再次是插件 ID + family，最后才是显示名。
+ * 不使用原始 HID path / serial 等敏感数据。
+ */
 function stableDeviceIdentity(device: DeviceState, entries: DeviceSnapshotEntry[]): string {
   const entry = selectedDeviceEntry(entries);
   if (entry?.deviceKey) return entry.deviceKey;
+  const historyGroup = entry?.snapshot.historyIdentity?.group?.trim();
+  if (historyGroup) return `history:${historyGroup}`;
   if (device.pluginId) return `${device.pluginId}:${device.family ?? ''}`;
   return String(device.name).trim().toLocaleLowerCase().replace(/\s+/g, '-');
 }
@@ -2640,21 +2795,39 @@ function DeviceDetails({ device, deviceKey, onClose }: { device: DeviceState; de
       </header>
       <p className="details-note">{i18n.t('dashboard.detailsNote')}</p>
       <div className="details-actions">
-        <button className="details-action-btn" onClick={() => void handleRefresh()} title={i18n.t('dashboard.refreshAll')} disabled={refreshingDetails}>
-          <MiraInlineActivity active={refreshingDetails} activity="refreshing-device-details" announce fallback={<Timer weight="regular" />} /> {i18n.t('dashboard.refreshAll')}
-        </button>
-        <button className="details-action-btn" onClick={handleCopyAll} title={i18n.t('dashboard.copyAllReadings')} disabled={copyState === 'copying'}>
-          {copyState === 'copied'
-            ? '✓'
-            : <MiraInlineActivity active={copyState === 'copying'} activity="copying-readings" announce fallback={<ReadCvLogo weight="regular" />} />}
+        <MiraActivityButton
+          className="details-action-btn"
+          active={refreshingDetails}
+          activity="refreshing-device-details"
+          announce
+          leading={<Timer weight="regular" />}
+          onClick={() => void handleRefresh()}
+          title={i18n.t('dashboard.refreshAll')}
+        >
+          {i18n.t('dashboard.refreshAll')}
+        </MiraActivityButton>
+        <MiraActivityButton
+          className="details-action-btn"
+          active={copyState === 'copying'}
+          activity="copying-readings"
+          announce
+          leading={copyState === 'copied' ? <span aria-hidden="true">✓</span> : <ReadCvLogo weight="regular" />}
+          onClick={handleCopyAll}
+          title={i18n.t('dashboard.copyAllReadings')}
+        >
           {i18n.t('dashboard.copyAllReadings')}
-        </button>
-        <button className="details-action-btn" onClick={handleCopyDiagnostics} title={i18n.t('dashboard.copyDeviceDiagnostics')} disabled={diagCopyState === 'copying'}>
-          {diagCopyState === 'copied'
-            ? '✓'
-            : <MiraInlineActivity active={diagCopyState === 'copying'} activity="copying-device-diagnostics" announce fallback={<Info weight="regular" />} />}
+        </MiraActivityButton>
+        <MiraActivityButton
+          className="details-action-btn"
+          active={diagCopyState === 'copying'}
+          activity="copying-device-diagnostics"
+          announce
+          leading={diagCopyState === 'copied' ? <span aria-hidden="true">✓</span> : <Info weight="regular" />}
+          onClick={handleCopyDiagnostics}
+          title={i18n.t('dashboard.copyDeviceDiagnostics')}
+        >
           {i18n.t('dashboard.copyDeviceDiagnostics')}
-        </button>
+        </MiraActivityButton>
       </div>
       <div className="protocol-diagnostic-toggle">
         <label className="protocol-diagnostic-label">
@@ -3871,8 +4044,11 @@ function Dashboard({
  *  目标归属由 resolveUpdateAttentionTarget 裁决：固定更新区域当前可见时返回
  *  undefined —— 由固定更新行播放（§11 仲裁），保证同一事件只有一个目标消费。 */
 function resolveNotificationBeam(notification: AppNotification, currentView: View, currentSettingsTab: SettingsTab): AttentionBeamRequest | undefined {
+  // 日志页没有固定更新区域；在通知归属上按普通非设置视图处理，避免沿用
+  // 离开设置前的 plugins 标签误抑制插件 / 本地 AI 更新通知。
+  const attentionView = currentView === 'logs' ? 'dashboard' : currentView;
   const target = (kind: 'app' | 'plugin' | 'local-ai') =>
-    resolveUpdateAttentionTarget(kind, { view: currentView, settingsTab: currentSettingsTab });
+    resolveUpdateAttentionTarget(kind, { view: attentionView, settingsTab: currentSettingsTab });
 
   switch (notification.action) {
     case 'about-update': {
@@ -3954,7 +4130,28 @@ export default function App() {
   const [, startTransition] = useTransition();
   const [theme, setTheme] = useState<ThemeMode>('system');
   const [themeLoaded, setThemeLoaded] = useState(pureWeb);
-  const [view, setView] = useState<View>('dashboard');
+  const [view, setViewState] = useState<View>('dashboard');
+  // 页面切换过渡：current 层始终渲染目标页 view；leaving 层仅在切换期间渲染
+  // 旧页并整层淡出，与目标页淡入交叉，全程无透明空白，避免「闪现」。
+  // leaving 层使用旧页的「静态 DOM 快照」而非活组件渲染，避免退场期间 SettingsPage
+  // 等内部自带 IPC/effect 的页持续重渲染、重置容器淡出动画，造成刷新与闪烁。
+  const [leavingView, setLeavingView] = useState<View | null>(null);
+  const [leavingHTML, setLeavingHTML] = useState<string | null>(null);
+  const prevViewRef = useRef<View>('dashboard');
+  const transitionTimer = useRef<number | undefined>(undefined);
+  // 当前层 DOM 节点引用：用于抓取旧页快照。
+  const currentPageRef = useRef<HTMLDivElement | null>(null);
+  // 最近一次「非过渡期」提交时抓取的当前页 HTML 快照；导航触发时再覆盖为
+  // 含实时 Aura 合成帧的快照，保证退场层不把光团重置到关键帧起点。
+  const pageSnapshotRef = useRef<string | null>(null);
+  // 过渡进行中标记：置位期间暂停快照抓取，避免把新页误抓成旧页。
+  const transitioningRef = useRef(false);
+  const navigateTo = useCallback((nextView: View) => {
+    if (nextView === view) return;
+    const node = currentPageRef.current;
+    if (node) pageSnapshotRef.current = pageSnapshotHtml(node);
+    setViewState(nextView);
+  }, [view]);
   // 设置页当前「实际可见」的标签（由 SettingsPage 在 130ms 切换过渡结束后上报，
   // 不是用户点击的目标标签）。通知与固定更新行的可见性仲裁都以此为准。
   const [visibleSettingsTab, setVisibleSettingsTab] = useState<SettingsTab>('general');
@@ -3970,7 +4167,6 @@ export default function App() {
   const [appNotificationAttentionEventKey, setAppNotificationAttentionEventKey] = useState<string>();
   const [showBatteryUsage, setShowBatteryUsage] = useState(false);
   const [batteryUsageSession, setBatteryUsageSession] = useState(0);
-  const [batteryUsageLoading, setBatteryUsageLoading] = useState(false);
   const [batteryUsageSettings, setBatteryUsageSettings] = useState<{ batteryHistoryEnabled: boolean; aiAnalysisEnabled: boolean } | undefined>(
     pureWeb ? { batteryHistoryEnabled: true, aiAnalysisEnabled: false } : undefined,
   );
@@ -3987,22 +4183,22 @@ export default function App() {
     setDevice(undefined);
     setDeviceEntries([]);
     deviceEntriesRef.current = [];
-    setView('dashboard');
+    navigateTo('dashboard');
     setRefreshNonce((value) => value + 1);
     invoke('device_refresh').catch(() => {});
-  }, []);
+  }, [navigateTo]);
   const openAboutUpdate = useCallback(() => {
-    setView('about');
+    navigateTo('about');
     setAboutFocusToken((value) => value + 1);
-  }, []);
+  }, [navigateTo]);
   const openSettingsPluginUpdate = useCallback(() => {
-    setView('settings');
+    navigateTo('settings');
     setSettingsPluginFocusToken((value) => value + 1);
-  }, []);
+  }, [navigateTo]);
   const openSettingsLocalAiUpdate = useCallback(() => {
-    setView('settings');
+    navigateTo('settings');
     setSettingsLocalAiFocusToken((value) => value + 1);
-  }, []);
+  }, [navigateTo]);
   const openBatteryUsage = useCallback(() => {
     setBatteryUsageSession((value) => value + 1);
     setShowBatteryUsage(true);
@@ -4230,19 +4426,15 @@ export default function App() {
     () => connectedBatteryUsageTargets(deviceEntries),
     [deviceEntries],
   );
-  // 全局近程 Orb（MiraActivityOverlay）的显式设备状态：电量整理 → 等待鼠标 →
-  // 设备初始化。电量弹窗覆盖 Dashboard，优先于设备状态；其余情况仅在
-  // Dashboard 可见时表达，避免在其他视图弹出噪音 Orb。
-  const globalDeviceActivity = showBatteryUsage && batteryUsageLoading
-    ? 'battery-analysis' as const
-    : view === 'dashboard' && device
-      ? (device.mouseReady === false
-          ? 'awaiting-mouse' as const
-          : deviceRuntimePending(device)
-            ? 'device-initializing' as const
-            : null)
-      : null;
-  const batteryAnalysisEnabled = batteryUsageSettings?.aiAnalysisEnabled ?? false;
+  // 全局 Orb 只表达 Dashboard 的设备近程状态。电量整理属于已打开的电量
+  // Modal，由 Modal 内部的 embedded Orb 承担，避免玻璃浮层之上再叠玻璃卡。
+  const globalDeviceActivity = view === 'dashboard' && device
+    ? (device.mouseReady === false
+        ? 'awaiting-mouse' as const
+        : deviceRuntimePending(device)
+          ? 'device-initializing' as const
+          : null)
+    : null;
 
   // ── Attention Beam：设备 等待→就绪 / 断开→恢复 ───────────────────────
   // 只对真实状态迁移播放；启动即在线的设备不算事件，轮询读到相同状态不触发。
@@ -4276,7 +4468,9 @@ export default function App() {
       variant: 'line',
       color: attentionColorForZone(accent ?? '#ffb3b3'),
       durationMs: readyAction ? 1300 : 1100,
-      strength: readyAction ? 0.16 : 0.13,
+      // control-stage 明显大于普通更新行，需要更高的设备专用基准；浅色主题
+      // 仍会在渲染层自动收敛，避免退回到刺眼的实体描边。
+      strength: readyAction ? 0.66 : 0.60,
       cycles: 1,
       priority: ATTENTION_PRIORITY[readyAction ? 'device-ready' : 'device-reconnected'],
     });
@@ -4310,37 +4504,100 @@ export default function App() {
     applyTheme(theme, themeColor);
   }, [themeLoaded, theme, themeColor]);
 
+  // 页面切换过渡：view 变化时，把上一页（prevViewRef）作为退场页渲染在 leaving 层
+  // 并整层淡出，目标页在 current 层直接淡入，两层交叉，避免内容瞬时消失造成「闪现」。
+  // 用 useLayoutEffect 保证退场层在浏览器绘制前就位，避免中间一帧旧页已消失、新页直显。
+  useLayoutEffect(() => {
+    const prev = prevViewRef.current;
+    prevViewRef.current = view;
+    if (view === prev) return;
+    window.clearTimeout(transitionTimer.current);
+    // 把导航瞬间抓取的旧页快照交给 leaving 层，并用 transitioningRef 暂停后续快照抓取，
+    // 直到过渡结束，避免退场期间把新页误抓成「旧页」。
+    transitioningRef.current = true;
+    setLeavingHTML(pageSnapshotRef.current);
+    setLeavingView(prev);
+    transitionTimer.current = window.setTimeout(() => {
+      setLeavingView(null);
+      setLeavingHTML(null);
+      transitioningRef.current = false;
+    }, 180);
+    return () => {
+      window.clearTimeout(transitionTimer.current);
+      transitioningRef.current = false;
+    };
+  }, [view]);
+
+  // 非过渡期持续抓取当前层的 DOM 快照，供下一次退场使用。
+  // 用 useLayoutEffect 保证在绘制前拿到与屏幕一致的结构；过渡中跳过，避免误抓新页。
+  useLayoutEffect(() => {
+    if (transitioningRef.current) return;
+    const node = currentPageRef.current;
+    if (node) pageSnapshotRef.current = node.innerHTML;
+  });
+
+  // 渲染指定视图。current 层与 leaving 层共用，保证切换时两层内容一致。
+  const renderView = (v: View) => {
+    if (v === 'dashboard') {
+      return !device
+        ? <EmptyState onRefresh={() => { setDemoMode(false); setDevice(undefined); setDeviceEntries([]); deviceEntriesRef.current = []; setRefreshNonce((value) => value + 1); invoke('device_refresh').catch(() => {}); }} onDemo={() => { setDemoMode(true); setDevice(MOCK_DEVICE); setDeviceEntries(MOCK_DEVICE_ENTRIES); deviceEntriesRef.current = MOCK_DEVICE_ENTRIES; }} onOpenSettings={() => navigateTo('settings')} />
+        : device.mouseReady === false
+          ? <AwaitingMouseState deviceName={device.name} onRefresh={() => { setRefreshNonce((value) => value + 1); invoke('device_refresh').catch(() => {}); }} onOpenSettings={() => navigateTo('settings')} />
+          : <Dashboard device={device} deviceEntries={deviceEntries} onDeviceChange={setDevice} onDeviceSelect={selectDevice} onOpenBatteryUsage={openBatteryUsage} pluginLocaleRevision={pluginLocaleRevision} demoMode={demoMode} />;
+    }
+    if (v === 'settings') {
+      return <SettingsPage initialTab={visibleSettingsTab} onTabChange={setVisibleSettingsTab} previewMode={pureWeb} focusPluginUpdateToken={settingsPluginFocusToken} focusLocalAiUpdateToken={settingsLocalAiFocusToken} onSettingsExit={handleSettingsExit} onNavigateAbout={() => navigateTo('about')} onNavigateLogs={() => navigateTo('logs')} onOpenBatteryUsage={openBatteryUsage} onBatteryUsageSettingsChange={syncBatteryUsageSettings} onThemeChange={setTheme} pluginCapabilities={device?.pluginCapabilities ?? []} writableMutations={device?.writableMutations ?? []} />;
+    }
+    if (v === 'about') {
+      return <AboutPage previewMode={pureWeb} focusUpdateToken={aboutFocusToken} onBack={() => navigateTo('settings')} />;
+    }
+    return <LogPage onBack={() => navigateTo('settings')} />;
+  };
+  const titledView = view === 'dashboard' ? undefined : view;
+  const pageTitle = view === 'settings'
+    ? t('settings.title')
+    : view === 'about'
+      ? t('about.title')
+      : view === 'logs'
+        ? t('logs.title')
+        : undefined;
+
   return <div className={`app-shell ${pureWeb ? 'web-preview' : ''} ${windowsPlatform ? 'platform-windows' : ''} ${macPlatform ? 'platform-macos' : ''} ${fallbackPlatform ? 'platform-fallback' : ''} ${windowsWebPreview ? 'windows-web-preview' : ''}`}>
     <AttentionBusController />
-    <MiraActivityOverlay
-      activity={globalDeviceActivity}
-      batteryAnalysisEnabled={batteryAnalysisEnabled}
-    />
+    <MiraActivityOverlay activity={globalDeviceActivity} />
     {windowsWebPreview && <WindowsPreviewControls />}
     {windowsPlatform && !windowsWebPreview && !pureWeb && <WindowsWindowControls />}
     {windowsPlatform && !windowsWebPreview && !pureWeb && <div className="windows-drag-strip" data-tauri-drag-region />}
     <nav className="top-nav" data-tauri-drag-region />
     <div className="nav-links">
-      <button className={`nav-link ${view === 'dashboard' ? 'active' : ''}`} onClick={() => setView('dashboard')}>{t('nav.dashboard')}</button>
-      <button className={`nav-link ${view === 'settings' ? 'active' : ''}`} onClick={() => setView('settings')}>{t('nav.settings')}</button>
-      <button className={`nav-link nav-about ${view === 'about' ? 'active' : ''}`} onClick={() => setView('about')} aria-label={t('nav.about')}><Info weight="regular" /></button>
+      <button className={`nav-link ${view === 'dashboard' ? 'active' : ''}`} onClick={() => navigateTo('dashboard')}>{t('nav.dashboard')}</button>
+      <button className={`nav-link ${view === 'settings' || view === 'logs' ? 'active' : ''}`} onClick={() => navigateTo('settings')}>{t('nav.settings')}</button>
+      <button className={`nav-link nav-about ${view === 'about' ? 'active' : ''}`} onClick={() => navigateTo('about')} aria-label={t('nav.about')}><Info weight="regular" /></button>
       {demoMode && !windowsPlatform && <button className="nav-link nav-exit" onClick={exitDemo} aria-label={t('nav.exitDemo')} title={t('nav.exitDemo')}><SignOut weight="regular" /></button>}
     </div>
     {windowsPlatform && demoMode && view === 'dashboard' && <button className="content-exit" onClick={exitDemo} aria-label={t('nav.exitDemo')} title={t('nav.exitDemo')}><SignOut weight="regular" /></button>}
-    {view === 'dashboard' && (
-      !device
-        ? <EmptyState onRefresh={() => { setDemoMode(false); setDevice(undefined); setDeviceEntries([]); deviceEntriesRef.current = []; setRefreshNonce((value) => value + 1); invoke('device_refresh').catch(() => {}); }} onDemo={() => { setDemoMode(true); setDevice(MOCK_DEVICE); setDeviceEntries(MOCK_DEVICE_ENTRIES); deviceEntriesRef.current = MOCK_DEVICE_ENTRIES; }} onOpenSettings={() => setView('settings')} />
-        : device.mouseReady === false
-          ? <AwaitingMouseState deviceName={device.name} onRefresh={() => { setRefreshNonce((value) => value + 1); invoke('device_refresh').catch(() => {}); }} onOpenSettings={() => setView('settings')} />
-          : <Dashboard device={device} deviceEntries={deviceEntries} onDeviceChange={setDevice} onDeviceSelect={selectDevice} onOpenBatteryUsage={openBatteryUsage} pluginLocaleRevision={pluginLocaleRevision} demoMode={demoMode} />
-    )}
-    {view === 'settings' && <SettingsPage initialTab={visibleSettingsTab} onTabChange={setVisibleSettingsTab} previewMode={pureWeb} focusPluginUpdateToken={settingsPluginFocusToken} focusLocalAiUpdateToken={settingsLocalAiFocusToken} onSettingsExit={handleSettingsExit} onNavigateAbout={() => setView('about')} onOpenBatteryUsage={openBatteryUsage} onBatteryUsageSettingsChange={syncBatteryUsageSettings} onThemeChange={setTheme} pluginCapabilities={device?.pluginCapabilities ?? []} writableMutations={device?.writableMutations ?? []} />}
-    {view === 'about' && <AboutPage previewMode={pureWeb} focusUpdateToken={aboutFocusToken} onBack={() => setView('settings')} />}
+    <div className={`page-swap${leavingView ? ' is-transitioning' : ''}`} data-page-view={view}>
+      {titledView && pageTitle && (
+        // 设置 / 关于 / 日志共用固定眉题与标题槽，不参与 current / leaving
+        // 页面层的整层交叉淡化；标题自身只做 2px 双向推切。
+        <div className="page-persistent-copy">
+          <p className="eyebrow page-persistent-eyebrow">{t('about.eyebrow')}</p>
+          <PersistentPageTitle view={titledView} title={pageTitle} />
+        </div>
+      )}
+      {leavingView && (
+        // leaving 层渲染旧页的静态快照（非活组件），退场期间冻结内容，
+        // 避免 SettingsPage 等内部 IPC/effect 持续重渲染导致动画被重置。
+        <div key="leaving" className="page-layer page-layer-leaving" aria-hidden="true" dangerouslySetInnerHTML={{ __html: leavingHTML ?? '' }} />
+      )}
+      <div key="current" ref={currentPageRef} className="page-layer page-layer-current">
+        {renderView(view)}
+      </div>
+    </div>
     <BatteryUsageModal
       key={batteryUsageSession}
       open={showBatteryUsage}
       onClose={() => setShowBatteryUsage(false)}
-      onLoadingChange={setBatteryUsageLoading}
       hasBattery={(device?.batteries.length ?? 0) > 0}
       batteryHistoryEnabled={batteryUsageSettings?.batteryHistoryEnabled}
       aiAnalysisEnabled={batteryUsageSettings?.aiAnalysisEnabled}

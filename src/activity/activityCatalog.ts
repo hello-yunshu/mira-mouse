@@ -30,13 +30,13 @@ export interface MiraActivitySpec {
   state: MiraOrbState;
   size: 20 | 64;
   speed: number;
-  layer: 'global' | 'inline';
+  layer: 'global' | 'embedded' | 'inline';
 }
 
 const ACTIVITY_SPECS: Record<MiraActivityKind, MiraActivitySpec> = {
   'awaiting-mouse': { state: 'connecting', size: 64, speed: 1, layer: 'global' },
   'device-initializing': { state: 'connecting', size: 64, speed: 1, layer: 'global' },
-  'battery-analysis': { state: 'solving', size: 64, speed: 0.9, layer: 'global' },
+  'battery-analysis': { state: 'solving', size: 64, speed: 0.9, layer: 'embedded' },
   'applying-settings': { state: 'working', size: 20, speed: 1, layer: 'inline' },
   'scanning-devices': { state: 'searching', size: 20, speed: 0.95, layer: 'inline' },
   'checking-app-update': { state: 'searching', size: 20, speed: 0.95, layer: 'inline' },
@@ -115,26 +115,17 @@ export function miraActivityLabel(
 export type MiraGlobalActivity =
   | 'awaiting-mouse'
   | 'device-initializing'
-  | 'battery-analysis'
   | null;
 
 /**
- * 兼容兜底：从 Mira 已有的、稳定的业务 DOM 标志推导全局状态。
+ * 兼容兜底：从 Mira 已有的、稳定的业务 DOM 标志推导全局设备状态。
  * 显式业务状态为第一优先级；仅在未提供显式状态时使用本函数。
- * 电量弹窗覆盖 Dashboard，因此优先判定电量流程；弹窗出现状态条或空态后，
- * 说明业务结果已就绪，不能继续显示 Orb。
+ * 电量流程由 BatteryUsageModal 内部的 embedded activity 表达，绝不能在
+ * Modal 之上再创建第二张全局玻璃卡。
  */
 export function resolveGlobalMiraActivity(
   root: ParentNode = document,
 ): MiraGlobalActivity {
-  const batteryModal = root.querySelector<HTMLElement>('.battery-usage-modal');
-  if (batteryModal) {
-    const ready = batteryModal.querySelector(
-      '.battery-status-strip-shell, .battery-usage-empty',
-    );
-    return ready ? null : 'battery-analysis';
-  }
-
   return root.querySelector('.dashboard.is-initializing')
     ? 'device-initializing'
     : null;

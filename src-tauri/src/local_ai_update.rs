@@ -213,7 +213,7 @@ pub fn check_updates(app: &AppHandle) -> Result<Vec<LocalAiUpdateInfo>, String> 
     let index = fetch_and_verify_index()?;
     let artifacts = select_artifacts(&index.payload)?;
     let current = status(app);
-    Ok(vec![update_info(&current, artifacts)?])
+    update_infos(&current, artifacts)
 }
 
 pub fn install_update(app: &AppHandle, component: &str) -> Result<LocalAiInstallResult, String> {
@@ -343,17 +343,31 @@ fn update_plan(
     })
 }
 
-fn update_info(
+fn update_infos(
     current: &LocalAiStatus,
     artifacts: SelectedArtifacts<'_>,
-) -> Result<LocalAiUpdateInfo, String> {
+) -> Result<Vec<LocalAiUpdateInfo>, String> {
     let plan = update_plan(current, artifacts)?;
-    Ok(LocalAiUpdateInfo {
-        component: "bundle".into(),
-        current_version: current.bundle_version.clone(),
-        available_version: selected_deployment_version(artifacts, plan).to_string(),
-        update_available: plan.any(),
-    })
+    Ok(vec![
+        LocalAiUpdateInfo {
+            component: "runtime".into(),
+            current_version: current.runtime_version.clone(),
+            available_version: artifacts.runtime.version.clone(),
+            update_available: plan.runtime,
+        },
+        LocalAiUpdateInfo {
+            component: "model".into(),
+            current_version: current.model_pack_version.clone(),
+            available_version: artifacts.model.version.clone(),
+            update_available: plan.model,
+        },
+        LocalAiUpdateInfo {
+            component: "handler".into(),
+            current_version: current.handler_version.clone(),
+            available_version: artifacts.handler.version.clone(),
+            update_available: plan.handler,
+        },
+    ])
 }
 
 fn selected_deployment_version(artifacts: SelectedArtifacts<'_>, plan: UpdatePlan) -> &str {
@@ -1032,13 +1046,31 @@ mod tests {
         let runtime = runtime_artifact("0.7.1");
         let model = model_artifact("0.8.2");
         let handler = handler_artifact("0.9.0");
-        let info = update_info(
+        let infos = update_infos(
             &current("0.7.1", "0.8.2", "0.8.2"),
             selected(&runtime, &model, &handler),
         )
         .unwrap();
-        assert!(info.update_available);
-        assert_eq!(info.available_version, "0.9.0");
+        let handler_info = infos
+            .iter()
+            .find(|item| item.component == "handler")
+            .unwrap();
+        assert!(handler_info.update_available);
+        assert_eq!(handler_info.available_version, "0.9.0");
+        assert!(
+            !infos
+                .iter()
+                .find(|item| item.component == "runtime")
+                .unwrap()
+                .update_available
+        );
+        assert!(
+            !infos
+                .iter()
+                .find(|item| item.component == "model")
+                .unwrap()
+                .update_available
+        );
     }
 
     #[test]

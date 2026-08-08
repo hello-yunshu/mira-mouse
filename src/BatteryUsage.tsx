@@ -21,7 +21,7 @@ import { segmentedIndicatorStyle } from './segmentedControl';
 import { Modal } from './overlay';
 import { Tooltip } from './Tooltip';
 import { useScrollFadeState } from './useScrollOverflow';
-import { MiraInlineActivity } from './activity';
+import { MiraActivityButton, MiraEmbeddedActivity } from './activity';
 
 function isPureWebPreview(): boolean {
   return !('__TAURI_INTERNALS__' in window);
@@ -316,7 +316,7 @@ function BatteryUsageChart({ points, range, generatedAt }: ChartProps) {
       const tickCount = Math.floor(maxUsageMinutes / stepMinutes) + 1;
       let previousPointIndex = -1;
 
-      return Array.from({ length: Math.max(1, tickCount) }, (_, tickIndex) => tickIndex * stepMinutes)
+      const ticks = Array.from({ length: Math.max(1, tickCount) }, (_, tickIndex) => tickIndex * stepMinutes)
         .flatMap((elapsedMinutes) => {
           let pointIndex = usageMinutes.findIndex((minutes) => minutes >= elapsedMinutes);
           if (pointIndex < 0) pointIndex = Math.max(0, points.length - 1);
@@ -343,6 +343,16 @@ function BatteryUsageChart({ points, range, generatedAt }: ChartProps) {
             major,
           }];
         });
+
+      // 短时使用或较稀疏的小时刻度可能一个主刻度都到不了；此时至少给最后一个
+      // 实际显示的刻度补上单位，避免整条“累计使用”横轴只剩下无语义的数字。
+      if (ticks.some((tick) => tick.major) || ticks.length === 0) return ticks;
+      const unit = usesMinutes
+        ? (isChinese ? '分钟' : 'min')
+        : (isChinese ? '小时' : 'hr');
+      return ticks.map((tick, index) => index === ticks.length - 1
+        ? { ...tick, label: `${tick.label} ${unit}`, major: true }
+        : tick);
     }
 
     return Array.from({ length: Math.ceil(pointCount / 3) }, (_, dayIndex) => {
@@ -1121,7 +1131,7 @@ export interface BatteryUsageModalProps {
   preferredDeviceName?: string;
   preferredComponentId?: string;
   demoMode?: boolean;
-  /** 电量数据加载状态上抛，供全局 Orb 显式判断「正在整理电量记录」。 */
+  /** 可选的请求生命周期观察回调；视觉加载由 Modal 内部承担。 */
   onLoadingChange?: (loading: boolean) => void;
 }
 
@@ -1172,9 +1182,8 @@ export function BatteryUsageModal({
   const historyEnabled = providedHistoryEnabled ?? loadedHistoryEnabled;
   const aiAnalysisEnabled = providedAiAnalysisEnabled ?? loadedAiAnalysisEnabled;
 
-  // 将真实电量数据加载状态上抛给 App，
-  // 让全局 Activity 与 BatteryUsage 请求生命周期一致。
-  // 弹窗关闭、历史记录禁用或无电池支持时都不向 App 报全局 battery-analysis。
+  // 保留请求生命周期回调供嵌入方观测；加载 Orb 只渲染在
+  // BatteryUsage Modal 的现有表面内，不再让 App 叠加第二个全局视觉主语。
   const canReportLoading = open && historyEnabled && (hasBattery || pureWeb);
   const reportedLoading = canReportLoading && loading;
 
@@ -1182,7 +1191,7 @@ export function BatteryUsageModal({
     onLoadingChange?.(reportedLoading);
   }, [onLoadingChange, reportedLoading]);
 
-  // 卸载时收尾，避免残留的 loading 状态污染父级全局 Activity。
+  // 卸载时收尾，避免观察方留下过期的 loading 状态。
   useEffect(() => {
     return () => {
       onLoadingChange?.(false);
@@ -1468,7 +1477,16 @@ export function BatteryUsageModal({
           </button>
         </div>
 
-        <div ref={scrollRef} className={`battery-usage-scroll-region${canScrollUp ? ' scroll-fade-top' : ''}${canScrollDown ? ' scroll-fade-bottom' : ''}`}>
+        <div
+          ref={scrollRef}
+          className={`battery-usage-scroll-region${canScrollUp ? ' scroll-fade-top' : ''}${canScrollDown ? ' scroll-fade-bottom' : ''}`}
+          aria-busy={loading || undefined}
+        >
+          <MiraEmbeddedActivity
+            active={loading}
+            activity="battery-analysis"
+            aiAnalysisEnabled={aiAnalysisEnabled}
+          />
           <div ref={contentRef} className="battery-usage-scroll-content">
           {!loading && (!response || selectableDevices.length === 0) ? (
             <BatteryHistoryEmptyState onClose={onClose} />
@@ -1542,12 +1560,28 @@ export function BatteryUsageModal({
                     <button className="action-btn" onClick={() => setConfirmingClear(true)}>
                       <Trash weight="regular" /> {t('batteryUsage.clearHistory')}
                     </button>
-                    <button className="action-btn" onClick={() => handleExport('json')} disabled={exportingFormat !== null}>
-                      <MiraInlineActivity active={exportingFormat === 'json'} activity="exporting-battery-history" announce fallback={<Download weight="regular" />} /> {t('batteryUsage.exportJson')}
-                    </button>
-                    <button className="action-btn" onClick={() => handleExport('csv')} disabled={exportingFormat !== null}>
-                      <MiraInlineActivity active={exportingFormat === 'csv'} activity="exporting-battery-history" announce fallback={<Download weight="regular" />} /> {t('batteryUsage.exportCsv')}
-                    </button>
+                    <MiraActivityButton
+                      className="action-btn"
+                      active={exportingFormat === 'json'}
+                      activity="exporting-battery-history"
+                      announce
+                      leading={<Download weight="regular" />}
+                      onClick={() => handleExport('json')}
+                      disabled={exportingFormat !== null}
+                    >
+                      {t('batteryUsage.exportJson')}
+                    </MiraActivityButton>
+                    <MiraActivityButton
+                      className="action-btn"
+                      active={exportingFormat === 'csv'}
+                      activity="exporting-battery-history"
+                      announce
+                      leading={<Download weight="regular" />}
+                      onClick={() => handleExport('csv')}
+                      disabled={exportingFormat !== null}
+                    >
+                      {t('batteryUsage.exportCsv')}
+                    </MiraActivityButton>
                   </>
                 )}
               </div>

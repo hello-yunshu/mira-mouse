@@ -44,7 +44,7 @@ describe('settings tab transition visibility arbitration (App level)', () => {
   it('plays the plugin update on the notification surface while the plugins tab is still transitioning', async () => {
     render(<App />);
     fireEvent.click(screen.getByRole('button', { name: '设置' }));
-    fireEvent.click(screen.getByRole('button', { name: '插件' }));
+    fireEvent.click(await screen.findByRole('button', { name: '插件' }));
 
     invokeMock.mockImplementation((command: string) => {
       if (command === 'plugin_updates_check') return Promise.resolve([pluginInfo('mira-amaster', '2.0.0')]);
@@ -61,7 +61,7 @@ describe('settings tab transition visibility arbitration (App level)', () => {
   it('plays fresh plugin updates on the fixed row after the plugins tab transition completes', async () => {
     render(<App />);
     fireEvent.click(screen.getByRole('button', { name: '设置' }));
-    fireEvent.click(screen.getByRole('button', { name: '插件' }));
+    fireEvent.click(await screen.findByRole('button', { name: '插件' }));
     await act(async () => { await sleep(210); });
 
     invokeMock.mockImplementation((command: string) => {
@@ -79,12 +79,12 @@ describe('settings tab transition visibility arbitration (App level)', () => {
   it('plays the local-ai update on the notification surface while the plugins tab is still transitioning', async () => {
     render(<App />);
     fireEvent.click(screen.getByRole('button', { name: '设置' }));
-    fireEvent.click(screen.getByRole('button', { name: '插件' }));
+    fireEvent.click(await screen.findByRole('button', { name: '插件' }));
 
     invokeMock.mockImplementation((command: string) => {
       if (command === 'local_ai_updates_check') {
         return Promise.resolve([
-          { component: 'bundle', currentVersion: '1.0.0', availableVersion: '1.2.0', updateAvailable: true },
+          { component: 'runtime', currentVersion: '1.0.0', availableVersion: '1.2.0', updateAvailable: true },
         ]);
       }
       return Promise.reject(new Error('not mocked'));
@@ -93,7 +93,7 @@ describe('settings tab transition visibility arbitration (App level)', () => {
 
     const bus = getAttentionBusState();
     expect(bus.active?.scope).toBe('notification:app');
-    expect(bus.active?.eventKey).toBe(attentionLocalAiUpdateKey('bundle', '1.2.0'));
+    expect(bus.active?.eventKey).toBe(attentionLocalAiUpdateKey('runtime', '1.2.0'));
     expect(bus.pending.some((request) => request.scope === 'settings-local-ai')).toBe(false);
   });
 });
@@ -144,14 +144,14 @@ describe('notification beam binding (P1-3)', () => {
     invokeMock.mockImplementation((command: string) => {
       if (command === 'local_ai_updates_check') {
         return Promise.resolve([
-          { component: 'bundle', currentVersion: '1.0.0', availableVersion: '1.2.0', updateAvailable: true },
+          { component: 'runtime', currentVersion: '1.0.0', availableVersion: '1.2.0', updateAvailable: true },
         ]);
       }
       return Promise.reject(new Error('not mocked'));
     });
     await act(async () => { await checkForLocalAiUpdates(true); });
 
-    const beamC = attentionLocalAiUpdateKey('bundle', '1.2.0');
+    const beamC = attentionLocalAiUpdateKey('runtime', '1.2.0');
     expect(getAttentionBusState().active?.eventKey).toBe(beamC);
     const card = document.querySelector('.app-notification');
     expect(card?.querySelector(`[data-event-key="${beamC}"]`)).not.toBeNull();

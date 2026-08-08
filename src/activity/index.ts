@@ -3,6 +3,14 @@ import './activity.css';
 
 export { MiraActivityOverlay } from './MiraActivityOverlay';
 export {
+  MiraActivityButton,
+  type MiraActivityButtonProps,
+} from './MiraActivityButton';
+export {
+  MiraEmbeddedActivity,
+  type MiraEmbeddedActivityProps,
+} from './MiraEmbeddedActivity';
+export {
   MiraInlineActivity,
   type MiraInlineActivityProps,
 } from './MiraInlineActivity';

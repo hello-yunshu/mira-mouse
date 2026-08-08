@@ -24,6 +24,11 @@ export interface MiraInlineActivityProps {
   activity: MiraActivityKind;
   className?: string;
   /**
+   * overlay 按钮的可见内容。由 Activity 组件与 Orb 在同一次渲染中切换，
+   * 避免调用方分别维护文字后出现“Orb + 原动作文字”并存的一帧。
+   */
+  label?: React.ReactNode;
+  /**
    * 按钮文案已经表达“正在……”时保持 false，避免屏幕阅读器重复播报。
    * 图标单独承担状态表达时可设为 true。
    */
@@ -56,6 +61,7 @@ export function MiraInlineActivity({
   active,
   activity,
   className,
+  label,
   announce = false,
   delayMs,
   minVisibleMs,
@@ -92,40 +98,49 @@ export function MiraInlineActivity({
     };
   }, [orbScope, showOrb, token]);
 
-  if (!showOrb && !reserveSpace && fallback === undefined) return null;
+  const renderActivitySlot = showOrb || reserveSpace || fallback !== undefined;
 
   const spec = miraActivitySpec(activity);
-  const label = miraActivityLabel(
+  const activityLabel = miraActivityLabel(
     activity,
     i18n.resolvedLanguage ?? i18n.language,
   );
 
   return (
-    <span
-      className={[
-        'mira-inline-activity',
-        showOrb ? 'is-visible' : 'is-waiting',
-        !showOrb && fallback !== undefined ? 'has-fallback' : null,
-        layout === 'overlay' ? 'mira-inline-activity--overlay' : null,
-        className,
-      ].filter(Boolean).join(' ')}
-      role={announce && showOrb ? 'status' : undefined}
-      aria-hidden={announce && showOrb ? undefined : 'true'}
-      aria-label={announce && showOrb ? label : undefined}
-    >
-      {showOrb ? (
-        <ThinkingOrb
-          state={spec.state}
-          size={spec.size}
-          speed={spec.speed}
-          theme="auto"
-          aria-hidden="true"
-        />
-      ) : fallback !== undefined ? (
-        <span className="mira-inline-activity-fallback" aria-hidden="true">
-          {fallback}
+    <>
+      {renderActivitySlot && (
+        <span
+          className={[
+            'mira-inline-activity',
+            showOrb ? 'is-visible' : 'is-waiting',
+            !showOrb && fallback !== undefined ? 'has-fallback' : null,
+            layout === 'overlay' ? 'mira-inline-activity--overlay' : null,
+            className,
+          ].filter(Boolean).join(' ')}
+          role={announce && showOrb ? 'status' : undefined}
+          aria-hidden={announce && showOrb ? undefined : 'true'}
+          aria-label={announce && showOrb ? activityLabel : undefined}
+        >
+          {showOrb ? (
+            <ThinkingOrb
+              state={spec.state}
+              size={spec.size}
+              speed={spec.speed}
+              theme="auto"
+              aria-hidden="true"
+            />
+          ) : fallback !== undefined ? (
+            <span className="mira-inline-activity-fallback" aria-hidden="true">
+              {fallback}
+            </span>
+          ) : undefined}
         </span>
-      ) : undefined}
-    </span>
+      )}
+      {label !== undefined && (
+        <span className={`mira-activity-label${showOrb ? ' is-concealed' : ''}`}>
+          {label}
+        </span>
+      )}
+    </>
   );
 }

@@ -27,6 +27,14 @@
   opacity: 0;
 }
 
+/* Line 的柔光与清晰边缘分层绘制：bloom 只负责被环形 mask 约束的渐变光晕，
+   不拿一条加粗实体线冒充光影，也不会铺进宿主内容。旧 WebView 不启用该层。 */
+.attention-beam__bloom {
+  display: none;
+  position: absolute;
+  pointer-events: none;
+}
+
 /* ===== line：默认静态降级（不依赖 @property / mask / color-mix） =====
    旧 WebKitGTK / 旧 Chromium 也能看到：静态普通颜色的内边框，
    播放一次淡入淡出，无无限动画，无布局变化，不影响点击。 */
@@ -61,13 +69,35 @@
 html.attention-full-line-supported
 .attention-beam--line
 .attention-beam__cycle {
-  padding: 1.5px;
+  padding: 2px;
 
+  /* 所有光效都先绘制在同一层，再由下方 mask 严格裁成 2px 边缘环：
+     - 第一层是短小的白色亮头；
+     - 第二层是克制的彩色尾迹；
+     - 第三层只保留极淡的路径提示；不能在深色主题里读成完整实体矩形。 */
   background:
     conic-gradient(
       from var(--attention-beam-angle),
-      var(--beam-color, #ffffff) 0deg,
-      transparent 72deg
+      transparent 0%, transparent 58%,
+      color-mix(in oklch, #ffffff 24%, transparent) 63%,
+      color-mix(in oklch, #ffffff 88%, transparent) 66%,
+      color-mix(in oklch, #ffffff 24%, transparent) 69%,
+      transparent 74%, transparent 100%
+    ),
+    conic-gradient(
+      from var(--attention-beam-angle),
+      transparent 0%, transparent 50%,
+      color-mix(in oklch, var(--beam-color-2, var(--beam-color, #ffffff)) 10%, transparent) 54%,
+      color-mix(in oklch, var(--beam-color-2, var(--beam-color, #ffffff)) 38%, transparent) 61%,
+      color-mix(in oklch, var(--beam-color, #ffffff) 68%, transparent) 66%,
+      color-mix(in oklch, var(--beam-color, #ffffff) 34%, transparent) 73%,
+      color-mix(in oklch, var(--beam-color, #ffffff) 10%, transparent) 79%,
+      transparent 84%, transparent 100%
+    ),
+    linear-gradient(
+      115deg,
+      color-mix(in oklch, var(--beam-color, #ffffff) 6%, transparent),
+      color-mix(in oklch, var(--beam-color-2, var(--beam-color, #ffffff)) 6%, transparent)
     );
 
   -webkit-mask:
@@ -82,6 +112,49 @@ html.attention-full-line-supported
 
   box-shadow: none;
 
+  animation:
+    attention-line-sweep
+    var(--beam-duration, 1700ms)
+    var(--motion-ease-standard, ease-in-out)
+    both;
+}
+
+/* 现代 WebView 的独立 bloom：与 stroke 共用同一角度和时序，但使用更宽、
+   更柔的色带。先裁成边缘环，再 blur，让光从边缘向内外各扩散少量；中心
+   仍保持透明。Line 层允许外溢，避免把外侧光晕硬裁成一根线。 */
+html.attention-full-line-supported .attention-beam--line {
+  overflow: visible;
+}
+
+html.attention-full-line-supported
+.attention-beam--line
+.attention-beam__bloom {
+  display: block;
+  inset: -2px;
+  padding: 5px;
+  border-radius: inherit;
+  box-sizing: border-box;
+  background: conic-gradient(
+    from var(--attention-beam-angle),
+    transparent 0%, transparent 48%,
+    color-mix(in oklch, var(--beam-color-2, var(--beam-color, #ffffff)) 8%, transparent) 53%,
+    color-mix(in oklch, var(--beam-color-2, var(--beam-color, #ffffff)) 30%, transparent) 59%,
+    color-mix(in oklch, var(--beam-color, #ffffff) 76%, transparent) 66%,
+    color-mix(in oklch, #ffffff 82%, transparent) 68%,
+    color-mix(in oklch, var(--beam-color, #ffffff) 42%, transparent) 72%,
+    color-mix(in oklch, var(--beam-color, #ffffff) 12%, transparent) 79%,
+    transparent 86%, transparent 100%
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  filter: blur(4px) saturate(1.16);
+  opacity: 0;
   animation:
     attention-line-sweep
     var(--beam-duration, 1700ms)
@@ -161,6 +234,9 @@ html.attention-color-mix-supported
 /* 无障碍降级：约 220ms 的静态内边框淡入淡出；清除 mask 与 conic 扫掠，
    不保留绕边移动动画。普通颜色优先，color-mix 作为现代第二层覆盖。 */
 @media (prefers-reduced-motion: reduce) {
+  .attention-beam__bloom {
+    display: none !important;
+  }
   .attention-beam__cycle {
     animation:
       attention-static-fade

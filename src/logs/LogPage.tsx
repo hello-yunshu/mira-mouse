@@ -1508,8 +1508,7 @@ export function LogPage({ onBack }: { onBack: () => void }) {
   return (
     <main className="log-page">
       <header>
-        <div>
-          <p className="eyebrow">{t('logs.eyebrow')}</p>
+        <div className="log-title-block">
           <h1>{t('logs.title')}</h1>
         </div>
         <button className="secondary" onClick={onBack}>{t('common.back')}</button>

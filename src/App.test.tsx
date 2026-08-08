@@ -4,13 +4,47 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
 import { notifyError } from './notify';
 
-const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
+const { invokeMock, currentWindowMock, windowHandlers } = vi.hoisted(() => {
+  const handlers: {
+    focus?: (event: { payload: boolean }) => void;
+    resized?: (event: { payload: { width: number; height: number } }) => void;
+  } = {};
+  return {
+    invokeMock: vi.fn(),
+    windowHandlers: handlers,
+    currentWindowMock: {
+      isVisible: vi.fn(),
+      isMinimized: vi.fn(),
+      onFocusChanged: vi.fn(),
+      onResized: vi.fn(),
+      minimize: vi.fn(),
+    },
+  };
+});
 vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }));
+vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => currentWindowMock }));
 
 const originalUserAgent = navigator.userAgent;
 
 beforeEach(() => {
   invokeMock.mockRejectedValue(new Error('not mocked'));
+  currentWindowMock.isVisible.mockReset().mockResolvedValue(true);
+  currentWindowMock.isMinimized.mockReset().mockResolvedValue(false);
+  currentWindowMock.onFocusChanged.mockReset().mockImplementation(async (
+    handler: (event: { payload: boolean }) => void,
+  ) => {
+    windowHandlers.focus = handler;
+    return vi.fn();
+  });
+  currentWindowMock.onResized.mockReset().mockImplementation(async (
+    handler: (event: { payload: { width: number; height: number } }) => void,
+  ) => {
+    windowHandlers.resized = handler;
+    return vi.fn();
+  });
+  currentWindowMock.minimize.mockReset().mockResolvedValue(undefined);
+  delete windowHandlers.focus;
+  delete windowHandlers.resized;
 });
 
 afterEach(() => {
@@ -31,6 +65,99 @@ describe('Mira shell', () => {
     render(<App />);
     expect(screen.getByText('还没找到支持的鼠标呢')).toBeInTheDocument();
     expect(screen.queryByText(/0 DPI|--%/)).not.toBeInTheDocument();
+  });
+  it('pauses the dashboard aura while minimized even when the native window stays visible', async () => {
+    render(<App />);
+    await waitFor(() => expect(windowHandlers.focus).toBeTypeOf('function'));
+    await waitFor(() => expect(windowHandlers.resized).toBeTypeOf('function'));
+
+    // macOS 最小化后 isVisible 仍可能为 true；focus 回调还可能早于 minimized 状态落定。
+    windowHandlers.focus?.({ payload: false });
+    currentWindowMock.isMinimized.mockResolvedValue(true);
+    await act(async () => {
+      windowHandlers.resized?.({ payload: { width: 0, height: 0 } });
+    });
+
+    await waitFor(() => expect(document.querySelector('.device-aura')).toHaveClass('is-paused'));
+
+    currentWindowMock.isMinimized.mockResolvedValue(false);
+    await act(async () => {
+      windowHandlers.focus?.({ payload: true });
+    });
+    await waitFor(() => expect(document.querySelector('.device-aura')).not.toHaveClass('is-paused'));
+  });
+  it('freezes the exact aura frame in the leaving page snapshot', async () => {
+    render(<App />);
+    const aura = document.querySelector<HTMLElement>('.device-aura')!;
+    expect(aura.style.getPropertyValue('--aura-phase-offset')).toMatch(/^-\d+ms$/);
+
+    const cloud = aura.querySelector<HTMLElement>('.aura-cloud-1')!;
+    cloud.style.transform = 'translate(7px, -3px) scale(1.08)';
+    cloud.style.opacity = '0.67';
+    cloud.style.borderRadius = '55% 45% 60% 40%';
+    const stars = aura.querySelector<HTMLElement>('.aura-stars')!;
+    stars.style.opacity = '0.82';
+    const star = stars.querySelector<HTMLElement>('.aura-star-2')!;
+    star.style.transform = 'scale(1.14)';
+    star.style.opacity = '0.74';
+
+    fireEvent.click(screen.getByRole('button', { name: '设置' }));
+
+    await waitFor(() => expect(document.querySelector('.page-layer-leaving .device-aura')).toBeInTheDocument());
+    const frozenCloud = document.querySelector<HTMLElement>('.page-layer-leaving .aura-cloud-1')!;
+    expect(frozenCloud.style.animation).toBe('none');
+    expect(frozenCloud.style.transform).toBe('translate(7px, -3px) scale(1.08)');
+    expect(frozenCloud.style.opacity).toBe('0.67');
+    expect(frozenCloud.style.borderRadius).toBe('55% 45% 60% 40%');
+    const frozenStars = document.querySelector<HTMLElement>('.page-layer-leaving .aura-stars')!;
+    const frozenStar = frozenStars.querySelector<HTMLElement>('.aura-star-2')!;
+    expect(frozenStars.style.animation).toBe('none');
+    expect(frozenStars.style.opacity).toBe('0.82');
+    expect(frozenStar.style.animation).toBe('none');
+    expect(frozenStar.style.transform).toBe('scale(1.14)');
+    expect(frozenStar.style.opacity).toBe('0.74');
+  });
+  it('keeps one persistent Mira Mouse eyebrow while switching settings and about', () => {
+    render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: '设置' }));
+
+    const eyebrow = document.querySelector('.page-persistent-eyebrow');
+    expect(eyebrow).toHaveTextContent('Mira Mouse');
+
+    fireEvent.click(screen.getByRole('button', { name: '关于' }));
+    expect(document.querySelector('.page-persistent-eyebrow')).toBe(eyebrow);
+    expect(document.querySelector('.page-persistent-eyebrow')).toHaveTextContent('Mira Mouse');
+  });
+  it('pushes page titles through one fixed title slot without scaling', async () => {
+    render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: '设置' }));
+
+    const titleSlot = document.querySelector('.page-persistent-title');
+    expect(titleSlot?.querySelector('.is-current')).toHaveTextContent('设置');
+
+    fireEvent.click(screen.getByRole('button', { name: '关于 Mira' }));
+    await waitFor(() => expect(titleSlot?.querySelector('.is-next')).toHaveTextContent('关于'));
+    const incomingTitle = titleSlot?.querySelector('.is-next');
+    expect(document.querySelector('.page-persistent-title')).toBe(titleSlot);
+    expect(titleSlot).toHaveClass('direction-forward');
+    await waitFor(() => expect(titleSlot).toHaveClass('is-transitioning'));
+    await waitFor(() => expect(titleSlot?.querySelector('.is-current')).toHaveTextContent('关于'));
+    expect(titleSlot?.querySelector('.is-current')).toBe(incomingTitle);
+  });
+  it('routes logs through the shared page transition while keeping Settings active', async () => {
+    render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: '设置' }));
+    fireEvent.click(await screen.findByRole('button', { name: '关于' }));
+    fireEvent.click(await screen.findByRole('button', { name: '打开日志与诊断' }));
+
+    expect(document.querySelector('.page-swap')).toHaveAttribute('data-page-view', 'logs');
+    expect(document.querySelector('.page-swap')).toHaveClass('is-transitioning');
+    expect(document.querySelector('.page-layer-leaving')).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: '日志与诊断' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '设置' })).toHaveClass('active');
+
+    fireEvent.click(screen.getByRole('button', { name: '返回' }));
+    expect(document.querySelector('.page-swap')).toHaveAttribute('data-page-view', 'settings');
   });
   it('shows native-style window controls in the Windows web preview', () => {
     Object.defineProperty(navigator, 'userAgent', { configurable: true, value: 'Linux jsdom' });
