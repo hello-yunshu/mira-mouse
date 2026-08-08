@@ -141,12 +141,9 @@ button.mira-activity-button[data-mira-processing="true"]:disabled {
 
 .mira-embedded-activity canvas {
   display: block;
-  filter: drop-shadow(
-    0 6px 16px rgb(30 24 38 / 16%)
-  );
-  filter: drop-shadow(
-    0 6px 16px color-mix(in oklch, var(--accent), transparent 70%)
-  );
+  filter:
+    drop-shadow(0 6px 16px rgb(30 24 38 / 16%))
+    drop-shadow(0 6px 16px color-mix(in oklch, var(--accent), transparent 70%));
 }
 
 @keyframes mira-activity-enter {
