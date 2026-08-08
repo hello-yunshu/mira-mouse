@@ -156,13 +156,10 @@ export interface MiraActivityOverlayProps {
    * DOM 兜底检测；显式 null 表示“当前没有活动”，不会被 DOM 标志覆盖。
    */
   activity?: MiraGlobalActivity | null;
-  /** 电量功能真实启用状态，用于区分电量分析文案。 */
-  batteryAnalysisEnabled?: boolean;
 }
 
 export function MiraActivityOverlay({
   activity: deviceActivity,
-  batteryAnalysisEnabled = false,
 }: MiraActivityOverlayProps) {
   const { i18n } = useTranslation();
   const hasExplicitActivity = deviceActivity !== undefined;
@@ -199,7 +196,6 @@ export function MiraActivityOverlay({
   const label = miraActivityLabel(
     displayed,
     i18n.resolvedLanguage ?? i18n.language,
-    { aiAnalysisEnabled: batteryAnalysisEnabled },
   );
 
   return (

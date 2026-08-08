@@ -49,6 +49,7 @@ export {
   attentionPluginInstalledKey,
   attentionLocalAiUpdateKey,
   attentionLocalAiInstalledKey,
+  attentionSectionFocusKey,
   attentionDeviceKey,
   attentionColorForZone,
   attentionAccentColor,

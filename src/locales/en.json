@@ -328,15 +328,17 @@
       "hint": "Runs adaptive analysis on this device. Turning it off hides AI labels elsewhere and stops the learning model.",
       "enabled": "Enabled",
       "disabled": "Off",
-      "bundle": "Local AI engine",
+      "component": {
+        "runtime": "Local AI engine",
+        "model": "Local AI model",
+        "handler": "Local AI handler"
+      },
       "checkUpdates": "Check updates",
-      "checking": "Checking…",
       "runtimeReady": "Engine ready",
       "runtimeUnavailable": "Local AI engine unavailable; Battery Usage still uses Mira's existing algorithm.",
       "notInstalled": "Not installed",
       "signedBundle": "Signature verified",
-      "defaultBundled": "Bundled by default",
-      "updatable": "Update available: v{{version}}",
+      "updatable": "Update available to v{{version}}",
       "updating": "Updating…",
       "updateBundle": "Update",
       "updated": "Updated to v{{version}}",
@@ -448,7 +450,6 @@
     },
     "pluginUpdate": {
       "check": "Check for plugin updates",
-      "checking": "Checking…",
       "allLatest": "All plugins up to date",
       "noPlugins": "No installed plugins found. The official installer bundles mira.amaster by default.",
       "signatureVerified": "Signature verified",
@@ -528,7 +529,6 @@
     "updateEnabledHint": "Automatic checks are enabled; you can also check manually",
     "updateDisabledHint": "This build is not marked release-ready (releaseReady: false), so automatic updates are disabled. Download the latest from the GitHub Release page.",
     "updateCheck": "Check for updates",
-    "updateChecking": "Checking…",
     "updateUpToDate": "Up to date",
     "downloadInstall": "Download & install v{{version}}",
     "relaunch": "Relaunch to finish update",
@@ -570,11 +570,11 @@
     },
     "localAiUpdateFound": {
       "title": "AI engine update available",
-      "body": "The local AI engine can be updated to v{{version}}. Update it in Settings → Plugins."
+      "body": "{{component}} can be updated to v{{version}}. Update it in Settings → Plugins."
     },
     "localAiUpdateInstalled": {
       "title": "AI engine update installed",
-      "body": "The local AI engine has been updated to v{{version}}."
+      "body": "{{components}} updated to the latest version."
     },
     "saveFailed": "Save failed",
     "writeFailed": "Write failed",
@@ -777,7 +777,6 @@
     "title": "Logs & Diagnostics",
     "eyebrow": "Local runtime records",
     "cardHint": "Inspect local runtime logs of the app, mouse plugins, and local AI to troubleshoot device connection, plugin execution, and prediction issues.",
-    "cardPrivacy": "Logs are stored locally only and never uploaded.",
     "openButton": "Open Logs & Diagnostics",
     "back": "Back",
     "filter": {

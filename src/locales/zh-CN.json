@@ -328,14 +328,16 @@
       "hint": "在设备本地运行自适应分析；关闭后，其他页面不再显示 AI 标识，也不会运行学习模型。",
       "enabled": "已启用",
       "disabled": "已关闭",
-      "bundle": "本地 AI 引擎",
+      "component": {
+        "runtime": "本地 AI 引擎",
+        "model": "本地 AI 模型",
+        "handler": "本地 AI 处理器"
+      },
       "checkUpdates": "检查更新",
-      "checking": "正在检查…",
       "runtimeReady": "引擎可用",
       "runtimeUnavailable": "本地 AI 引擎暂不可用；电量页仍使用原有算法。",
       "notInstalled": "未安装",
       "signedBundle": "签名已验证",
-      "defaultBundled": "默认内置",
       "updatable": "可更新至 v{{version}}",
       "updating": "更新中…",
       "updateBundle": "更新",
@@ -448,7 +450,6 @@
     },
     "pluginUpdate": {
       "check": "检查插件更新",
-      "checking": "检查中…",
       "allLatest": "插件均为最新",
       "noPlugins": "未发现已安装的插件。正式安装包默认包含 mira.amaster。",
       "signatureVerified": "签名已验证",
@@ -528,7 +529,6 @@
     "updateEnabledHint": "自动检查已启用，也可手动检查新版本",
     "updateDisabledHint": "当前构建未达到正式发布条件（releaseReady: false），自动更新已关闭。请前往 GitHub Release 页面手动下载。",
     "updateCheck": "检查更新",
-    "updateChecking": "检查中…",
     "updateUpToDate": "已是最新",
     "downloadInstall": "下载并安装 v{{version}}",
     "relaunch": "重启完成更新",
@@ -570,11 +570,11 @@
     },
     "localAiUpdateFound": {
       "title": "发现 AI 引擎更新",
-      "body": "本地 AI 引擎可更新至 v{{version}}，请在「设置 → 插件」中更新。"
+      "body": "{{component}}可更新至 v{{version}}，请在「设置 → 插件」中更新。"
     },
     "localAiUpdateInstalled": {
       "title": "AI 引擎更新完成",
-      "body": "本地 AI 引擎已更新至 v{{version}}。"
+      "body": "{{components}}已更新至最新版本。"
     },
     "saveFailed": "保存失败",
     "writeFailed": "写入失败",
@@ -777,7 +777,6 @@
     "title": "日志与诊断",
     "eyebrow": "本地运行记录",
     "cardHint": "查看程序、鼠标插件和本地 AI 的本地运行记录，用于排查设备连接、插件执行和预测问题。",
-    "cardPrivacy": "日志仅保存在本机，不会上传。",
     "openButton": "打开日志与诊断",
     "back": "返回",
     "filter": {

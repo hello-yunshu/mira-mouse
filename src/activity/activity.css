@@ -64,6 +64,12 @@ button.mira-activity-button {
   display: inline-flex;
 }
 
+/* Processing is not the same visual state as unavailable. Keep interaction
+   disabled, but do not halve the contrast of the already delicate 20px Orb. */
+button.mira-activity-button[data-mira-processing="true"]:disabled {
+  opacity: 1;
+}
+
 /* overlay 布局：Orb 绝对居中覆盖按钮内容，不参与外部宽度计算；
    空闲与 0–300ms 延迟期不渲染空槽，Orb 显示时仅视觉隐藏原文字，
    因此按钮尺寸保持稳定。 */
@@ -79,9 +85,18 @@ button.mira-activity-button {
   pointer-events: none;
 }
 
-/* Orb 真正出现（showOrb）时才渲染 overlay 元素；此时隐藏紧邻的文字，
-   保持按钮尺寸不变，文字节点仍留在 DOM 中继续贡献 accessible name。 */
-.mira-inline-activity--overlay + span {
+/* Activity owns both states in one React render. Once the Orb is visible, the
+   full icon/text label is visually concealed without leaving the DOM, so there
+   can be no ambiguous “Orb + original action” frame or width change. */
+.mira-activity-label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: inherit;
+  opacity: 1;
+}
+
+.mira-activity-label.is-concealed {
   opacity: 0;
 }
 
@@ -116,6 +131,24 @@ button.mira-activity-button {
   display: block;
 }
 
+/* Embedded activity belongs to an existing surface (for example the battery
+   modal), so it intentionally has no secondary glass card or visible label. */
+.mira-embedded-activity {
+  display: grid;
+  place-items: center;
+  color: var(--text, currentColor);
+}
+
+.mira-embedded-activity canvas {
+  display: block;
+  filter: drop-shadow(
+    0 6px 16px rgb(30 24 38 / 16%)
+  );
+  filter: drop-shadow(
+    0 6px 16px color-mix(in oklch, var(--accent), transparent 70%)
+  );
+}
+
 @keyframes mira-activity-enter {
   from {
     opacity: 0;
@@ -136,6 +169,7 @@ button.mira-activity-button {
   .mira-inline-activity {
     transition: none;
   }
+
 }
 
 @media (prefers-reduced-transparency: reduce) {

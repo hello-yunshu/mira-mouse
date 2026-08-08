@@ -16,13 +16,14 @@ import {
   relaunchAfterUpdate,
   type AppUpdateState,
 } from './updater';
-import { MiraInlineActivity, announceAfterOrbExit } from './activity';
+import { MiraActivityButton, announceAfterOrbExit } from './activity';
 import {
   ATTENTION_PRIORITY,
   AttentionBeamLayer,
   attentionAppRestartKey,
   attentionAppUpdateKey,
   attentionDesaturatedAccent,
+  attentionSectionFocusKey,
   useAttentionFeedback,
 } from './attention';
 
@@ -105,12 +106,26 @@ export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0 }:
     }
   }, [update.phase, update.version, aboutAnnounce]);
 
+  // 从通知跳转定位到更新块：滚动定位 + 无声 focus（可访问性），并用 Beam
+  // 替代被移除的 focus outline 来做视觉强调。
+  const aboutSectionFocusSeq = useRef(0);
   useEffect(() => {
     if (focusUpdateToken === 0) return;
     const target = document.getElementById('about-update-section');
     target?.scrollIntoView?.({ block: 'start', behavior: 'smooth' });
     target?.focus?.({ preventScroll: true });
-  }, [focusUpdateToken, info]);
+    const seq = ++aboutSectionFocusSeq.current;
+    aboutAnnounce({
+      eventKey: attentionSectionFocusKey('about-update', seq),
+      scope: 'about-update',
+      variant: 'line',
+      color: attentionDesaturatedAccent(),
+      durationMs: 1500,
+      strength: 0.2,
+      cycles: 1,
+      priority: ATTENTION_PRIORITY['update-available'],
+    });
+  }, [focusUpdateToken, info, aboutAnnounce]);
 
   async function checkForUpdates() {
     if (!info?.updaterActive) return;
@@ -197,6 +212,7 @@ export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0 }:
       </section>
 
       <section className="card about-section donate-card">
+        <span className="donate-border-beam" aria-hidden="true" />
         <div className="card-title"><h2>{t('about.section.donate')}</h2></div>
         <p className="setting-hint donate-hint">{t('about.donate.hint')}</p>
         <div className="contact-links">
@@ -268,10 +284,15 @@ export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0 }:
           </div>
           {info.updaterActive && (
             <div className="contact-links align-end">
-              <button className="secondary mira-activity-button" onClick={checkForUpdates} disabled={manualCheckBusy || update.phase === 'checking' || update.phase === 'downloading'}>
-                <MiraInlineActivity active={manualCheckBusy} activity="checking-app-update" layout="overlay" />
-                <span>{update.phase === 'checking' ? t('about.updateChecking') : t('about.updateCheck')}</span>
-              </button>
+              <MiraActivityButton
+                className="secondary"
+                active={manualCheckBusy}
+                activity="checking-app-update"
+                onClick={checkForUpdates}
+                disabled={update.phase === 'checking' || update.phase === 'downloading'}
+              >
+                {t('about.updateCheck')}
+              </MiraActivityButton>
               {update.phase === 'up-to-date' && <span className="save-badge">{t('about.updateUpToDate')}</span>}
             </div>
           )}

@@ -251,33 +251,39 @@ describe('SettingsPage', () => {
   });
 
   it('updates and rolls back the local AI bundle as a single unit', async () => {
-    let bundleVersion = '0.5.0';
+    let runtimeVersion = '0.5.0';
     invokeMock.mockImplementation((command: string, payload?: { component?: string }) => {
       if (command === 'settings_get') return Promise.resolve(settings);
       if (command === 'autostart_state') return Promise.resolve(false);
       if (command === 'about_info') return Promise.resolve({ bundledPlugins: [] });
       if (command === 'local_ai_status') return Promise.resolve({
         ready: true,
-        bundleVersion: bundleVersion,
-        runtimeVersion: '0.5.0',
+        bundleVersion: runtimeVersion,
+        runtimeVersion: runtimeVersion,
         modelPackId: 'mira.battery.default',
-        modelPackVersion: bundleVersion,
+        modelPackVersion: '0.4.0',
+        handlerId: 'mira.battery.handler',
+        handlerVersion: '0.3.0',
         rollbackAvailable: true,
       });
       if (command === 'local_ai_updates_check') return Promise.resolve([
-        { component: 'bundle', currentVersion: bundleVersion, availableVersion: '0.6.0', updateAvailable: true },
+        { component: 'runtime', currentVersion: runtimeVersion, availableVersion: '0.6.0', updateAvailable: true },
+        { component: 'model', currentVersion: '0.4.0', availableVersion: '0.4.0', updateAvailable: false },
+        { component: 'handler', currentVersion: '0.3.0', availableVersion: '0.3.0', updateAvailable: false },
       ]);
       if (command === 'local_ai_update_install') {
         expect(payload?.component).toBe('bundle');
-        bundleVersion = '0.6.0';
-        return Promise.resolve({ component: 'bundle', version: bundleVersion, previousVersion: '0.5.0', ready: true });
+        runtimeVersion = '0.6.0';
+        return Promise.resolve({ component: 'bundle', version: runtimeVersion, previousVersion: '0.5.0', ready: true });
       }
       if (command === 'local_ai_update_rollback') return Promise.resolve({
         ready: true,
         bundleVersion: '0.5.0',
         runtimeVersion: '0.5.0',
         modelPackId: 'mira.battery.default',
-        modelPackVersion: '0.5.0',
+        modelPackVersion: '0.4.0',
+        handlerId: 'mira.battery.handler',
+        handlerVersion: '0.3.0',
         rollbackAvailable: false,
       });
       return Promise.resolve(undefined);
@@ -287,13 +293,14 @@ describe('SettingsPage', () => {
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('local_ai_status'));
     fireEvent.click(screen.getByRole('button', { name: '插件' }));
     expect(await screen.findByText('本地 AI 引擎')).toBeInTheDocument();
+    expect(screen.getByText('本地 AI 模型')).toBeInTheDocument();
+    expect(screen.getByText('本地 AI 处理器')).toBeInTheDocument();
     expect(screen.getByText('引擎可用')).toBeInTheDocument();
-    const localAiItem = screen.getByText('本地 AI 引擎').closest('.plugin-item');
-    expect(localAiItem).not.toBeNull();
-    expect(localAiItem?.querySelector('.setting-hint')).toHaveTextContent('v0.5.0');
-    expect(localAiItem?.querySelector('.plugin-meta .badge')).toHaveTextContent('签名已验证');
-    expect(localAiItem?.querySelector('.plugin-meta .badge')).toHaveClass('badge-ok');
-    expect(screen.queryByText('随 Mira 打包的 Runtime 与模型，可整体更新或回退；异常时自动回退到 Mira 原有算法。')).toBeNull();
+    const runtimeItem = screen.getByText('本地 AI 引擎').closest('.plugin-item');
+    expect(runtimeItem).not.toBeNull();
+    expect(runtimeItem?.querySelector('.setting-hint')).toHaveTextContent('v0.5.0');
+    expect(runtimeItem?.querySelector('.plugin-meta .badge')).toHaveTextContent('签名已验证');
+    expect(runtimeItem?.querySelector('.plugin-meta .badge')).toHaveClass('badge-ok');
 
     // 更新成功后回退按钮不应显示（仅出错时显示）。
     expect(screen.queryByRole('button', { name: '回退' })).toBeNull();
@@ -309,22 +316,26 @@ describe('SettingsPage', () => {
   });
 
   it('shows the rollback button only when local AI update errors', async () => {
-    const bundleVersion = '0.5.0';
+    const runtimeVersion = '0.5.0';
     invokeMock.mockImplementation((command: string) => {
       if (command === 'settings_get') return Promise.resolve(settings);
       if (command === 'autostart_state') return Promise.resolve(false);
       if (command === 'about_info') return Promise.resolve({ bundledPlugins: [] });
       if (command === 'local_ai_status') return Promise.resolve({
         ready: true,
-        bundleVersion: bundleVersion,
-        runtimeVersion: '0.5.0',
+        bundleVersion: runtimeVersion,
+        runtimeVersion: runtimeVersion,
         modelPackId: 'mira.battery.default',
-        modelPackVersion: bundleVersion,
+        modelPackVersion: '0.4.0',
+        handlerId: 'mira.battery.handler',
+        handlerVersion: '0.3.1',
         rollbackAvailable: true,
         previousVersion: '0.3.0',
       });
       if (command === 'local_ai_updates_check') return Promise.resolve([
-        { component: 'bundle', currentVersion: bundleVersion, availableVersion: '0.6.0', updateAvailable: true },
+        { component: 'runtime', currentVersion: runtimeVersion, availableVersion: '0.6.0', updateAvailable: true },
+        { component: 'model', currentVersion: '0.4.0', availableVersion: '0.4.0', updateAvailable: false },
+        { component: 'handler', currentVersion: '0.3.1', availableVersion: '0.3.1', updateAvailable: false },
       ]);
       if (command === 'local_ai_update_install') {
         return Promise.reject(new Error('install failed'));
@@ -334,7 +345,9 @@ describe('SettingsPage', () => {
         bundleVersion: '0.5.0',
         runtimeVersion: '0.5.0',
         modelPackId: 'mira.battery.default',
-        modelPackVersion: '0.5.0',
+        modelPackVersion: '0.4.0',
+        handlerId: 'mira.battery.handler',
+        handlerVersion: '0.3.1',
         rollbackAvailable: false,
       });
       return Promise.resolve(undefined);

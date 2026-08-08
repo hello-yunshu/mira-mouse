@@ -14,6 +14,11 @@ vi.mock('./notify', () => ({
   notifyInfo: vi.fn(),
   notifySuccess: vi.fn(),
 }));
+vi.mock('thinking-orbs', () => ({
+  ThinkingOrb: ({ state }: { state: string }) => (
+    <span data-testid="thinking-orb" data-state={state} />
+  ),
+}));
 
 const settingsEnabled = {
   batteryHistoryEnabled: true,
@@ -235,6 +240,27 @@ describe('BatteryUsageModal', () => {
     fireEvent.mouseEnter(firstUsagePoint);
     expect(document.querySelector('.battery-chart-tooltip')).toHaveTextContent('累计使用: 0m');
     expect(document.querySelector('.battery-chart-tooltip')).toHaveTextContent('实际时间:');
+  });
+
+  it('keeps a cumulative-usage unit visible when the recorded range has no natural major tick', async () => {
+    const shortUsageResponse: BatteryHistoryResponse = {
+      ...MOCK_BATTERY_HISTORY_24H,
+      series: MOCK_BATTERY_HISTORY_24H.series.map((series) => ({
+        ...series,
+        points: series.points.slice(0, 4).map((point, index) => ({
+          ...point,
+          usageElapsedMinutes: index * 5,
+        })),
+      })),
+    };
+    mockInvoke({ response: shortUsageResponse });
+    render(<BatteryUsageModal open onClose={() => {}} hasBattery />);
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('battery_history_get', { range: '24h' }));
+
+    const usageLabels = Array.from(document.querySelectorAll<SVGTextElement>('.battery-chart-x-label'))
+      .map((label) => label.textContent);
+    expect(usageLabels).toEqual(['0', '5', '10', '15 分钟']);
+    expect(document.querySelectorAll('.battery-chart-x-grid.major')).toHaveLength(1);
   });
 
   it('switches to 10d range using cached response without refetching', async () => {
@@ -949,7 +975,7 @@ describe('BatteryUsageModal scroll fade (P0-D)', () => {
 
 // ─── onLoadingChange 生命周期（P0-1 收口）────────────────────────────────
 // 内部 loading 与对外 reportedLoading 分离：弹窗关闭、历史记录禁用、无电池
-// 支持时都不得向 App 错报全局 battery-analysis。
+// 支持时都不得向调用方残留 loading；视觉反馈只在 Modal 内部表达。
 describe('BatteryUsageModal onLoadingChange lifecycle', () => {
   beforeEach(async () => {
     invokeMock.mockReset();
@@ -969,6 +995,23 @@ describe('BatteryUsageModal onLoadingChange lifecycle', () => {
     });
     return resolvers;
   }
+
+  it('pending 超过 300ms 时只在电量 Modal 内容面显示 Orb', async () => {
+    pendingHistory();
+    render(<BatteryUsageModal open onClose={() => {}} hasBattery />);
+
+    await waitFor(
+      () => expect(screen.getByTestId('thinking-orb')).toHaveAttribute('data-state', 'solving'),
+      { timeout: 1200 },
+    );
+
+    const embedded = document.querySelector('.mira-embedded-activity');
+    expect(embedded).toBeInTheDocument();
+    expect(embedded?.parentElement).toHaveClass('battery-usage-scroll-region');
+    expect(document.querySelector('.mira-activity-overlay')).not.toBeInTheDocument();
+    expect(document.querySelector('.mira-activity-card')).not.toBeInTheDocument();
+    expect(screen.queryByText('正在整理电量记录…')).not.toBeInTheDocument();
+  });
 
   it('A. 请求 pending 时关闭：onLoadingChange 落到 false，settle 后不得重新上报 true', async () => {
     const resolvers = pendingHistory();

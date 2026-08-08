@@ -337,8 +337,10 @@ export interface LocalAiStatus {
   error?: string;
 }
 
+export type LocalAiComponent = 'runtime' | 'model' | 'handler';
+
 export interface LocalAiUpdateInfo {
-  component: 'bundle';
+  component: LocalAiComponent;
   currentVersion?: string;
   availableVersion: string;
   updateAvailable: boolean;

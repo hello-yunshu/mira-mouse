@@ -17,6 +17,22 @@ import {
   attentionPluginUpdateKey,
 } from './attentionTypes';
 
+const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }));
+
+const BUNDLED_PLUGIN = {
+  pluginId: 'mira-amaster',
+  version: '1.0.0',
+  asset: 'mira-amaster.mira-plugin',
+  sha256: 'test',
+  publisherKeyId: 'test',
+  releaseTag: 'stable',
+  bundleByDefault: true,
+  signatureVerified: true,
+  evidence: 'test',
+  source: 'installed',
+};
+
 // ─── 伪存储控制面（vi.mock 工厂与测试共享）─────────────────────────────────
 const plugin = vi.hoisted(() => {
   const listeners = new Set<(next: unknown) => void>();
@@ -77,6 +93,9 @@ vi.mock('../local-ai-updater', () => ({
   checkForLocalAiUpdates: vi.fn(),
   installLocalAiUpdate: vi.fn(),
   rollbackLocalAiUpdate: vi.fn(),
+  localAiComponentLabel: (component: string) => component,
+  startAutomaticLocalAiUpdateCheck: vi.fn(),
+  stopAutomaticLocalAiUpdateCheck: vi.fn(),
 }));
 
 function emitPlugin(next: PluginUpdateState): void {
@@ -92,12 +111,17 @@ function pluginInfo(pluginId: string, version: string): PluginUpdateInfo {
 }
 
 function localAiBundle(version: string): LocalAiUpdateInfo {
-  return { component: 'bundle', currentVersion: '1.0.0', availableVersion: version, updateAvailable: true };
+  return { component: 'runtime', currentVersion: '1.0.0', availableVersion: version, updateAvailable: true };
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 beforeEach(async () => {
+  invokeMock.mockReset();
+  invokeMock.mockImplementation((command: string) => {
+    if (command === 'about_info') return Promise.resolve({ bundledPlugins: [BUNDLED_PLUGIN] });
+    return Promise.reject(new Error(`not mocked: ${command}`));
+  });
   plugin.reset();
   localAi.reset();
   resetAttentionBusForTests();
@@ -108,10 +132,10 @@ afterEach(() => {
   resetAttentionBusForTests();
 });
 
-function renderSettings(initialTab: 'general' | 'plugins', onTabChange: (tab: string) => void) {
+function renderSettings(initialTab: 'general' | 'plugins', onTabChange: (tab: string) => void, previewMode = true) {
   render(
     <SettingsPage
-      previewMode
+      previewMode={previewMode}
       initialTab={initialTab}
       onTabChange={onTabChange}
       onNavigateAbout={vi.fn()}
@@ -142,11 +166,12 @@ describe('settings tab transition and update arbitration', () => {
 
   it('plays a fresh plugin update on the fixed row once the plugins tab is visible', async () => {
     const onTabChange = vi.fn();
-    renderSettings('general', onTabChange);
+    renderSettings('general', onTabChange, false);
     await waitFor(() => expect(onTabChange).toHaveBeenLastCalledWith('general'));
 
     fireEvent.click(screen.getByRole('button', { name: '插件' }));
     await act(async () => { await sleep(210); });
+    await screen.findByText('mira-amaster');
 
     emitPlugin({ phase: 'available', updates: [pluginInfo('mira-amaster', '2.1.0')], downloadedBytes: 0 });
 
@@ -155,6 +180,22 @@ describe('settings tab transition and update arbitration', () => {
     expect(bus.active?.eventKey).toBe(attentionPluginUpdateKey('mira-amaster', '2.1.0'));
     expect(bus.active?.priority).toBe(ATTENTION_PRIORITY['update-available']);
     expect(bus.pending.length).toBe(0);
+    const beam = document.querySelector(`[data-event-key="${attentionPluginUpdateKey('mira-amaster', '2.1.0')}"]`);
+    expect(beam).toHaveClass('attention-beam--line');
+    expect(beam?.parentElement).toHaveClass('plugin-update-row');
+  });
+
+  it('plays a fresh local-ai update on its fixed update row', async () => {
+    const onTabChange = vi.fn();
+    renderSettings('plugins', onTabChange);
+
+    emitLocalAi({ phase: 'available', updates: [localAiBundle('1.2.0')], downloadedBytes: 0 });
+
+    const eventKey = attentionLocalAiUpdateKey('runtime', '1.2.0');
+    expect(getAttentionBusState().active?.eventKey).toBe(eventKey);
+    const beam = document.querySelector(`[data-event-key="${eventKey}"]`);
+    expect(beam).toHaveClass('attention-beam--line');
+    expect(beam?.parentElement).toHaveClass('plugin-update-row');
   });
 
   it('ignores a fresh local-ai version while the plugins tab is not visible', async () => {
@@ -169,7 +210,7 @@ describe('settings tab transition and update arbitration', () => {
 
     expect(onTabChange).toHaveBeenLastCalledWith('general');
     expect(getAttentionBusState().active).toBeNull();
-    expect(hasAttentionEventPlayedOnce(attentionLocalAiUpdateKey('bundle', '1.2.0'))).toBe(false);
+    expect(hasAttentionEventPlayedOnce(attentionLocalAiUpdateKey('runtime', '1.2.0'))).toBe(false);
 
     await act(async () => { await sleep(210); });
     expect(onTabChange).toHaveBeenLastCalledWith('plugins');
@@ -177,7 +218,8 @@ describe('settings tab transition and update arbitration', () => {
 
   it('plays a plugin flash as installed only when the plugins tab is visible', async () => {
     const onTabChange = vi.fn();
-    renderSettings('plugins', onTabChange);
+    renderSettings('plugins', onTabChange, false);
+    await screen.findByText('mira-amaster');
 
     emitPlugin({
       phase: 'installed',
@@ -194,6 +236,10 @@ describe('settings tab transition and update arbitration', () => {
     expect(bus.active?.priority).toBe(ATTENTION_PRIORITY['update-installed']);
     expect(bus.active?.durationMs).toBe(950);
     expect(bus.pending.length).toBe(0);
+    const beam = document.querySelector(`[data-event-key="${attentionPluginInstalledKey('mira-amaster', '2.0.0')}"]`);
+    expect(beam).toHaveClass('attention-beam--flash');
+    expect(beam?.parentElement).toHaveClass('plugin-item');
+    expect(beam?.closest('.plugin-update-row')).toBeNull();
   });
 
   it('does not submit or consume the flash when installations finish while general is visible, and switching later never replays', async () => {
@@ -231,16 +277,21 @@ describe('settings tab transition and update arbitration', () => {
 
     emitLocalAi({
       phase: 'installed',
-      updates: [{ ...localAiBundle('1.1.0'), updateAvailable: false }],
+      updates: [{ ...localAiBundle('1.1.0'), updateAvailable: false, currentVersion: '1.1.0' }],
       downloadedBytes: 0,
+      updatedComponents: ['runtime'],
     });
 
     const bus = getAttentionBusState();
     expect(bus.active?.scope).toBe('settings-local-ai');
     expect(bus.active?.variant).toBe('flash');
-    expect(bus.active?.eventKey).toBe(attentionLocalAiInstalledKey('bundle', '1.0.0'));
+    expect(bus.active?.eventKey).toBe(attentionLocalAiInstalledKey('runtime', '1.1.0'));
     expect(bus.active?.priority).toBe(ATTENTION_PRIORITY['update-installed']);
     expect(bus.pending.length).toBe(0);
+    const beam = document.querySelector(`[data-event-key="${attentionLocalAiInstalledKey('runtime', '1.1.0')}"]`);
+    expect(beam).toHaveClass('attention-beam--flash');
+    expect(beam?.parentElement).toHaveClass('plugin-item');
+    expect(beam?.closest('.plugin-update-row')).toBeNull();
   });
 
   it('does not submit a local-ai flash while general is visible', async () => {
@@ -248,9 +299,9 @@ describe('settings tab transition and update arbitration', () => {
     renderSettings('general', onTabChange);
     await waitFor(() => expect(onTabChange).toHaveBeenLastCalledWith('general'));
 
-    emitLocalAi({ phase: 'installed', updates: [localAiBundle('1.1.0')], downloadedBytes: 0 });
+    emitLocalAi({ phase: 'installed', updates: [localAiBundle('1.1.0')], downloadedBytes: 0, updatedComponents: ['runtime'] });
 
     expect(getAttentionBusState().active).toBeNull();
-    expect(hasAttentionEventPlayedOnce(attentionLocalAiInstalledKey('bundle', '1.0.0'))).toBe(false);
+    expect(hasAttentionEventPlayedOnce(attentionLocalAiInstalledKey('runtime', '1.1.0'))).toBe(false);
   });
 });
