@@ -393,6 +393,103 @@ describe('real device snapshot mapping', () => {
     expect(summary).not.toHaveTextContent('100%');
   });
 
+  it('shows a local-learning explanation and hides the .100 receiver charging percentage', async () => {
+    const learningSnapshot: DeviceSnapshot = {
+      ...snapshot,
+      family: 'protocol-a-receiver',
+      historyIdentity: { group: 'am-infinity-8k-mouse', displayName: 'AM INFINITY MOUSE .100' },
+      batteries: [
+        { id: 'mouse', label: '鼠标', percentage: 100, charging: false },
+        { id: 'receiver', label: '接收器', percentage: 59, charging: true },
+      ],
+      pluginCapabilities: [
+        ...(snapshot.pluginCapabilities ?? []),
+        {
+          id: 'battery', control: 'ReadOnlyValue', labelKey: 'capability.battery', readOnly: true,
+          metadata: {
+            batteryHistory: {
+              validConnections: ['wireless'],
+              chargingEstimate: {
+                mode: 'local-learning',
+                componentId: 'receiver',
+                groundTruthComponentId: 'mouse',
+                families: ['protocol-a-receiver'],
+              },
+            },
+          },
+        },
+      ],
+    };
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'settings_get') return Promise.resolve(settings);
+      if (command === 'device_snapshots') return Promise.resolve(entries(learningSnapshot));
+      if (command === 'device_refresh_battery') return Promise.resolve();
+      if (command === 'battery_charging_estimate_get') {
+        return Promise.resolve({
+          state: 'learning', lowerPercentage: 12, upperPercentage: 46, calibrationCount: 2,
+        });
+      }
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+
+    render(<App />);
+    await screen.findByRole('heading', { name: 'AM INFINITY 8K MOUSE' });
+    fireEvent.click(document.querySelector('.battery-state') as HTMLButtonElement);
+    const learning = await screen.findByRole('button', { name: /学习中/ });
+    const receiverRow = learning.closest('.battery-device');
+    expect(receiverRow).not.toHaveTextContent('59%');
+    expect(receiverRow?.querySelector('.battery-meter-fill.confirmed')).toHaveStyle({ width: '12%' });
+    expect(receiverRow?.querySelector('.battery-meter-fill.uncertain')).toHaveStyle({ left: '12%', width: '34%' });
+
+    fireEvent.click(learning);
+    const dialog = screen.getByRole('dialog', { name: '接收器电量学习中' });
+    expect(dialog).toHaveTextContent('用鼠标直读电量校准接收器的充电曲线');
+    expect(within(dialog).getByRole('button', { name: '知道了' })).toBeInTheDocument();
+  });
+
+  it('does not apply the .100 charging learner to the .97 family', async () => {
+    invokeMock.mockClear();
+    const am97Snapshot: DeviceSnapshot = {
+      ...snapshot,
+      family: 'am35-receiver',
+      historyIdentity: { group: 'am-infinity-97-mouse', displayName: 'AM INFINITY MOUSE .97' },
+      batteries: [
+        { id: 'mouse', label: '鼠标', percentage: 80, charging: false },
+        { id: 'receiver', label: '接收器', percentage: 59, charging: true },
+      ],
+      pluginCapabilities: [
+        ...(snapshot.pluginCapabilities ?? []),
+        {
+          id: 'battery', control: 'ReadOnlyValue', labelKey: 'capability.battery', readOnly: true,
+          metadata: {
+            batteryHistory: {
+              validConnections: ['wireless'],
+              chargingEstimate: {
+                mode: 'local-learning',
+                componentId: 'receiver',
+                groundTruthComponentId: 'mouse',
+                families: ['protocol-a-receiver'],
+              },
+            },
+          },
+        },
+      ],
+    };
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'settings_get') return Promise.resolve(settings);
+      if (command === 'device_snapshots') return Promise.resolve(entries(am97Snapshot));
+      if (command === 'device_refresh_battery') return Promise.resolve();
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+
+    render(<App />);
+    await screen.findByRole('heading', { name: 'AM INFINITY 8K MOUSE' });
+    fireEvent.click(document.querySelector('.battery-state') as HTMLButtonElement);
+    expect(await screen.findByText('59%')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /学习中/ })).not.toBeInTheDocument();
+    expect(invokeMock).not.toHaveBeenCalledWith('battery_charging_estimate_get', expect.anything());
+  });
+
   it('uses the shared continuous battery icon for plugin-declared dashboard battery status', async () => {
     const batteryStatusSnapshot: DeviceSnapshot = {
       displayName: 'Battery Status Mouse', connection: 'wireless', batteryPercent: 67,

@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
 import { notifyError } from './notify';
+import { announceAttentionRequest, resetAttentionBusForTests } from './attention';
 
 const { invokeMock, currentWindowMock, windowHandlers } = vi.hoisted(() => {
   const handlers: {
@@ -23,6 +24,11 @@ const { invokeMock, currentWindowMock, windowHandlers } = vi.hoisted(() => {
 });
 vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }));
 vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => currentWindowMock }));
+vi.mock('thinking-orbs', () => ({
+  ThinkingOrb: ({ state }: { state: string }) => (
+    <span data-testid="thinking-orb" data-state={state} />
+  ),
+}));
 
 const originalUserAgent = navigator.userAgent;
 
@@ -128,7 +134,7 @@ describe('Mira shell', () => {
     expect(document.querySelector('.page-persistent-eyebrow')).toBe(eyebrow);
     expect(document.querySelector('.page-persistent-eyebrow')).toHaveTextContent('Mira Mouse');
   });
-  it('pushes page titles through one fixed title slot without scaling', async () => {
+  it('crossfades page titles through one fixed title slot', async () => {
     render(<App />);
     fireEvent.click(screen.getByRole('button', { name: '设置' }));
 
@@ -139,10 +145,22 @@ describe('Mira shell', () => {
     await waitFor(() => expect(titleSlot?.querySelector('.is-next')).toHaveTextContent('关于'));
     const incomingTitle = titleSlot?.querySelector('.is-next');
     expect(document.querySelector('.page-persistent-title')).toBe(titleSlot);
-    expect(titleSlot).toHaveClass('direction-forward');
     await waitFor(() => expect(titleSlot).toHaveClass('is-transitioning'));
     await waitFor(() => expect(titleSlot?.querySelector('.is-current')).toHaveTextContent('关于'));
     expect(titleSlot?.querySelector('.is-current')).toBe(incomingTitle);
+  });
+  it('settles rapid title reversals without replaying or stacking faces', async () => {
+    render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: '设置' }));
+
+    const titleSlot = document.querySelector('.page-persistent-title');
+    fireEvent.click(screen.getByRole('button', { name: '关于 Mira' }));
+    await waitFor(() => expect(titleSlot).toHaveClass('is-transitioning'));
+    fireEvent.click(screen.getByRole('button', { name: '设置' }));
+
+    await waitFor(() => expect(titleSlot?.querySelector('.is-current')).toHaveTextContent('设置'));
+    expect(titleSlot).not.toHaveClass('is-transitioning');
+    expect(titleSlot?.querySelector('.is-next')).not.toBeInTheDocument();
   });
   it('routes logs through the shared page transition while keeping Settings active', async () => {
     render(<App />);
@@ -175,7 +193,30 @@ describe('Mira shell', () => {
     render(<App />);
     fireEvent.click(screen.getByText('查看演示'));
     expect(screen.getByText('正在和鼠标沟通…')).toBeInTheDocument();
+    expect(screen.getByTestId('thinking-orb')).toHaveAttribute('data-state', 'working');
+    expect(document.querySelector('.mira-inline-activity')).toHaveClass('is-visible');
     expect(document.querySelector('.control-stage')).toHaveClass('has-preview-message');
+  });
+  it('never renders a device Beam over the dashboard control stage', () => {
+    resetAttentionBusForTests();
+    render(<App />);
+    fireEvent.click(screen.getByText('查看演示'));
+
+    act(() => {
+      announceAttentionRequest({
+        eventKey: 'device-reconnected:test:1',
+        scope: 'device:app',
+        variant: 'line',
+        color: '#ffb3b3',
+        durationMs: 1100,
+        strength: 0.6,
+        cycles: 1,
+        priority: 60,
+      });
+    });
+
+    expect(document.querySelector('.control-stage .attention-beam')).not.toBeInTheDocument();
+    resetAttentionBusForTests();
   });
   it('hides to tray from the Windows close control and keeps maximize absent', () => {
     Object.defineProperty(navigator, 'userAgent', { configurable: true, value: 'Windows' });

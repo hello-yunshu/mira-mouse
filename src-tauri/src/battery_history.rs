@@ -43,6 +43,11 @@ const VERY_SLOW_DRAIN_HOURS: f64 = 9999.0;
 /// 日均耗电至少覆盖半天自然时间，避免用短时波动外推整天。
 const MIN_DAILY_DRAIN_OBSERVATION_HOURS: f64 = 12.0;
 const PERSIST_INTERVAL_SECS: u64 = 300;
+const CHARGING_CALIBRATION_PAIR_WINDOW_MINUTES: i64 = 30;
+const CHARGING_CALIBRATION_MOUSE_JUMP_PERCENT: u8 = 20;
+const CHARGING_CALIBRATION_RECEIVER_JUMP_PERCENT: u8 = 10;
+const CHARGING_CALIBRATION_READY_PAIRS: usize = 6;
+const CHARGING_CALIBRATION_READY_P90_ERROR: f64 = 12.0;
 /// EWMA 时间衰减常数：段结束时间距今每 48h，权重衰减到 e^-1 ≈ 37%。
 /// 让剩余时间预估更关注近期使用模式，而非 10 天平均。
 const RATE_DECAY_TAU_HOURS: f64 = 48.0;
@@ -121,6 +126,22 @@ pub struct BatteryHistoryState {
     last_persist: Mutex<Instant>,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BatteryChargingEstimate {
+    pub state: String,
+    pub lower_percentage: u8,
+    pub upper_percentage: u8,
+    pub calibration_count: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ChargingCalibrationFrame {
+    at: DateTime<Utc>,
+    source_percentage: u8,
+    ground_truth_percentage: u8,
+}
+
 impl BatteryHistoryState {
     pub fn new() -> Self {
         let first_persist_due = Instant::now()
@@ -171,6 +192,221 @@ impl BatteryHistoryState {
 impl Default for BatteryHistoryState {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+fn calibration_points(
+    samples: &[BatterySample],
+    identity_group: &str,
+    source_component_id: &str,
+    ground_truth_component_id: &str,
+) -> Vec<(u8, u8)> {
+    let mut by_time: BTreeMap<DateTime<Utc>, Vec<&BatterySample>> = BTreeMap::new();
+    for sample in samples.iter().filter(|sample| {
+        sample.identity_group.as_deref() == Some(identity_group)
+            && (sample.component_id == source_component_id
+                || sample.component_id == ground_truth_component_id)
+    }) {
+        by_time.entry(sample.at).or_default().push(sample);
+    }
+
+    let mut source = None;
+    let mut ground_truth = None;
+    let mut frames = Vec::new();
+    for (at, updates) in by_time {
+        for sample in updates {
+            if sample.component_id == source_component_id {
+                source = Some(sample.percentage);
+            } else if sample.component_id == ground_truth_component_id {
+                ground_truth = Some(sample.percentage);
+            }
+        }
+        if let (Some(source_percentage), Some(ground_truth_percentage)) = (source, ground_truth) {
+            let frame = ChargingCalibrationFrame {
+                at,
+                source_percentage,
+                ground_truth_percentage,
+            };
+            if frames
+                .last()
+                .is_none_or(|previous: &ChargingCalibrationFrame| {
+                    previous.source_percentage != frame.source_percentage
+                        || previous.ground_truth_percentage != frame.ground_truth_percentage
+                })
+            {
+                frames.push(frame);
+            }
+        }
+    }
+
+    let mut points = BTreeSet::new();
+    let mut anchor = 0;
+    while anchor + 1 < frames.len() {
+        let previous = frames[anchor];
+        let mut matched = None;
+        for (index, current) in frames.iter().enumerate().skip(anchor + 1) {
+            let elapsed = current.at - previous.at;
+            if elapsed > Duration::minutes(CHARGING_CALIBRATION_PAIR_WINDOW_MINUTES) {
+                break;
+            }
+            if elapsed < Duration::zero() {
+                continue;
+            }
+            let source_delta = current.source_percentage as i16 - previous.source_percentage as i16;
+            let truth_delta =
+                current.ground_truth_percentage as i16 - previous.ground_truth_percentage as i16;
+            let changed_enough = source_delta.unsigned_abs()
+                >= CHARGING_CALIBRATION_RECEIVER_JUMP_PERCENT as u16
+                && truth_delta.unsigned_abs() >= CHARGING_CALIBRATION_MOUSE_JUMP_PERCENT as u16;
+            if changed_enough && source_delta.signum() != truth_delta.signum() {
+                matched = Some(index);
+                break;
+            }
+        }
+        if let Some(index) = matched {
+            let current = frames[index];
+            // A high-confidence exchange gives two labels: the battery entering
+            // the receiver was just measured in the mouse, while the battery
+            // entering the mouse was the receiver's immediately preceding slot.
+            points.insert((current.source_percentage, previous.ground_truth_percentage));
+            points.insert((previous.source_percentage, current.ground_truth_percentage));
+            anchor = index;
+        } else {
+            anchor += 1;
+        }
+    }
+    points.into_iter().collect()
+}
+
+fn isotonic_prediction(points: &[(u8, u8)], raw_percentage: u8) -> f64 {
+    if points.is_empty() {
+        return f64::from(raw_percentage);
+    }
+    let mut grouped: BTreeMap<u8, (f64, usize)> = BTreeMap::new();
+    for &(source, truth) in points {
+        let entry = grouped.entry(source).or_insert((0.0, 0));
+        entry.0 += f64::from(truth);
+        entry.1 += 1;
+    }
+
+    #[derive(Clone, Copy)]
+    struct Block {
+        x_sum: f64,
+        y_sum: f64,
+        weight: usize,
+    }
+    impl Block {
+        fn x(self) -> f64 {
+            self.x_sum / self.weight as f64
+        }
+        fn y(self) -> f64 {
+            self.y_sum / self.weight as f64
+        }
+    }
+
+    let mut blocks = Vec::<Block>::new();
+    for (source, (truth_sum, weight)) in grouped {
+        blocks.push(Block {
+            x_sum: f64::from(source) * weight as f64,
+            y_sum: truth_sum,
+            weight,
+        });
+        while blocks.len() >= 2 {
+            let right = blocks[blocks.len() - 1];
+            let left = blocks[blocks.len() - 2];
+            if left.y() <= right.y() {
+                break;
+            }
+            blocks.pop();
+            blocks.pop();
+            blocks.push(Block {
+                x_sum: left.x_sum + right.x_sum,
+                y_sum: left.y_sum + right.y_sum,
+                weight: left.weight + right.weight,
+            });
+        }
+    }
+
+    let raw = f64::from(raw_percentage);
+    if raw <= blocks[0].x() {
+        return blocks[0].y();
+    }
+    if raw >= blocks[blocks.len() - 1].x() {
+        return blocks[blocks.len() - 1].y();
+    }
+    for window in blocks.windows(2) {
+        let left = window[0];
+        let right = window[1];
+        if raw <= right.x() {
+            let span = (right.x() - left.x()).max(1.0);
+            let ratio = (raw - left.x()) / span;
+            return left.y() + (right.y() - left.y()) * ratio;
+        }
+    }
+    blocks[blocks.len() - 1].y()
+}
+
+fn leave_one_out_p90_error(points: &[(u8, u8)]) -> Option<f64> {
+    if points.len() < 3 {
+        return None;
+    }
+    let mut errors = Vec::with_capacity(points.len());
+    for index in 0..points.len() {
+        let training = points
+            .iter()
+            .enumerate()
+            .filter_map(|(candidate, point)| (candidate != index).then_some(*point))
+            .collect::<Vec<_>>();
+        let predicted = isotonic_prediction(&training, points[index].0);
+        errors.push((predicted - f64::from(points[index].1)).abs());
+    }
+    errors.sort_by(f64::total_cmp);
+    let index = ((errors.len() as f64 * 0.9).ceil() as usize)
+        .saturating_sub(1)
+        .min(errors.len() - 1);
+    Some(errors[index])
+}
+
+pub fn estimate_charging_percentage(
+    state: &BatteryHistoryState,
+    identity_group: &str,
+    source_component_id: &str,
+    ground_truth_component_id: &str,
+    raw_percentage: u8,
+) -> BatteryChargingEstimate {
+    let samples = state
+        .samples
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone();
+    let points = calibration_points(
+        &samples,
+        identity_group,
+        source_component_id,
+        ground_truth_component_id,
+    );
+    let prediction = isotonic_prediction(&points, raw_percentage).clamp(0.0, 100.0);
+    let p90_error = leave_one_out_p90_error(&points);
+    let distinct_source_values = points
+        .iter()
+        .map(|(source, _)| *source)
+        .collect::<BTreeSet<_>>()
+        .len();
+    let ready = points.len() >= CHARGING_CALIBRATION_READY_PAIRS
+        && distinct_source_values >= 3
+        && p90_error.is_some_and(|error| error <= CHARGING_CALIBRATION_READY_P90_ERROR);
+    let uncertainty = if ready {
+        p90_error.unwrap_or(8.0).ceil().max(6.0)
+    } else if points.len() >= 3 {
+        p90_error.unwrap_or(20.0).ceil().max(18.0)
+    } else {
+        30.0
+    };
+    BatteryChargingEstimate {
+        state: if ready { "ready" } else { "learning" }.into(),
+        lower_percentage: (prediction - uncertainty).floor().clamp(0.0, 100.0) as u8,
+        upper_percentage: (prediction + uncertainty).ceil().clamp(0.0, 100.0) as u8,
+        calibration_count: points.len(),
     }
 }
 
@@ -2271,6 +2507,72 @@ mod tests {
             eligible_for_prediction: true,
             context: None,
         }
+    }
+
+    fn calibration_sample(at: DateTime<Utc>, component_id: &str, percentage: u8) -> BatterySample {
+        let mut sample = make_sample(at, percentage, component_id == "receiver");
+        sample.identity_group = Some("am-infinity-8k-mouse".into());
+        sample.component_id = component_id.into();
+        sample.component_label = format!("mock.{component_id}Label");
+        sample
+    }
+
+    fn push_calibration_frame(
+        samples: &mut Vec<BatterySample>,
+        at: DateTime<Utc>,
+        receiver: u8,
+        mouse: u8,
+    ) {
+        samples.push(calibration_sample(at, "receiver", receiver));
+        samples.push(calibration_sample(at, "mouse", mouse));
+    }
+
+    #[test]
+    fn charging_estimate_learns_from_staggered_high_confidence_swap() {
+        let state = BatteryHistoryState::new();
+        let start = Utc::now() - Duration::minutes(20);
+        {
+            let mut samples = state.samples.lock().unwrap();
+            push_calibration_frame(&mut samples, start, 100, 16);
+            samples.push(calibration_sample(
+                start + Duration::minutes(17),
+                "receiver",
+                59,
+            ));
+            samples.push(calibration_sample(
+                start + Duration::minutes(18),
+                "mouse",
+                100,
+            ));
+        }
+
+        let estimate =
+            estimate_charging_percentage(&state, "am-infinity-8k-mouse", "receiver", "mouse", 59);
+        assert_eq!(estimate.state, "learning");
+        assert_eq!(estimate.calibration_count, 2);
+        assert!(estimate.lower_percentage <= 16);
+        assert!(estimate.upper_percentage >= 16);
+    }
+
+    #[test]
+    fn charging_estimate_becomes_ready_after_diverse_stable_pairs() {
+        let state = BatteryHistoryState::new();
+        let start = Utc::now() - Duration::minutes(90);
+        {
+            let mut samples = state.samples.lock().unwrap();
+            push_calibration_frame(&mut samples, start, 90, 10);
+            push_calibration_frame(&mut samples, start + Duration::minutes(1), 10, 90);
+            push_calibration_frame(&mut samples, start + Duration::minutes(40), 80, 20);
+            push_calibration_frame(&mut samples, start + Duration::minutes(41), 20, 80);
+            push_calibration_frame(&mut samples, start + Duration::minutes(80), 70, 30);
+            push_calibration_frame(&mut samples, start + Duration::minutes(81), 30, 70);
+        }
+
+        let estimate =
+            estimate_charging_percentage(&state, "am-infinity-8k-mouse", "receiver", "mouse", 70);
+        assert_eq!(estimate.state, "ready", "estimate={estimate:?}");
+        assert!(estimate.calibration_count >= CHARGING_CALIBRATION_READY_PAIRS);
+        assert!(estimate.upper_percentage - estimate.lower_percentage <= 24);
     }
 
     #[test]

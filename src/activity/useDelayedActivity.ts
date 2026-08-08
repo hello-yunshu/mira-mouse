@@ -21,7 +21,9 @@ export function useDelayedActivity(
   minVisibleMs = MIRA_ACTIVITY_MIN_VISIBLE_MS,
   exitHint = 0,
 ): boolean {
-  const [visible, setVisible] = useState(false);
+  // delayMs=0 是调用方明确要求首帧显示；初次挂载时直接建立可见状态，避免
+  // 先渲染业务提示、再等 effect + timer 补上 Orb 的空白帧。
+  const [visible, setVisible] = useState(() => active && delayMs <= 0);
   const visibleSinceRef = useRef(0);
   const lastExitHintRef = useRef(0);
   const suppressedRef = useRef(false);

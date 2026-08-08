@@ -1334,12 +1334,12 @@ fn receiver_status_battery_percentage(object: &serde_json::Map<String, Value>) -
     Some(percentage)
 }
 
-fn protocol_a_receiver_battery_charging(_percentage: u8) -> bool {
-    // The official driver computes mouseDBatStatus as 1 (discharging) for
-    // 0 < pct < 100 and 2 (full) for pct == 100, but neither value means
-    // "charging" — the receiver/dongle is USB-powered and has no charging
-    // phase. Always report not charging to match official semantics.
-    false
+fn protocol_a_receiver_battery_charging(percentage: u8) -> bool {
+    // Official AMasterDriver 1.3.8 maps the receiver-slot battery to
+    // mouseDBatStatus: 1 while 0 < pct < 100, 2 at 100, and 0 when absent.
+    // Its frontend defines status 1 as charging. Preserve that state so the
+    // host does not treat the charging curve as an exact discharge reading.
+    percentage > 0 && percentage < 100
 }
 
 /// 电池充电状态字段约定：原始字节值 1 表示充电中（与官方前端
@@ -1629,8 +1629,7 @@ mod tests {
         assert_eq!(reading.batteries.len(), 2);
         assert_eq!(reading.batteries[1].id, "receiver");
         assert_eq!(reading.batteries[1].percentage, 88);
-        // Receiver/dongle is USB-powered — no charging phase per official driver.
-        assert!(!reading.batteries[1].charging);
+        assert!(reading.batteries[1].charging);
     }
 
     #[test]
@@ -1649,7 +1648,7 @@ mod tests {
         assert_eq!(reading.batteries.len(), 2);
         assert_eq!(reading.batteries[1].id, "receiver");
         assert_eq!(reading.batteries[1].percentage, 87);
-        assert!(!reading.batteries[1].charging);
+        assert!(reading.batteries[1].charging);
     }
 
     #[test]

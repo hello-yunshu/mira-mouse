@@ -17,7 +17,9 @@ mod logging;
 mod pointer_activity;
 mod tray;
 mod unlock_watcher;
-use battery_history::{AbnormalDrainNotifyState, BatteryHistoryResponse, BatteryHistoryState};
+use battery_history::{
+    AbnormalDrainNotifyState, BatteryChargingEstimate, BatteryHistoryResponse, BatteryHistoryState,
+};
 use logging::model::{FieldValue, LogInput, LogLevel, LogSource};
 use logging::protocol_event::{self, ProtocolEventContext};
 use mira_plugin_runtime::{
@@ -13602,6 +13604,39 @@ async fn battery_history_get(
     .map_err(|error| format!("battery history task failed: {error}"))?
 }
 
+/// 基于插件声明的组件关系，从本机换电历史重建充电校准区间。
+/// 该命令不触发 HID 读取，也不按品牌或型号做宿主特判。
+#[tauri::command]
+async fn battery_charging_estimate_get(
+    app: tauri::AppHandle,
+    identity_group: String,
+    component_id: String,
+    ground_truth_component_id: String,
+    raw_percentage: u8,
+) -> Result<BatteryChargingEstimate, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<SessionState>();
+        let settings = cached_settings_for_state(&state);
+        if !local_ai_feature_enabled(&settings, LOCAL_AI_FEATURE_BATTERY_USAGE) {
+            return Ok(BatteryChargingEstimate {
+                state: "disabled".into(),
+                lower_percentage: raw_percentage.saturating_sub(25),
+                upper_percentage: raw_percentage.saturating_add(25).min(100),
+                calibration_count: 0,
+            });
+        }
+        Ok(battery_history::estimate_charging_percentage(
+            &state.battery_history,
+            &identity_group,
+            &component_id,
+            &ground_truth_component_id,
+            raw_percentage,
+        ))
+    })
+    .await
+    .map_err(|error| format!("battery charging estimate task failed: {error}"))?
+}
+
 /// 清除电量历史。不影响低电量通知设置。
 #[tauri::command]
 fn battery_history_clear(
@@ -15190,6 +15225,7 @@ pub fn run() {
             export_diagnostics,
             plugin_locales,
             battery_history_get,
+            battery_charging_estimate_get,
             battery_history_clear,
             battery_history_export,
             // 统一日志系统命令

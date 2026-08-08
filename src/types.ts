@@ -5,6 +5,25 @@ export interface DpiStage { value: number; color: string; active: boolean; enabl
 export interface DeviceBattery { id: string; label: string; percentage: number; charging?: boolean }
 export interface DeviceIdentity { group: string; displayName?: string; aliases?: string[] }
 
+export interface PluginChargingEstimatePolicy {
+  mode: 'local-learning';
+  componentId: string;
+  groundTruthComponentId: string;
+  families: string[];
+}
+
+export interface PluginBatteryHistoryPolicy {
+  validConnections: Array<'usb' | 'wireless' | 'bluetooth' | 'virtual'>;
+  chargingEstimate?: PluginChargingEstimatePolicy;
+}
+
+export interface BatteryChargingEstimate {
+  state: 'disabled' | 'learning' | 'ready';
+  lowerPercentage: number;
+  upperPercentage: number;
+  calibrationCount: number;
+}
+
 /** Per-output read status from the workflow engine. */
 export type ReadStatus = 'ok' | 'skipped' | 'not-supported' | { failed: string };
 
@@ -174,6 +193,7 @@ export interface PluginCapabilityMetadata {
   statusDisplay?: PluginStatusDisplay;
   summary?: PluginSummaryItem[];
   stateMapping?: PluginStateMapping;
+  batteryHistory?: PluginBatteryHistoryPolicy;
   visibleWhen?: PluginVisibleWhen;
   [key: string]: unknown;
 }
@@ -223,6 +243,8 @@ export interface DeviceState {
   readonly: boolean;
   /** 匹配该设备的插件 ID，用于 i18n namespace 解析。 */
   pluginId?: string;
+  /** 插件声明的跨连接身份；本地充电校准按 identity group 隔离。 */
+  historyIdentity?: DeviceIdentity;
   updatedAt: string;
   /** Per-output read statuses from the workflow engine. */
   readStatuses?: Record<string, ReadStatus>;
