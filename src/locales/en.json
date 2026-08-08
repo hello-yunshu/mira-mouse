@@ -569,11 +569,11 @@
       "body": "Plugin {{pluginId}} updated to v{{version}}."
     },
     "localAiUpdateFound": {
-      "title": "AI engine update available",
-      "body": "{{component}} can be updated to v{{version}}. Update it in Settings → Plugins."
+      "title": "Local AI updates available",
+      "body": "Updates are available for {{components}}. Update them in Settings → Plugins."
     },
     "localAiUpdateInstalled": {
-      "title": "AI engine update installed",
+      "title": "Local AI update installed",
       "body": "{{components}} updated to the latest version."
     },
     "saveFailed": "Save failed",

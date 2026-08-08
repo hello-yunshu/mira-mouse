@@ -569,11 +569,11 @@
       "body": "插件 {{pluginId}} 已更新至 v{{version}}。"
     },
     "localAiUpdateFound": {
-      "title": "发现 AI 引擎更新",
-      "body": "{{component}}可更新至 v{{version}}，请在「设置 → 插件」中更新。"
+      "title": "发现本地 AI 更新",
+      "body": "{{components}}有可用更新，请在「设置 → 插件」中更新。"
     },
     "localAiUpdateInstalled": {
-      "title": "AI 引擎更新完成",
+      "title": "本地 AI 更新完成",
       "body": "{{components}}已更新至最新版本。"
     },
     "saveFailed": "保存失败",
