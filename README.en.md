@@ -40,9 +40,9 @@
 
 | Platform | Recommended download |
 |---|---|
-| macOS (Apple Silicon) | [Download DMG](https://github.com/hello-yunshu/mira-mouse/releases/latest/download/Mira_macOS_1.1.2_aarch64.dmg) |
-| Windows (x64) | [Download installer](https://github.com/hello-yunshu/mira-mouse/releases/latest/download/Mira_Windows_1.1.2_x64-setup.exe) |
-| Linux (x86_64) | [Download AppImage](https://github.com/hello-yunshu/mira-mouse/releases/latest/download/Mira_Linux_1.1.2_amd64.AppImage) |
+| macOS (Apple Silicon) | [Download DMG](https://github.com/hello-yunshu/mira-mouse/releases/latest/download/Mira_macOS_1.1.3_aarch64.dmg) |
+| Windows (x64) | [Download installer](https://github.com/hello-yunshu/mira-mouse/releases/latest/download/Mira_Windows_1.1.3_x64-setup.exe) |
+| Linux (x86_64) | [Download AppImage](https://github.com/hello-yunshu/mira-mouse/releases/latest/download/Mira_Linux_1.1.3_amd64.AppImage) |
 
 Most users only need the file for their platform above. For release notes and other assets, open the [latest release](https://github.com/hello-yunshu/mira-mouse/releases/latest).
 

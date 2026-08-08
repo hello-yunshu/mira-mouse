@@ -63,6 +63,17 @@ describe('SettingsPage', () => {
     window.history.replaceState({}, '', '/');
   });
 
+  it('keeps the slower top-level entry separate from internal tab timing', async () => {
+    render(<SettingsPage onNavigateAbout={vi.fn()} onThemeChange={vi.fn()} previewMode />);
+
+    expect(document.querySelector('.settings-scroll-content')).not.toHaveClass('is-tab-entry');
+    fireEvent.click(screen.getByRole('button', { name: '设备' }));
+
+    await waitFor(() => {
+      expect(document.querySelector('.settings-scroll-content')).toHaveClass('is-tab-entry');
+    });
+  });
+
   it('describes automatic tray color as menu bar background matching on macOS', () => {
     window.history.replaceState({}, '', '/?platform=macos');
     render(<SettingsPage onNavigateAbout={vi.fn()} onThemeChange={vi.fn()} previewMode />);

@@ -123,6 +123,24 @@ describe('Mira shell', () => {
     expect(frozenStar.style.transform).toBe('scale(1.14)');
     expect(frozenStar.style.opacity).toBe('0.74');
   });
+  it('freezes an in-progress settings card before the page fades out', async () => {
+    render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: '设置' }));
+
+    const card = document.querySelector<HTMLElement>('.settings-scroll-content > section')!;
+    card.style.transform = 'translateY(3px) scale(0.99)';
+    card.style.opacity = '0.42';
+    card.style.filter = 'saturate(0.91)';
+
+    fireEvent.click(screen.getByRole('button', { name: '关于 Mira' }));
+
+    await waitFor(() => expect(document.querySelector('.page-layer-leaving .settings-scroll-content > section')).toBeInTheDocument());
+    const frozenCard = document.querySelector<HTMLElement>('.page-layer-leaving .settings-scroll-content > section')!;
+    expect(frozenCard.style.animation).toBe('none');
+    expect(frozenCard.style.transform).toBe('translateY(3px) scale(0.99)');
+    expect(frozenCard.style.opacity).toBe('0.42');
+    expect(frozenCard.style.filter).toBe('saturate(0.91)');
+  });
   it('keeps one persistent Mira Mouse eyebrow while switching settings and about', () => {
     render(<App />);
     fireEvent.click(screen.getByRole('button', { name: '设置' }));
@@ -139,28 +157,38 @@ describe('Mira shell', () => {
     fireEvent.click(screen.getByRole('button', { name: '设置' }));
 
     const titleSlot = document.querySelector('.page-persistent-title');
-    expect(titleSlot?.querySelector('.is-current')).toHaveTextContent('设置');
+    const settingsFace = titleSlot?.querySelector('.page-persistent-title-face');
+    expect(settingsFace).toHaveTextContent('设置');
+    expect(settingsFace).toHaveClass('is-active');
+    expect(settingsFace).toHaveAttribute('data-title', '设置');
 
     fireEvent.click(screen.getByRole('button', { name: '关于 Mira' }));
-    await waitFor(() => expect(titleSlot?.querySelector('.is-next')).toHaveTextContent('关于'));
-    const incomingTitle = titleSlot?.querySelector('.is-next');
     expect(document.querySelector('.page-persistent-title')).toBe(titleSlot);
-    await waitFor(() => expect(titleSlot).toHaveClass('is-transitioning'));
-    await waitFor(() => expect(titleSlot?.querySelector('.is-current')).toHaveTextContent('关于'));
-    expect(titleSlot?.querySelector('.is-current')).toBe(incomingTitle);
+    await waitFor(() => expect(titleSlot?.querySelectorAll('.page-persistent-title-face')).toHaveLength(2));
+    const aboutFace = [...titleSlot!.querySelectorAll('.page-persistent-title-face')]
+      .find((face) => face.textContent === '关于');
+    await waitFor(() => expect(aboutFace).toHaveClass('is-active'));
+    expect(aboutFace).toHaveClass('is-forming');
+    expect(aboutFace).toHaveAttribute('data-title', '关于');
+    expect(settingsFace).not.toHaveClass('is-active');
+    expect(settingsFace).toHaveClass('is-exiting');
+    await waitFor(() => expect(titleSlot?.querySelectorAll('.page-persistent-title-face')).toHaveLength(1));
+    expect(titleSlot?.querySelector('.page-persistent-title-face')).toHaveTextContent('关于');
   });
   it('settles rapid title reversals without replaying or stacking faces', async () => {
     render(<App />);
     fireEvent.click(screen.getByRole('button', { name: '设置' }));
 
     const titleSlot = document.querySelector('.page-persistent-title');
+    const settingsFace = titleSlot?.querySelector('.page-persistent-title-face');
     fireEvent.click(screen.getByRole('button', { name: '关于 Mira' }));
-    await waitFor(() => expect(titleSlot).toHaveClass('is-transitioning'));
+    await waitFor(() => expect(titleSlot?.querySelectorAll('.page-persistent-title-face')).toHaveLength(2));
+    await waitFor(() => expect(settingsFace).not.toHaveClass('is-active'));
     fireEvent.click(screen.getByRole('button', { name: '设置' }));
 
-    await waitFor(() => expect(titleSlot?.querySelector('.is-current')).toHaveTextContent('设置'));
-    expect(titleSlot).not.toHaveClass('is-transitioning');
-    expect(titleSlot?.querySelector('.is-next')).not.toBeInTheDocument();
+    await waitFor(() => expect(settingsFace).toHaveClass('is-active'));
+    await waitFor(() => expect(titleSlot?.querySelectorAll('.page-persistent-title-face')).toHaveLength(1));
+    expect(titleSlot?.querySelector('.page-persistent-title-face')).toBe(settingsFace);
   });
   it('routes logs through the shared page transition while keeping Settings active', async () => {
     render(<App />);
@@ -233,7 +261,7 @@ describe('Mira shell', () => {
     expect(screen.getAllByText('82%')).toHaveLength(1);
     fireEvent.click(document.querySelector('.battery-state') as HTMLButtonElement);
     expect(screen.getAllByText('82%')).toHaveLength(2);
-    expect(screen.getByLabelText('当前 DPI：1000，点击编辑')).toBeInTheDocument();
+    expect(screen.getByLabelText('当前 DPI：1600，点击编辑')).toBeInTheDocument();
     const dpiItems = [...document.querySelectorAll<HTMLElement>('.dpi-stage-item')];
     expect(dpiItems[0]?.style.getPropertyValue('--dpi-stage-delay')).toBe('60ms');
     expect(dpiItems[1]?.style.getPropertyValue('--dpi-stage-delay')).toBe('86ms');
@@ -314,7 +342,7 @@ describe('Mira shell', () => {
     expect(metricLayer).toHaveAttribute('data-variant', 'hertz');
     expect(metricLayer).toHaveAttribute('data-positioned', 'true');
     const metricValue = metricLayer?.querySelector('.shared-control-metric-value');
-    expect(metricValue?.querySelector('.shared-control-metric-face.is-current')).toHaveTextContent('1000DPI');
+    expect(metricValue?.querySelector('.shared-control-metric-face.is-current')).toHaveTextContent('1600DPI');
     expect(metricValue?.querySelector('.shared-control-metric-face.is-next')).not.toBeInTheDocument();
     let incomingMetricFace: Element | null = null;
     await waitFor(() => {
@@ -350,7 +378,7 @@ describe('Mira shell', () => {
     expect(metricValue?.querySelector('.shared-control-metric-face.is-current')).toHaveTextContent('1000Hz');
     expect(metricValue?.querySelector('.shared-control-metric-face.is-next')).not.toBeInTheDocument();
     await waitFor(() => {
-      expect(metricValue?.querySelector('.shared-control-metric-face.is-current')).toHaveTextContent('1000DPI');
+      expect(metricValue?.querySelector('.shared-control-metric-face.is-current')).toHaveTextContent('1600DPI');
     });
 
     fireEvent.click(screen.getByRole('tab', { name: '灯光' }));
@@ -401,8 +429,8 @@ describe('Mira shell', () => {
     render(<App />);
     fireEvent.click(screen.getByText('查看演示'));
 
-    fireEvent.click(screen.getByRole('button', { name: '当前 DPI：1000，点击编辑' }));
-    let dialog = await screen.findByRole('dialog', { name: '编辑第 3 档 DPI' });
+    fireEvent.click(screen.getByRole('button', { name: '当前 DPI：1600，点击编辑' }));
+    let dialog = await screen.findByRole('dialog', { name: '编辑第 4 档 DPI' });
     fireEvent.change(within(dialog).getByLabelText('DPI 数值'), { target: { value: '9300' } });
     fireEvent.click(within(dialog).getByRole('button', { name: '应用' }));
 
@@ -418,7 +446,7 @@ describe('Mira shell', () => {
     });
 
     fireEvent.click(screen.getByRole('button', { name: '当前 DPI：9300，点击编辑' }));
-    dialog = await screen.findByRole('dialog', { name: '编辑第 3 档 DPI' });
+    dialog = await screen.findByRole('dialog', { name: '编辑第 4 档 DPI' });
     fireEvent.change(within(dialog).getByLabelText('DPI 数值'), { target: { value: '500' } });
     fireEvent.click(within(dialog).getByRole('button', { name: '应用' }));
 
@@ -541,7 +569,7 @@ describe('MorphingMetricValue context flip timing (P0-B)', () => {
     fireEvent.click(screen.getByText('查看演示'));
 
     const metricValue = document.querySelector('.shared-control-metric-value')!;
-    expect(metricValue.querySelector('.shared-control-metric-face.is-current')).toHaveTextContent('1000DPI');
+    expect(metricValue.querySelector('.shared-control-metric-face.is-current')).toHaveTextContent('1600DPI');
 
     // 切换到回报率（metric-to-metric context change）
     vi.useFakeTimers();
@@ -608,7 +636,7 @@ describe('MorphingMetricValue context flip timing (P0-B)', () => {
     fireEvent.click(screen.getByText('查看演示'));
 
     const metricValue = document.querySelector('.shared-control-metric-value')!;
-    expect(metricValue.querySelector('.shared-control-metric-face.is-current')).toHaveTextContent('1000DPI');
+    expect(metricValue.querySelector('.shared-control-metric-face.is-current')).toHaveTextContent('1600DPI');
 
     vi.useFakeTimers();
     // DPI -> 回报率（contextKey 改变，触发 50ms 延迟翻牌）
@@ -623,7 +651,7 @@ describe('MorphingMetricValue context flip timing (P0-B)', () => {
     // 不应有残留的 next face（旧动画已取消）
     expect(metricValue.querySelector('.shared-control-metric-face.is-next')).not.toBeInTheDocument();
     // current face 应仍然是 DPI（未因旧 timeout 提交错误值）
-    expect(metricValue.querySelector('.shared-control-metric-face.is-current')).toHaveTextContent('1000DPI');
+    expect(metricValue.querySelector('.shared-control-metric-face.is-current')).toHaveTextContent('1600DPI');
   });
 
   it('preserves flip behavior under prefers-reduced-motion without crashing', async () => {
@@ -656,15 +684,15 @@ describe('MorphingMetricValue context flip timing (P0-B)', () => {
     vi.useFakeTimers();
     // DPI → 回报率
     fireEvent.click(screen.getByRole('tab', { name: '回报率' }));
-    await act(async () => { await vi.advanceTimersByTimeAsync(600); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(700); });
 
     // 回报率 → DPI
     fireEvent.click(screen.getByRole('tab', { name: 'DPI' }));
-    await act(async () => { await vi.advanceTimersByTimeAsync(600); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(700); });
 
     // DPI → 回报率（最终状态）
     fireEvent.click(screen.getByRole('tab', { name: '回报率' }));
-    await act(async () => { await vi.advanceTimersByTimeAsync(600); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(700); });
 
     // 最终应为回报率值（非 DPI 残留）
     const currentFace = metricValue.querySelector('.shared-control-metric-face.is-current');
@@ -683,7 +711,7 @@ describe('MorphingMetricValue context flip timing (P0-B)', () => {
     // 切换到回报率
     fireEvent.click(screen.getByRole('tab', { name: '回报率' }));
     // 完成翻牌（50ms 延迟 + 动画 + fallback timeout）
-    await act(async () => { await vi.advanceTimersByTimeAsync(600); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(700); });
 
     // 最终值应包含 Hz 单位（回报率），不包含 DPI
     const currentFace = metricValue.querySelector('.shared-control-metric-face.is-current');
@@ -710,7 +738,7 @@ describe('MorphingMetricValue context flip timing (P0-B)', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(600); });
 
     // current face 应为 DPI（旧 timeout 未提交回报率的过期值）
-    expect(metricValue.querySelector('.shared-control-metric-face.is-current')).toHaveTextContent('1000DPI');
+    expect(metricValue.querySelector('.shared-control-metric-face.is-current')).toHaveTextContent('1600DPI');
     // 不应有残留的回报率 next face
     expect(metricValue.querySelector('.shared-control-metric-face.is-next')).not.toBeInTheDocument();
   });

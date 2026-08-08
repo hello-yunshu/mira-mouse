@@ -275,87 +275,80 @@ function LiveValue({ text, className, style, duration = 160 }: {
   );
 }
 
-/**
- * 设置 / 关于 / 日志共用的固定标题槽。文字只在同一几何位置交叉淡化，
- * 避免两个页面各自挂载 h1 时产生闪现或位置跳动。
- */
+type PersistentTitleFace = { key: string; title: string };
+
+/** 设置 / 关于 / 日志共用的固定标题槽。新旧标题在同一几何位置直接交叉，
+ * 新标题由轮廓过渡到实心，旧标题保持实心淡出；短时间反向时复用仍在场的 face。 */
 function PersistentPageTitle({ view, title }: { view: TitledView; title: string }) {
-  const [currentValue, setCurrentValue] = useState(() => ({ view, title }));
-  const [nextValue, setNextValue] = useState<{ view: TitledView; title: string }>();
-  const [transitioning, setTransitioning] = useState(false);
-  const currentValueRef = useRef(currentValue);
+  const incomingKey = `${view}::${title}`;
+  const [faces, setFaces] = useState<PersistentTitleFace[]>(() => [{ key: incomingKey, title }]);
+  const [activeKey, setActiveKey] = useState(incomingKey);
+  const facesRef = useRef(faces);
+  const activeKeyRef = useRef(activeKey);
   const transitionIdRef = useRef(0);
-  const transitioningRef = useRef(false);
 
   useEffect(() => {
     const transitionId = transitionIdRef.current + 1;
     transitionIdRef.current = transitionId;
-    const incomingValue = { view, title };
-    const displayedValue = currentValueRef.current;
+    const incomingFace = { key: incomingKey, title };
     let prepareFrame = 0;
-    let transitionFrame = 0;
-    let commitTimeout = 0;
+    let activateFrame = 0;
+    let settleTimeout = 0;
 
-    if (displayedValue.view === view && displayedValue.title === title) {
-      setNextValue(undefined);
-      setTransitioning(false);
-      transitioningRef.current = false;
+    if (activeKeyRef.current === incomingKey) {
       return undefined;
     }
 
-    // 快速连续切换时，不把半透明的旧标题先拉回再重播一轮动画；直接让当前
-    // 可见的目标层接管，避免偶发的明暗闪回和反向位移。
-    if (transitioningRef.current) {
-      currentValueRef.current = incomingValue;
-      setCurrentValue(incomingValue);
-      setNextValue(undefined);
-      setTransitioning(false);
-      transitioningRef.current = false;
-      return undefined;
-    }
+    const activateIncoming = () => {
+      if (transitionIdRef.current !== transitionId) return;
+      activeKeyRef.current = incomingKey;
+      setActiveKey(incomingKey);
+      settleTimeout = window.setTimeout(() => {
+        if (transitionIdRef.current !== transitionId) return;
+        facesRef.current = [incomingFace];
+        setFaces([incomingFace]);
+      }, 260);
+    };
 
     prepareFrame = window.requestAnimationFrame(() => {
       if (transitionIdRef.current !== transitionId) return;
-      setNextValue(incomingValue);
-      transitionFrame = window.requestAnimationFrame(() => {
-        if (transitionIdRef.current !== transitionId) return;
-        setTransitioning(true);
-        transitioningRef.current = true;
-        commitTimeout = window.setTimeout(() => {
-          if (transitionIdRef.current !== transitionId) return;
-          currentValueRef.current = incomingValue;
-          setCurrentValue(incomingValue);
-          setNextValue(undefined);
-          setTransitioning(false);
-          transitioningRef.current = false;
-        }, 190);
-      });
+      const faceAlreadyMounted = facesRef.current.some((face) => face.key === incomingKey);
+      if (faceAlreadyMounted) {
+        activateIncoming();
+        return;
+      }
+
+      const nextFaces = [...facesRef.current, incomingFace];
+      facesRef.current = nextFaces;
+      setFaces(nextFaces);
+      activateFrame = window.requestAnimationFrame(activateIncoming);
     });
 
     return () => {
       window.cancelAnimationFrame(prepareFrame);
-      window.cancelAnimationFrame(transitionFrame);
-      window.clearTimeout(commitTimeout);
+      window.cancelAnimationFrame(activateFrame);
+      window.clearTimeout(settleTimeout);
     };
-  }, [title, view]);
+  }, [incomingKey, title]);
 
   return (
-    <h1
-      className={`page-persistent-title${transitioning ? ' is-transitioning' : ''}`}
-      aria-hidden="true"
-    >
-      <span
-        key={`${currentValue.view}:${currentValue.title}`}
-        className="page-persistent-title-face is-current"
-        aria-hidden="true"
-      >{currentValue.title}</span>
-      {nextValue && (
+    <h1 className="page-persistent-title" aria-hidden="true">
+      {faces.map((face) => (
         <span
-          key={`${nextValue.view}:${nextValue.title}`}
-          className="page-persistent-title-face is-next"
+          key={face.key}
+          className={`page-persistent-title-face${
+            face.key === activeKey
+              ? ` is-active${faces.length > 1 ? ' is-forming' : ''}`
+              : face.key === incomingKey
+                ? ' is-entering'
+                : ' is-exiting'
+          }`}
+          data-title={face.title}
           aria-hidden="true"
-        >{nextValue.title}</span>
-      )}
+        >
+          {face.title}
+        </span>
+      ))}
     </h1>
   );
 }
@@ -827,13 +820,23 @@ function auraPhaseOffset(): string {
   return `${-Math.max(0, Math.round(performance.now() - auraTimelineStartedAt))}ms`;
 }
 
-/**
- * 页面退场层使用静态 HTML 快照。把 Aura 当前的合成帧写入快照，避免快照层
- * 禁用动画后从任意运动相位跳回 0% 关键帧。
- */
+/** 页面退场层使用静态 HTML 快照。把仍在运动的页头、卡片与 Aura 当前合成帧
+ * 写入快照，避免快照层禁用动画后突然跳到关键帧起点或终点。 */
 function pageSnapshotHtml(root: HTMLElement): string {
   const clone = root.cloneNode(true) as HTMLElement;
-  const selector = '[data-animation="realtime-deformation"] .aura-cloud, [data-animation="realtime-deformation"] .aura-stars, [data-animation="realtime-deformation"] .aura-star';
+  const selector = [
+    '[data-animation="realtime-deformation"] .aura-cloud',
+    '[data-animation="realtime-deformation"] .aura-stars',
+    '[data-animation="realtime-deformation"] .aura-star',
+    '.settings-page > header',
+    '.settings-page > .sub-nav',
+    '.about-page > header',
+    '.log-page > header',
+    '.log-page > .log-toolbar',
+    '.settings-scroll-content > .card',
+    '.settings-scroll-content > section',
+    '.log-page > .log-list-wrapper',
+  ].join(', ');
   const sources = root.querySelectorAll<HTMLElement>(selector);
   const targets = clone.querySelectorAll<HTMLElement>(selector);
 
@@ -844,6 +847,7 @@ function pageSnapshotHtml(root: HTMLElement): string {
     target.style.animation = 'none';
     target.style.transform = frame.transform;
     target.style.opacity = frame.opacity;
+    target.style.filter = frame.filter;
     target.style.borderRadius = frame.borderRadius;
     target.style.willChange = 'auto';
   });
@@ -4583,7 +4587,7 @@ export default function App() {
       setLeavingView(null);
       setLeavingHTML(null);
       transitioningRef.current = false;
-    }, 180);
+    }, 240);
     return () => {
       window.clearTimeout(transitionTimer.current);
       transitioningRef.current = false;
@@ -4641,7 +4645,7 @@ export default function App() {
     <div className={`page-swap${leavingView ? ' is-transitioning' : ''}`} data-page-view={view}>
       {titledView && pageTitle && (
         // 设置 / 关于 / 日志共用固定眉题与标题槽，不参与 current / leaving
-        // 页面层的整层交叉淡化；标题自身只做 2px 双向推切。
+        // 页面层的整层交叉淡化；标题自身原地交叉，并由轮廓过渡到实心。
         <div className="page-persistent-copy">
           <p className="eyebrow page-persistent-eyebrow">{t('about.eyebrow')}</p>
           <PersistentPageTitle view={titledView} title={pageTitle} />

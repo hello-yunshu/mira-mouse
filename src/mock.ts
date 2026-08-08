@@ -8,8 +8,8 @@ import { DEFAULT_THEME_ACCENT } from './theme';
 const MOCK_DPI_STAGES: DpiStage[] = [
   { value: 400, color: '#7ea7d8', enabled: true, active: false },
   { value: 800, color: '#9a8bd0', enabled: true, active: false },
-  { value: 1000, color: '#bf7fa8', enabled: true, active: true },
-  { value: 1600, color: '#d39378', enabled: true, active: false },
+  { value: 1000, color: '#bf7fa8', enabled: true, active: false },
+  { value: 1600, color: '#d39378', enabled: true, active: true },
   { value: 2400, color: '#7eb2a0', enabled: true, active: false },
   { value: 3200, color: '#a8c46a', enabled: true, active: false },
   { value: 6400, color: '#c9a86c', enabled: true, active: false },
@@ -132,7 +132,7 @@ export const MOCK_DEVICE: DeviceState = {
   },
   capabilities: {
     battery: { percentage: 82, charging: false, valid: true },
-    dpi: { profile: 0, currentStage: 3, stageCount: 8, dpiX: [400, 800, 1000, 1600, 2400, 3200, 6400, 12800], dpiY: [400, 800, 1000, 1600, 2400, 3200, 6400, 12800], stageColors: ['#7ea7d8', '#9a8bd0', '#bf7fa8', '#d39378', '#7eb2a0', '#a8c46a', '#c9a86c', '#c77a9a'] },
+    dpi: { profile: 0, currentStage: 4, stageCount: 8, dpiX: [400, 800, 1000, 1600, 2400, 3200, 6400, 12800], dpiY: [400, 800, 1000, 1600, 2400, 3200, 6400, 12800], stageColors: ['#7ea7d8', '#9a8bd0', '#bf7fa8', '#d39378', '#7eb2a0', '#a8c46a', '#c9a86c', '#c77a9a'] },
     settings: { profile: 0, pollingRaw: 1, pollingRate: 1000, usbDebounce: 4, wirelessDebounce: 4, bluetoothDebounce: 4, rippleCorrection: true, angleSnap: false, motionSync: true, liftCutOff: 1, buttonChangeTime: 12, wheelToButton: 0, buttonToWheel: 0, bluetoothSleepValue: 600, wirelessSleepValue: 300, mouseLightStartColor: DEFAULT_THEME_ACCENT, mouseLightEndColor: DEFAULT_THEME_ACCENT, mouseLightEnabled: true },
     mouseLighting: { effect: 2, effectName: '呼吸', speed: 2, brightness: 70, color: DEFAULT_THEME_ACCENT, extraColor: DEFAULT_THEME_ACCENT, enabled: true },
     receiverLighting: { effect: 3, effectName: '霓虹', speed: 2, brightness: 70, option: 7, optionName: '模式 7', color: MOCK_RECEIVER_LIGHT_COLOR, color2: '#FF6B6B', ratio: 50, enabled: true },
