@@ -2873,9 +2873,21 @@ h2 { margin: 2px 0 0; letter-spacing: -.02em; font-size: 16px; }
   gap: 4px;
   z-index: 5;
 }
-.nav-link { color: var(--muted); background: transparent; padding: 5px 12px; font-size: 13px; border-radius: 999px; }
+.nav-link {
+  color: var(--muted);
+  background: transparent;
+  padding: 5px 12px;
+  font-size: 13px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  transition:
+    transform var(--motion-fast) var(--motion-ease-out),
+    background var(--motion-base) var(--motion-ease-standard),
+    border-color var(--motion-fast) ease,
+    color var(--motion-fast) ease;
+}
 .nav-link:hover:not(.active) { color: inherit; background: var(--control-hover-bg); }
-.nav-link.active { color: inherit; background: var(--control-secondary-bg); border: 1px solid var(--control-secondary-border); }
+.nav-link.active { color: inherit; background: var(--control-secondary-bg); border-color: var(--control-secondary-border); }
 .nav-about { width: 30px; height: 30px; padding: 0; display: grid; place-items: center; }
 .nav-about svg { width: 19px; height: 19px; }
 .nav-exit { width: 30px; height: 30px; padding: 0; display: grid; place-items: center; }
@@ -4992,22 +5004,67 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
 }
 .page-persistent-title-face {
   grid-area: 1 / 1;
+  position: relative;
   justify-self: start;
+  color: transparent;
+  white-space: nowrap;
+  -webkit-text-fill-color: transparent;
+}
+.page-persistent-title-face::before,
+.page-persistent-title-face::after {
+  position: absolute;
+  inset: 0;
+  content: attr(data-title);
+  pointer-events: none;
+}
+.page-persistent-title-face::before {
+  opacity: 0;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  -webkit-text-stroke: .72px color-mix(in srgb, var(--text), transparent 10%);
+  paint-order: stroke fill;
+}
+.page-persistent-title-face::after {
+  opacity: 0;
+  color: var(--text);
+  clip-path: inset(0);
+  -webkit-text-fill-color: var(--text);
+  -webkit-text-stroke: 0 transparent;
+  transition:
+    opacity 150ms ease-in-out,
+    clip-path 220ms cubic-bezier(.4, 0, .2, 1);
+}
+.page-persistent-title-face.is-entering::after {
+  clip-path: inset(48% 0);
+}
+.page-persistent-title-face.is-active::after {
   opacity: 1;
 }
-.page-persistent-title-face.is-current {
-  transition: opacity 110ms ease-in;
-}
-.page-persistent-title-face.is-next {
+.page-persistent-title-face.is-exiting::after {
   opacity: 0;
-  /* 新标题稍晚 40ms 接入，与旧标题保留短暂重叠，但不会出现透明空帧。 */
-  transition: opacity 140ms ease-out 40ms;
+  transition: opacity 90ms ease-out;
 }
-.page-persistent-title.is-transitioning .page-persistent-title-face.is-current {
-  opacity: 0;
+.page-persistent-title-face.is-active.is-forming::before {
+  animation: mira-title-outline-form 220ms cubic-bezier(.4, 0, .2, 1) both;
 }
-.page-persistent-title.is-transitioning .page-persistent-title-face.is-next {
-  opacity: 1;
+@keyframes mira-title-outline-form {
+  0% { opacity: .72; }
+  12% { opacity: 1; }
+  72% { opacity: 1; }
+  100% { opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .page-persistent-title-face::before {
+    display: none;
+  }
+  .page-persistent-title-face::after,
+  .page-persistent-title-face.is-entering::after {
+    clip-path: inset(0);
+    transition: none;
+  }
+  .page-persistent-title-face.is-active.is-forming {
+    animation: none;
+  }
 }
 .page-swap:is([data-page-view="settings"], [data-page-view="about"], [data-page-view="logs"])
   .page-layer :is(.settings-page, .about-page) > header .eyebrow {
@@ -5053,7 +5110,9 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
 }
 
 .settings-scroll-content > .card,
-.settings-scroll-content > section,
+.settings-scroll-content > section {
+  animation: mira-section-enter 240ms var(--motion-ease-out) both;
+}
 .log-page > .log-list-wrapper {
   animation: mira-section-enter 200ms var(--motion-ease-out) both;
 }
@@ -5077,26 +5136,27 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
 .settings-scroll-content > .card:nth-of-type(n+4),
 .settings-scroll-content > section:nth-of-type(n+4) { animation-delay: 200ms; }
 
-/* 设置页 tab 切换：旧内容块同时淡出，退场结束后新块依次淡入 */
-.settings-scroll-content.is-exiting > .card,
-.settings-scroll-content.is-exiting > section {
-  animation: mira-section-exit 120ms var(--motion-ease-standard) both;
+/* 设置页内部标签切换：使用 180ms 的高效舒缓档。首次从设置/关于顶层进入时
+   没有 is-tab-entry，使用上面的 240ms 慢档；因此两种切换互不影响。 */
+.settings-page .settings-scroll-content.is-tab-entry > .card,
+.settings-page .settings-scroll-content.is-tab-entry > section {
+  animation-duration: 180ms;
 }
+.settings-page .settings-scroll-content.is-tab-entry > .card:nth-of-type(1),
+.settings-page .settings-scroll-content.is-tab-entry > section:nth-of-type(1) { animation-delay: 50ms; }
+.settings-page .settings-scroll-content.is-tab-entry > .card:nth-of-type(2),
+.settings-page .settings-scroll-content.is-tab-entry > section:nth-of-type(2) { animation-delay: 90ms; }
+.settings-page .settings-scroll-content.is-tab-entry > .card:nth-of-type(3),
+.settings-page .settings-scroll-content.is-tab-entry > section:nth-of-type(3) { animation-delay: 130ms; }
+.settings-page .settings-scroll-content.is-tab-entry > .card:nth-of-type(n+4),
+.settings-page .settings-scroll-content.is-tab-entry > section:nth-of-type(n+4) { animation-delay: 160ms; }
 
-/* 设置页内容块入场：轻快档节奏（仅设置页，不影响关于/日志页与顶层页面切换）。
-   首块沿用不位移的 leading 入场，其余块错峰淡入。 */
-.settings-page .settings-scroll-content > .card,
-.settings-page .settings-scroll-content > section {
-  animation-duration: 150ms;
+/* 设置页 tab 退场规则放在入场规则之后，压过入场时长与错峰延迟；否则旧内容
+   会按 180ms 播放，却被 JS 在退场完成前替换，形成一帧突兀的截断。 */
+.settings-page .settings-scroll-content.is-tab-entry.is-exiting > .card,
+.settings-page .settings-scroll-content.is-tab-entry.is-exiting > section {
+  animation: mira-section-exit 140ms ease-in-out both;
 }
-.settings-page .settings-scroll-content > .card:nth-of-type(1),
-.settings-page .settings-scroll-content > section:nth-of-type(1) { animation-delay: 50ms; }
-.settings-page .settings-scroll-content > .card:nth-of-type(2),
-.settings-page .settings-scroll-content > section:nth-of-type(2) { animation-delay: 90ms; }
-.settings-page .settings-scroll-content > .card:nth-of-type(3),
-.settings-page .settings-scroll-content > section:nth-of-type(3) { animation-delay: 130ms; }
-.settings-page .settings-scroll-content > .card:nth-of-type(n+4),
-.settings-page .settings-scroll-content > section:nth-of-type(n+4) { animation-delay: 160ms; }
 
 .log-preview-hint {
   margin: -2px 0 8px;

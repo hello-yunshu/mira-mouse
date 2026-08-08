@@ -74,7 +74,7 @@ async function enterDemoMode() {
   const result = renderAppInRoot();
   fireEvent.click(screen.getByText('查看演示'));
   // 等待 DPI 编辑按钮出现，标志 dashboard 已渲染完成
-  await screen.findByLabelText('当前 DPI：1000，点击编辑');
+  await screen.findByLabelText('当前 DPI：1600，点击编辑');
   return result;
 }
 

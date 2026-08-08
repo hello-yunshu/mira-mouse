@@ -219,6 +219,9 @@ export function SettingsPage({ onNavigateAbout, onNavigateLogs = () => {}, onOpe
   // 新内容因 key 变化重新挂载自动触发依次淡入。
   const [displayedTab, setDisplayedTab] = useState<SettingsTab>(tabState.tab);
   const [exiting, setExiting] = useState(false);
+  // 首次挂载来自设置/关于顶层页面切换，使用稍慢的内容入场；一旦用户在
+  // 设置页内部切换过标签，后续内容改用独立的高效舒缓档，不受顶层节奏影响。
+  const [internalTabEntry, setInternalTabEntry] = useState(false);
   const exitTimer = useRef<number | undefined>(undefined);
   const pendingPluginFocus = useRef(false);
   const pendingLocalAiFocus = useRef(false);
@@ -387,7 +390,7 @@ export function SettingsPage({ onNavigateAbout, onNavigateLogs = () => {}, onOpe
   useEffect(() => () => onSettingsExit?.(), [onSettingsExit]);
 
   // 把当前「实际渲染」的标签上抛给父组件（不是用户点击后的目标标签）：
-  // 标签切换有约 120ms 过渡，displayedTab 只在退出动画结束后才变化；
+  // 标签切换有约 150ms 过渡，displayedTab 只在退出动画结束后才变化；
   // 父级据此做更新事件的可见性仲裁，避免过渡期间误判目标标签已可见。
   // 同时使设置页在卸载/重建（例如进入关于页再返回）后能恢复到用户先前
   // 所在的标签，而不是每次都落回首个标签。
@@ -402,11 +405,14 @@ export function SettingsPage({ onNavigateAbout, onNavigateLogs = () => {}, onOpe
     window.clearTimeout(exitTimer.current);
     // 用 rAF 延迟一帧设置 exiting，确保浏览器先应用 key 变化前的旧 DOM 状态，
     // 再添加 is-exiting class 触发退出动画。
-    const raf = requestAnimationFrame(() => setExiting(true));
+    const raf = requestAnimationFrame(() => {
+      setInternalTabEntry(true);
+      setExiting(true);
+    });
     exitTimer.current = window.setTimeout(() => {
       setDisplayedTab(tab);
       setExiting(false);
-    }, 120);
+    }, 150);
     return () => {
       cancelAnimationFrame(raf);
       window.clearTimeout(exitTimer.current);
@@ -871,7 +877,7 @@ export function SettingsPage({ onNavigateAbout, onNavigateLogs = () => {}, onOpe
       </nav>
 
       <div ref={scrollRef} className={`settings-scroll-area${canScrollUp ? ' scroll-fade-top' : ''}${canScrollDown ? ' scroll-fade-bottom' : ''}`}>
-      <div ref={contentRef} key={displayedTab} className={`settings-scroll-content${exiting ? ' is-exiting' : ''}`}>
+      <div ref={contentRef} key={displayedTab} className={`settings-scroll-content${internalTabEntry ? ' is-tab-entry' : ''}${exiting ? ' is-exiting' : ''}`}>
       {displayedTab === 'general' && (
         <>
           <section className="card settings-section">
