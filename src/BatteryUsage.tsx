@@ -1138,6 +1138,11 @@ export interface BatteryUsageModalProps {
 export interface BatteryUsageConnectedTarget {
   deviceName: string;
   componentId: string;
+  /** 当前连接快照中的电量；仅覆盖即时 UI，不写入或伪造历史曲线。 */
+  latestPercentage?: number;
+  latestCharging?: boolean;
+  latestAt?: string;
+  lowBattery?: boolean;
 }
 
 function normalizedDeviceName(value: string | undefined): string {
@@ -1253,17 +1258,30 @@ export function BatteryUsageModal({
 
   const loadData = useCallback(() => setReloadNonce((n) => n + 1), []);
 
-  // 历史响应继续保留完整数据；设备切换器只投影当前连接快照中的电量组件。
+  // 历史响应继续保留完整数据；设备切换器只投影主界面已经维护的连接快照，
+  // 并用它覆盖即时字段。弹窗自身不触发额外设备读取；曲线/洞察仍来自历史
+  // 响应，不会因打开弹窗而伪造样本或提高记录频率。
   // 未提供 connectedTargets 时保持组件的独立使用兼容性（例如单元测试和故事页）。
   const selectableDevices = useMemo(() => {
     const historyDevices = response?.devices ?? [];
     if (connectedTargets === undefined) return historyDevices;
-    const connectedKeys = new Set(
-      connectedTargets.map((target) => batteryUsageTargetKey(target.deviceName, target.componentId)),
+    const connectedByKey = new Map(
+      connectedTargets.map((target) => [
+        batteryUsageTargetKey(target.deviceName, target.componentId),
+        target,
+      ]),
     );
-    return historyDevices.filter((device) => (
-      connectedKeys.has(batteryUsageTargetKey(device.deviceName, device.componentId))
-    ));
+    return historyDevices.flatMap((device) => {
+      const target = connectedByKey.get(batteryUsageTargetKey(device.deviceName, device.componentId));
+      if (!target) return [];
+      return [{
+        ...device,
+        latestPercentage: target.latestPercentage ?? device.latestPercentage,
+        latestCharging: target.latestCharging ?? device.latestCharging,
+        latestAt: target.latestAt ?? device.latestAt,
+        lowBattery: target.lowBattery ?? device.lowBattery,
+      }];
+    });
   }, [connectedTargets, response]);
 
   // 每次打开时，优先定位 Dashboard 当前鼠标的历史记录；手动切换仍保持优先。
