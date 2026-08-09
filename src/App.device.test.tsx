@@ -169,6 +169,48 @@ function entries(...snapshots: DeviceSnapshot[]) {
 }
 
 describe('real device snapshot mapping', () => {
+  it('creates Host-managed DPI stages for a device that only supports direct DPI writes', async () => {
+    const softwareSnapshot: DeviceSnapshot = {
+      displayName: 'Direct DPI Mouse', connection: 'usb', charging: false, batteries: [],
+      dpi: 1600, dpiStages: [{ value: 1600, color: '#9a8bd0', active: true, enabled: true }],
+      evidence: 'hardware-verified', pluginId: 'mira.direct-dpi', family: 'direct',
+      capabilities: {},
+      pluginCapabilities: [{
+        id: 'dpi', control: 'DpiStages', labelKey: 'capability.dpi', readOnly: false,
+        placements: [{ region: 'control', group: 'performance', order: 10, span: 1, icon: 'gauge', priority: 100, dashboardRole: 'fixed-core', fixedSlot: 1, fourthSlotEligible: false, dedupeKey: 'dashboard.dpi', fallbackRegion: 'advanced' }],
+        metadata: {
+          stageLayout: {
+            mode: 'auto', currentValueSource: 'state.dpi',
+            defaultValues: [400, 800, 1600, 3200, 6400],
+            dotsSource: 'state.dpiStages', selectMutation: 'set-dpi-stage', valueSource: 'state.dpiStages',
+            setMutation: 'set-dpi', stageParam: 'stage', valueParam: 'dpi',
+            range: { min: 100, max: 26000, step: 50 },
+          },
+          stateMapping: { dpi: 'dpi', dpiStages: 'dpiStages' },
+        },
+      }],
+      writableMutations: ['set-dpi'],
+    };
+    invokeMock.mockImplementation((command: string, args?: { mutation?: string; params?: Record<string, unknown> }) => {
+      if (command === 'settings_get') return Promise.resolve(settings);
+      if (command === 'device_snapshots') return Promise.resolve(entries(softwareSnapshot));
+      if (command === 'device_mutate' && args?.mutation === 'set-dpi') {
+        return Promise.resolve({ ...softwareSnapshot, dpi: args.params?.dpi as number });
+      }
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Direct DPI Mouse' });
+    expect(screen.getAllByRole('button', { name: /切换到第 \d+ 档/ })).toHaveLength(5);
+
+    fireEvent.click(screen.getByRole('button', { name: '切换到第 4 档' }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('device_mutate', {
+      mutation: 'set-dpi', params: { stage: 1, dpi: 3200 },
+    }));
+    expect(await screen.findByLabelText('当前 DPI：3200，点击编辑')).toBeInTheDocument();
+  });
+
   it('renders the signed plugin layout during the provisional presence snapshot', async () => {
     const provisionalSnapshot: DeviceSnapshot = {
       ...snapshot,

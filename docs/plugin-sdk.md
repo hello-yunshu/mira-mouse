@@ -114,6 +114,23 @@ Host 判定开关状态：`readPath(switch.source) !== switch.offValue` 即为�
 | `stageParam` | string | 否 | 写入档位 mutation 的档位参数名，默认 `stage`。 |
 | `valueParam` | string | 否 | 写入档位 mutation 的数值参数名，默认 `value`。 |
 
+不支持硬件 DPI 档位、但支持直接写入 DPI 的设备，可以声明 Host 软件档位：
+
+```json
+{
+  "mode": "software",
+  "currentValueSource": "state.dpi",
+  "defaultValues": [400, 800, 1600, 3200, 6400],
+  "setMutation": "set-dpi",
+  "valueParam": "dpi",
+  "range": { "min": 100, "max": 26000, "step": 50 }
+}
+```
+
+软件档位按插件与设备身份保存在本机。切换档位时，Host 只调用插件声明的 `setMutation` 写入所选 DPI；设备不需要报告档位数组，也不需要提供档位切换 mutation。修改非当前档位只更新本地预设，修改当前档位才会同时写入设备。插件仍必须通过 `stateMapping` 提供 `currentValueSource`，Host 不推断厂商、型号或协议。
+
+同一协议族同时包含硬件分档与单值 DPI 设备时，可使用 `mode: "auto"`，并同时保留 `dotsSource`、`selectMutation`、`valueSource`。Host 在设备报告至少两个可用档位且切档 mutation 可写时使用硬件档位，否则回退到软件档位。若单值写入 mutation 的输入仍要求一个兼容用档位参数，可保留 `stageParam`；软件档位会固定传入 `1`，不会把它解释成设备档位能力。
+
 ### statusDisplay
 
 `statusDisplay` 声明状态栏显示，将字段值映射到仪表盘状态条：

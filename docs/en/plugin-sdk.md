@@ -113,6 +113,23 @@ The host determines switch state: `readPath(switch.source) !== switch.offValue` 
 | `stageParam` | string | no | Stage parameter name for the stage write mutation; defaults to `stage`. |
 | `valueParam` | string | no | Value parameter name for the stage write mutation; defaults to `value`. |
 
+Devices that do not expose hardware DPI stages but do support direct DPI writes can declare Host-managed software stages:
+
+```json
+{
+  "mode": "software",
+  "currentValueSource": "state.dpi",
+  "defaultValues": [400, 800, 1600, 3200, 6400],
+  "setMutation": "set-dpi",
+  "valueParam": "dpi",
+  "range": { "min": 100, "max": 26000, "step": 50 }
+}
+```
+
+Software stages are stored locally per plugin and device identity. Selecting a stage only calls the plugin-declared `setMutation` with that DPI value; the device does not need to report a stage array or expose a stage-selection mutation. Editing an inactive stage only updates the local preset, while editing the active stage also writes the device. The plugin must still expose `currentValueSource` through `stateMapping`; the Host does not infer a vendor, model, or protocol.
+
+When one protocol family contains both hardware-stage and single-value DPI devices, use `mode: "auto"` and keep `dotsSource`, `selectMutation`, and `valueSource`. The Host uses hardware stages when the device reports at least two enabled stages and the select mutation is writable; otherwise it falls back to software stages. If the direct-write mutation still requires a compatibility stage input, keep `stageParam`; software stages pass a fixed `1` without treating it as a device stage capability.
+
 ### statusDisplay
 
 `statusDisplay` declares status bar display, mapping field values to the dashboard status strip:

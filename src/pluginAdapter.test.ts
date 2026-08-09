@@ -680,6 +680,25 @@ describe('simulateDemoMutation', () => {
     expect(stages[1].value).toBe(2000);
   });
 
+  it('simulates a software DPI stage through its declared current-value path', () => {
+    const device = structuredClone(MOCK_DEVICE);
+    device.pluginCapabilities = [{
+      id: 'dpi', control: 'DpiStages', labelKey: 'dpi', readOnly: false,
+      metadata: {
+        stageLayout: {
+          mode: 'software', currentValueSource: 'state.dpi', defaultValues: [400, 800, 1600],
+          setMutation: 'set-dpi', valueParam: 'dpi', range: { min: 100, max: 26000, step: 50 },
+        },
+        stateMapping: { dpi: 'dpi' },
+      },
+    }];
+    device.writableMutations = ['set-dpi'];
+    device.state.dpi = 1600;
+
+    const next = simulateDemoMutation(device, 'set-dpi', { dpi: 3200 });
+    expect(next.state.dpi).toBe(3200);
+  });
+
   it('set-polling-rate updates state.pollingRate (the field source the UI reads)', () => {
     const next = simulateDemoMutation(MOCK_DEVICE, 'set-polling-rate', { value: 2000 });
     expect(next.state.pollingRate).toBe(2000);

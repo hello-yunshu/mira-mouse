@@ -255,20 +255,37 @@
     "stageLayout": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["dotsSource", "selectMutation", "setMutation", "valueSource", "range"],
       "properties": {
+        "mode": { "enum": ["hardware", "software", "auto"] },
         "dotsSource": { "type": "string", "minLength": 1, "maxLength": 160 },
         "selectMutation": { "$ref": "#/$defs/mutationDecl" },
         "setMutation": { "$ref": "#/$defs/mutationDecl" },
         "valueSource": { "type": "string", "minLength": 1, "maxLength": 160 },
         "colorSource": { "type": "string", "minLength": 1, "maxLength": 160 },
         "range": { "$ref": "#/$defs/rangeSpec" },
+        "currentValueSource": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "defaultValues": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": { "type": "integer", "minimum": 1 }
+        },
         "rangeSource": { "type": "string", "minLength": 1, "maxLength": 160 },
         "rangeMaxOffset": { "type": "integer" },
         "selectParam": { "type": "string", "minLength": 1, "maxLength": 32 },
         "stageParam": { "type": "string", "minLength": 1, "maxLength": 32 },
         "valueParam": { "type": "string", "minLength": 1, "maxLength": 32 }
-      }
+      },
+      "allOf": [{
+        "if": { "required": ["mode"], "properties": { "mode": { "const": "software" } } },
+        "then": { "required": ["mode", "setMutation", "range", "currentValueSource", "defaultValues"] },
+        "else": {
+          "if": { "required": ["mode"], "properties": { "mode": { "const": "auto" } } },
+          "then": { "required": ["mode", "dotsSource", "selectMutation", "setMutation", "valueSource", "range", "currentValueSource", "defaultValues"] },
+          "else": { "required": ["dotsSource", "selectMutation", "setMutation", "valueSource", "range"] }
+        }
+      }]
     },
     "statusDisplay": {
       "type": "object",
