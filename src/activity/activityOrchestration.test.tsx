@@ -22,8 +22,12 @@ import type { AttentionBeamRequest } from '../attention/attentionTypes';
 import type { MiraActivityKind } from './activityCatalog';
 
 vi.mock('thinking-orbs', () => ({
-  ThinkingOrb: ({ state }: { state: string }) => (
-    <span data-testid="thinking-orb" data-state={state} />
+  ThinkingOrb: ({ state, color }: { state: string; color?: string }) => (
+    <span
+      data-testid="thinking-orb"
+      data-state={state}
+      data-color={color}
+    />
   ),
 }));
 
@@ -71,6 +75,14 @@ describe('MiraActivityOverlay 生命周期仲裁（P0-3）', () => {
     act(() => { vi.advanceTimersByTime(150); });
     expect(screen.getByTestId('thinking-orb')).toHaveAttribute('data-state', 'connecting');
     expect(screen.getByRole('status')).toHaveTextContent('正在识别并读取鼠标…');
+  });
+
+  it('1a. 和鼠标沟通的 applying-settings Orb 使用当前主题 accent 着色', () => {
+    render(<MiraInlineActivity active activity="applying-settings" delayMs={0} />);
+
+    const orb = screen.getByTestId('thinking-orb');
+    expect(orb).toHaveAttribute('data-color', 'var(--accent)');
+    expect(orb.closest('.mira-inline-activity')?.querySelector('svg')).toBeNull();
   });
 
   it('2. 设备 ready 后 Orb 立即退出（不等 420ms 尾段），随后才播放 ready Beam', async () => {
