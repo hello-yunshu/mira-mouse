@@ -94,6 +94,16 @@ import { LOCAL_AI_FEATURE, localAiFeatureEnabled } from './localAi';
 import { segmentedIndicatorStyle } from './segmentedControl';
 import { Modal, OverlayPortal, useHasOpenModal } from './overlay';
 import { MiraActivityButton, MiraInlineActivity, MiraActivityOverlay } from './activity';
+import {
+  isSoftwareDpiLayout,
+  loadSoftwareDpiStages,
+  saveSoftwareDpiStages,
+  softwareDpiCurrentValue,
+  softwareDpiStorage,
+  softwareDpiStageKey,
+  softwareDpiStages,
+  type SoftwareDpiStageState,
+} from './softwareDpiStages';
 import './styles.css';
 
 type View = 'dashboard' | 'settings' | 'about' | 'logs';
@@ -1069,7 +1079,8 @@ function declaredAccentColor(device: DeviceState): string | undefined {
   for (const capability of device.pluginCapabilities.filter(capabilityAvailable)) {
     const layout = capability.metadata.stageLayout;
     if (layout) {
-      const stages = readPath(device, layout.colorSource ?? layout.dotsSource) as DpiStage[] | undefined;
+      const colorPath = layout.colorSource ?? layout.dotsSource;
+      const stages = colorPath ? readPath(device, colorPath) as DpiStage[] | undefined : undefined;
       const active = stages?.find((stage) => stage.enabled && stage.active) ?? stages?.find((stage) => stage.enabled);
       if (active?.color) return active.color;
     }
@@ -1115,6 +1126,16 @@ function capabilityRuntimePending(capability: PluginCapability): boolean {
   return capability.metadata._miraRuntimePending === true;
 }
 
+function usesSoftwareDpiLayout(layout: NonNullable<PluginCapability['metadata']['stageLayout']>, device: DeviceState): boolean {
+  if (isSoftwareDpiLayout(layout)) return true;
+  if (layout.mode !== 'auto') return false;
+  const reportedStages = layout.dotsSource
+    ? (readPath(device, layout.dotsSource) as DpiStage[] | undefined) ?? []
+    : [];
+  const enabledCount = reportedStages.filter((stage) => stage.enabled).length;
+  return enabledCount < 2 || !resolveMutation(layout.selectMutation, device.writableMutations);
+}
+
 function deviceRuntimePending(device: DeviceState): boolean {
   return device.pluginCapabilities.some(capabilityRuntimePending);
 }
@@ -1124,6 +1145,11 @@ function capabilityHasControlContent(capability: PluginCapability, device: Devic
 
   const layout = resolveStageLayout(capability);
   if (layout) {
+    if (usesSoftwareDpiLayout(layout, device)) {
+      return softwareDpiCurrentValue(layout, device) !== undefined
+        && (layout.defaultValues?.length ?? 0) >= 2;
+    }
+    if (!layout.dotsSource) return false;
     const stages = readPath(device, layout.dotsSource);
     return Array.isArray(stages) && stages.some((stage) => (
       stage && typeof stage === 'object' && (stage as DpiStage).enabled
@@ -1895,17 +1921,37 @@ function StageLayout({ capability, device, writeBusy, runMutation }: {
   const layout = resolveStageLayout(capability);
   const [editingStage, setEditingStage] = useState<number | null>(null);
   const runtimePending = capabilityRuntimePending(capability);
+  const software = layout ? usesSoftwareDpiLayout(layout, device) : false;
+  const currentSoftwareDpi = layout && software ? softwareDpiCurrentValue(layout, device) : undefined;
+  const softwareKey = layout && software ? softwareDpiStageKey(device, capability.id) : '';
+  const [softwareStates, setSoftwareStates] = useState<Record<string, SoftwareDpiStageState>>({});
 
   if (!layout) return null;
 
-  const allStages = (readPath(device, layout.dotsSource) as DpiStage[] | undefined) ?? [];
+  const softwareState = software
+    ? softwareStates[softwareKey] ?? loadSoftwareDpiStages(softwareDpiStorage(), softwareKey, layout, currentSoftwareDpi)
+    : { values: [], selectedIndex: 0 };
+
+  const allStages = software
+    ? softwareDpiStages(softwareState, currentSoftwareDpi)
+    : ((layout.dotsSource ? readPath(device, layout.dotsSource) : undefined) as DpiStage[] | undefined) ?? [];
   const stages = allStages.filter((stage) => stage.enabled);
   const displayedStages = stages.slice(0, 8);
   const current = stages.find((stage) => stage.active);
-  const currentStageNumber = Math.max(1, stages.findIndex((stage) => stage.active) + 1);
-  const activeDpi = current?.value ?? stages[0]?.value ?? 0;
+  const reportedSoftwareIndex = software && currentSoftwareDpi !== undefined
+    ? softwareState.values.indexOf(currentSoftwareDpi)
+    : -1;
+  const effectiveSoftwareIndex = reportedSoftwareIndex >= 0
+    ? reportedSoftwareIndex
+    : softwareState.selectedIndex;
+  const currentStageNumber = software
+    ? Math.max(1, effectiveSoftwareIndex + 1)
+    : Math.max(1, stages.findIndex((stage) => stage.active) + 1);
+  const activeDpi = software ? currentSoftwareDpi ?? 0 : current?.value ?? stages[0]?.value ?? 0;
 
-  const selectMutation = resolveMutation(layout.selectMutation, device.writableMutations);
+  const selectMutation = software
+    ? resolveMutation(layout.setMutation, device.writableMutations)
+    : resolveMutation(layout.selectMutation, device.writableMutations);
   const setMutation = resolveMutation(layout.setMutation, device.writableMutations);
   const selectWritable = Boolean(selectMutation);
   const setWritable = Boolean(setMutation);
@@ -1922,7 +1968,7 @@ function StageLayout({ capability, device, writeBusy, runMutation }: {
 
   const stageField: PluginField = {
     id: 'stage-value',
-    source: layout.valueSource,
+    source: layout.valueSource ?? layout.currentValueSource ?? '',
     mutation: setMutation,
     param: layout.valueParam ?? 'value',
     editor: 'modal-number',
@@ -1967,7 +2013,20 @@ function StageLayout({ capability, device, writeBusy, runMutation }: {
                 className={`dpi-stage-dot ${stage.active ? 'active' : ''}`}
                 aria-pressed={stage.active}
                 disabled={writeBusy || !selectWritable}
-                onClick={() => selectMutation && runMutation(selectMutation, { [layout.selectParam ?? 'value']: stageNumber })}
+                onClick={() => {
+                  if (!selectMutation) return;
+                  if (software) {
+                    const next = { ...softwareState, selectedIndex: index };
+                    setSoftwareStates((states) => ({ ...states, [softwareKey]: next }));
+                    saveSoftwareDpiStages(softwareDpiStorage(), softwareKey, next);
+                    void runMutation(selectMutation, {
+                      ...(layout.stageParam ? { [layout.stageParam]: 1 } : {}),
+                      [layout.valueParam ?? 'value']: stage.value,
+                    });
+                  } else {
+                    void runMutation(selectMutation, { [layout.selectParam ?? 'value']: stageNumber });
+                  }
+                }}
                 aria-label={i18n.t('dashboard.switchToStage', { stage: stageNumber })}
               >
                 <i style={{ '--stage-source-color': pastelDisplayColor(stage.color) } as React.CSSProperties} />
@@ -2001,10 +2060,29 @@ function StageLayout({ capability, device, writeBusy, runMutation }: {
           onClose={() => setEditingStage(null)}
           onApply={(value) => {
             if (setMutation) {
-              void runMutation(setMutation, {
-                [layout.stageParam ?? 'stage']: editingStage,
-                [layout.valueParam ?? 'value']: value,
-              });
+              if (software) {
+                const nextValues = softwareState.values.map((item, index) => index === editingStage - 1 ? Number(value) : item);
+                const editingIndex = editingStage - 1;
+                const writesCurrentStage = effectiveSoftwareIndex === editingIndex;
+                const next = {
+                  ...softwareState,
+                  values: nextValues,
+                  selectedIndex: writesCurrentStage ? editingIndex : softwareState.selectedIndex,
+                };
+                setSoftwareStates((states) => ({ ...states, [softwareKey]: next }));
+                saveSoftwareDpiStages(softwareDpiStorage(), softwareKey, next);
+                if (writesCurrentStage) {
+                  void runMutation(setMutation, {
+                    ...(layout.stageParam ? { [layout.stageParam]: 1 } : {}),
+                    [layout.valueParam ?? 'value']: value,
+                  });
+                }
+              } else {
+                void runMutation(setMutation, {
+                  [layout.stageParam ?? 'stage']: editingStage,
+                  [layout.valueParam ?? 'value']: value,
+                });
+              }
             }
             setEditingStage(null);
           }}
@@ -2960,9 +3038,12 @@ function sharedControlMetric(capabilities: PluginCapability[], device: DeviceSta
   for (const capability of capabilities) {
     const layout = resolveStageLayout(capability);
     if (layout) {
-      const stages = ((readPath(device, layout.dotsSource) as DpiStage[] | undefined) ?? [])
-        .filter((stage) => stage.enabled);
-      const activeDpi = stages.find((stage) => stage.active)?.value ?? stages[0]?.value;
+      const stages = layout.dotsSource
+        ? ((readPath(device, layout.dotsSource) as DpiStage[] | undefined) ?? []).filter((stage) => stage.enabled)
+        : [];
+      const activeDpi = usesSoftwareDpiLayout(layout, device)
+        ? softwareDpiCurrentValue(layout, device)
+        : stages.find((stage) => stage.active)?.value ?? stages[0]?.value;
       const text = activeDpi
         ? String(activeDpi)
         : capabilityRuntimePending(capability) ? '—' : i18n.t('common.notReported');

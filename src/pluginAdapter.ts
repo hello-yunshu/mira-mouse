@@ -900,10 +900,19 @@ export function simulateDemoMutation(
       const selectMutation = resolveMutation(layout.selectMutation, next.writableMutations);
       const setMutation = resolveMutation(layout.setMutation, next.writableMutations);
 
+      if (layout.mode === 'software' && setMutation === mutation) {
+        const valueParam = layout.valueParam ?? 'value';
+        const newValue = Number(params[valueParam]);
+        if (layout.currentValueSource && Number.isFinite(newValue)) {
+          writeSynced(layout.currentValueSource, newValue);
+        }
+        continue;
+      }
+
       if (selectMutation === mutation) {
         const selectParam = layout.selectParam ?? 'value';
         const stageNumber = Number(params[selectParam]);
-        const stages = readPath(next, layout.dotsSource) as DpiStage[] | undefined;
+        const stages = layout.dotsSource ? readPath(next, layout.dotsSource) as DpiStage[] | undefined : undefined;
         if (stages && Number.isInteger(stageNumber) && stageNumber >= 1 && stageNumber <= stages.length) {
           stages.forEach((stage, i) => { stage.active = (i + 1) === stageNumber; });
         }
@@ -915,7 +924,7 @@ export function simulateDemoMutation(
         const valueParam = layout.valueParam ?? 'value';
         const stageNumber = Number(params[stageParam]);
         const newValue = Number(params[valueParam]);
-        const stages = readPath(next, layout.valueSource) as DpiStage[] | undefined;
+        const stages = layout.valueSource ? readPath(next, layout.valueSource) as DpiStage[] | undefined : undefined;
         if (stages && Number.isInteger(stageNumber) && stageNumber >= 1 && stageNumber <= stages.length) {
           stages[stageNumber - 1].value = newValue;
         }

@@ -109,12 +109,18 @@ export interface PluginZone { id: string; labelKey: string; fields: PluginField[
 
 /** DPI 分档布局声明。 */
 export interface PluginStageLayout {
-  dotsSource: string;
-  selectMutation: PluginMutation;
+  /** hardware=设备原生档位；software=Host 本地预设，切换时仅写 DPI 数值。 */
+  mode?: 'hardware' | 'software' | 'auto';
+  dotsSource?: string;
+  selectMutation?: PluginMutation;
   setMutation: PluginMutation;
-  valueSource: string;
+  valueSource?: string;
   colorSource?: string;
   range: RangeSpec;
+  /** 软件档位读取当前真实 DPI 的路径。 */
+  currentValueSource?: string;
+  /** 软件档位初始值；2..8 项，实际值仍受 range 约束。 */
+  defaultValues?: number[];
   /** 动态 range 来源：指向 snapshot 中的数字路径，运行时覆盖 range.max。 */
   rangeSource?: string;
   /** rangeSource 解析后的偏移量（默认 0），用于 count → index 转换（如 -1）。 */
