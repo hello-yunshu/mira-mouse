@@ -100,6 +100,12 @@ button.mira-activity-button[data-mira-processing="true"]:disabled {
   opacity: 0;
 }
 
+/* Orb 已完全退出后才让原动作文案柔和恢复。进入处理态仍是瞬时隐藏，
+   因此不会重新引入 Orb 与文字同时可见的重叠帧。 */
+.mira-activity-label.is-restoring {
+  animation: mira-activity-label-return 120ms var(--motion-ease-out, ease-out) both;
+}
+
 .mira-inline-activity {
   display: inline-grid;
   width: 20px;
@@ -158,6 +164,16 @@ button.mira-activity-button[data-mira-processing="true"]:disabled {
   }
 }
 
+@keyframes mira-activity-label-return {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .mira-activity-card {
     animation: none;
@@ -165,6 +181,10 @@ button.mira-activity-button[data-mira-processing="true"]:disabled {
 
   .mira-inline-activity {
     transition: none;
+  }
+
+  .mira-activity-label.is-restoring {
+    animation: none;
   }
 
 }

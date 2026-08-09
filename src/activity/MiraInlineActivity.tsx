@@ -77,6 +77,34 @@ export function MiraInlineActivity({
   // 渲染层兜底仲裁：同一 scope 已有 Beam 在播放时不渲染 Orb。
   const beamActive = useActiveBeamForScope(orbScope);
   const showOrb = visible && !beamActive;
+  // Orb 一旦在本轮任务中真正出现，直到业务 active 结束前都继续隐藏原按钮
+  // 文案。否则完成事件要求 Orb 先退出、Beam 再进入的短暂间隙会把“检查更新”
+  // 突然恢复出来，形成用户可见的文字跳闪。
+  //
+  // 这里使用 React 的“由 props/派生状态同步上一轮 state”模式，让 Orb 与标签
+  // 的互斥仍在同一次提交中完成；不在 effect 里补状态，避免多留一帧。
+  const [labelCycle, setLabelCycle] = useState(() => ({
+    active,
+    activity,
+    orbHasAppeared: showOrb,
+    restoreAfterOrb: false,
+  }));
+  if (labelCycle.active !== active || labelCycle.activity !== activity) {
+    setLabelCycle({
+      active,
+      activity,
+      orbHasAppeared: active ? showOrb : false,
+      restoreAfterOrb: !active && labelCycle.orbHasAppeared,
+    });
+  } else if (showOrb && !labelCycle.orbHasAppeared) {
+    setLabelCycle({
+      ...labelCycle,
+      orbHasAppeared: true,
+      restoreAfterOrb: false,
+    });
+  }
+  const concealLabel = showOrb || (active && labelCycle.orbHasAppeared);
+  const restoreLabel = !concealLabel && labelCycle.restoreAfterOrb;
   // 组件级注册令牌：StrictMode 双挂载与重挂载复用同一 token，同 scope 的
   // 多个组件互不覆盖，注销到最后一个时 scope 才算不可见。
   const [token] = useState<ActivityRegistrationToken>(
@@ -139,7 +167,17 @@ export function MiraInlineActivity({
         </span>
       )}
       {label !== undefined && (
-        <span className={`mira-activity-label${showOrb ? ' is-concealed' : ''}`}>
+        <span
+          className={[
+            'mira-activity-label',
+            concealLabel ? 'is-concealed' : null,
+            restoreLabel ? 'is-restoring' : null,
+          ].filter(Boolean).join(' ')}
+          onAnimationEnd={(event) => {
+            if (event.animationName !== 'mira-activity-label-return') return;
+            setLabelCycle((current) => ({ ...current, restoreAfterOrb: false }));
+          }}
+        >
           {label}
         </span>
       )}
