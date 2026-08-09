@@ -453,6 +453,45 @@ describe('MiraActivityOverlay 生命周期仲裁（P0-3）', () => {
     expect(screen.getByRole('button', { name: label })).not.toHaveAttribute('data-mira-processing');
   });
 
+  it('22a. 关于页检查完成仲裁时，Orb 退出到 busy 结束之间不跳回“检查更新”', async () => {
+    const announce = vi.fn(() => true);
+    const { rerender } = render(
+      <MiraActivityButton active activity="checking-app-update">
+        检查更新
+      </MiraActivityButton>,
+    );
+    act(() => { vi.advanceTimersByTime(350); });
+    expect(screen.getByTestId('thinking-orb')).toBeInTheDocument();
+    expect(screen.getByText('检查更新')).toHaveClass('is-concealed');
+
+    // 更新结果先到：完成 Beam 请求 Orb 立即退出，但 About 的 finally 尚未
+    // 把 manualCheckBusy 归 false。此间原文案必须继续隐藏，不能跳闪一帧。
+    act(() => {
+      void announceAfterOrbExit(
+        'about-update',
+        announce,
+        request('app-update-ready', 'about-update'),
+      );
+    });
+    act(() => { vi.advanceTimersByTime(0); });
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.queryByTestId('thinking-orb')).not.toBeInTheDocument();
+    expect(screen.getByText('检查更新')).toHaveClass('is-concealed');
+    expect(screen.getByRole('button', { name: '检查更新' })).toHaveAttribute(
+      'data-mira-processing',
+      'true',
+    );
+
+    // 业务 busy 真正结束后才恢复原文案，并使用仅退出侧的淡入动画。
+    rerender(
+      <MiraActivityButton active={false} activity="checking-app-update">
+        检查更新
+      </MiraActivityButton>,
+    );
+    expect(screen.getByText('检查更新')).not.toHaveClass('is-concealed');
+    expect(screen.getByText('检查更新')).toHaveClass('is-restoring');
+  });
+
   it('22b. 电量分析 Orb 嵌入现有 Modal 表面，视觉上不重复显示动作文字', () => {
     render(<MiraEmbeddedActivity active activity="battery-analysis" aiAnalysisEnabled />);
     expect(screen.queryByTestId('thinking-orb')).not.toBeInTheDocument();
