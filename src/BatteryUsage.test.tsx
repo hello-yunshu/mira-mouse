@@ -595,6 +595,71 @@ describe('BatteryUsageModal', () => {
     expect(screen.queryByRole('menuitemradio', { name: /Old Offline Mouse/ })).toBeNull();
   });
 
+  it('overlays main-screen battery values without triggering an extra device read', async () => {
+    mockInvoke();
+    const { rerender } = render(
+      <BatteryUsageModal
+        open
+        onClose={() => {}}
+        hasBattery
+        connectedTargets={[
+          {
+            deviceName: 'Mira Example Wireless Mouse',
+            componentId: 'mouse',
+            latestPercentage: 67,
+            latestCharging: true,
+            latestAt: new Date().toISOString(),
+            lowBattery: false,
+          },
+          {
+            deviceName: 'Mira Example Wireless Mouse',
+            componentId: 'receiver',
+            latestPercentage: 91,
+            latestCharging: false,
+            latestAt: new Date().toISOString(),
+            lowBattery: false,
+          },
+        ]}
+      />,
+    );
+
+    await waitFor(() => expect(document.querySelector('.battery-status-metric strong')).toHaveTextContent('67%'));
+    expect(invokeMock).not.toHaveBeenCalledWith('device_refresh_battery');
+    expect(screen.getAllByText('67%').length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole('button', { name: '切换设备' }));
+    expect(screen.getByRole('menuitemradio', { name: /接收器/ })).toHaveTextContent('91%');
+
+    fireEvent.click(screen.getByRole('menuitemradio', { name: /鼠标/ }));
+    rerender(
+      <BatteryUsageModal
+        open
+        onClose={() => {}}
+        hasBattery
+        connectedTargets={[
+          {
+            deviceName: 'Mira Example Wireless Mouse',
+            componentId: 'mouse',
+            latestPercentage: 12,
+            latestCharging: false,
+            latestAt: new Date().toISOString(),
+            lowBattery: true,
+          },
+          {
+            deviceName: 'Mira Example Wireless Mouse',
+            componentId: 'receiver',
+            latestPercentage: 91,
+            latestCharging: false,
+            latestAt: new Date().toISOString(),
+            lowBattery: false,
+          },
+        ]}
+      />,
+    );
+    await waitFor(() => expect(document.querySelector('.battery-status-metric strong')).toHaveTextContent('12%'));
+    expect(document.querySelector('.battery-status-strip')).toHaveClass('low');
+  });
+
   it('falls back to an available device when a refreshed range drops the selection', async () => {
     const tenDayWithoutReceiver: BatteryHistoryResponse = {
       ...MOCK_BATTERY_HISTORY_10D,

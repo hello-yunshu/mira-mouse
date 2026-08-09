@@ -790,23 +790,42 @@ function batteryUsageTarget(entry: DeviceSnapshotEntry | undefined) {
   };
 }
 
-function connectedBatteryUsageTargets(entries: DeviceSnapshotEntry[]): BatteryUsageConnectedTarget[] {
+function connectedBatteryUsageTargets(
+  entries: DeviceSnapshotEntry[],
+  lowBatteryThreshold: number,
+): BatteryUsageConnectedTarget[] {
   const targets: BatteryUsageConnectedTarget[] = [];
   const seen = new Set<string>();
+  // entries 只在真实设备快照变化时更新；把这一刻作为即时状态的观测时间，
+  // 避免弹窗继续展示历史记录的旧时间戳。
+  const latestAt = new Date().toISOString();
 
   for (const { snapshot } of entries) {
     const deviceName = snapshot.historyIdentity?.displayName ?? snapshot.displayName;
-    const componentIds = snapshot.batteries?.length
-      ? snapshot.batteries.map((battery) => battery.id)
+    const batteries = snapshot.batteries?.length
+      ? snapshot.batteries
       : snapshot.batteryPercent !== undefined
-        ? ['mouse']
+        ? [{
+            id: 'mouse',
+            label: '',
+            percentage: snapshot.batteryPercent,
+            charging: snapshot.charging,
+          }]
         : [];
 
-    for (const componentId of componentIds) {
+    for (const battery of batteries) {
+      const componentId = battery.id;
       const key = `${deviceName.trim().replace(/\s+/g, ' ').toLocaleLowerCase()}\u0000${componentId}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      targets.push({ deviceName, componentId });
+      targets.push({
+        deviceName,
+        componentId,
+        latestPercentage: battery.percentage,
+        latestCharging: battery.charging,
+        latestAt,
+        lowBattery: battery.percentage <= lowBatteryThreshold,
+      });
     }
   }
 
@@ -4272,8 +4291,12 @@ export default function App() {
   const [appNotificationAttentionEventKey, setAppNotificationAttentionEventKey] = useState<string>();
   const [showBatteryUsage, setShowBatteryUsage] = useState(false);
   const [batteryUsageSession, setBatteryUsageSession] = useState(0);
-  const [batteryUsageSettings, setBatteryUsageSettings] = useState<{ batteryHistoryEnabled: boolean; aiAnalysisEnabled: boolean } | undefined>(
-    pureWeb ? { batteryHistoryEnabled: true, aiAnalysisEnabled: false } : undefined,
+  const [batteryUsageSettings, setBatteryUsageSettings] = useState<{
+    batteryHistoryEnabled: boolean;
+    aiAnalysisEnabled: boolean;
+    lowBatteryThreshold: number;
+  } | undefined>(
+    pureWeb ? { batteryHistoryEnabled: true, aiAnalysisEnabled: false, lowBatteryThreshold: 20 } : undefined,
   );
   const [pluginLocaleRevision, setPluginLocaleRevision] = useState(0);
   const windowsPlatform = isWindowsPlatform();
@@ -4308,7 +4331,11 @@ export default function App() {
     setBatteryUsageSession((value) => value + 1);
     setShowBatteryUsage(true);
   }, []);
-  const syncBatteryUsageSettings = useCallback((settings: { batteryHistoryEnabled: boolean; aiAnalysisEnabled: boolean }) => {
+  const syncBatteryUsageSettings = useCallback((settings: {
+    batteryHistoryEnabled: boolean;
+    aiAnalysisEnabled: boolean;
+    lowBatteryThreshold: number;
+  }) => {
     setBatteryUsageSettings(settings);
   }, []);
   const reloadPluginLocales = useCallback(() => {
@@ -4417,6 +4444,7 @@ export default function App() {
         syncBatteryUsageSettings({
           batteryHistoryEnabled: settings.batteryHistoryEnabled ?? true,
           aiAnalysisEnabled: localAiFeatureEnabled(settings, LOCAL_AI_FEATURE.batteryUsage),
+          lowBatteryThreshold: settings.lowBatteryThreshold,
         });
         applyLanguage(settings.language ?? 'auto');
         if (settings.automaticUpdateChecks) {
@@ -4528,8 +4556,8 @@ export default function App() {
   const themeColor = device ? declaredAccentColor(device) : undefined;
   const selectedBatteryUsageTarget = batteryUsageTarget(selectedDeviceEntry(deviceEntries));
   const batteryUsageConnectedTargets = useMemo(
-    () => connectedBatteryUsageTargets(deviceEntries),
-    [deviceEntries],
+    () => connectedBatteryUsageTargets(deviceEntries, batteryUsageSettings?.lowBatteryThreshold ?? 20),
+    [batteryUsageSettings?.lowBatteryThreshold, deviceEntries],
   );
   // 全局 Orb 只表达 Dashboard 的设备近程状态。电量整理属于已打开的电量
   // Modal，由 Modal 内部的 embedded Orb 承担，避免玻璃浮层之上再叠玻璃卡。

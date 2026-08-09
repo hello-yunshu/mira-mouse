@@ -176,7 +176,7 @@ function isMacPlatform(): boolean {
     || (previewPlatform === null && /Macintosh|Mac OS X/.test(navigator.userAgent));
 }
 
-export function SettingsPage({ onNavigateAbout, onNavigateLogs = () => {}, onOpenBatteryUsage = () => {}, onBatteryUsageSettingsChange, onThemeChange, previewMode = false, pluginCapabilities = [], writableMutations = [], focusPluginUpdateToken = 0, focusLocalAiUpdateToken = 0, initialTab = 'general', onTabChange, onSettingsExit }: { onNavigateAbout: () => void; onNavigateLogs?: () => void; onOpenBatteryUsage?: () => void; onBatteryUsageSettingsChange?: (settings: { batteryHistoryEnabled: boolean; aiAnalysisEnabled: boolean }) => void; onThemeChange: (theme: ThemeMode) => void; previewMode?: boolean; pluginCapabilities?: PluginCapability[]; writableMutations?: string[]; focusPluginUpdateToken?: number; focusLocalAiUpdateToken?: number; initialTab?: SettingsTab; onTabChange?: (tab: SettingsTab) => void; onSettingsExit?: () => void }) {
+export function SettingsPage({ onNavigateAbout, onNavigateLogs = () => {}, onOpenBatteryUsage = () => {}, onBatteryUsageSettingsChange, onThemeChange, previewMode = false, pluginCapabilities = [], writableMutations = [], focusPluginUpdateToken = 0, focusLocalAiUpdateToken = 0, initialTab = 'general', onTabChange, onSettingsExit }: { onNavigateAbout: () => void; onNavigateLogs?: () => void; onOpenBatteryUsage?: () => void; onBatteryUsageSettingsChange?: (settings: { batteryHistoryEnabled: boolean; aiAnalysisEnabled: boolean; lowBatteryThreshold: number }) => void; onThemeChange: (theme: ThemeMode) => void; previewMode?: boolean; pluginCapabilities?: PluginCapability[]; writableMutations?: string[]; focusPluginUpdateToken?: number; focusLocalAiUpdateToken?: number; initialTab?: SettingsTab; onTabChange?: (tab: SettingsTab) => void; onSettingsExit?: () => void }) {
   const { t } = useTranslation();
   const windowsPlatform = isWindowsPlatform();
   const macPlatform = isMacPlatform();
@@ -617,8 +617,9 @@ export function SettingsPage({ onNavigateAbout, onNavigateLogs = () => {}, onOpe
     onBatteryUsageSettingsChange?.({
       batteryHistoryEnabled: settings.batteryHistoryEnabled,
       aiAnalysisEnabled: batteryAiAnalysisEnabled,
+      lowBatteryThreshold: settings.lowBatteryThreshold,
     });
-  }, [batteryAiAnalysisEnabled, onBatteryUsageSettingsChange, settings.batteryHistoryEnabled]);
+  }, [batteryAiAnalysisEnabled, onBatteryUsageSettingsChange, settings.batteryHistoryEnabled, settings.lowBatteryThreshold]);
 
   function update(patch: Partial<AppSettings>) {
     const next = { ...settingsRef.current, ...patch };
