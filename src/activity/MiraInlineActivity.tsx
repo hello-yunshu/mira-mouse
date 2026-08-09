@@ -105,6 +105,7 @@ export function MiraInlineActivity({
     activity,
     i18n.resolvedLanguage ?? i18n.language,
   );
+  const usesThemeAccent = activity === 'applying-settings';
 
   return (
     <>
@@ -127,6 +128,7 @@ export function MiraInlineActivity({
               size={spec.size}
               speed={spec.speed}
               theme="auto"
+              color={usesThemeAccent ? 'var(--accent)' : undefined}
               aria-hidden="true"
             />
           ) : fallback !== undefined ? (
