@@ -24,7 +24,10 @@ export {
 } from './activityCoordinator';
 export {
   MIRA_ACTIVITY_MIN_VISIBLE_MS,
+  MIRA_ACTIVITY_EXIT_MS,
   MIRA_ACTIVITY_SHOW_DELAY_MS,
+  MIRA_DEVICE_INITIALIZING_SHOW_DELAY_MS,
+  miraGlobalActivityShowDelay,
   miraActivityLabel,
   miraActivitySpec,
   resolveGlobalMiraActivity,

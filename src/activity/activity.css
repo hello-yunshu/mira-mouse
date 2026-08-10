@@ -11,23 +11,72 @@
   pointer-events: none;
 }
 
+/* 只柔化检测卡附近的既有主页，不压暗整页。这个局部焦点层与卡片同轴，
+   因此状态出现时像 Aura 的柔光凝成一块玻璃，而不是另一个 Modal 突然盖上来。 */
+.mira-activity-overlay::before {
+  content: '';
+  position: absolute;
+  width: min(360px, calc(100vw - 32px));
+  height: min(250px, calc(100vh - 32px));
+  border-radius: 50%;
+  background: rgb(35 32 43 / 1%);
+  -webkit-backdrop-filter: blur(2.5px) saturate(92%);
+  backdrop-filter: blur(2.5px) saturate(92%);
+  -webkit-mask-image: radial-gradient(closest-side, #000 34%, rgb(0 0 0 / 72%) 58%, transparent 100%);
+  mask-image: radial-gradient(closest-side, #000 34%, rgb(0 0 0 / 72%) 58%, transparent 100%);
+  animation: mira-activity-focus-enter 160ms var(--motion-ease-out, ease-out) both;
+}
+
 .mira-activity-card {
+  position: relative;
+  isolation: isolate;
   display: grid;
-  min-width: 196px;
+  min-width: 216px;
   max-width: min(300px, calc(100vw - 48px));
   justify-items: center;
   gap: 12px;
-  padding: 18px 22px 16px;
+  padding: 20px 26px 17px;
+  border-radius: 20px;
+  color: var(--text, currentColor);
+  transform-origin: 65% -35%;
+  animation: mira-activity-enter 160ms var(--motion-ease-out, ease-out) both;
+}
+
+/* 玻璃壳与内容分层：壳体先把背景稳定接住，Orb / 文案再出现，避免入场
+   透明度作用到整卡后让后方的大号 DPI 数值穿透。 */
+.mira-activity-card::before {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  inset: 0;
   border: 1px solid var(--floating-glass-border, rgb(255 255 255 / 34%));
-  border-radius: 18px;
+  border-radius: inherit;
   background: var(--floating-glass-bg, rgb(247 244 250 / 88%));
   box-shadow:
-    0 18px 50px rgb(30 24 38 / 18%),
+    0 16px 44px rgb(30 24 38 / 20%),
+    0 0 0 1px color-mix(in oklch, var(--accent), transparent 90%),
+    0 0 30px color-mix(in oklch, var(--accent), transparent 88%),
     inset 0 1px 0 rgb(255 255 255 / 24%);
-  backdrop-filter: var(--floating-glass-blur, blur(24px) saturate(160%));
   -webkit-backdrop-filter: var(--floating-glass-blur, blur(24px) saturate(160%));
-  color: var(--text, currentColor);
-  animation: mira-activity-enter 180ms var(--motion-ease-out, ease-out) both;
+  backdrop-filter: var(--floating-glass-blur, blur(24px) saturate(160%));
+  animation: mira-activity-shell-enter 160ms var(--motion-ease-out, ease-out) both;
+}
+
+.mira-activity-overlay.is-exiting::before {
+  animation: mira-activity-focus-exit var(--motion-instant, 90ms) var(--motion-ease-standard, ease) both;
+}
+
+.mira-activity-overlay.is-exiting .mira-activity-card {
+  animation: mira-activity-exit var(--motion-instant, 90ms) var(--motion-ease-standard, ease) both;
+}
+
+.mira-activity-overlay.is-exiting .mira-activity-card::before {
+  animation: mira-activity-shell-exit var(--motion-instant, 90ms) var(--motion-ease-standard, ease) both;
+}
+
+.mira-activity-overlay.is-exiting .mira-activity-card canvas,
+.mira-activity-overlay.is-exiting .mira-activity-card > span {
+  animation: mira-activity-content-exit 60ms var(--motion-ease-standard, ease) both;
 }
 
 .mira-activity-card canvas {
@@ -38,6 +87,7 @@
   filter: drop-shadow(
     0 6px 16px color-mix(in oklch, var(--accent), transparent 70%)
   );
+  animation: mira-activity-content-enter 140ms var(--motion-ease-out, ease-out) 20ms both;
 }
 
 .mira-activity-card > span {
@@ -48,6 +98,7 @@
   line-height: 1.45;
   text-align: center;
   text-wrap: balance;
+  animation: mira-activity-content-enter 140ms var(--motion-ease-out, ease-out) 20ms both;
 }
 
 /* P1/P2：按钮或既有状态文案中的 20px 过程反馈。 */
@@ -154,14 +205,52 @@ button.mira-activity-button[data-mira-processing="true"]:disabled {
 
 @keyframes mira-activity-enter {
   from {
-    opacity: 0;
-    transform: translateY(5px) scale(0.985);
+    transform: translateY(-8px) scale(.975);
   }
 
   to {
-    opacity: 1;
     transform: translateY(0) scale(1);
   }
+}
+
+@keyframes mira-activity-exit {
+  from {
+    transform: translateY(0) scale(1);
+  }
+
+  to {
+    transform: translateY(3px) scale(.985);
+  }
+}
+
+@keyframes mira-activity-shell-enter {
+  from { opacity: .88; }
+  to { opacity: 1; }
+}
+
+@keyframes mira-activity-shell-exit {
+  0%, 55% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+@keyframes mira-activity-content-enter {
+  from { opacity: 0; filter: blur(1px); transform: translateY(-2px); }
+  to { opacity: 1; filter: blur(0); transform: translateY(0); }
+}
+
+@keyframes mira-activity-content-exit {
+  from { opacity: 1; filter: blur(0); transform: translateY(0); }
+  to { opacity: 0; filter: blur(1px); transform: translateY(1px); }
+}
+
+@keyframes mira-activity-focus-enter {
+  from { opacity: 0; transform: scale(.92); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes mira-activity-focus-exit {
+  from { opacity: 1; transform: scale(1); }
+  to { opacity: 0; transform: scale(.96); }
 }
 
 @keyframes mira-activity-label-return {
@@ -175,7 +264,16 @@ button.mira-activity-button[data-mira-processing="true"]:disabled {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .mira-activity-card {
+  .mira-activity-card,
+  .mira-activity-card::before,
+  .mira-activity-card canvas,
+  .mira-activity-card > span,
+  .mira-activity-overlay::before,
+  .mira-activity-overlay.is-exiting::before,
+  .mira-activity-overlay.is-exiting .mira-activity-card,
+  .mira-activity-overlay.is-exiting .mira-activity-card::before,
+  .mira-activity-overlay.is-exiting .mira-activity-card canvas,
+  .mira-activity-overlay.is-exiting .mira-activity-card > span {
     animation: none;
   }
 
@@ -190,7 +288,11 @@ button.mira-activity-button[data-mira-processing="true"]:disabled {
 }
 
 @media (prefers-reduced-transparency: reduce) {
-  .mira-activity-card {
+  .mira-activity-overlay::before {
+    display: none;
+  }
+
+  .mira-activity-card::before {
     background: var(--surface-bg-strong, rgb(247 244 250 / 98%));
     backdrop-filter: none;
     -webkit-backdrop-filter: none;

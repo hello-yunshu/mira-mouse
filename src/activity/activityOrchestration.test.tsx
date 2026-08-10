@@ -67,14 +67,23 @@ describe('MiraActivityOverlay 生命周期仲裁（P0-3）', () => {
     resetAttentionBusForTests();
   });
 
-  it('1. 设备初始化超过 300ms 才显示 Orb', () => {
+  it('1. 设备初始化超过 0.5 秒才显示 Orb', () => {
     render(<MiraActivityOverlay activity="device-initializing" />);
     expect(screen.queryByTestId('thinking-orb')).not.toBeInTheDocument();
-    act(() => { vi.advanceTimersByTime(200); });
+    act(() => { vi.advanceTimersByTime(500); });
     expect(screen.queryByTestId('thinking-orb')).not.toBeInTheDocument();
-    act(() => { vi.advanceTimersByTime(150); });
+    act(() => { vi.advanceTimersByTime(20); });
     expect(screen.getByTestId('thinking-orb')).toHaveAttribute('data-state', 'connecting');
     expect(screen.getByRole('status')).toHaveTextContent('正在识别并读取鼠标…');
+  });
+
+  it('1b. 设备在 0.5 秒内完成读取时完全不显示全局识别卡', () => {
+    const { rerender } = render(<MiraActivityOverlay activity="device-initializing" />);
+    act(() => { vi.advanceTimersByTime(500); });
+    rerender(<MiraActivityOverlay activity={null} />);
+    act(() => { vi.advanceTimersByTime(1000); });
+    expect(screen.queryByTestId('thinking-orb')).not.toBeInTheDocument();
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
   });
 
   it('1a. 和鼠标沟通的 applying-settings Orb 使用当前主题 accent 着色', () => {
@@ -88,7 +97,7 @@ describe('MiraActivityOverlay 生命周期仲裁（P0-3）', () => {
   it('2. 设备 ready 后 Orb 立即退出（不等 420ms 尾段），随后才播放 ready Beam', async () => {
     const announce = vi.fn(() => true);
     render(<MiraActivityOverlay activity="device-initializing" />);
-    act(() => { vi.advanceTimersByTime(350); });
+    act(() => { vi.advanceTimersByTime(550); });
     expect(screen.getByTestId('thinking-orb')).toBeInTheDocument();
 
     act(() => {
@@ -96,6 +105,8 @@ describe('MiraActivityOverlay 生命周期仲裁（P0-3）', () => {
     });
     expect(announce).not.toHaveBeenCalled();
     // 立即退出提示后，Orb 先退出，Beam 才提交（Orb 真实注销后才提交完成反馈）。
+    act(() => { vi.advanceTimersByTime(1); });
+    expect(screen.getByRole('status')).toHaveAttribute('data-phase', 'exiting');
     await act(async () => {
       vi.advanceTimersByTime(100);
       await Promise.resolve();
@@ -151,13 +162,13 @@ describe('MiraActivityOverlay 生命周期仲裁（P0-3）', () => {
       announceAttentionRequest(request('plugin-update-1', 'settings-plugin'));
     });
     render(<MiraActivityOverlay activity="device-initializing" />);
-    act(() => { vi.advanceTimersByTime(350); });
+    act(() => { vi.advanceTimersByTime(550); });
     expect(screen.getByTestId('thinking-orb')).toBeInTheDocument();
   });
 
   it('8. 卸载后 timer/rAF/observer 清理，协调层状态清空', () => {
     const { unmount } = render(<MiraActivityOverlay activity="device-initializing" />);
-    act(() => { vi.advanceTimersByTime(350); });
+    act(() => { vi.advanceTimersByTime(550); });
     expect(screen.getByTestId('thinking-orb')).toBeInTheDocument();
     expect(isActivityVisible('device:app')).toBe(true);
 
@@ -276,7 +287,7 @@ describe('MiraActivityOverlay 生命周期仲裁（P0-3）', () => {
       explicit.unmount();
 
       render(<MiraActivityOverlay />);
-      act(() => { vi.advanceTimersByTime(350); });
+      act(() => { vi.advanceTimersByTime(550); });
       expect(screen.getByTestId('thinking-orb')).toBeInTheDocument();
     } finally {
       marker.remove();
@@ -290,7 +301,7 @@ describe('MiraActivityOverlay 生命周期仲裁（P0-3）', () => {
       return true;
     });
     const { rerender } = render(<MiraActivityOverlay activity="device-initializing" />);
-    act(() => { vi.advanceTimersByTime(350); });
+    act(() => { vi.advanceTimersByTime(550); });
     expect(screen.getByTestId('thinking-orb')).toBeInTheDocument();
 
     // 业务状态变 null，但 Orb 仍处于最短可见尾段。
@@ -302,6 +313,8 @@ describe('MiraActivityOverlay 生命周期仲裁（P0-3）', () => {
       void announceAfterOrbExit('device:app', announce, request('ready-app-1', 'device:app'));
     });
     expect(announce).not.toHaveBeenCalled();
+    act(() => { vi.advanceTimersByTime(1); });
+    expect(screen.getByRole('status')).toHaveAttribute('data-phase', 'exiting');
     await act(async () => {
       vi.advanceTimersByTime(100);
       await Promise.resolve();
@@ -322,6 +335,8 @@ describe('MiraActivityOverlay 生命周期仲裁（P0-3）', () => {
       void announceAfterOrbExit('device:app', announce, request('ready-mouse', 'device:app'));
     });
     expect(announce).not.toHaveBeenCalled();
+    act(() => { vi.advanceTimersByTime(1); });
+    expect(screen.getByRole('status')).toHaveAttribute('data-phase', 'exiting');
     await act(async () => {
       vi.advanceTimersByTime(100);
       await Promise.resolve();
@@ -332,7 +347,7 @@ describe('MiraActivityOverlay 生命周期仲裁（P0-3）', () => {
 
   it('18. activity=null 但无完成事件：仍遵守最短可见尾段', () => {
     const { rerender } = render(<MiraActivityOverlay activity="device-initializing" />);
-    act(() => { vi.advanceTimersByTime(300); });
+    act(() => { vi.advanceTimersByTime(550); });
     expect(screen.getByTestId('thinking-orb')).toBeInTheDocument();
 
     rerender(<MiraActivityOverlay activity={null} />);
@@ -340,7 +355,9 @@ describe('MiraActivityOverlay 生命周期仲裁（P0-3）', () => {
     // 已显示 300ms（< 420ms），无 exit hint 时不得提前隐藏。
     expect(screen.getByTestId('thinking-orb')).toBeInTheDocument();
 
-    act(() => { vi.advanceTimersByTime(200); });
+    act(() => { vi.advanceTimersByTime(120); });
+    expect(screen.getByRole('status')).toHaveAttribute('data-phase', 'exiting');
+    act(() => { vi.advanceTimersByTime(100); });
     expect(screen.queryByTestId('thinking-orb')).not.toBeInTheDocument();
   });
 
@@ -526,13 +543,15 @@ describe('MiraActivityOverlay 生命周期仲裁（P0-3）', () => {
     const { rerender } = render(<MiraActivityOverlay activity="device-initializing" />);
 
     // 第一轮：ready 后 Orb 立即退出，Beam 提交一次。
-    act(() => { vi.advanceTimersByTime(350); });
+    act(() => { vi.advanceTimersByTime(550); });
     expect(screen.getByTestId('thinking-orb')).toBeInTheDocument();
     rerender(<MiraActivityOverlay activity={null} />);
     act(() => {
       void announceAfterOrbExit('device:app', announce, request('ready-1', 'device:app'));
     });
     expect(announce).not.toHaveBeenCalled();
+    act(() => { vi.advanceTimersByTime(1); });
+    expect(screen.getByRole('status')).toHaveAttribute('data-phase', 'exiting');
     await act(async () => {
       vi.advanceTimersByTime(100);
       await Promise.resolve();
@@ -542,13 +561,15 @@ describe('MiraActivityOverlay 生命周期仲裁（P0-3）', () => {
 
     // 第二轮：同一组件、同一协调层，scope 重新建立后退出提示基线一并重置。
     rerender(<MiraActivityOverlay activity="device-initializing" />);
-    act(() => { vi.advanceTimersByTime(350); });
+    act(() => { vi.advanceTimersByTime(550); });
     expect(screen.getByTestId('thinking-orb')).toBeInTheDocument();
     rerender(<MiraActivityOverlay activity={null} />);
     act(() => {
       void announceAfterOrbExit('device:app', announce, request('ready-2', 'device:app'));
     });
     expect(announce).toHaveBeenCalledTimes(1);
+    act(() => { vi.advanceTimersByTime(1); });
+    expect(screen.getByRole('status')).toHaveAttribute('data-phase', 'exiting');
     await act(async () => {
       vi.advanceTimersByTime(100);
       await Promise.resolve();

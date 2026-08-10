@@ -93,7 +93,20 @@ const EN_LABELS: Record<MiraActivityKind | 'battery-analysis-with-ai', string> =
 };
 
 export const MIRA_ACTIVITY_SHOW_DELAY_MS = 300;
+// Presence snapshots often become a complete dashboard in a few hundred
+// milliseconds. Keep the large global card out of that fast path so startup
+// does not flash a transient surface that immediately disappears.
+export const MIRA_DEVICE_INITIALIZING_SHOW_DELAY_MS = 520;
 export const MIRA_ACTIVITY_MIN_VISIBLE_MS = 420;
+export const MIRA_ACTIVITY_EXIT_MS = 90;
+
+export function miraGlobalActivityShowDelay(
+  activity: Exclude<MiraGlobalActivity, null>,
+): number {
+  return activity === 'device-initializing'
+    ? MIRA_DEVICE_INITIALIZING_SHOW_DELAY_MS
+    : MIRA_ACTIVITY_SHOW_DELAY_MS;
+}
 
 export function miraActivitySpec(activity: MiraActivityKind): MiraActivitySpec {
   return ACTIVITY_SPECS[activity];
