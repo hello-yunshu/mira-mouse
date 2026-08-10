@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import App from './App';
 import { themeAccent } from './theme';
@@ -169,6 +169,39 @@ function entries(...snapshots: DeviceSnapshot[]) {
 }
 
 describe('real device snapshot mapping', () => {
+  it('crossfades the rendered no-device state into the first dashboard snapshot', async () => {
+    let resolveSnapshots!: (value: ReturnType<typeof entries>) => void;
+    const snapshotsPromise = new Promise<ReturnType<typeof entries>>((resolve) => {
+      resolveSnapshots = resolve;
+    });
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'settings_get') return Promise.resolve(settings);
+      if (command === 'device_snapshots') return snapshotsPromise;
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+
+    render(<App />);
+    expect(screen.getByText('还没找到支持的鼠标呢')).toBeInTheDocument();
+
+    await act(async () => {
+      resolveSnapshots(entries(snapshot));
+      await snapshotsPromise;
+    });
+
+    await waitFor(() => expect(document.querySelector('.page-swap')).toHaveAttribute(
+      'data-page-transition',
+      'device-arrival',
+    ));
+    expect(document.querySelector('.page-layer-leaving .empty')).toHaveTextContent('还没找到支持的鼠标呢');
+    expect(document.querySelector('.page-layer-current > .dashboard')).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'AM INFINITY 8K MOUSE' })).toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(document.querySelector('.page-layer-leaving')).not.toBeInTheDocument();
+      expect(document.querySelector('.page-swap')).not.toHaveAttribute('data-page-transition');
+    });
+  });
+
   it('creates Host-managed DPI stages for a device that only supports direct DPI writes', async () => {
     const softwareSnapshot: DeviceSnapshot = {
       displayName: 'Direct DPI Mouse', connection: 'usb', charging: false, batteries: [],

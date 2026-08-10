@@ -4,8 +4,9 @@ import { ThinkingOrb } from 'thinking-orbs';
 import { useTranslation } from 'react-i18next';
 import { OverlayPortal } from '../overlay';
 import {
+  MIRA_ACTIVITY_EXIT_MS,
   MIRA_ACTIVITY_MIN_VISIBLE_MS,
-  MIRA_ACTIVITY_SHOW_DELAY_MS,
+  miraGlobalActivityShowDelay,
   miraActivityLabel,
   miraActivitySpec,
   resolveGlobalMiraActivity,
@@ -85,10 +86,13 @@ function useGlobalActivityCoordination(
 ): {
   displayed: MiraGlobalActivity;
   coordinationScope: ActivityScope | null;
+  exiting: boolean;
 } {
-  // 初始不跟随检测值：显式业务状态也必须经过 300ms 延迟出现在先，
-  // 否则 App 一挂载就闪现 Orb。
+  // 初始不跟随检测值：显式业务状态也必须经过各自的展示门槛，
+  // 否则 App 一挂载就闪现 Orb。device-initializing 的门槛略高于
+  // 0.5 秒，让快速 Presence → Full 读取完全不展示大卡片。
   const [displayed, setDisplayed] = useState<MiraGlobalActivity>(null);
+  const [exiting, setExiting] = useState(false);
   const detectedScope = detected ? attentionScopeForActivity(detected) : null;
   // displayed 是上一轮渲染的 state，本轮即可参与 scope 计算，无循环依赖。
   const displayedScope = displayed
@@ -119,16 +123,23 @@ function useGlobalActivityCoordination(
       lastExitHintRef.current = exitHint;
     }
 
-    if (exitHint > lastExitHintRef.current) {
+    if (exiting) {
+      // 退场仍保留真实节点与注册 token，让局部柔焦、玻璃卡和 Orb 一起完成
+      // 极短的收束动画；动画结束后才注销，避免完成帧突然断掉。
+      timer = window.setTimeout(() => {
+        setDisplayed(null);
+        setExiting(false);
+      }, MIRA_ACTIVITY_EXIT_MS);
+    } else if (exitHint > lastExitHintRef.current) {
       lastExitHintRef.current = exitHint;
       suppressedValueRef.current = detected;
-      timer = window.setTimeout(() => setDisplayed(null), 0);
+      timer = window.setTimeout(() => setExiting(true), 0);
     } else if (detected) {
       if (detected !== suppressedValueRef.current && !displayed) {
         timer = window.setTimeout(() => {
           visibleSinceRef.current = performance.now();
           setDisplayed(detected);
-        }, Math.max(0, MIRA_ACTIVITY_SHOW_DELAY_MS));
+        }, Math.max(0, miraGlobalActivityShowDelay(detected)));
       } else if (displayed && displayed !== detected) {
         timer = window.setTimeout(() => setDisplayed(detected), 0);
       }
@@ -138,16 +149,16 @@ function useGlobalActivityCoordination(
       if (displayed) {
         const elapsed = performance.now() - visibleSinceRef.current;
         timer = window.setTimeout(
-          () => setDisplayed(null),
+          () => setExiting(true),
           Math.max(0, MIRA_ACTIVITY_MIN_VISIBLE_MS - elapsed),
         );
       }
     }
 
     return () => window.clearTimeout(timer);
-  }, [detected, displayed, coordinationScope, exitHint]);
+  }, [detected, displayed, coordinationScope, exitHint, exiting]);
 
-  return { displayed, coordinationScope };
+  return { displayed, coordinationScope, exiting };
 }
 
 export interface MiraActivityOverlayProps {
@@ -165,7 +176,7 @@ export function MiraActivityOverlay({
   const hasExplicitActivity = deviceActivity !== undefined;
   const detectedDom = useDetectedGlobalActivity(!hasExplicitActivity);
   const detected = hasExplicitActivity ? deviceActivity : detectedDom;
-  const { displayed, coordinationScope } = useGlobalActivityCoordination(detected);
+  const { displayed, coordinationScope, exiting } = useGlobalActivityCoordination(detected);
   // 渲染层兜底仲裁：同一 scope 已有 Beam 播放时不显示全局 Orb。
   const beamActive = useActiveBeamForScope(coordinationScope);
   const showOrb = displayed !== null && !beamActive;
@@ -201,8 +212,9 @@ export function MiraActivityOverlay({
   return (
     <OverlayPortal>
       <div
-        className="mira-activity-overlay"
+        className={`mira-activity-overlay${exiting ? ' is-exiting' : ''}`}
         data-mira-activity={displayed}
+        data-phase={exiting ? 'exiting' : 'visible'}
         role="status"
         aria-live="polite"
         aria-atomic="true"

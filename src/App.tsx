@@ -4338,7 +4338,44 @@ function resolveNotificationBeam(notification: AppNotification, currentView: Vie
 export default function App() {
   const { t } = useTranslation();
   const pureWeb = isPureWebPreview();
-  const [device, setDevice] = useState<DeviceState | undefined>(pureWeb ? MOCK_DEVICE : undefined);
+  // 纯网页视觉夹具：复现真实 Presence → Full 之间的短暂初始化快照。
+  // Tauri 运行时不读取该分支；打开/刷新 ?preview=initializing 即可观察
+  // 玻璃卡的完整入场、稳定和退场，不需要伪造设备协议事件。
+  const startupPreviewMode = pureWeb
+    ? new URLSearchParams(window.location.search).get('preview')
+    : null;
+  const startupPreview = startupPreviewMode === 'initializing'
+    || startupPreviewMode === 'initializing-fast';
+  const previewDevice = useMemo(() => startupPreview
+    ? {
+        ...MOCK_DEVICE,
+        pluginCapabilities: MOCK_DEVICE.pluginCapabilities.map((capability, index) => (
+          index === 0
+            ? {
+                ...capability,
+                metadata: { ...capability.metadata, _miraRuntimePending: true },
+              }
+            : capability
+        )),
+      }
+    : MOCK_DEVICE, [startupPreview]);
+  const [device, setDevice] = useState<DeviceState | undefined>(
+    pureWeb && !startupPreview ? previewDevice : undefined,
+  );
+  useEffect(() => {
+    if (!startupPreview) return;
+    // 先让空状态真实显示，再模拟 Presence 快照抵达。慢夹具会超过
+    // 识别卡门槛；快夹具在门槛前完成，用于证明卡片不会闪现。
+    const detectedTimer = window.setTimeout(() => setDevice(previewDevice), 280);
+    const readyTimer = window.setTimeout(
+      () => setDevice(MOCK_DEVICE),
+      startupPreviewMode === 'initializing-fast' ? 560 : 1280,
+    );
+    return () => {
+      window.clearTimeout(detectedTimer);
+      window.clearTimeout(readyTimer);
+    };
+  }, [previewDevice, startupPreview, startupPreviewMode]);
   const [deviceEntries, setDeviceEntries] = useState<DeviceSnapshotEntry[]>(pureWeb ? MOCK_DEVICE_ENTRIES : []);
   const deviceEntriesRef = useRef<DeviceSnapshotEntry[]>(pureWeb ? MOCK_DEVICE_ENTRIES : []);
   // device-updated 可能由初始化或用户按需读取连续触发；用 startTransition
@@ -4353,7 +4390,9 @@ export default function App() {
   // 等内部自带 IPC/effect 的页持续重渲染、重置容器淡出动画，造成刷新与闪烁。
   const [leavingView, setLeavingView] = useState<View | null>(null);
   const [leavingHTML, setLeavingHTML] = useState<string | null>(null);
+  const [pageTransitionKind, setPageTransitionKind] = useState<'navigation' | 'device-arrival' | null>(null);
   const prevViewRef = useRef<View>('dashboard');
+  const prevHasDeviceRef = useRef(device !== undefined);
   const transitionTimer = useRef<number | undefined>(undefined);
   // 当前层 DOM 节点引用：用于抓取旧页快照。
   const currentPageRef = useRef<HTMLDivElement | null>(null);
@@ -4730,9 +4769,11 @@ export default function App() {
     transitioningRef.current = true;
     setLeavingHTML(pageSnapshotRef.current);
     setLeavingView(prev);
+    setPageTransitionKind('navigation');
     transitionTimer.current = window.setTimeout(() => {
       setLeavingView(null);
       setLeavingHTML(null);
+      setPageTransitionKind(null);
       transitioningRef.current = false;
     }, 240);
     return () => {
@@ -4740,6 +4781,34 @@ export default function App() {
       transitioningRef.current = false;
     };
   }, [view]);
+
+  const hasDevice = device !== undefined;
+  // 设备从“未找到”变为可渲染快照时，复用页面快照层保留旧空状态，
+  // 与新 Dashboard 做一次短交叉过渡。旧层与新层始终重叠，不制造空白帧；
+  // 初始即有设备时不会触发，避免重新引入启动内容延迟。
+  useLayoutEffect(() => {
+    const hadDevice = prevHasDeviceRef.current;
+    prevHasDeviceRef.current = hasDevice;
+    if (view !== 'dashboard' || hadDevice || !hasDevice) return;
+    const snapshot = pageSnapshotRef.current;
+    if (!snapshot?.includes('class="empty"')) return;
+
+    window.clearTimeout(transitionTimer.current);
+    transitioningRef.current = true;
+    setLeavingHTML(snapshot);
+    setLeavingView('dashboard');
+    setPageTransitionKind('device-arrival');
+    transitionTimer.current = window.setTimeout(() => {
+      setLeavingView(null);
+      setLeavingHTML(null);
+      setPageTransitionKind(null);
+      transitioningRef.current = false;
+    }, 240);
+    return () => {
+      window.clearTimeout(transitionTimer.current);
+      transitioningRef.current = false;
+    };
+  }, [hasDevice, view]);
 
   // 非过渡期持续抓取当前层的 DOM 快照，供下一次退场使用。
   // 用 useLayoutEffect 保证在绘制前拿到与屏幕一致的结构；过渡中跳过，避免误抓新页。
@@ -4789,7 +4858,11 @@ export default function App() {
       {demoMode && !windowsPlatform && <button className="nav-link nav-exit" onClick={exitDemo} aria-label={t('nav.exitDemo')} title={t('nav.exitDemo')}><SignOut weight="regular" /></button>}
     </div>
     {windowsPlatform && demoMode && view === 'dashboard' && <button className="content-exit" onClick={exitDemo} aria-label={t('nav.exitDemo')} title={t('nav.exitDemo')}><SignOut weight="regular" /></button>}
-    <div className={`page-swap${leavingView ? ' is-transitioning' : ''}`} data-page-view={view}>
+    <div
+      className={`page-swap${leavingView ? ' is-transitioning' : ''}`}
+      data-page-view={view}
+      data-page-transition={pageTransitionKind ?? undefined}
+    >
       {titledView && pageTitle && (
         // 设置 / 关于 / 日志共用固定眉题与标题槽，不参与 current / leaving
         // 页面层的整层交叉淡化；标题自身原地交叉，并由轮廓过渡到实心。

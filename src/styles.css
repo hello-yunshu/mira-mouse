@@ -4731,6 +4731,19 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   to { opacity: 0; }
 }
 
+/* 空状态与首个设备 Dashboard 是同一个业务页面的两个连续阶段。
+   旧空状态向上轻收并淡出；Dashboard 从下方对应接入。两层全程重叠，
+   不出现透明空帧，也不延迟 Dashboard 内部的真实数据。 */
+@keyframes mira-device-empty-exit {
+  from { opacity: 1; transform: translateY(0) scale(1); }
+  to { opacity: 0; transform: translateY(-3px) scale(.99); }
+}
+
+@keyframes mira-device-dashboard-enter {
+  from { opacity: 0; transform: translateY(var(--motion-distance)) scale(.995); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
 /* 等级筛选 pill 标签切换动画：旧值上移淡出，新值从下方滑入 */
 @keyframes mira-pill-label-in {
   from { opacity: 0; transform: translateY(6px); }
@@ -5089,6 +5102,12 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   z-index: 1;
   pointer-events: none;
   animation: mira-page-exit 180ms var(--motion-ease-standard) forwards;
+}
+.page-swap[data-page-transition="device-arrival"] .page-layer-leaving {
+  animation: mira-device-empty-exit 180ms var(--motion-ease-standard) forwards;
+}
+.page-swap[data-page-transition="device-arrival"] .page-layer-current > .dashboard {
+  animation: mira-device-dashboard-enter 220ms var(--motion-ease-out) both;
 }
 /* 退场页是旧页在 leaving 层重新挂载的副本：抑制其内部入场动画，仅整层淡出，
    避免二次入场造成闪烁。 */
