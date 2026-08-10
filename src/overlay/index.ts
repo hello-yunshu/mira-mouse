@@ -9,5 +9,7 @@ export {
   openModalLayer,
   hasOpenModal,
   subscribeOverlayStack,
+  dismissTransientSurfaces,
+  subscribeTransientSurfaceDismiss,
 } from './overlayStack';
 export { useHasOpenModal } from './useOverlayStack';

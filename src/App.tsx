@@ -92,7 +92,13 @@ import { localAiUpdateState, startAutomaticLocalAiUpdateCheck } from './local-ai
 import { initUpdatePriorityCoordinator } from './update-priority';
 import { LOCAL_AI_FEATURE, localAiFeatureEnabled } from './localAi';
 import { segmentedIndicatorStyle } from './segmentedControl';
-import { Modal, OverlayPortal, useHasOpenModal } from './overlay';
+import {
+  dismissTransientSurfaces,
+  Modal,
+  OverlayPortal,
+  subscribeTransientSurfaceDismiss,
+  useHasOpenModal,
+} from './overlay';
 import { MiraActivityButton, MiraInlineActivity, MiraActivityOverlay } from './activity';
 import {
   isSoftwareDpiLayout,
@@ -3400,6 +3406,11 @@ function Dashboard({
     };
   }, []);
 
+  useEffect(() => subscribeTransientSurfaceDismiss(() => {
+    setShowBatteries(false);
+    setShowDeviceSwitcher(false);
+  }), []);
+
   const runMutation: RunMutation = async (
     mutation: string,
     params: Record<string, unknown>,
@@ -4400,14 +4411,6 @@ export default function App() {
     navigateTo('about');
     setAboutFocusToken((value) => value + 1);
   }, [navigateTo]);
-  const openAboutFromTray = useCallback(() => {
-    setShowBatteryUsage(false);
-    navigateTo('about');
-  }, [navigateTo]);
-  const openDashboardFromTray = useCallback(() => {
-    setShowBatteryUsage(false);
-    navigateTo('dashboard');
-  }, [navigateTo]);
   const openSettingsPluginUpdate = useCallback(() => {
     navigateTo('settings');
     setSettingsPluginFocusToken((value) => value + 1);
@@ -4432,6 +4435,43 @@ export default function App() {
       if (loaded) setPluginLocaleRevision((value) => value + 1);
     });
   }, []);
+
+  const handleTauriEvent = useEffectEvent((eventName: string) => {
+    switch (eventName) {
+      case 'navigate-about-update':
+        openAboutUpdate();
+        break;
+      case 'navigate-about':
+        dismissTransientSurfaces();
+        setShowBatteryUsage(false);
+        navigateTo('about');
+        break;
+      case 'navigate-dashboard':
+        dismissTransientSurfaces();
+        setShowBatteryUsage(false);
+        navigateTo('dashboard');
+        break;
+      case 'navigate-plugin-update':
+        openSettingsPluginUpdate();
+        break;
+      case 'navigate-local-ai-update':
+        openSettingsLocalAiUpdate();
+        break;
+      case 'open-battery-usage':
+        dismissTransientSurfaces();
+        openBatteryUsage();
+        break;
+      case 'plugin-locales-updated':
+        reloadPluginLocales();
+        break;
+      case 'window-resumed':
+        setRefreshNonce((value) => value + 1);
+        remindInstalledUpdateOnShown();
+        break;
+      default:
+        break;
+    }
+  });
 
   // 设置页卸载时清除插件/AI 引擎更新聚焦 token，避免下次进入设置时重复跳转和重复显示"已更新至"标签。
   // token 仅在点击更新完成通知时递增，离开设置页即视为已消费。
@@ -4469,54 +4509,34 @@ export default function App() {
 
   useEffect(() => {
     if (pureWeb) return;
-    let unlisten: (() => void) | undefined;
-    let unlistenAbout: (() => void) | undefined;
-    let unlistenDashboard: (() => void) | undefined;
-    let unlistenResume: (() => void) | undefined;
-    let unlistenBatteryUsage: (() => void) | undefined;
-    let unlistenPluginLocales: (() => void) | undefined;
-    listen('navigate-about-update', () => openAboutUpdate())
-      .then((un) => { unlisten = un; })
-      .catch(() => {});
-    listen('navigate-about', () => openAboutFromTray())
-      .then((un) => { unlistenAbout = un; })
-      .catch(() => {});
-    listen('navigate-dashboard', () => openDashboardFromTray())
-      .then((un) => { unlistenDashboard = un; })
-      .catch(() => {});
-    let unlistenPluginUpdate: (() => void) | undefined;
-    listen('navigate-plugin-update', () => openSettingsPluginUpdate())
-      .then((un) => { unlistenPluginUpdate = un; })
-      .catch(() => {});
-    let unlistenLocalAiUpdate: (() => void) | undefined;
-    listen('navigate-local-ai-update', () => openSettingsLocalAiUpdate())
-      .then((un) => { unlistenLocalAiUpdate = un; })
-      .catch(() => {});
-    listen('open-battery-usage', () => openBatteryUsage())
-      .then((un) => { unlistenBatteryUsage = un; })
-      .catch(() => {});
-    listen('plugin-locales-updated', () => reloadPluginLocales())
-      .then((un) => { unlistenPluginLocales = un; })
-      .catch(() => {});
-    listen('window-resumed', () => {
-      setRefreshNonce((value) => value + 1);
-      remindInstalledUpdateOnShown();
-    }).then((un) => { unlistenResume = un; })
-      .catch(() => {});
+    let disposed = false;
+    const unlisteners: Array<() => void> = [];
+    const eventNames = [
+      'navigate-about-update',
+      'navigate-about',
+      'navigate-dashboard',
+      'navigate-plugin-update',
+      'navigate-local-ai-update',
+      'open-battery-usage',
+      'plugin-locales-updated',
+      'window-resumed',
+    ];
+    for (const eventName of eventNames) {
+      void listen(eventName, () => handleTauriEvent(eventName))
+        .then((unlisten) => {
+          if (disposed) unlisten();
+          else unlisteners.push(unlisten);
+        })
+        .catch(() => {});
+    }
     // macOS native 通知只提醒。
     // 不监听窗口聚焦事件，避免误把用户主动打开当作通知点击。Windows/Linux 由 navigate-* / open-battery-usage
     // 事件直接处理；macOS 系统通知仅显示 title/body，应用内 Toast 保留可点击入口。
     return () => {
-      if (unlisten) unlisten();
-      if (unlistenAbout) unlistenAbout();
-      if (unlistenDashboard) unlistenDashboard();
-      if (unlistenPluginUpdate) unlistenPluginUpdate();
-      if (unlistenLocalAiUpdate) unlistenLocalAiUpdate();
-      if (unlistenResume) unlistenResume();
-      if (unlistenBatteryUsage) unlistenBatteryUsage();
-      if (unlistenPluginLocales) unlistenPluginLocales();
+      disposed = true;
+      for (const unlisten of unlisteners) unlisten();
     };
-  }, [openAboutFromTray, openAboutUpdate, openBatteryUsage, openDashboardFromTray, openSettingsPluginUpdate, openSettingsLocalAiUpdate, pureWeb, reloadPluginLocales]);
+  }, [pureWeb]);
 
   // 加载插件 locale，注册为 i18n namespace（以插件 ID 命名）。
   // 异步加载完成后刷新插件标签 memo，加载前使用 host 回退标签。

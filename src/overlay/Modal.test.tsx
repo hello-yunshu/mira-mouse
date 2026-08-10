@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { act, fireEvent, render, screen, cleanup } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { Modal, OVERLAY_ROOT_ID } from './index';
+import { dismissTransientSurfaces, Modal, OVERLAY_ROOT_ID } from './index';
 
 describe('Modal', () => {
   beforeEach(() => {
@@ -73,6 +73,19 @@ describe('Modal', () => {
     const surface = screen.getByRole('dialog');
     fireEvent.mouseDown(surface);
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('统一临时界面清理会调用正常的 onClose', () => {
+    const onClose = vi.fn();
+    render(
+      <Modal open onClose={onClose} title="标题">
+        <p>内容</p>
+      </Modal>,
+    );
+
+    act(() => dismissTransientSurfaces());
+
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it('打开后焦点进入弹窗', async () => {

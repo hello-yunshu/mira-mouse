@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { PropsWithChildren, useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
-import { OverlayPortal, subscribeOverlayStack } from './overlay';
+import { OverlayPortal, subscribeOverlayStack, subscribeTransientSurfaceDismiss } from './overlay';
 
 /**
  * Tooltip — 内容通过 OverlayPortal 渲染到顶层 #mira-overlay-root。
@@ -102,6 +102,8 @@ export function Tooltip({ label, children, fitContent = false }: PropsWithChildr
     // 使用 hideNow 的清理逻辑确保 timer 不会泄漏。
     hideNow();
   }), [hideNow]);
+
+  useEffect(() => subscribeTransientSurfaceDismiss(hideNow), [hideNow]);
 
   useEffect(() => () => { cancelHover(); cancelHide(); }, []);
 

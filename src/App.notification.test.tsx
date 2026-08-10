@@ -132,6 +132,69 @@ describe('托盘导航状态重置', () => {
       expect(screen.getByRole('button', { name: '关于 Mira' })).not.toHaveClass('active');
     });
   });
+
+  it('已经在首页时点击打开 Mira 也会关闭页面内弹窗', async () => {
+    await enterDemoMode();
+    fireEvent.click(screen.getByRole('button', { name: '全部读数' }));
+    await screen.findByRole('dialog', { name: '全部读数' });
+
+    await emitTauriEvent('navigate-dashboard');
+
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: '全部读数' })).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: '设备' })).toHaveClass('nav-link active');
+    });
+  });
+
+  it('页面内弹窗打开时从托盘进入电量不会叠加双 Modal', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await enterDemoMode();
+      fireEvent.click(screen.getByRole('button', { name: '全部读数' }));
+      await screen.findByRole('dialog', { name: '全部读数' });
+
+      await emitTauriEvent('open-battery-usage');
+
+      await screen.findByRole('dialog', { name: '电量使用情况' });
+      expect(screen.queryByRole('dialog', { name: '全部读数' })).not.toBeInTheDocument();
+      expect(screen.getAllByRole('dialog')).toHaveLength(1);
+      expect(document.getElementById('root')).toHaveAttribute('inert');
+      expect(document.getElementById('root')).toHaveAttribute('aria-hidden', 'true');
+      expect(warn).not.toHaveBeenCalledWith('[Mira Overlay] Multiple modal layers are open simultaneously.');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('托盘动作会关闭自定义电量 Popover 且不会在 Modal 关闭后复现', async () => {
+    await enterDemoMode();
+    fireEvent.click(document.querySelector('.battery-state') as HTMLButtonElement);
+    await screen.findByRole('region', { name: '设备电量' });
+
+    await emitTauriEvent('open-battery-usage');
+    await screen.findByRole('dialog', { name: '电量使用情况' });
+    expect(screen.queryByRole('region', { name: '设备电量' })).not.toBeInTheDocument();
+
+    fireEvent.click(document.querySelector('.battery-usage-close-icon') as HTMLButtonElement);
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: '电量使用情况' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('region', { name: '设备电量' })).not.toBeInTheDocument();
+    });
+  });
+
+  it('页面导航期间托盘监听保持单次订阅', async () => {
+    await enterDemoMode();
+    await waitFor(() => expect(eventCallbacks.has('navigate-dashboard')).toBe(true));
+    const subscriptionCount = listenMock.mock.calls.length;
+
+    await emitTauriEvent('navigate-about');
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: '关于 Mira' })).toHaveClass('active');
+    });
+    await emitTauriEvent('navigate-dashboard');
+
+    expect(listenMock).toHaveBeenCalledTimes(subscriptionCount);
+  });
 });
 
 describe('ITERATION-009 §4.1: 通知 action 路由', () => {

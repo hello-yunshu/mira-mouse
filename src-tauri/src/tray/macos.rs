@@ -87,6 +87,16 @@ define_class!(
     struct MiraStatusItemDelegate;
 
     impl MiraStatusItemDelegate {
+        /// 状态栏图标直接点击 → 只恢复窗口，保留用户当前页面。
+        #[unsafe(method(focusWindow:))]
+        fn focus_window(&self, _sender: Option<&AnyObject>) {
+            if let Some(handle) = APP_HANDLE.get() {
+                let _ = handle.run_on_main_thread(|| {
+                    crate::focus_main_from_tray(handle);
+                });
+            }
+        }
+
         /// 菜单 "打开 Mira" → 聚焦主窗口、关闭残留浮层并返回首页
         #[unsafe(method(openWindow:))]
         fn open_window(&self, _sender: Option<&AnyObject>) {
@@ -340,14 +350,14 @@ impl MacNativeTrayController {
         let status_view = MiraStatusView::with_frame(view_frame, mtm)
             .ok_or("failed to initialize MiraStatusView")?;
 
-        // 获取 button 并设置 target/action
+        // 获取 button 并设置 target/action。状态栏图标直接点击只恢复窗口；
+        // 菜单里的“打开 Mira”使用独立 openWindow: selector 返回首页。
         if let Some(button) = item.button(mtm) {
-            // target/action: 点击按钮 → openWindow:
-            // SAFETY: delegate 是有效的 NSObject 子类实例，openWindow: 是有效 selector
+            // SAFETY: delegate 是有效的 NSObject 子类实例，focusWindow: 是有效 selector
             let any_obj: &AnyObject = &delegate;
             unsafe {
                 button.setTarget(Some(any_obj));
-                button.setAction(Some(objc2::sel!(openWindow:)));
+                button.setAction(Some(objc2::sel!(focusWindow:)));
                 // NSTextAlignmentRight. Keep the native title to the right of
                 // the 28pt custom icon view instead of centering underneath it.
                 let _: () = msg_send![&*button, setAlignment: 1isize];
