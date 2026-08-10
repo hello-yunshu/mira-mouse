@@ -13775,11 +13775,22 @@ const TRAY_OPEN_ACCELERATOR: &str = "CmdOrCtrl+O";
 const TRAY_ABOUT_ACCELERATOR: &str = "CmdOrCtrl+I";
 const TRAY_QUIT_ACCELERATOR: &str = "CmdOrCtrl+Q";
 
+fn tray_action_accelerator_for_platform(
+    platform: &str,
+    accelerator: &'static str,
+) -> Option<&'static str> {
+    (platform == "macos").then_some(accelerator)
+}
+
+fn tray_action_accelerator(accelerator: &'static str) -> Option<&'static str> {
+    tray_action_accelerator_for_platform(std::env::consts::OS, accelerator)
+}
+
 #[cfg(test)]
 mod tray_menu_tests {
     use super::{
-        tr_about, tray_info_menu_rows, TrayInfoMenuRow, TRAY_ABOUT_ACCELERATOR,
-        TRAY_OPEN_ACCELERATOR, TRAY_QUIT_ACCELERATOR,
+        tr_about, tray_action_accelerator_for_platform, tray_info_menu_rows, TrayInfoMenuRow,
+        TRAY_ABOUT_ACCELERATOR, TRAY_OPEN_ACCELERATOR, TRAY_QUIT_ACCELERATOR,
     };
     use crate::tray::state::{TrayBatteryState, TrayRenderMode, TrayStatusState};
     use mira_core::Connection;
@@ -13874,9 +13885,24 @@ mod tray_menu_tests {
     fn action_labels_and_accelerators_keep_the_cross_platform_contract() {
         assert_eq!(tr_about("zh-CN"), "关于 Mira");
         assert_eq!(tr_about("en"), "About Mira");
-        assert_eq!(TRAY_OPEN_ACCELERATOR, "CmdOrCtrl+O");
-        assert_eq!(TRAY_ABOUT_ACCELERATOR, "CmdOrCtrl+I");
-        assert_eq!(TRAY_QUIT_ACCELERATOR, "CmdOrCtrl+Q");
+        for accelerator in [
+            TRAY_OPEN_ACCELERATOR,
+            TRAY_ABOUT_ACCELERATOR,
+            TRAY_QUIT_ACCELERATOR,
+        ] {
+            assert_eq!(
+                tray_action_accelerator_for_platform("macos", accelerator),
+                Some(accelerator)
+            );
+            assert_eq!(
+                tray_action_accelerator_for_platform("windows", accelerator),
+                None
+            );
+            assert_eq!(
+                tray_action_accelerator_for_platform("linux", accelerator),
+                None
+            );
+        }
     }
 }
 
@@ -14806,7 +14832,7 @@ fn update_tray(
             tr_open(lang),
             true,
             Some(NativeIcon::Home),
-            Some(TRAY_OPEN_ACCELERATOR),
+            tray_action_accelerator(TRAY_OPEN_ACCELERATOR),
         )?)?;
         menu.append(&IconMenuItem::with_id_and_native_icon(
             app,
@@ -14814,7 +14840,7 @@ fn update_tray(
             tr_about(lang),
             true,
             Some(NativeIcon::Info),
-            Some(TRAY_ABOUT_ACCELERATOR),
+            tray_action_accelerator(TRAY_ABOUT_ACCELERATOR),
         )?)?;
         menu.append(&PredefinedMenuItem::separator(app)?)?;
         menu.append(&IconMenuItem::with_id_and_native_icon(
@@ -14823,7 +14849,7 @@ fn update_tray(
             tr_quit(lang),
             true,
             Some(NativeIcon::StopProgress),
-            Some(TRAY_QUIT_ACCELERATOR),
+            tray_action_accelerator(TRAY_QUIT_ACCELERATOR),
         )?)?;
         tray.set_menu(Some(menu.clone()))?;
         // Windows: 数字电量图标托盘共享同一份菜单（克隆 Arc 引用）
@@ -14928,7 +14954,7 @@ fn build_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         tr_open(lang),
         true,
         Some(NativeIcon::Home),
-        Some(TRAY_OPEN_ACCELERATOR),
+        tray_action_accelerator(TRAY_OPEN_ACCELERATOR),
     )?;
     let about_i = IconMenuItem::with_id_and_native_icon(
         app,
@@ -14936,7 +14962,7 @@ fn build_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         tr_about(lang),
         true,
         Some(NativeIcon::Info),
-        Some(TRAY_ABOUT_ACCELERATOR),
+        tray_action_accelerator(TRAY_ABOUT_ACCELERATOR),
     )?;
     let separator_i = PredefinedMenuItem::separator(app)?;
     let quit_i = IconMenuItem::with_id_and_native_icon(
@@ -14945,7 +14971,7 @@ fn build_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         tr_quit(lang),
         true,
         Some(NativeIcon::StopProgress),
-        Some(TRAY_QUIT_ACCELERATOR),
+        tray_action_accelerator(TRAY_QUIT_ACCELERATOR),
     )?;
     let menu = Menu::with_items(app, &[&open_i, &about_i, &separator_i, &quit_i])?;
     let initial_icon = tauri::image::Image::from_bytes(
