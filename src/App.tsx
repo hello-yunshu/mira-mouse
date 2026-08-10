@@ -4400,8 +4400,13 @@ export default function App() {
     navigateTo('about');
     setAboutFocusToken((value) => value + 1);
   }, [navigateTo]);
-  const openAbout = useCallback(() => {
+  const openAboutFromTray = useCallback(() => {
+    setShowBatteryUsage(false);
     navigateTo('about');
+  }, [navigateTo]);
+  const openDashboardFromTray = useCallback(() => {
+    setShowBatteryUsage(false);
+    navigateTo('dashboard');
   }, [navigateTo]);
   const openSettingsPluginUpdate = useCallback(() => {
     navigateTo('settings');
@@ -4466,14 +4471,18 @@ export default function App() {
     if (pureWeb) return;
     let unlisten: (() => void) | undefined;
     let unlistenAbout: (() => void) | undefined;
+    let unlistenDashboard: (() => void) | undefined;
     let unlistenResume: (() => void) | undefined;
     let unlistenBatteryUsage: (() => void) | undefined;
     let unlistenPluginLocales: (() => void) | undefined;
     listen('navigate-about-update', () => openAboutUpdate())
       .then((un) => { unlisten = un; })
       .catch(() => {});
-    listen('navigate-about', () => openAbout())
+    listen('navigate-about', () => openAboutFromTray())
       .then((un) => { unlistenAbout = un; })
+      .catch(() => {});
+    listen('navigate-dashboard', () => openDashboardFromTray())
+      .then((un) => { unlistenDashboard = un; })
       .catch(() => {});
     let unlistenPluginUpdate: (() => void) | undefined;
     listen('navigate-plugin-update', () => openSettingsPluginUpdate())
@@ -4500,13 +4509,14 @@ export default function App() {
     return () => {
       if (unlisten) unlisten();
       if (unlistenAbout) unlistenAbout();
+      if (unlistenDashboard) unlistenDashboard();
       if (unlistenPluginUpdate) unlistenPluginUpdate();
       if (unlistenLocalAiUpdate) unlistenLocalAiUpdate();
       if (unlistenResume) unlistenResume();
       if (unlistenBatteryUsage) unlistenBatteryUsage();
       if (unlistenPluginLocales) unlistenPluginLocales();
     };
-  }, [openAbout, openAboutUpdate, openBatteryUsage, openSettingsPluginUpdate, openSettingsLocalAiUpdate, pureWeb, reloadPluginLocales]);
+  }, [openAboutFromTray, openAboutUpdate, openBatteryUsage, openDashboardFromTray, openSettingsPluginUpdate, openSettingsLocalAiUpdate, pureWeb, reloadPluginLocales]);
 
   // 加载插件 locale，注册为 i18n namespace（以插件 ID 命名）。
   // 异步加载完成后刷新插件标签 memo，加载前使用 host 回退标签。

@@ -87,12 +87,12 @@ define_class!(
     struct MiraStatusItemDelegate;
 
     impl MiraStatusItemDelegate {
-        /// 菜单 "打开 Mira" / 状态栏按钮点击 → 聚焦主窗口
+        /// 菜单 "打开 Mira" → 聚焦主窗口、关闭残留浮层并返回首页
         #[unsafe(method(openWindow:))]
         fn open_window(&self, _sender: Option<&AnyObject>) {
             if let Some(handle) = APP_HANDLE.get() {
                 let _ = handle.run_on_main_thread(|| {
-                    crate::focus_main_from_tray(handle);
+                    crate::open_main_from_tray(handle);
                 });
             }
         }

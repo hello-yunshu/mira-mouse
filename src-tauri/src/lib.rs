@@ -13753,6 +13753,11 @@ pub(crate) fn focus_main_from_tray(app: &AppHandle) {
     request_presence_refresh(&app.state::<SessionState>());
 }
 
+pub(crate) fn open_main_from_tray(app: &AppHandle) {
+    focus_main_from_tray(app);
+    let _ = app.emit("navigate-dashboard", ());
+}
+
 pub(crate) fn open_battery_usage_from_tray(app: &AppHandle) {
     // ITERATION-009 §4.2 方案 B：不再写入 pending_notification_action。
     // 托盘入口直接 emit `open-battery-usage`，由前端打开 Battery Usage modal。
@@ -14954,6 +14959,7 @@ fn build_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .menu(&menu)
         .on_menu_event(|app, event| match event.id().as_ref() {
             "quit" => app.exit(0),
+            "open" => open_main_from_tray(app),
             "about" => open_about_from_tray(app),
             id if id.starts_with("battery-") => {
                 open_battery_usage_from_tray(app);
@@ -14987,6 +14993,7 @@ fn build_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             .menu(&menu)
             .on_menu_event(|app, event| match event.id().as_ref() {
                 "quit" => app.exit(0),
+                "open" => open_main_from_tray(app),
                 "about" => open_about_from_tray(app),
                 id if id.starts_with("battery-") => {
                     open_battery_usage_from_tray(app);
