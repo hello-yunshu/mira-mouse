@@ -1177,6 +1177,9 @@ export function BatteryUsageModal({
   const [responses, setResponses] = useState<Partial<Record<BatteryHistoryRange, BatteryHistoryResponse>>>({});
   const response = responses[range] ?? null;
   const [loading, setLoading] = useState(false);
+  // 与请求 effect 分离记录“至少完成过一次加载”。Modal 常驻 App 树中，
+  // 从托盘首次打开时 effect 尚未执行；该标记防止首帧误显示为空历史。
+  const [loadSettled, setLoadSettled] = useState(false);
   const [exportingFormat, setExportingFormat] = useState<'json' | 'csv' | null>(null);
   const [confirmingClear, setConfirmingClear] = useState(false);
   const [loadedHistoryEnabled, setLoadedHistoryEnabled] = useState(true);
@@ -1190,7 +1193,8 @@ export function BatteryUsageModal({
   // 保留请求生命周期回调供嵌入方观测；加载 Orb 只渲染在
   // BatteryUsage Modal 的现有表面内，不再让 App 叠加第二个全局视觉主语。
   const canReportLoading = open && historyEnabled && (hasBattery || pureWeb);
-  const reportedLoading = canReportLoading && loading;
+  const displayLoading = canReportLoading && (loading || (!loadSettled && response === null));
+  const reportedLoading = displayLoading;
 
   useEffect(() => {
     onLoadingChange?.(reportedLoading);
@@ -1232,6 +1236,7 @@ export function BatteryUsageModal({
           '10d': MOCK_BATTERY_HISTORY_10D,
         });
         setLoading(false);
+        setLoadSettled(true);
       });
       return () => { cancelled = true; };
     }
@@ -1240,6 +1245,7 @@ export function BatteryUsageModal({
     // effect 依赖不包含 loading，不会触发级联渲染。
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
+    setLoadSettled(false);
     Promise.allSettled([
       invoke<BatteryHistoryResponse>('battery_history_get', { range: '24h' }),
       invoke<BatteryHistoryResponse>('battery_history_get', { range: '10d' }),
@@ -1252,6 +1258,7 @@ export function BatteryUsageModal({
       else notifyError(t('batteryUsage.title'), String(r10d.reason));
       setResponses(next);
       setLoading(false);
+      setLoadSettled(true);
     });
     return () => { cancelled = true; };
   }, [open, historyEnabled, pureWeb, t, reloadNonce]);
@@ -1498,15 +1505,15 @@ export function BatteryUsageModal({
         <div
           ref={scrollRef}
           className={`battery-usage-scroll-region${canScrollUp ? ' scroll-fade-top' : ''}${canScrollDown ? ' scroll-fade-bottom' : ''}`}
-          aria-busy={loading || undefined}
+          aria-busy={displayLoading || undefined}
         >
           <MiraEmbeddedActivity
-            active={loading}
+            active={displayLoading}
             activity="battery-analysis"
             aiAnalysisEnabled={aiAnalysisEnabled}
           />
           <div ref={contentRef} className="battery-usage-scroll-content">
-          {!loading && (!response || selectableDevices.length === 0) ? (
+          {!displayLoading && (!response || selectableDevices.length === 0) ? (
             <BatteryHistoryEmptyState onClose={onClose} />
           ) : (
             <>

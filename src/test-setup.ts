@@ -27,4 +27,9 @@ if (!('ResizeObserver' in globalThis)) {
   (globalThis as { ResizeObserver: typeof ResizeObserverStub }).ResizeObserver = ResizeObserverStub;
 }
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  (globalThis as typeof globalThis & {
+    __MIRA_RESET_RUNTIME_DATA_CACHE__?: () => void;
+  }).__MIRA_RESET_RUNTIME_DATA_CACHE__?.();
+});

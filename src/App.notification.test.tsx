@@ -105,6 +105,21 @@ async function emitTauriEvent(eventName: string) {
 }
 
 describe('托盘导航状态重置', () => {
+  it('Windows 式延迟 IPC 下从托盘打开关于仍立即显示完整页面骨架', async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'about_info') return new Promise(() => {});
+      return Promise.reject(new Error('not mocked'));
+    });
+    await enterDemoMode();
+
+    await emitTauriEvent('navigate-about');
+
+    expect(screen.getByRole('heading', { name: '关于' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '返回' })).toBeInTheDocument();
+    expect(screen.getByLabelText('加载中…')).toHaveAttribute('aria-busy', 'true');
+    expect(document.querySelector('.about-loading-content')).toBeInTheDocument();
+  });
+
   it('从电量弹窗打开关于时先关闭电量弹窗', async () => {
     await enterDemoMode();
     await emitTauriEvent('open-battery-usage');

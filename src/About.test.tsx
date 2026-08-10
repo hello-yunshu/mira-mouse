@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AboutPage } from './About';
 
 const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
@@ -17,6 +17,23 @@ vi.mock('./updater', () => ({
 }));
 
 describe('AboutPage', () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+  });
+
+  it('keeps a complete, stable shell while native about info is pending', () => {
+    invokeMock.mockReturnValue(new Promise(() => {}));
+
+    render(<AboutPage onBack={vi.fn()} />);
+
+    expect(screen.getByRole('heading', { name: '关于' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '返回' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '版本' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '内置插件' })).toBeInTheDocument();
+    expect(screen.getByLabelText('加载中…')).toHaveAttribute('aria-busy', 'true');
+    expect(document.querySelectorAll('.runtime-skeleton').length).toBeGreaterThan(0);
+  });
+
   it('renders the complete host skeleton in web preview mode', () => {
     render(<AboutPage previewMode onBack={vi.fn()} />);
     expect(screen.getByRole('heading', { name: '关于' })).toBeInTheDocument();
