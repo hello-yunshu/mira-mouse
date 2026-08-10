@@ -7,6 +7,7 @@ type Listener = () => void;
 
 let modalCount = 0;
 const listeners = new Set<Listener>();
+const transientDismissListeners = new Set<Listener>();
 
 function emit(): void {
   for (const listener of listeners) listener();
@@ -37,5 +38,19 @@ export function subscribeOverlayStack(listener: Listener): () => void {
   listeners.add(listener);
   return () => {
     listeners.delete(listener);
+  };
+}
+
+/// 关闭由当前页面持有的临时界面，但不重挂页面，也不中断设备写入等业务任务。
+/// 托盘的“打开 / 关于 / 电量”入口在切换目标前调用此函数，Modal、Popover、
+/// Tooltip 以及业务自定义浮层各自通过订阅执行自己的正常 onClose 清理。
+export function dismissTransientSurfaces(): void {
+  for (const listener of [...transientDismissListeners]) listener();
+}
+
+export function subscribeTransientSurfaceDismiss(listener: Listener): () => void {
+  transientDismissListeners.add(listener);
+  return () => {
+    transientDismissListeners.delete(listener);
   };
 }

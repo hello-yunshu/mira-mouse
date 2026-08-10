@@ -26,6 +26,7 @@ import {
 import { friendlyUpdateError } from './update-errors';
 import { DEFAULT_LOCAL_AI_FEATURES, LOCAL_AI_FEATURE, localAiFeatureEnabled, setLocalAiFeature } from './localAi';
 import { MiraActivityButton, announceAfterOrbExit } from './activity';
+import { subscribeTransientSurfaceDismiss } from './overlay';
 import {
   ATTENTION_PRIORITY,
   AttentionBeamLayer,
@@ -222,6 +223,10 @@ export function SettingsPage({ onNavigateAbout, onNavigateLogs = () => {}, onOpe
   // 首次挂载来自设置/关于顶层页面切换，使用稍慢的内容入场；一旦用户在
   // 设置页内部切换过标签，后续内容改用独立的高效舒缓档，不受顶层节奏影响。
   const [internalTabEntry, setInternalTabEntry] = useState(false);
+
+  useEffect(() => subscribeTransientSurfaceDismiss(() => {
+    setConfirmingClearBattery(false);
+  }), []);
   const exitTimer = useRef<number | undefined>(undefined);
   const pendingPluginFocus = useRef(false);
   const pendingLocalAiFocus = useRef(false);

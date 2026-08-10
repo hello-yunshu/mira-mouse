@@ -5,6 +5,7 @@ import { SettingsPage } from './Settings';
 import type { AppSettings, PluginCapability } from './types';
 import { checkForPluginUpdates } from './plugin-updater';
 import i18n from './i18n';
+import { dismissTransientSurfaces } from './overlay';
 
 const { invokeMock, startAutomaticAppUpdateCheckMock } = vi.hoisted(() => ({
   invokeMock: vi.fn(),
@@ -72,6 +73,18 @@ describe('SettingsPage', () => {
     await waitFor(() => {
       expect(document.querySelector('.settings-scroll-content')).toHaveClass('is-tab-entry');
     });
+  });
+
+  it('统一临时界面清理会收起电量历史确认条', async () => {
+    render(<SettingsPage onNavigateAbout={vi.fn()} onThemeChange={vi.fn()} previewMode />);
+    fireEvent.click(screen.getByRole('button', { name: '设备' }));
+    fireEvent.click(await screen.findByRole('button', { name: '清除电量历史' }));
+    expect(screen.getByText('确认清除当前设备的电量历史？此操作不会影响设备设置。')).toBeInTheDocument();
+
+    act(() => dismissTransientSurfaces());
+
+    expect(screen.queryByText('确认清除当前设备的电量历史？此操作不会影响设备设置。')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '清除电量历史' })).toBeInTheDocument();
   });
 
   it('describes automatic tray color as menu bar background matching on macOS', () => {

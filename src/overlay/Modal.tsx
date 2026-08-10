@@ -2,7 +2,7 @@
 import { useEffect, useLayoutEffect, useRef } from 'react';
 import type { ReactNode } from 'react';
 import { OverlayPortal } from './OverlayPortal';
-import { openModalLayer } from './overlayStack';
+import { openModalLayer, subscribeTransientSurfaceDismiss } from './overlayStack';
 
 export type ModalSize = 'small' | 'medium' | 'large';
 
@@ -134,9 +134,13 @@ export function Modal({
 
     // 注册到浮层栈：Tooltip / Popover 据此在 Modal 打开时关闭自身。
     const releaseModalLayer = openModalLayer();
+    const releaseTransientDismiss = subscribeTransientSurfaceDismiss(() => {
+      onCloseRef.current();
+    });
 
     return () => {
       document.removeEventListener('keydown', handleKeyDown);
+      releaseTransientDismiss();
       releaseModalLayer();
       appRoot?.removeAttribute('inert');
       appRoot?.removeAttribute('aria-hidden');

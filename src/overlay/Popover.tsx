@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ReactNode, RefObject } from 'react';
 import { OverlayPortal } from './OverlayPortal';
-import { subscribeOverlayStack } from './overlayStack';
+import { subscribeOverlayStack, subscribeTransientSurfaceDismiss } from './overlayStack';
 
 /// 水平对齐方式：`end` 让浮层右边缘对齐 trigger 右边缘，`start` 让左边缘对齐。
 export type PopoverAlign = 'start' | 'end';
@@ -145,6 +145,13 @@ export function Popover({
   useEffect(() => {
     if (!open) return;
     return subscribeOverlayStack(() => {
+      onCloseRef.current();
+    });
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    return subscribeTransientSurfaceDismiss(() => {
       onCloseRef.current();
     });
   }, [open]);
