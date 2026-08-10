@@ -15,11 +15,24 @@ import App from './App';
 import { OVERLAY_ROOT_ID } from './overlay';
 import { notifyInfo } from './notify';
 
-const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
+const { eventCallbacks, invokeMock, listenMock } = vi.hoisted(() => ({
+  eventCallbacks: new Map<string, (event: { payload: unknown }) => void>(),
+  invokeMock: vi.fn(),
+  listenMock: vi.fn(),
+}));
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }));
+vi.mock('@tauri-apps/api/event', () => ({ listen: listenMock }));
 
 beforeEach(() => {
+  eventCallbacks.clear();
+  listenMock.mockImplementation(async (
+    eventName: string,
+    callback: (event: { payload: unknown }) => void,
+  ) => {
+    eventCallbacks.set(eventName, callback);
+    return () => eventCallbacks.delete(eventName);
+  });
   invokeMock.mockRejectedValue(new Error('not mocked'));
   // About 页面在非 preview 模式下调用 about_info；mock 为有效响应避免 error 分支。
   invokeMock.mockImplementation((command: string) => {
@@ -53,6 +66,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  eventCallbacks.clear();
+  listenMock.mockReset();
   invokeMock.mockReset();
   window.history.pushState({}, '', '/');
   cleanup();
@@ -83,6 +98,41 @@ async function dispatchAndWait(action: Parameters<typeof notifyInfo>[2]) {
   notifyInfo('更新提示', '发现新版本', action);
   return screen.findByRole('status');
 }
+
+async function emitTauriEvent(eventName: string) {
+  await waitFor(() => expect(eventCallbacks.has(eventName)).toBe(true));
+  act(() => eventCallbacks.get(eventName)?.({ payload: null }));
+}
+
+describe('托盘导航状态重置', () => {
+  it('从电量弹窗打开关于时先关闭电量弹窗', async () => {
+    await enterDemoMode();
+    await emitTauriEvent('open-battery-usage');
+    await screen.findByRole('dialog', { name: '电量使用情况' });
+
+    await emitTauriEvent('navigate-about');
+
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: '电量使用情况' })).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: '关于 Mira' })).toHaveClass('nav-link nav-about active');
+    });
+  });
+
+  it('从关于页点击打开 Mira 时返回设备首页', async () => {
+    await enterDemoMode();
+    await emitTauriEvent('navigate-about');
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: '关于 Mira' })).toHaveClass('nav-link nav-about active');
+    });
+
+    await emitTauriEvent('navigate-dashboard');
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: '设备' })).toHaveClass('nav-link active');
+      expect(screen.getByRole('button', { name: '关于 Mira' })).not.toHaveClass('active');
+    });
+  });
+});
 
 describe('ITERATION-009 §4.1: 通知 action 路由', () => {
   it('Local AI toast → settings local AI section', async () => {
