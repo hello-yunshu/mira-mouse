@@ -156,9 +156,8 @@ export async function installAppUpdate(): Promise<void> {
 }
 
 export async function relaunchAfterUpdate(): Promise<void> {
-  // tauri-plugin-process 的 relaunch() 与 tauri-plugin-single-instance 冲突：
-  // 新进程启动时旧进程仍在运行，single-instance 检测到已有实例后退出新进程。
-  // 改用自定义的 relaunch_app 命令：延迟启动新实例，等旧进程退出并清理 socket 后再启动。
+  // 统一交给后端处理平台生命周期：macOS 等旧进程退出后打开 .app bundle，
+  // Windows/Linux 先完成 RunEvent::Exit 清理，再重启 exe/AppImage。
   await invoke('relaunch_app');
 }
 
