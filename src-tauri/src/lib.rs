@@ -31,8 +31,6 @@ use mira_plugin_runtime::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-#[cfg(target_os = "macos")]
-use std::io::Write;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     fs,
@@ -42,9 +40,13 @@ use std::{
     sync::{Arc, Condvar, Mutex},
     time::{Duration, Instant},
 };
+#[cfg(any(test, target_os = "macos"))]
+use std::{ffi::OsString, path::Path};
+#[cfg(target_os = "macos")]
+use std::{io::Write, os::unix::process::CommandExt, process::Stdio};
 use sys_locale::get_locale;
 use tauri::{
-    menu::{Menu, MenuItem, PredefinedMenuItem},
+    menu::{IconMenuItem, Menu, MenuItem, NativeIcon, PredefinedMenuItem},
     tray::TrayIconBuilder,
     AppHandle, Emitter, Manager, Theme, WebviewWindow,
 };
@@ -521,6 +523,52 @@ struct TrayMenuSignature {
     connection_label: String,
     /// 设备显示名
     display_name: String,
+    /// 当前界面语言；未连接时也必须随语言切换重建菜单。
+    language: &'static str,
+}
+
+/// 托盘顶部的信息区菜单行。纯状态行不可点击，电量行进入电量使用情况。
+/// 所有平台共用同一份有序模型，避免 macOS 原生菜单与 Tauri 菜单顺序漂移。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TrayInfoMenuRow {
+    Status { id: &'static str, text: String },
+    Battery { index: usize, text: String },
+}
+
+pub(crate) fn tray_info_menu_rows(
+    state: &tray::state::TrayStatusState,
+    lang: &str,
+) -> Vec<TrayInfoMenuRow> {
+    if !state.connected {
+        return vec![TrayInfoMenuRow::Status {
+            id: "disconnected",
+            text: tr_disconnected(lang).to_string(),
+        }];
+    }
+
+    let mut rows = Vec::with_capacity(state.batteries.len() + usize::from(state.show_connection));
+    if state.show_connection {
+        let connection = state
+            .connection
+            .map(|value| connection_label(value, lang))
+            .unwrap_or_default();
+        rows.push(TrayInfoMenuRow::Status {
+            id: "connection-status",
+            text: tr_connection_status(
+                lang,
+                connection,
+                state.device_name.as_deref().unwrap_or_default(),
+            ),
+        });
+    }
+    rows.extend(state.batteries.iter().enumerate().map(|(index, battery)| {
+        let label = tr_battery_label(lang, &battery.id, &battery.label);
+        TrayInfoMenuRow::Battery {
+            index,
+            text: tr_battery_item(lang, &label, battery.percentage, battery.charging),
+        }
+    }));
+    rows
 }
 
 /// 安静灯光（夜间模式）当前所处的阶段。
@@ -13502,58 +13550,80 @@ fn show_update_notification(
     }
 }
 
-/// 自定义重启命令：解决 tauri-plugin-single-instance 与 tauri-plugin-process relaunch() 冲突。
+#[cfg(any(test, target_os = "macos"))]
+const MACOS_RELAUNCH_SCRIPT: &str =
+    "while kill -0 \"$2\" 2>/dev/null; do sleep 0.1; done; exec /usr/bin/open \"$1\"";
+
+#[cfg(any(test, target_os = "macos"))]
+fn macos_relaunch_args(app_bundle: &Path, parent_pid: u32) -> [OsString; 5] {
+    [
+        OsString::from("-c"),
+        OsString::from(MACOS_RELAUNCH_SCRIPT),
+        OsString::from("mira-relaunch"),
+        app_bundle.as_os_str().to_owned(),
+        OsString::from(parent_pid.to_string()),
+    ]
+}
+
+#[cfg(target_os = "macos")]
+fn macos_relaunch_command(app_bundle: &Path, parent_pid: u32) -> Command {
+    let mut command = Command::new("/bin/sh");
+    command
+        .args(macos_relaunch_args(app_bundle, parent_pid))
+        // Keep the helper independent from the app process and its inherited
+        // file descriptors so normal Tauri shutdown cannot take it down too.
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0);
+    command
+}
+
+/// 重启已完成更新的应用。
 ///
-/// `relaunch()` 先 spawn 新进程再退出旧进程，但新进程启动时 single-instance
-/// 检测到旧进程的 Unix socket 仍在监听，立即退出新进程，导致重启失败。
-///
-/// 本命令改为延迟启动：先 spawn 一个独立子进程（sleep 1 秒后启动新实例），
-/// 然后调用 `app.exit(0)` 退出当前进程。退出时 single-instance 的 `RunEvent::Exit`
-/// 回调会清理 socket。1 秒后子进程启动新实例，此时 socket 已被清理，新实例正常成为单例。
+/// macOS 必须等当前进程完全退出后，通过 LaunchServices 打开 `.app` bundle；直接
+/// 重启内部二进制会绕过正常的 bundle 启动语义。Windows/Linux 则使用 Tauri 的
+/// `request_restart()`，让 `RunEvent::Exit` 先释放 single-instance 资源，再启动
+/// Windows 可执行文件或 Linux AppImage。
 #[tauri::command]
 fn relaunch_app(app: tauri::AppHandle) -> Result<(), String> {
-    let current_exe = std::env::current_exe().map_err(|e| e.to_string())?;
-
     #[cfg(target_os = "macos")]
     {
-        // current_exe = Mira.app/Contents/MacOS/Mira，推断 .app bundle 路径，
-        // 用 open -n 通过 LaunchServices 启动（符合 macOS 启动规范）。
-        // ancestors: [0]=Mira, [1]=MacOS, [2]=Contents, [3]=Mira.app
-        let app_bundle = current_exe
-            .ancestors()
-            .nth(3)
-            .ok_or_else(|| "cannot determine app bundle path".to_string())?;
-        std::process::Command::new("sh")
-            .arg("-c")
-            .arg(format!("sleep 1 && open -n -a '{}'", app_bundle.display()))
+        let app_bundle = current_app_bundle_path()
+            .ok_or_else(|| "failed to locate current app bundle".to_string())?;
+        macos_relaunch_command(&app_bundle, std::process::id())
             .spawn()
-            .map_err(|e| e.to_string())?;
+            .map_err(|error| format!("failed to schedule app relaunch: {error}"))?;
+        app.exit(0);
+        Ok(())
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(not(target_os = "macos"))]
     {
-        let exe_str = current_exe.to_string_lossy().to_string();
-        std::process::Command::new("cmd")
-            .args([
-                "/c",
-                &format!("timeout /t 1 /nobreak >nul & start \"\" \"{exe_str}\""),
-            ])
-            .spawn()
-            .map_err(|e| e.to_string())?;
+        app.request_restart();
+        Ok(())
     }
+}
 
-    #[cfg(target_os = "linux")]
-    {
-        let exe_str = current_exe.to_string_lossy().to_string();
-        std::process::Command::new("sh")
-            .arg("-c")
-            .arg(format!("sleep 1 && '{exe_str}'"))
-            .spawn()
-            .map_err(|e| e.to_string())?;
+#[cfg(test)]
+mod relaunch_tests {
+    use super::{macos_relaunch_args, MACOS_RELAUNCH_SCRIPT};
+    use std::{ffi::OsStr, path::Path};
+
+    #[test]
+    fn macos_relaunch_waits_for_exit_and_opens_the_bundle() {
+        let bundle = Path::new("/Applications/Mira Test's.app");
+        let args = macos_relaunch_args(bundle, 4242);
+
+        assert_eq!(args[0], OsStr::new("-c"));
+        assert_eq!(args[1], OsStr::new(MACOS_RELAUNCH_SCRIPT));
+        assert_eq!(args[2], OsStr::new("mira-relaunch"));
+        assert_eq!(args[3], bundle.as_os_str());
+        assert_eq!(args[4], OsStr::new("4242"));
+        assert!(MACOS_RELAUNCH_SCRIPT.contains("while kill -0"));
+        assert!(MACOS_RELAUNCH_SCRIPT.contains("exec /usr/bin/open"));
+        assert!(!MACOS_RELAUNCH_SCRIPT.contains("open -a"));
     }
-
-    app.exit(0);
-    Ok(())
 }
 
 // 电量使用情况 Tauri 命令
@@ -13690,7 +13760,120 @@ pub(crate) fn open_battery_usage_from_tray(app: &AppHandle) {
     let _ = app.emit("open-battery-usage", ());
 }
 
+pub(crate) fn open_about_from_tray(app: &AppHandle) {
+    focus_main_from_tray(app);
+    let _ = app.emit("navigate-about", ());
+}
+
 const TRAY_ID: &str = "mira-status";
+const TRAY_OPEN_ACCELERATOR: &str = "CmdOrCtrl+O";
+const TRAY_ABOUT_ACCELERATOR: &str = "CmdOrCtrl+I";
+const TRAY_QUIT_ACCELERATOR: &str = "CmdOrCtrl+Q";
+
+#[cfg(test)]
+mod tray_menu_tests {
+    use super::{
+        tr_about, tray_info_menu_rows, TrayInfoMenuRow, TRAY_ABOUT_ACCELERATOR,
+        TRAY_OPEN_ACCELERATOR, TRAY_QUIT_ACCELERATOR,
+    };
+    use crate::tray::state::{TrayBatteryState, TrayRenderMode, TrayStatusState};
+    use mira_core::Connection;
+
+    fn connected_state(show_connection: bool) -> TrayStatusState {
+        TrayStatusState {
+            connected: true,
+            device_name: Some("Mira Mouse".into()),
+            connection: Some(Connection::Wireless),
+            batteries: vec![
+                TrayBatteryState {
+                    id: "mouse".into(),
+                    label: "mock.mouseLabel".into(),
+                    percentage: 82,
+                    charging: false,
+                },
+                TrayBatteryState {
+                    id: "receiver".into(),
+                    label: "mock.receiverLabel".into(),
+                    percentage: 91,
+                    charging: true,
+                },
+            ],
+            mouse_battery: Some(82),
+            mouse_charging: false,
+            receiver_battery: Some(91),
+            receiver_charging: true,
+            show_receiver: true,
+            show_connection,
+            show_battery_title: true,
+            low_battery_threshold: 20,
+            render_mode: TrayRenderMode::Auto,
+        }
+    }
+
+    #[test]
+    fn info_section_orders_connection_before_actionable_batteries() {
+        let rows = tray_info_menu_rows(&connected_state(true), "zh-CN");
+
+        assert!(matches!(
+            rows.first(),
+            Some(TrayInfoMenuRow::Status {
+                id: "connection-status",
+                text,
+            }) if text == "连接：无线 · Mira Mouse"
+        ));
+        assert!(matches!(
+            rows.get(1),
+            Some(TrayInfoMenuRow::Battery { index: 0, text })
+                if text == "鼠标电量：82%"
+        ));
+        assert!(matches!(
+            rows.get(2),
+            Some(TrayInfoMenuRow::Battery { index: 1, text })
+                if text == "接收器电量：91% · 充电中"
+        ));
+    }
+
+    #[test]
+    fn info_section_hides_connection_without_reordering_batteries() {
+        let rows = tray_info_menu_rows(&connected_state(false), "en");
+
+        assert_eq!(rows.len(), 2);
+        assert!(matches!(
+            rows.first(),
+            Some(TrayInfoMenuRow::Battery { index: 0, .. })
+        ));
+        assert!(matches!(
+            rows.get(1),
+            Some(TrayInfoMenuRow::Battery { index: 1, .. })
+        ));
+    }
+
+    #[test]
+    fn disconnected_info_section_is_one_non_actionable_status_row() {
+        let mut state = connected_state(true);
+        state.connected = false;
+        state.device_name = None;
+        state.connection = None;
+        state.batteries.clear();
+
+        assert_eq!(
+            tray_info_menu_rows(&state, "en"),
+            vec![TrayInfoMenuRow::Status {
+                id: "disconnected",
+                text: "No supported mouse connected".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn action_labels_and_accelerators_keep_the_cross_platform_contract() {
+        assert_eq!(tr_about("zh-CN"), "关于 Mira");
+        assert_eq!(tr_about("en"), "About Mira");
+        assert_eq!(TRAY_OPEN_ACCELERATOR, "CmdOrCtrl+O");
+        assert_eq!(TRAY_ABOUT_ACCELERATOR, "CmdOrCtrl+I");
+        assert_eq!(TRAY_QUIT_ACCELERATOR, "CmdOrCtrl+Q");
+    }
+}
 
 /// Windows 独立数字电量图标托盘 ID。仅在 Windows 上创建。
 #[cfg(target_os = "windows")]
@@ -13781,6 +13964,14 @@ pub(crate) fn tr_open(lang: &str) -> &'static str {
         "Open Mira"
     } else {
         "打开 Mira"
+    }
+}
+
+pub(crate) fn tr_about(lang: &str) -> &'static str {
+    if lang == "en" {
+        "About Mira"
+    } else {
+        "关于 Mira"
     }
 }
 
@@ -14563,6 +14754,7 @@ fn update_tray(
             show_connection: settings.tray_show_connection,
             connection_label: connection_label(snapshot.connection, lang).to_string(),
             display_name: snapshot.display_name.clone(),
+            language: lang,
         }
     } else {
         TrayMenuSignature {
@@ -14571,6 +14763,7 @@ fn update_tray(
             show_connection: false,
             connection_label: String::new(),
             display_name: String::new(),
+            language: lang,
         }
     };
 
@@ -14582,57 +14775,50 @@ fn update_tray(
         .unwrap_or(true);
 
     if menu_changed {
-        if let Some(snapshot) = snapshot {
-            for (index, battery) in tray_state.batteries.iter().enumerate() {
-                let label = tr_battery_label(lang, &battery.id, &battery.label);
-                let item = MenuItem::with_id(
-                    app,
-                    format!("battery-{index}"),
-                    tr_battery_item(lang, &label, battery.percentage, battery.charging),
-                    true,
-                    None::<&str>,
-                )?;
-                menu.append(&item)?;
+        for row in tray_info_menu_rows(&tray_state, lang) {
+            match row {
+                TrayInfoMenuRow::Status { id, text } => {
+                    let item = MenuItem::with_id(app, id, text, false, None::<&str>)?;
+                    menu.append(&item)?;
+                }
+                TrayInfoMenuRow::Battery { index, text } => {
+                    let item = MenuItem::with_id(
+                        app,
+                        format!("battery-{index}"),
+                        text,
+                        true,
+                        None::<&str>,
+                    )?;
+                    menu.append(&item)?;
+                }
             }
-            if settings.tray_show_connection {
-                let connection = MenuItem::with_id(
-                    app,
-                    "connection-status",
-                    tr_connection_status(
-                        lang,
-                        connection_label(snapshot.connection, lang),
-                        &snapshot.display_name,
-                    ),
-                    true,
-                    None::<&str>,
-                )?;
-                menu.append(&connection)?;
-            }
-        } else {
-            let disconnected = MenuItem::with_id(
-                app,
-                "disconnected",
-                tr_disconnected(lang),
-                true,
-                None::<&str>,
-            )?;
-            menu.append(&disconnected)?;
         }
 
         menu.append(&PredefinedMenuItem::separator(app)?)?;
-        menu.append(&MenuItem::with_id(
+        menu.append(&IconMenuItem::with_id_and_native_icon(
             app,
             "open",
             tr_open(lang),
             true,
-            None::<&str>,
+            Some(NativeIcon::Home),
+            Some(TRAY_OPEN_ACCELERATOR),
         )?)?;
-        menu.append(&MenuItem::with_id(
+        menu.append(&IconMenuItem::with_id_and_native_icon(
+            app,
+            "about",
+            tr_about(lang),
+            true,
+            Some(NativeIcon::Info),
+            Some(TRAY_ABOUT_ACCELERATOR),
+        )?)?;
+        menu.append(&PredefinedMenuItem::separator(app)?)?;
+        menu.append(&IconMenuItem::with_id_and_native_icon(
             app,
             "quit",
             tr_quit(lang),
             true,
-            None::<&str>,
+            Some(NativeIcon::StopProgress),
+            Some(TRAY_QUIT_ACCELERATOR),
         )?)?;
         tray.set_menu(Some(menu.clone()))?;
         // Windows: 数字电量图标托盘共享同一份菜单（克隆 Arc 引用）
@@ -14731,9 +14917,32 @@ fn build_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     tray::macos::set_app_handle(app.handle().clone());
 
     let lang = effective_language("auto");
-    let open_i = MenuItem::with_id(app, "open", tr_open(lang), true, None::<&str>)?;
-    let quit_i = MenuItem::with_id(app, "quit", tr_quit(lang), true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&open_i, &quit_i])?;
+    let open_i = IconMenuItem::with_id_and_native_icon(
+        app,
+        "open",
+        tr_open(lang),
+        true,
+        Some(NativeIcon::Home),
+        Some(TRAY_OPEN_ACCELERATOR),
+    )?;
+    let about_i = IconMenuItem::with_id_and_native_icon(
+        app,
+        "about",
+        tr_about(lang),
+        true,
+        Some(NativeIcon::Info),
+        Some(TRAY_ABOUT_ACCELERATOR),
+    )?;
+    let separator_i = PredefinedMenuItem::separator(app)?;
+    let quit_i = IconMenuItem::with_id_and_native_icon(
+        app,
+        "quit",
+        tr_quit(lang),
+        true,
+        Some(NativeIcon::StopProgress),
+        Some(TRAY_QUIT_ACCELERATOR),
+    )?;
+    let menu = Menu::with_items(app, &[&open_i, &about_i, &separator_i, &quit_i])?;
     let initial_icon = tauri::image::Image::from_bytes(
         tray::static_icon::static_tray_app_icon_bytes_for_theme(detect_system_dark(app.handle())),
     )?;
@@ -14745,6 +14954,7 @@ fn build_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .menu(&menu)
         .on_menu_event(|app, event| match event.id().as_ref() {
             "quit" => app.exit(0),
+            "about" => open_about_from_tray(app),
             id if id.starts_with("battery-") => {
                 open_battery_usage_from_tray(app);
             }
@@ -14777,6 +14987,7 @@ fn build_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             .menu(&menu)
             .on_menu_event(|app, event| match event.id().as_ref() {
                 "quit" => app.exit(0),
+                "about" => open_about_from_tray(app),
                 id if id.starts_with("battery-") => {
                     open_battery_usage_from_tray(app);
                 }
@@ -14848,7 +15059,6 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let startup_settings = cached_settings(app.handle());

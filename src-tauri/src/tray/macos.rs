@@ -14,8 +14,9 @@
 //! │   └── NSMenu (右键菜单)
 //! │       ├── 电池信息项 (disabled)
 //! │       ├── 分隔线
-//! │       ├── "打开 Mira" → delegate.openWindow:
-//! │       └── "退出 Mira" → delegate.quitApp:
+//! │       ├── "打开 Mira" → delegate.openWindow:（⌘O）
+//! │       ├── "关于 Mira" → delegate.openAbout:（⌘I）
+//! │       └── "退出 Mira" → delegate.quitApp:（⌘Q）
 //! ├── MiraStatusItemDelegate (自定义 NSObject，处理菜单动作)
 //! ├── TrayIconCacheKey diff (避免重复生成 NSImage)
 //! └── TauriTrayController fallback (初始化失败时使用)
@@ -43,7 +44,8 @@ use objc2::{
 };
 use objc2_app_kit::{
     NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
-    NSCellImagePosition, NSImage, NSMenu, NSMenuItem, NSStatusBar, NSStatusItem, NSView,
+    NSCellImagePosition, NSEventModifierFlags, NSImage, NSMenu, NSMenuItem, NSStatusBar,
+    NSStatusItem, NSView,
 };
 use objc2_foundation::{NSArray, NSData, NSPoint, NSRect, NSSize, NSString};
 
@@ -101,6 +103,16 @@ define_class!(
             if let Some(handle) = APP_HANDLE.get() {
                 let _ = handle.run_on_main_thread(|| {
                     crate::open_battery_usage_from_tray(handle);
+                });
+            }
+        }
+
+        /// 菜单 "关于 Mira" → 聚焦主窗口并进入应用内关于页
+        #[unsafe(method(openAbout:))]
+        fn open_about(&self, _sender: Option<&AnyObject>) {
+            if let Some(handle) = APP_HANDLE.get() {
+                let _ = handle.run_on_main_thread(|| {
+                    crate::open_about_from_tray(handle);
                 });
             }
         }
@@ -382,6 +394,20 @@ impl MacNativeTrayController {
         Some(image)
     }
 
+    /// 为原生动作菜单项补齐 SF Symbol 与右侧快捷键提示。
+    fn configure_action_item(item: &NSMenuItem, symbol: &str, title: &str, key: &str) {
+        let title = NSString::from_str(title);
+        if let Some(image) = NSImage::imageWithSystemSymbolName_accessibilityDescription(
+            &NSString::from_str(symbol),
+            Some(&title),
+        ) {
+            image.setTemplate(true);
+            item.setImage(Some(&image));
+        }
+        item.setKeyEquivalent(&NSString::from_str(key));
+        item.setKeyEquivalentModifierMask(NSEventModifierFlags::Command);
+    }
+
     /// 渲染当前状态的 NSImage
     fn render_image(
         &self,
@@ -409,46 +435,28 @@ impl MacNativeTrayController {
         // 禁用自动启用/禁用菜单项（我们手动控制 enabled 状态）
         menu.setAutoenablesItems(false);
 
-        if state.connected {
-            // 连接状态与设备名由设置控制，保持与 Tauri fallback 菜单一致。
-            if state.show_connection {
-                let name = state.device_name.as_deref().unwrap_or("");
-                let connection = state
-                    .connection
-                    .map(|value| crate::connection_label(value, lang))
-                    .unwrap_or("");
-                let item = NSMenuItem::new(mtm);
-                item.setTitle(&NSString::from_str(&crate::tr_connection_status(
-                    lang, connection, name,
-                )));
-                item.setEnabled(true);
-                menu.addItem(&item);
-            }
-
-            // 菜单始终逐项列出插件报告的完整电量列表；show_receiver
-            // 只控制菜单栏标题附带的接收器电量。
-            for battery in &state.batteries {
-                let label = crate::tr_battery_label(lang, &battery.id, &battery.label);
-                let text =
-                    crate::tr_battery_item(lang, &label, battery.percentage, battery.charging);
-                let item = NSMenuItem::new(mtm);
-                item.setTitle(&NSString::from_str(&text));
-                if let Some(delegate) = &self.delegate {
-                    let any_obj: &AnyObject = delegate;
-                    unsafe {
-                        item.setTarget(Some(any_obj));
-                        item.setAction(Some(objc2::sel!(openBatteryUsage:)));
-                    }
+        for row in crate::tray_info_menu_rows(state, lang) {
+            match row {
+                crate::TrayInfoMenuRow::Status { text, .. } => {
+                    let item = NSMenuItem::new(mtm);
+                    item.setTitle(&NSString::from_str(&text));
+                    item.setEnabled(false);
+                    menu.addItem(&item);
                 }
-                item.setEnabled(true);
-                menu.addItem(&item);
+                crate::TrayInfoMenuRow::Battery { text, .. } => {
+                    let item = NSMenuItem::new(mtm);
+                    item.setTitle(&NSString::from_str(&text));
+                    if let Some(delegate) = &self.delegate {
+                        let any_obj: &AnyObject = delegate;
+                        unsafe {
+                            item.setTarget(Some(any_obj));
+                            item.setAction(Some(objc2::sel!(openBatteryUsage:)));
+                        }
+                    }
+                    item.setEnabled(true);
+                    menu.addItem(&item);
+                }
             }
-        } else {
-            // 未连接
-            let item = NSMenuItem::new(mtm);
-            item.setTitle(&NSString::from_str(crate::tr_disconnected(lang)));
-            item.setEnabled(true);
-            menu.addItem(&item);
         }
 
         // 分隔线
@@ -456,7 +464,9 @@ impl MacNativeTrayController {
 
         // 打开 Mira
         let open_item = NSMenuItem::new(mtm);
-        open_item.setTitle(&NSString::from_str(crate::tr_open(lang)));
+        let open_title = crate::tr_open(lang);
+        open_item.setTitle(&NSString::from_str(open_title));
+        Self::configure_action_item(&open_item, "macwindow", open_title, "o");
         if let Some(delegate) = &self.delegate {
             // SAFETY: delegate 是有效的 NSObject 子类实例，openWindow: 是有效 selector
             let any_obj: &AnyObject = delegate;
@@ -468,9 +478,28 @@ impl MacNativeTrayController {
         open_item.setEnabled(true);
         menu.addItem(&open_item);
 
+        // 关于 Mira
+        let about_item = NSMenuItem::new(mtm);
+        let about_title = crate::tr_about(lang);
+        about_item.setTitle(&NSString::from_str(about_title));
+        Self::configure_action_item(&about_item, "info.circle", about_title, "i");
+        if let Some(delegate) = &self.delegate {
+            let any_obj: &AnyObject = delegate;
+            unsafe {
+                about_item.setTarget(Some(any_obj));
+                about_item.setAction(Some(objc2::sel!(openAbout:)));
+            }
+        }
+        about_item.setEnabled(true);
+        menu.addItem(&about_item);
+
+        menu.addItem(&NSMenuItem::separatorItem(mtm));
+
         // 退出 Mira
         let quit_item = NSMenuItem::new(mtm);
-        quit_item.setTitle(&NSString::from_str(crate::tr_quit(lang)));
+        let quit_title = crate::tr_quit(lang);
+        quit_item.setTitle(&NSString::from_str(quit_title));
+        Self::configure_action_item(&quit_item, "power", quit_title, "q");
         if let Some(delegate) = &self.delegate {
             // SAFETY: delegate 是有效的 NSObject 子类实例，quitApp: 是有效 selector
             let any_obj: &AnyObject = delegate;

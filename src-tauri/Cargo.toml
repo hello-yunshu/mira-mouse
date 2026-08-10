@@ -31,7 +31,6 @@ tauri = { version = "2", features = ["image-png", "macos-private-api", "tray-ico
 tauri-plugin-dialog = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-single-instance = "2"
-tauri-plugin-process = "2"
 tauri-plugin-updater = "2"
 notify-rust = "4.18"
 mira-core = { path = "../crates/mira-core" }
@@ -64,7 +63,7 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     "std", "NSApplication", "NSImage",
     "NSStatusBar", "NSStatusItem", "NSStatusBarButton",
     "NSButton", "NSControl", "NSResponder", "NSView",
-    "NSMenu", "NSMenuItem", "NSAppearance",
+    "NSMenu", "NSMenuItem", "NSAppearance", "NSEvent",
     "objc2-core-foundation",
 ] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSData", "NSString", "NSGeometry"] }
