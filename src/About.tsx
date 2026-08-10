@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { useEffect, useRef, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
 import { useTranslation } from 'react-i18next';
 import { ExternalLink } from './ExternalLink';
 import type { AboutInfo } from './types';
@@ -17,6 +16,7 @@ import {
   type AppUpdateState,
 } from './updater';
 import { MiraActivityButton, announceAfterOrbExit } from './activity';
+import { loadAboutInfo, peekAboutInfo } from './runtime-data-cache';
 import {
   ATTENTION_PRIORITY,
   AttentionBeamLayer,
@@ -52,7 +52,7 @@ export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0 }:
     },
     updaterActive: false,
   };
-  const [info, setInfo] = useState<AboutInfo | null>(previewMode ? PREVIEW_INFO : null);
+  const [info, setInfo] = useState<AboutInfo | null>(() => previewMode ? PREVIEW_INFO : (peekAboutInfo() ?? null));
   const [error, setError] = useState<string>('');
   const [update, setUpdate] = useState<AppUpdateState>(appUpdateState());
   // 手动检查的局部 busy：与自动后台检查解耦，避免自动检查时页面出现 Orb。
@@ -60,7 +60,7 @@ export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0 }:
 
   useEffect(() => {
     if (previewMode) return;
-    invoke<AboutInfo>('about_info')
+    loadAboutInfo()
       .then(setInfo)
       .catch((err) => {
         const message = String(err);
@@ -151,9 +151,20 @@ export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0 }:
     return (
       <main className="about-page">
         <header>
+          <div>
+            <p className="eyebrow">{t('about.eyebrow')}</p>
+            <h1>{t('about.title')}</h1>
+          </div>
           <button className="secondary" onClick={onBack}>{t('common.back')}</button>
         </header>
-        <p className="setting-hint">{t('about.loadFailed', { error })}</p>
+        <div className="settings-scroll-area">
+          <div className="settings-scroll-content">
+            <section className="card about-section about-load-state" role="alert">
+              <div className="card-title"><h2>{t('about.title')}</h2></div>
+              <p className="setting-hint update-error">{t('about.loadFailed', { error })}</p>
+            </section>
+          </div>
+        </div>
       </main>
     );
   }
@@ -162,9 +173,40 @@ export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0 }:
     return (
       <main className="about-page">
         <header>
+          <div>
+            <p className="eyebrow">{t('about.eyebrow')}</p>
+            <h1>{t('about.title')}</h1>
+          </div>
           <button className="secondary" onClick={onBack}>{t('common.back')}</button>
         </header>
-        <p className="setting-hint">{t('about.loading')}</p>
+        <div className="settings-scroll-area" aria-busy="true" aria-label={t('about.loading')}>
+          <div className="settings-scroll-content about-loading-content">
+            <section className="card about-section about-intro-card about-load-state">
+              <span className="about-logo-frame" aria-hidden="true">
+                <img className="about-logo about-logo-light" src="/app-icon.png" alt="" />
+                <img className="about-logo about-logo-dark" src="/app-icon-dark.png" alt="" />
+              </span>
+              <span className="runtime-skeleton runtime-skeleton-title" aria-hidden="true" />
+              <p className="setting-hint">{t('about.loading')}</p>
+            </section>
+            <section className="card about-section about-load-state">
+              <div className="card-title"><h2>{t('about.section.version')}</h2></div>
+              <div className="runtime-skeleton-lines" aria-hidden="true">
+                <span className="runtime-skeleton" />
+                <span className="runtime-skeleton" />
+                <span className="runtime-skeleton runtime-skeleton-short" />
+                <span className="runtime-skeleton" />
+              </div>
+            </section>
+            <section className="card about-section about-load-state">
+              <div className="card-title"><h2>{t('about.section.bundledPlugins')}</h2></div>
+              <div className="runtime-skeleton-lines" aria-hidden="true">
+                <span className="runtime-skeleton" />
+                <span className="runtime-skeleton runtime-skeleton-short" />
+              </div>
+            </section>
+          </div>
+        </div>
       </main>
     );
   }

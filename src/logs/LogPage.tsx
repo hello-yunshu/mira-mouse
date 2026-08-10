@@ -965,7 +965,9 @@ export function LogPage({ onBack }: { onBack: () => void }) {
   const [hasMore, setHasMore] = useState(() => (
     pureWeb ? queryPreviewLogs({ minLevel: 'info', limit: 200 }).hasMore : false
   ));
-  const [loading, setLoading] = useState(false);
+  // 原生端首次查询在 effect 中启动；初始即标为 loading，避免 WebView2
+  // 提交首帧时短暂把“尚未查询”误绘成“暂无日志”。
+  const [loading, setLoading] = useState(!pureWeb);
   const [error, setError] = useState<string>('');
 
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');

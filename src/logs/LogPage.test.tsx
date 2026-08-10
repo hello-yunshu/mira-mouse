@@ -123,6 +123,21 @@ describe('Settings about tab logs card ordering', () => {
 });
 
 describe('Logs page navigation and rendering', () => {
+  it('shows loading rather than a false empty state on the native first frame', () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'log_status') return Promise.resolve({});
+      if (command === 'log_query') return new Promise(() => {});
+      if (command === 'log_subscribe' || command === 'log_unsubscribe') return Promise.resolve(undefined);
+      return Promise.resolve(undefined);
+    });
+
+    render(<LogPage onBack={vi.fn()} />);
+
+    expect(screen.getByRole('heading', { name: '日志与诊断' })).toBeInTheDocument();
+    expect(screen.getByText('加载中…')).toBeInTheDocument();
+    expect(screen.queryByText('没有符合条件的日志')).not.toBeInTheDocument();
+  });
+
   it('opens the logs page from the about page logs card and returns', async () => {
     invokeMock.mockImplementation((command: string) => {
       if (command === 'settings_get') { return Promise.resolve({}); }

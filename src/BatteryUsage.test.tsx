@@ -60,6 +60,20 @@ describe('BatteryUsageModal', () => {
     await i18n.changeLanguage('zh-CN');
   });
 
+  it('does not flash the empty-history state before the first native requests start', () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'settings_get') return Promise.resolve(settingsEnabled);
+      if (command === 'battery_history_get') return new Promise(() => {});
+      return Promise.resolve(undefined);
+    });
+
+    render(<BatteryUsageModal open onClose={() => {}} hasBattery />);
+
+    expect(screen.getByRole('heading', { name: '电量使用情况' })).toBeInTheDocument();
+    expect(screen.queryByText('还没有足够的电量记录')).not.toBeInTheDocument();
+    expect(document.querySelector('.battery-usage-scroll-region')).toHaveAttribute('aria-busy', 'true');
+  });
+
   it('shows disabled state when history is disabled', async () => {
     mockInvoke({ settings: settingsDisabled });
     render(<BatteryUsageModal open onClose={() => {}} hasBattery />);

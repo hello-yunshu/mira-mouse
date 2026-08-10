@@ -64,6 +64,32 @@ describe('SettingsPage', () => {
     window.history.replaceState({}, '', '/');
   });
 
+  it('keeps cold settings and plugin data in pending states instead of showing defaults', async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'settings_get') return Promise.resolve(settings);
+      if (command === 'autostart_state') return Promise.resolve(false);
+      if (command === 'about_info' || command === 'local_ai_status') return new Promise(() => {});
+      return Promise.resolve(undefined);
+    });
+
+    render(
+      <SettingsPage
+        initialTab="plugins"
+        onNavigateAbout={vi.fn()}
+        onThemeChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole('main')).toHaveAttribute('aria-busy', 'true');
+    expect(document.querySelector('.runtime-loading-card')).toBeInTheDocument();
+
+    await screen.findByRole('heading', { name: 'AI 引擎插件' });
+    expect(screen.getByRole('main')).not.toHaveAttribute('aria-busy');
+    expect(screen.queryAllByText('未安装')).toHaveLength(0);
+    expect(screen.queryByText(/未发现已安装的插件/)).not.toBeInTheDocument();
+    expect(document.querySelectorAll('.runtime-skeleton-inline')).toHaveLength(3);
+  });
+
   it('keeps the slower top-level entry separate from internal tab timing', async () => {
     render(<SettingsPage onNavigateAbout={vi.fn()} onThemeChange={vi.fn()} previewMode />);
 

@@ -33,7 +33,7 @@ import { AboutPage } from './About';
 import { LogPage } from './logs/LogPage';
 import { BatteryUsageModal, type BatteryUsageConnectedTarget } from './BatteryUsage';
 import { BatteryLevelIcon } from './BatteryLevelIcon';
-import type { AboutInfo, AppSettings, BatteryChargingEstimate, DeviceSnapshot, DeviceSnapshotEntry, DeviceState, DpiStage, PluginCapability, PluginCapabilityPlacement, PluginChargingEstimatePolicy, PluginField, PluginFieldFormat, PluginSummaryItem, PluginZone, RangeSpec, ReadStatus, ThemeMode } from './types';
+import type { BatteryChargingEstimate, DeviceSnapshot, DeviceSnapshotEntry, DeviceState, DpiStage, PluginCapability, PluginCapabilityPlacement, PluginChargingEstimatePolicy, PluginField, PluginFieldFormat, PluginSummaryItem, PluginZone, RangeSpec, ReadStatus, ThemeMode } from './types';
 import { DetailValue } from './DetailValue';
 import {
   placementsFor,
@@ -92,6 +92,7 @@ import { localAiUpdateState, startAutomaticLocalAiUpdateCheck } from './local-ai
 import { initUpdatePriorityCoordinator } from './update-priority';
 import { LOCAL_AI_FEATURE, localAiFeatureEnabled } from './localAi';
 import { segmentedIndicatorStyle } from './segmentedControl';
+import { invalidateAboutInfo, loadAboutInfo, loadAppSettings } from './runtime-data-cache';
 import {
   dismissTransientSurfaces,
   Modal,
@@ -4501,6 +4502,7 @@ export default function App() {
         openBatteryUsage();
         break;
       case 'plugin-locales-updated':
+        invalidateAboutInfo();
         reloadPluginLocales();
         break;
       case 'window-resumed':
@@ -4595,7 +4597,7 @@ export default function App() {
 
   useEffect(() => {
     if (pureWeb) return;
-    invoke<AppSettings>('settings_get')
+    loadAppSettings()
       .then((settings) => {
         setTheme(settings.theme as ThemeMode);
         setThemeLoaded(true);
@@ -4606,7 +4608,7 @@ export default function App() {
         });
         applyLanguage(settings.language ?? 'auto');
         if (settings.automaticUpdateChecks) {
-          void invoke<AboutInfo>('about_info')
+          void loadAboutInfo()
             .then((info) => {
               if (info.updaterActive) return startAutomaticAppUpdateCheck(true, settings.automaticUpdateInstall);
             })

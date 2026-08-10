@@ -3,7 +3,7 @@ import { useEffect, useEffectEvent, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useTranslation } from 'react-i18next';
 import { ChartBar } from '@phosphor-icons/react';
-import type { AppSettings, BundledPluginInfo, AboutInfo, DiscoveredDevice, LocalAiComponent, LocalAiStatus, PluginCapability, ThemeMode } from './types';
+import type { AppSettings, BundledPluginInfo, DiscoveredDevice, LocalAiComponent, LocalAiStatus, PluginCapability, ThemeMode } from './types';
 import { Tooltip } from './Tooltip';
 import { notifyError, notifyInfo } from './notify';
 import { useScrollFadeState } from './useScrollOverflow';
@@ -27,6 +27,16 @@ import { friendlyUpdateError } from './update-errors';
 import { DEFAULT_LOCAL_AI_FEATURES, LOCAL_AI_FEATURE, localAiFeatureEnabled, setLocalAiFeature } from './localAi';
 import { MiraActivityButton, announceAfterOrbExit } from './activity';
 import { subscribeTransientSurfaceDismiss } from './overlay';
+import {
+  loadAboutInfo,
+  loadAppSettings,
+  loadLocalAiStatus,
+  peekAboutInfo,
+  peekAppSettings,
+  peekLocalAiStatus,
+  storeAppSettings,
+  storeLocalAiStatus,
+} from './runtime-data-cache';
 import {
   ATTENTION_PRIORITY,
   AttentionBeamLayer,
@@ -181,22 +191,34 @@ export function SettingsPage({ onNavigateAbout, onNavigateLogs = () => {}, onOpe
   const { t } = useTranslation();
   const windowsPlatform = isWindowsPlatform();
   const macPlatform = isMacPlatform();
-  const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
+  const [initialSettings] = useState(() => {
+    const cached = previewMode ? undefined : peekAppSettings();
+    return {
+      value: previewMode ? DEFAULT_SETTINGS : mergeSettingsSnapshot(cached ?? DEFAULT_SETTINGS),
+      hydrated: previewMode || cached !== undefined,
+    };
+  });
+  const [settings, setSettings] = useState<AppSettings>(initialSettings.value);
+  const [settingsPending, setSettingsPending] = useState(!initialSettings.hydrated);
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const { canScrollUp, canScrollDown } = useScrollFadeState(scrollRef, contentRef);
   // 乐观快照 + 串行化保存合并，避免拖动 range 时竞态、写盘队列堆积、settings.json.tmp 争用。
-  const settingsRef = useRef<AppSettings>(DEFAULT_SETTINGS);
-  const settingsHydrated = useRef(previewMode);
+  const settingsRef = useRef<AppSettings>(initialSettings.value);
+  const settingsHydrated = useRef(initialSettings.hydrated);
   const pendingHydrationPatch = useRef<Partial<AppSettings>>({});
   const settingsSaveSequence = useRef(0);
   const pendingSettingsSave = useRef<PendingSettingsSave | undefined>(undefined);
   const settingsSaveInFlight = useRef(false);
   const [autostartEnabled, setAutostartEnabled] = useState(false);
   const autostartTouched = useRef(false);
-  const [plugins, setPlugins] = useState<BundledPluginInfo[]>([]);
+  const cachedAboutInfo = previewMode ? undefined : peekAboutInfo();
+  const [plugins, setPlugins] = useState<BundledPluginInfo[]>(cachedAboutInfo?.bundledPlugins ?? []);
+  const [pluginsPending, setPluginsPending] = useState(!previewMode && cachedAboutInfo === undefined);
   const [pluginUpdate, setPluginUpdate] = useState<PluginUpdateState>(pluginUpdateState());
-  const [localAiStatus, setLocalAiStatus] = useState<LocalAiStatus>(previewMode ? PREVIEW_LOCAL_AI_STATUS : EMPTY_LOCAL_AI_STATUS);
+  const cachedLocalAiStatus = previewMode ? PREVIEW_LOCAL_AI_STATUS : peekLocalAiStatus();
+  const [localAiStatus, setLocalAiStatus] = useState<LocalAiStatus>(cachedLocalAiStatus ?? EMPTY_LOCAL_AI_STATUS);
+  const [localAiStatusPending, setLocalAiStatusPending] = useState(!previewMode && cachedLocalAiStatus === undefined);
   const [localAiUpdate, setLocalAiUpdate] = useState<LocalAiUpdateState>(localAiUpdateState());
   const [diagnostics, setDiagnostics] = useState<string>('');
   const [discovered, setDiscovered] = useState<DiscoveredDevice[]>([]);
@@ -251,7 +273,7 @@ export function SettingsPage({ onNavigateAbout, onNavigateLogs = () => {}, onOpe
       void startAutomaticAppUpdateCheck(false);
       return;
     }
-    void invoke<AboutInfo>('about_info')
+    void loadAboutInfo()
       .then((info) => {
         if (info.updaterActive) {
           return startAutomaticAppUpdateCheck(true, nextSettings.automaticUpdateInstall);
@@ -268,6 +290,7 @@ export function SettingsPage({ onNavigateAbout, onNavigateLogs = () => {}, onOpe
     settingsSaveInFlight.current = true;
     try {
       const savedSettings = await invoke<AppSettings>('settings_set', { settings: pending.settings });
+      storeAppSettings(savedSettings);
       // A newer optimistic edit may already be queued. Only the newest save
       // is allowed to replace the visible state with its normalized response.
       if (pending.sequence === settingsSaveSequence.current) {
@@ -298,7 +321,7 @@ export function SettingsPage({ onNavigateAbout, onNavigateLogs = () => {}, onOpe
       // an optimistic toggle does not remain visibly enabled after a failure.
       if (pending.sequence === settingsSaveSequence.current) {
         try {
-          const persisted = await invoke<AppSettings>('settings_get');
+          const persisted = await loadAppSettings({ refresh: true });
           const recovered = mergeSettingsSnapshot(persisted);
           settingsRef.current = recovered;
           setSettings(recovered);
@@ -434,7 +457,7 @@ export function SettingsPage({ onNavigateAbout, onNavigateLogs = () => {}, onOpe
 
   useEffect(() => {
     if (previewMode) return;
-    invoke<AppSettings>('settings_get')
+    loadAppSettings()
       .then((loaded) => {
         // 与默认值合并，避免后端字段缺失导致受控输入变为 undefined。
         // 首次 IPC 返回前发生的极早用户操作作为补丁叠加，不能用默认
@@ -445,6 +468,7 @@ export function SettingsPage({ onNavigateAbout, onNavigateLogs = () => {}, onOpe
         settingsHydrated.current = true;
         settingsRef.current = merged;
         setSettings(merged);
+        storeAppSettings(merged);
         onThemeChange(merged.theme as ThemeMode);
         if (Object.keys(hydrationPatch).length > 0) {
           queueSettingsSaveFromEffect(merged, hydrationPatch);
@@ -461,7 +485,8 @@ export function SettingsPage({ onNavigateAbout, onNavigateLogs = () => {}, onOpe
         if (Object.keys(hydrationPatch).length > 0) {
           queueSettingsSaveFromEffect(fallback, hydrationPatch);
         }
-      });
+      })
+      .finally(() => setSettingsPending(false));
     invoke<boolean>('autostart_state')
       .then((enabled) => {
         if (!autostartTouched.current) setAutostartEnabled(enabled);
@@ -469,13 +494,17 @@ export function SettingsPage({ onNavigateAbout, onNavigateLogs = () => {}, onOpe
       .catch(() => {
         if (!autostartTouched.current) setAutostartEnabled(false);
       });
-    invoke<AboutInfo>('about_info')
+    loadAboutInfo()
       .then((info) => setPlugins(info.bundledPlugins ?? []))
-      .catch(() => setPlugins([]));
+      .catch(() => setPlugins([]))
+      .finally(() => setPluginsPending(false));
     if (previewMode) return;
-    invoke<LocalAiStatus>('local_ai_status')
-      .then((status) => status && setLocalAiStatus(status))
-      .catch(() => setLocalAiStatus(EMPTY_LOCAL_AI_STATUS));
+    loadLocalAiStatus()
+      .then((status) => {
+        if (status) setLocalAiStatus(status);
+      })
+      .catch(() => setLocalAiStatus(EMPTY_LOCAL_AI_STATUS))
+      .finally(() => setLocalAiStatusPending(false));
   }, [onThemeChange, previewMode]);
 
   useEffect(() => onPluginUpdateState(setPluginUpdate), []);
@@ -484,8 +513,13 @@ export function SettingsPage({ onNavigateAbout, onNavigateLogs = () => {}, onOpe
   useEffect(() => onLocalAiUpdateState((next) => {
     setLocalAiUpdate(next);
     if (next.phase === 'installed') {
-      invoke<LocalAiStatus>('local_ai_status')
-        .then((status) => status && setLocalAiStatus(status))
+      loadLocalAiStatus({ refresh: true })
+        .then((status) => {
+          if (status) {
+            storeLocalAiStatus(status);
+            setLocalAiStatus(status);
+          }
+        })
         .catch(() => {});
     }
   }), []);
@@ -860,7 +894,7 @@ export function SettingsPage({ onNavigateAbout, onNavigateLogs = () => {}, onOpe
   };
 
   return (
-    <main className="settings-page">
+    <main className="settings-page" aria-busy={settingsPending || undefined}>
       <header>
         <div>
           <p className="eyebrow">Mira Mouse</p>
@@ -883,7 +917,19 @@ export function SettingsPage({ onNavigateAbout, onNavigateLogs = () => {}, onOpe
       </nav>
 
       <div ref={scrollRef} className={`settings-scroll-area${canScrollUp ? ' scroll-fade-top' : ''}${canScrollDown ? ' scroll-fade-bottom' : ''}`}>
-      <div ref={contentRef} key={displayedTab} className={`settings-scroll-content${internalTabEntry ? ' is-tab-entry' : ''}${exiting ? ' is-exiting' : ''}`}>
+      <div ref={contentRef} key={displayedTab} className={`settings-scroll-content${settingsPending ? ' is-runtime-pending' : ''}${internalTabEntry ? ' is-tab-entry' : ''}${exiting ? ' is-exiting' : ''}`}>
+      {settingsPending && (
+        <section className="card settings-section runtime-loading-card" aria-label={t('about.loading')}>
+          <div className="card-title"><h2>{TABS.find((item) => item.id === displayedTab)?.label}</h2></div>
+          <div className="runtime-skeleton-lines" aria-hidden="true">
+            <span className="runtime-skeleton" />
+            <span className="runtime-skeleton" />
+            <span className="runtime-skeleton runtime-skeleton-short" />
+            <span className="runtime-skeleton" />
+          </div>
+          <span className="visually-hidden" role="status">{t('about.loading')}</span>
+        </section>
+      )}
       {displayedTab === 'general' && (
         <>
           <section className="card settings-section">
@@ -1224,7 +1270,11 @@ export function SettingsPage({ onNavigateAbout, onNavigateLogs = () => {}, onOpe
                 <AttentionSurface key={component} className="plugin-item" beam={localAiInstalledItemBeamFor(component)}>
                   <div>
                     <strong>{localAiComponentLabel(component)}</strong>
-                    <span className="setting-hint">{version ? `v${version}` : t('settings.localAi.notInstalled')}</span>
+                    {localAiStatusPending ? (
+                      <span className="runtime-skeleton runtime-skeleton-inline" aria-label={t('about.loading')} />
+                    ) : (
+                      <span className="setting-hint">{version ? `v${version}` : t('settings.localAi.notInstalled')}</span>
+                    )}
                   </div>
                   <div className="plugin-meta">
                     <span className="badge badge-ok">{t('settings.localAi.signedBundle')}</span>
@@ -1305,7 +1355,12 @@ export function SettingsPage({ onNavigateAbout, onNavigateLogs = () => {}, onOpe
             </MiraActivityButton>
             {pluginUpdates.length > 0 && pluginUpdates.every((item) => !item.updateAvailable) && <span className="save-badge">{t('settings.pluginUpdate.allLatest')}</span>}
           </div>
-          {plugins.length === 0 ? (
+          {pluginsPending ? (
+            <div className="runtime-skeleton-lines" aria-label={t('about.loading')}>
+              <span className="runtime-skeleton" aria-hidden="true" />
+              <span className="runtime-skeleton runtime-skeleton-short" aria-hidden="true" />
+            </div>
+          ) : plugins.length === 0 ? (
             <p className="setting-hint">{t('settings.pluginUpdate.noPlugins')}</p>
           ) : (
             <div className="plugin-list">
