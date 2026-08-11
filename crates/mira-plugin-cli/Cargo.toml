@@ -4,7 +4,7 @@
 # 版本号遵循项目规则：不得含数字 4 或 11。
 [package]
 name = "mira-plugin-cli"
-version = "1.0.0"
+version = "1.0.2"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -28,4 +28,3 @@ serde_json.workspace = true
 sha2.workspace = true
 walkdir.workspace = true
 zip.workspace = true
-
