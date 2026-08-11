@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { useCallback, useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState, useTransition } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState, useTransition } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -28,10 +28,8 @@ import { useTranslation } from 'react-i18next';
 import { MOCK_DEVICE, MOCK_DEVICE_ENTRIES } from './mock';
 import { applyTheme, pastelDisplayColor } from './theme';
 import i18n, { applyLanguage, loadPluginLocales, resolveLabelKey } from './i18n';
-import { SettingsPage, type SettingsTab } from './Settings';
-import { AboutPage } from './About';
-import { LogPage } from './logs/LogPage';
-import { BatteryUsageModal, type BatteryUsageConnectedTarget } from './BatteryUsage';
+import type { SettingsTab } from './Settings';
+import type { BatteryUsageConnectedTarget } from './BatteryUsage';
 import { BatteryLevelIcon } from './BatteryLevelIcon';
 import type { BatteryChargingEstimate, DeviceSnapshot, DeviceSnapshotEntry, DeviceState, DpiStage, PluginCapability, PluginCapabilityPlacement, PluginChargingEstimatePolicy, PluginField, PluginFieldFormat, PluginSummaryItem, PluginZone, RangeSpec, ReadStatus, ThemeMode } from './types';
 import { DetailValue } from './DetailValue';
@@ -112,6 +110,13 @@ import {
   type SoftwareDpiStageState,
 } from './softwareDpiStages';
 import './styles.css';
+
+// Dashboard stays in the initial chunk; secondary pages and the analysis-heavy
+// battery modal are fetched only when the user opens them.
+const SettingsPage = lazy(() => import('./Settings').then((module) => ({ default: module.SettingsPage })));
+const AboutPage = lazy(() => import('./About').then((module) => ({ default: module.AboutPage })));
+const LogPage = lazy(() => import('./logs/LogPage').then((module) => ({ default: module.LogPage })));
+const BatteryUsageModal = lazy(() => import('./BatteryUsage').then((module) => ({ default: module.BatteryUsageModal })));
 
 type View = 'dashboard' | 'settings' | 'about' | 'logs';
 type TitledView = Exclude<View, 'dashboard'>;
@@ -4336,6 +4341,77 @@ function resolveNotificationBeam(notification: AppNotification, currentView: Vie
   }
 }
 
+function DeferredPageFallback({ view, onBack }: { view: View; onBack: () => void }) {
+  const { t } = useTranslation();
+  if (view === 'about') {
+    return (
+      <main className="about-page">
+        <header>
+          <div>
+            <p className="eyebrow">{t('about.eyebrow')}</p>
+            <h1>{t('about.title')}</h1>
+          </div>
+          <button className="secondary" onClick={onBack}>{t('common.back')}</button>
+        </header>
+        <div className="settings-scroll-area" aria-busy="true" aria-label={t('about.loading')}>
+          <div className="settings-scroll-content about-loading-content">
+            <section className="card about-section about-intro-card about-load-state">
+              <span className="runtime-skeleton runtime-skeleton-title" aria-hidden="true" />
+              <p className="setting-hint">{t('about.loading')}</p>
+            </section>
+            <section className="card about-section about-load-state">
+              <div className="runtime-skeleton-lines" aria-hidden="true">
+                <span className="runtime-skeleton" />
+                <span className="runtime-skeleton" />
+                <span className="runtime-skeleton runtime-skeleton-short" />
+              </div>
+            </section>
+          </div>
+        </div>
+      </main>
+    );
+  }
+  return (
+    <main className="deferred-page-loading" aria-busy="true" aria-label={t('about.loading')}>
+      <div className="runtime-skeleton-lines" aria-hidden="true">
+        <span className="runtime-skeleton runtime-skeleton-title" />
+        <span className="runtime-skeleton" />
+        <span className="runtime-skeleton runtime-skeleton-short" />
+      </div>
+    </main>
+  );
+}
+
+function DeferredBatteryUsageFallback({ onClose }: { onClose: () => void }) {
+  const { t } = useTranslation();
+  return (
+    <Modal
+      open
+      title={t('batteryUsage.title')}
+      size="large"
+      className="battery-usage-modal"
+      backdropClassName="battery-usage-modal-overlay"
+      onClose={onClose}
+    >
+      <div className="battery-usage-modal-layout">
+        <div className="battery-usage-header">
+          <div className="battery-usage-title-wrap"><h2>{t('batteryUsage.title')}</h2></div>
+          <button className="battery-usage-close-icon" onClick={onClose} aria-label={t('batteryUsage.close')}>
+            <X weight="regular" />
+          </button>
+        </div>
+        <div className="battery-usage-scroll-region deferred-battery-loading" aria-busy="true">
+          <div className="runtime-skeleton-lines" aria-hidden="true">
+            <span className="runtime-skeleton" />
+            <span className="runtime-skeleton runtime-skeleton-short" />
+            <span className="runtime-skeleton" />
+          </div>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 export default function App() {
   const { t } = useTranslation();
   const pureWeb = isPureWebPreview();
@@ -4879,21 +4955,27 @@ export default function App() {
         <div key="leaving" className="page-layer page-layer-leaving" aria-hidden="true" dangerouslySetInnerHTML={{ __html: leavingHTML ?? '' }} />
       )}
       <div key="current" ref={currentPageRef} className="page-layer page-layer-current">
-        {renderView(view)}
+        <Suspense fallback={<DeferredPageFallback view={view} onBack={() => navigateTo('settings')} />}>
+          {renderView(view)}
+        </Suspense>
       </div>
     </div>
-    <BatteryUsageModal
-      key={batteryUsageSession}
-      open={showBatteryUsage}
-      onClose={() => setShowBatteryUsage(false)}
-      hasBattery={(device?.batteries.length ?? 0) > 0}
-      batteryHistoryEnabled={batteryUsageSettings?.batteryHistoryEnabled}
-      aiAnalysisEnabled={batteryUsageSettings?.aiAnalysisEnabled}
-      connectedTargets={batteryUsageConnectedTargets}
-      preferredDeviceName={selectedBatteryUsageTarget?.name}
-      preferredComponentId={selectedBatteryUsageTarget?.componentId}
-      demoMode={demoMode}
-    />
+    {showBatteryUsage && (
+      <Suspense fallback={<DeferredBatteryUsageFallback onClose={() => setShowBatteryUsage(false)} />}>
+        <BatteryUsageModal
+          key={batteryUsageSession}
+          open
+          onClose={() => setShowBatteryUsage(false)}
+          hasBattery={(device?.batteries.length ?? 0) > 0}
+          batteryHistoryEnabled={batteryUsageSettings?.batteryHistoryEnabled}
+          aiAnalysisEnabled={batteryUsageSettings?.aiAnalysisEnabled}
+          connectedTargets={batteryUsageConnectedTargets}
+          preferredDeviceName={selectedBatteryUsageTarget?.name}
+          preferredComponentId={selectedBatteryUsageTarget?.componentId}
+          demoMode={demoMode}
+        />
+      </Suspense>
+    )}
     {appNotification && (
       <OverlayPortal>
         <aside

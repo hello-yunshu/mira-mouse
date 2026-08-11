@@ -1501,6 +1501,7 @@ export function SettingsPage({ onNavigateAbout, onNavigateLogs = () => {}, onOpe
           </section>
 
           <section className="card settings-section donate-card">
+            <span className="donate-aura" aria-hidden="true" />
             <span className="donate-border-beam" aria-hidden="true" />
             <div className="card-title"><h2>{t('about.section.donate')}</h2></div>
             <p className="setting-hint donate-hint">{t('about.donate.hint')}</p>

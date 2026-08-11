@@ -172,7 +172,7 @@ describe('Logs page navigation and rendering', () => {
     expect(await screen.findByRole('heading', { name: '日志与诊断' })).toBeInTheDocument();
     expect(screen.queryByText('本地运行记录')).not.toBeInTheDocument();
     // 空状态显示
-    expect(screen.getByText('没有符合条件的日志')).toBeInTheDocument();
+    expect(await screen.findByText('没有符合条件的日志')).toBeInTheDocument();
 
     // 返回关于页
     fireEvent.click(screen.getByRole('button', { name: '返回' }));

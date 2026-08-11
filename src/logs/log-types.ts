@@ -76,6 +76,9 @@ export interface LogStatus {
   recentErrorCount: number;
   recentWarnCount: number;
   filePersistenceEnabled: boolean;
+  /** Native bounded queues dropped entries during a sustained diagnostic burst. */
+  droppedStorageEntries?: number;
+  droppedFrontendEntries?: number;
   diagnosticSession: DiagnosticSessionStatus | null;
   protocolDiagnostic: ProtocolDiagnosticStatus | null;
 }
