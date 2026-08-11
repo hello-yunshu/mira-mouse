@@ -127,6 +127,7 @@ describe('Mira shell', () => {
     render(<App />);
     fireEvent.click(screen.getByRole('button', { name: '设置' }));
 
+    await waitFor(() => expect(document.querySelector('.settings-scroll-content > section')).toBeInTheDocument());
     const card = document.querySelector<HTMLElement>('.settings-scroll-content > section')!;
     card.style.transform = 'translateY(3px) scale(0.99)';
     card.style.opacity = '0.42';
@@ -141,14 +142,14 @@ describe('Mira shell', () => {
     expect(frozenCard.style.opacity).toBe('0.42');
     expect(frozenCard.style.filter).toBe('saturate(0.91)');
   });
-  it('keeps one persistent Mira Mouse eyebrow while switching settings and about', () => {
+  it('keeps one persistent Mira Mouse eyebrow while switching settings and about', async () => {
     render(<App />);
     fireEvent.click(screen.getByRole('button', { name: '设置' }));
 
     const eyebrow = document.querySelector('.page-persistent-eyebrow');
     expect(eyebrow).toHaveTextContent('Mira Mouse');
 
-    fireEvent.click(screen.getByRole('button', { name: '关于' }));
+    fireEvent.click(await screen.findByRole('button', { name: '关于' }));
     expect(document.querySelector('.page-persistent-eyebrow')).toBe(eyebrow);
     expect(document.querySelector('.page-persistent-eyebrow')).toHaveTextContent('Mira Mouse');
   });

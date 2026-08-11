@@ -2957,6 +2957,15 @@ h2 { margin: 2px 0 0; letter-spacing: -.02em; font-size: 16px; }
 .runtime-skeleton-short { width: 62%; }
 .runtime-skeleton-title { width: 42%; height: 18px; margin: 8px auto 2px; }
 .runtime-skeleton-inline { width: 72px; height: 11px; margin-top: 5px; }
+.deferred-page-loading {
+  width: min(100%, 480px);
+  margin: 2vh auto 0;
+  padding: 16px;
+}
+.deferred-battery-loading {
+  min-height: 220px;
+  padding: 24px 2px;
+}
 .settings-scroll-content { position: relative; }
 .runtime-loading-card {
   position: absolute;
@@ -3387,13 +3396,21 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
 }
 .donate-card {
   position: relative;
-  /* 用 overflow: clip 而非 hidden：clip 同样把装饰光晕裁进圆角内，但不会创建滚动容器，
-     避免 ::before 光晕撑大 scrollHeight 后，scrollIntoView / 交互让卡片内部滚动、裁切内容。 */
+  /* 外层继续用 clip 管理整张卡片；蓝绿云团另有专用 hidden 裁剪层，避免滤镜合成层
+     在部分桌面 WebView 中越过这里的圆角。 */
   overflow: clip;
   background: var(--surface-bg);
   border: 1px solid var(--surface-border);
 }
-.donate-card::before {
+.donate-aura {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  border-radius: inherit;
+  pointer-events: none;
+}
+.donate-aura::before {
   --donate-blue-x: 32%;
   --donate-blue-y: 32%;
   --donate-green-x: 70%;
@@ -3417,7 +3434,7 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   animation: donate-aura-drift 12s ease-in-out infinite;
   animation-play-state: paused;
 }
-.donate-card:hover::before {
+.donate-card:hover .donate-aura::before {
   animation-play-state: running;
 }
 @keyframes donate-aura-drift {
@@ -3454,7 +3471,7 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
     --donate-green-radius: 53%;
   }
 }
-.donate-card > :not(.donate-border-beam) { position: relative; z-index: 1; }
+.donate-card > :not(.donate-aura):not(.donate-border-beam) { position: relative; z-index: 1; }
 
 /* 打赏块专用 Border Beam：沿用上游 border-beam 的分层生成方式。
    - wrapper 只管理角度 / hover 生命周期；
@@ -3581,7 +3598,7 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   to { --donate-beam-angle: 360deg; }
 }
 .donate-card .contact-links { justify-content: flex-end; }
-:root[data-theme="dark"] .donate-card::before {
+:root[data-theme="dark"] .donate-aura::before {
   background:
     radial-gradient(circle at var(--donate-blue-x) var(--donate-blue-y), rgb(22 119 255 / 28%), transparent var(--donate-blue-radius)),
     radial-gradient(circle at var(--donate-green-x) var(--donate-green-y), rgb(7 193 96 / 27%), transparent var(--donate-green-radius));
@@ -3607,7 +3624,7 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
 .donate-hint { margin-top: 6px; line-height: 1.7; }
 
 @media (prefers-reduced-motion: reduce) {
-  .donate-card::before {
+  .donate-aura::before {
     animation: none !important;
   }
   .donate-card:hover > .donate-border-beam {
@@ -4214,12 +4231,15 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   display: inline-grid;
   vertical-align: bottom;
 }
-/* 多行模式：position:relative，next 用 absolute 定位脱离文档流，
-   外层容器高度仅由 current 决定，避免新旧文案行数不同时撑开容器导致重排
-   （参见 lessons-learned：FadeText 多行重排） */
+/* 多行模式：position:relative，next 用 absolute 定位脱离文档流。
+   容器始终占满父级的最终可用宽度，不能让 current 的固有宽度决定 next 的换行；
+   否则较短旧文案切到较长新文案时，淡入层会先按窄宽度换行，提交新值后再跳回。
+   高度仍仅由 current 决定，避免新旧文案行数不同时撑开容器。 */
 .battery-fade-multiline {
   position: relative;
   display: block;
+  width: 100%;
+  min-width: 0;
 }
 .battery-fade-text .battery-fade-current,
 .battery-fade-text .battery-fade-next {
@@ -4227,6 +4247,12 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
 }
 .battery-fade-multiline .battery-fade-current {
   grid-area: auto;
+}
+.battery-fade-multiline .battery-fade-current,
+.battery-fade-multiline .battery-fade-next {
+  display: block;
+  width: 100%;
+  min-width: 0;
 }
 .battery-fade-multiline .battery-fade-next {
   position: absolute;
@@ -4621,8 +4647,17 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
 .battery-insight-card .insight-body {
   display: flex;
   flex-direction: column;
+  flex: 1 1 0;
   gap: 1px;
   min-width: 0;
+}
+.battery-insight-card .insight-body > .tooltip {
+  align-self: stretch;
+  min-width: 0;
+  border-radius: inherit;
+}
+.battery-insight-card .insight-body > .tooltip > .battery-fade-multiline {
+  flex: 1 1 auto;
 }
 .battery-insight-card .insight-body .insight-title {
   font-size: 10.5px;

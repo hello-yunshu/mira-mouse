@@ -47,6 +47,7 @@ describe('AboutPage', () => {
     render(<AboutPage previewMode onBack={vi.fn()} />);
 
     expect(screen.getByRole('heading', { name: 'Mira Mouse' }).closest('section')).toHaveClass('about-intro-card');
+    expect(screen.getByRole('heading', { name: '打赏' }).closest('.donate-card')?.querySelector('.donate-aura')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'GitHub' }).closest('.settings-action-body')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: '查看开源许可证' }).closest('.settings-action-body')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: '报告问题' }).closest('.settings-action-body')).toBeInTheDocument();
