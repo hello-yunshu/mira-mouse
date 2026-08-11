@@ -12,8 +12,8 @@
 //! 前端通过 `log_subscribe` / `log_unsubscribe` 命令显式声明活动订阅。
 
 use crate::logging::model::LogEntry;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -26,17 +26,20 @@ pub const LOG_BATCH_EVENT: &str = "mira://logs/batch";
 const MAX_BATCH_SIZE: usize = 50;
 /// 单批最长等待时间。超过即 emit 当前累积批次。
 const MAX_BATCH_INTERVAL: Duration = Duration::from_millis(100);
+/// 前端事件 emitter 的最大待处理队列。WebView/Tauri 事件循环拥塞时，
+/// 新日志会被计数并丢弃，避免诊断洪峰形成无界内存增长。
+const EMITTER_QUEUE_CAPACITY: usize = 1_024;
 
 /// 前端推送控制句柄。clone 安全。
 #[derive(Clone)]
 pub struct FrontendEmitter {
-    tx: Sender<EmitterMessage>,
+    tx: SyncSender<EmitterMessage>,
+    subscriber_count: Arc<AtomicU32>,
+    dropped_entries: Arc<AtomicU64>,
 }
 
 enum EmitterMessage {
     Push(LogEntry),
-    Subscribe,
-    Unsubscribe,
     /// 请求 emit 当前累积批次（用于导出/状态查询后立即同步）。
     Flush,
     /// 预留：优雅关闭。生产退出走 flush；供 shutdown() 与 run_emitter 退出循环使用。
@@ -47,9 +50,10 @@ enum EmitterMessage {
 impl FrontendEmitter {
     /// 启动 emitter 线程。返回 (handle, join_handle)。
     pub fn spawn(app_handle: AppHandle) -> (Self, JoinHandle<()>) {
-        let (tx, rx) = mpsc::channel::<EmitterMessage>();
+        let (tx, rx) = mpsc::sync_channel::<EmitterMessage>(EMITTER_QUEUE_CAPACITY);
         let subscriber_count = Arc::new(AtomicU32::new(0));
         let count_clone = subscriber_count.clone();
+        let dropped_entries = Arc::new(AtomicU64::new(0));
 
         let join = std::thread::Builder::new()
             .name("mira-log-emitter".into())
@@ -58,22 +62,45 @@ impl FrontendEmitter {
             })
             .expect("spawn mira-log-emitter");
 
-        (Self { tx }, join)
+        (
+            Self {
+                tx,
+                subscriber_count,
+                dropped_entries,
+            },
+            join,
+        )
     }
 
-    /// 投递一条日志。无订阅者时会被 emitter 线程直接丢弃。
+    /// 投递一条日志。无订阅者时由调用端直接跳过。
     pub fn push(&self, entry: LogEntry) {
-        let _ = self.tx.send(EmitterMessage::Push(entry));
+        if self.subscriber_count.load(Ordering::Relaxed) == 0 {
+            return;
+        }
+        match self.tx.try_send(EmitterMessage::Push(entry)) {
+            Ok(()) | Err(TrySendError::Disconnected(_)) => {}
+            Err(TrySendError::Full(_)) => {
+                self.dropped_entries.fetch_add(1, Ordering::Relaxed);
+            }
+        }
     }
 
     /// 前端订阅：emitter 开始累积并 emit 批次。
     pub fn subscribe(&self) {
-        let _ = self.tx.send(EmitterMessage::Subscribe);
+        self.subscriber_count.fetch_add(1, Ordering::Relaxed);
     }
 
     /// 前端取消订阅：emitter 停止 emit，但仍消费消息。
     pub fn unsubscribe(&self) {
-        let _ = self.tx.send(EmitterMessage::Unsubscribe);
+        let _ = self
+            .subscriber_count
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+                count.checked_sub(1)
+            });
+    }
+
+    pub fn dropped_entries(&self) -> u64 {
+        self.dropped_entries.load(Ordering::Relaxed)
     }
 
     /// 立即 emit 当前累积批次（如有）。
@@ -114,19 +141,6 @@ fn run_emitter(rx: Receiver<EmitterMessage>, app_handle: AppHandle, count: Arc<A
                         last_flush = Instant::now();
                     }
                 }
-            }
-            Some(EmitterMessage::Subscribe) => {
-                count.fetch_add(1, Ordering::Relaxed);
-            }
-            Some(EmitterMessage::Unsubscribe) => {
-                // saturating 减法，避免下溢。
-                let _ = count.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |x| {
-                    if x > 0 {
-                        Some(x - 1)
-                    } else {
-                        None
-                    }
-                });
             }
             Some(EmitterMessage::Flush) => {
                 if !batch.is_empty() {
@@ -217,5 +231,15 @@ mod tests {
         let mut batch: Vec<LogEntry> = vec![make_entry(1), make_entry(2)];
         let _payload = std::mem::take(&mut batch);
         assert!(batch.is_empty());
+    }
+
+    #[test]
+    fn bounded_queue_rejects_new_entries_when_full() {
+        let (tx, _rx) = mpsc::sync_channel(1);
+        assert!(tx.try_send(EmitterMessage::Push(make_entry(1))).is_ok());
+        assert!(matches!(
+            tx.try_send(EmitterMessage::Push(make_entry(2))),
+            Err(TrySendError::Full(_))
+        ));
     }
 }

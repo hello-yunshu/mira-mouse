@@ -391,6 +391,10 @@ pub struct LogStatus {
     pub recent_warn_count: usize,
     /// 文件写入是否启用（目录不可写时为 false）。
     pub file_persistence_enabled: bool,
+    /// 因磁盘 writer 有界队列满而丢弃的条目数。
+    pub dropped_storage_entries: u64,
+    /// 因前端 emitter 有界队列满而丢弃的条目数。
+    pub dropped_frontend_entries: u64,
     /// None 表示未启用临时诊断会话。
     pub diagnostic_session: Option<DiagnosticSessionStatus>,
     /// 协议诊断会话信息；None 表示未启用。

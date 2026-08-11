@@ -1014,6 +1014,10 @@ struct SessionState {
     /// `battery_history_get` 直接返回缓存，打开弹窗时零计算开销。
     /// 超过 1 小时或缺失时降级为实时计算并记日志。
     prediction_cache: battery_history::PredictionCache,
+    /// 串行化预测缓存的 miss/stale 重建。电量弹窗会并发请求 24h 与 10d；
+    /// 第一个请求负责一次 HID BatteryOnly 读取并生成两个范围，第二个等待后
+    /// 直接命中同一缓存，避免双重设备 I/O 与双重 Local AI 分析。
+    prediction_refresh: Mutex<()>,
     /// 异常耗电通知节流：同一设备同一部件 24 小时内最多通知一次。
     abnormal_drain_notify: AbnormalDrainNotifyState,
     /// AI 预测独立节流时间戳：与电量采样解耦，距上次预测不足
@@ -13646,29 +13650,43 @@ async fn battery_history_get(
             if is_fresh {
                 return Ok(response);
             }
-            // 缓存陈旧：降级实时计算，记日志便于观测命中率。
-            state.log_warn(
-                "battery::history",
-                "prediction cache stale, falling back to real-time computation",
-            );
-        } else {
-            // 缓存缺失：降级实时计算，记日志便于观测命中率。
-            state.log_warn(
-                "battery::history",
-                "prediction cache miss, falling back to real-time computation",
-            );
         }
-        // 降级路径：同步触发 HID 读取 + 构建响应。
+
+        // 24h 与 10d 会并发抵达。只允许一个请求重建缓存；等待者取得门闩后
+        // 再检查一次缓存并立即返回，不重复 HID 读取或分析。
+        let _refresh_guard = state
+            .prediction_refresh
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let (cached, is_fresh) = state.prediction_cache.get(range_str);
+        if let Some(response) = cached {
+            if is_fresh {
+                return Ok(response);
+            }
+        }
+
+        state.log_warn(
+            "battery::history",
+            "prediction cache unavailable, rebuilding both ranges",
+        );
+        // 降级路径：同步触发一次 HID 读取，然后一次性构建并缓存两个范围。
         // `read_device_once` 序列化在设备 I/O 锁上，确保预测不会跑在陈旧历史之前。
         read_device_once(&app, ReadPlan::BatteryOnly);
         let settings = cached_settings_for_state(&state);
-        Ok(battery_history::build_response_with_analysis(
+        let (response_24h, response_10d) = battery_history::build_response_pair_with_analysis(
             &state.battery_history,
             settings.low_battery_threshold,
-            range_str,
             local_ai_feature_enabled(&settings, LOCAL_AI_FEATURE_BATTERY_USAGE),
             Some(&app),
-        ))
+        );
+        state
+            .prediction_cache
+            .set(response_24h.clone(), response_10d.clone());
+        Ok(if range_str == "24h" {
+            response_24h
+        } else {
+            response_10d
+        })
     })
     .await
     .map_err(|error| format!("battery history task failed: {error}"))?

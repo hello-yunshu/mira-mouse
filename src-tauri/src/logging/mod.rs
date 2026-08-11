@@ -304,6 +304,8 @@ impl LogService {
             recent_error_count,
             recent_warn_count,
             file_persistence_enabled: self.inner.storage.enabled(),
+            dropped_storage_entries: self.inner.storage.dropped_entries(),
+            dropped_frontend_entries: self.inner.frontend.dropped_entries(),
             diagnostic_session: diagnostic_session_status,
             protocol_diagnostic: protocol_diagnostic_status,
         }
