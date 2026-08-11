@@ -17,7 +17,8 @@ use chrono::{DateTime, Utc};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -32,17 +33,22 @@ pub const DISK_QUOTA_BYTES: u64 = MAX_FILE_BYTES * MAX_LOG_FILES as u64;
 pub const RETENTION_DAYS: i64 = 7;
 /// 每多少条写入后跑一次清理。
 const CLEANUP_INTERVAL: usize = 256;
+/// writer 的最大待写队列。诊断日志突发超过消费能力时丢弃新增条目，
+/// 避免无界 channel 在磁盘变慢或不可用时持续吃光进程内存。
+const STORAGE_QUEUE_CAPACITY: usize = 4_096;
 
 /// 存储控制句柄。clone 后用于向 writer 线程投递日志与命令。
 #[derive(Clone)]
 pub struct LogStorageHandle {
-    tx: Sender<StorageMessage>,
+    tx: SyncSender<StorageMessage>,
     /// 共享的当前目录路径（用于状态查询）。
     dir: Arc<Mutex<PathBuf>>,
     /// 共享的磁盘占用缓存（粗略，避免每次写都 stat）。
     disk_usage: Arc<Mutex<u64>>,
     /// 是否启用文件持久化。
     enabled: Arc<Mutex<bool>>,
+    /// 因有界队列满而未进入磁盘 writer 的条目数。
+    dropped_entries: Arc<AtomicU64>,
 }
 
 enum StorageMessage {
@@ -57,16 +63,18 @@ enum StorageMessage {
 
 /// `dir` 为日志目录；创建失败时 writer 立即降级为 disabled。
 pub fn spawn(dir: PathBuf) -> (LogStorageHandle, JoinHandle<()>) {
-    let (tx, rx) = mpsc::channel::<StorageMessage>();
+    let (tx, rx) = mpsc::sync_channel::<StorageMessage>(STORAGE_QUEUE_CAPACITY);
     let dir_arc = Arc::new(Mutex::new(dir.clone()));
     let disk_usage = Arc::new(Mutex::new(0u64));
     let enabled = Arc::new(Mutex::new(true));
+    let dropped_entries = Arc::new(AtomicU64::new(0));
 
     let handle = LogStorageHandle {
         tx: tx.clone(),
         dir: dir_arc.clone(),
         disk_usage: disk_usage.clone(),
         enabled: enabled.clone(),
+        dropped_entries,
     };
 
     // 尝试创建目录；成功后先收敛旧时间戳文件，再打开当前槽位。
@@ -92,7 +100,16 @@ pub fn spawn(dir: PathBuf) -> (LogStorageHandle, JoinHandle<()>) {
 impl LogStorageHandle {
     /// 投递一条日志。writer 线程不响应时立即返回，不阻塞业务。
     pub fn append(&self, entry: LogEntry) {
-        // 用 try_send 等价：channel 满则丢弃。
+        match self.tx.try_send(StorageMessage::Append(entry)) {
+            Ok(()) | Err(TrySendError::Disconnected(_)) => {}
+            Err(TrySendError::Full(_)) => {
+                self.dropped_entries.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn append_blocking(&self, entry: LogEntry) {
         let _ = self.tx.send(StorageMessage::Append(entry));
     }
 
@@ -109,6 +126,10 @@ impl LogStorageHandle {
 
     pub fn enabled(&self) -> bool {
         *self.enabled.lock().unwrap()
+    }
+
+    pub fn dropped_entries(&self) -> u64 {
+        self.dropped_entries.load(Ordering::Relaxed)
     }
 
     pub fn disk_usage(&self) -> u64 {
@@ -510,7 +531,9 @@ mod tests {
         for i in 1..=70_000 {
             let mut e = make_entry(i);
             e.message = "x".repeat(80);
-            handle.append(e);
+            // 轮转测试关注完整落盘；使用阻塞测试入口避免把有界队列的
+            // 过载丢弃策略混入文件槽位断言。
+            handle.append_blocking(e);
         }
         handle.flush();
         handle.shutdown();
@@ -532,6 +555,16 @@ mod tests {
             .sum();
         // 给清理留一些余量；理论上最终应接近 quota。
         assert!(total <= DISK_QUOTA_BYTES + MAX_FILE_BYTES);
+    }
+
+    #[test]
+    fn bounded_queue_drops_new_entries_instead_of_growing_without_limit() {
+        let (tx, _rx) = mpsc::sync_channel(1);
+        assert!(tx.try_send(StorageMessage::Append(make_entry(1))).is_ok());
+        assert!(matches!(
+            tx.try_send(StorageMessage::Append(make_entry(2))),
+            Err(TrySendError::Full(_))
+        ));
     }
 
     #[test]

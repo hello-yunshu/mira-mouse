@@ -1064,13 +1064,33 @@ pub fn build_response(
     build_response_with_analysis(state, low_battery_threshold, range, false, None)
 }
 
-pub fn build_response_with_analysis(
+#[cfg(test)]
+fn build_response_with_analysis(
     state: &BatteryHistoryState,
     low_battery_threshold: u8,
     range: &str,
     local_ai_analysis_enabled: bool,
     app: Option<&AppHandle>,
 ) -> BatteryHistoryResponse {
+    build_response_with_precomputed_analysis(
+        state,
+        low_battery_threshold,
+        range,
+        local_ai_analysis_enabled,
+        app,
+        None,
+    )
+    .0
+}
+
+fn build_response_with_precomputed_analysis(
+    state: &BatteryHistoryState,
+    low_battery_threshold: u8,
+    range: &str,
+    local_ai_analysis_enabled: bool,
+    app: Option<&AppHandle>,
+    precomputed_ai_estimates: Option<&BTreeMap<String, f64>>,
+) -> (BatteryHistoryResponse, BTreeMap<String, f64>) {
     let samples: Vec<BatterySample> = {
         let guard = state.samples.lock().unwrap_or_else(|e| e.into_inner());
         guard
@@ -1162,23 +1182,53 @@ pub fn build_response_with_analysis(
         })
         .collect();
 
-    let insights = build_insights(
+    let (insights, ai_estimates) = build_insights(
         samples_ref,
         &devices,
-        low_battery_threshold,
         range,
         now,
         local_ai_analysis_enabled,
         app,
+        precomputed_ai_estimates,
     );
 
-    BatteryHistoryResponse {
-        range: range.into(),
-        devices,
-        series,
-        insights,
-        generated_at: now.to_rfc3339(),
-    }
+    (
+        BatteryHistoryResponse {
+            range: range.into(),
+            devices,
+            series,
+            insights,
+            generated_at: now.to_rfc3339(),
+        },
+        ai_estimates,
+    )
+}
+
+/// 一次本地 AI 批量预测同时生成 24h/10d 响应。图表聚合与范围相关的
+/// 确定性洞察仍分别计算，但与范围无关的预测结果只请求 runtime 一次。
+pub fn build_response_pair_with_analysis(
+    state: &BatteryHistoryState,
+    low_battery_threshold: u8,
+    local_ai_analysis_enabled: bool,
+    app: Option<&AppHandle>,
+) -> (BatteryHistoryResponse, BatteryHistoryResponse) {
+    let (response_24h, ai_estimates) = build_response_with_precomputed_analysis(
+        state,
+        low_battery_threshold,
+        "24h",
+        local_ai_analysis_enabled,
+        app,
+        None,
+    );
+    let (response_10d, _) = build_response_with_precomputed_analysis(
+        state,
+        low_battery_threshold,
+        "10d",
+        local_ai_analysis_enabled,
+        app,
+        Some(&ai_estimates),
+    );
+    (response_24h, response_10d)
 }
 
 /// 后台预计算 24h/10d 两个响应并写入缓存。
@@ -1194,17 +1244,9 @@ pub fn precompute_prediction(
     local_ai_analysis_enabled: bool,
     app: &AppHandle,
 ) {
-    let response_24h = build_response_with_analysis(
+    let (response_24h, response_10d) = build_response_pair_with_analysis(
         state,
         low_battery_threshold,
-        "24h",
-        local_ai_analysis_enabled,
-        Some(app),
-    );
-    let response_10d = build_response_with_analysis(
-        state,
-        low_battery_threshold,
-        "10d",
         local_ai_analysis_enabled,
         Some(app),
     );
@@ -1391,12 +1433,12 @@ fn format_active_duration(minutes: i64) -> String {
 fn build_insights(
     samples: &[BatterySample],
     devices: &[BatteryHistoryDevice],
-    _threshold: u8,
     range: &str,
     now: DateTime<Utc>,
     local_ai_analysis_enabled: bool,
     app: Option<&AppHandle>,
-) -> Vec<BatteryInsight> {
+    precomputed_ai_estimates: Option<&BTreeMap<String, f64>>,
+) -> (Vec<BatteryInsight>, BTreeMap<String, f64>) {
     let mut insights = Vec::new();
     let groups = build_sample_groups(samples);
     let ai_batches = if local_ai_analysis_enabled {
@@ -1415,10 +1457,11 @@ fn build_insights(
     } else {
         Vec::new()
     };
-    let ai_estimates = app
-        .filter(|_| local_ai_analysis_enabled)
-        .map(|app| crate::local_ai_runtime::predict_batteries(app, &ai_batches, now))
-        .unwrap_or_default();
+    let ai_estimates = precomputed_ai_estimates.cloned().unwrap_or_else(|| {
+        app.filter(|_| local_ai_analysis_enabled)
+            .map(|app| crate::local_ai_runtime::predict_batteries(app, &ai_batches, now))
+            .unwrap_or_default()
+    });
     let window_start = range_window_start(range, now);
 
     for device in devices {
@@ -1570,7 +1613,7 @@ fn build_insights(
         }
     }
 
-    insights
+    (insights, ai_estimates)
 }
 
 fn remaining_message(remaining_hours: f64) -> String {
@@ -2811,6 +2854,30 @@ mod tests {
     }
 
     #[test]
+    fn response_pair_builds_both_ranges_from_one_shared_analysis_pass() {
+        let state = BatteryHistoryState::new();
+        state
+            .samples
+            .lock()
+            .unwrap()
+            .push(make_sample(Utc::now(), 82, false));
+
+        let (response_24h, response_10d) =
+            build_response_pair_with_analysis(&state, 20, false, None);
+
+        assert_eq!(response_24h.range, "24h");
+        assert_eq!(response_10d.range, "10d");
+        assert_eq!(response_24h.devices.len(), response_10d.devices.len());
+        assert_eq!(response_24h.devices[0].key, response_10d.devices[0].key);
+        assert_eq!(response_24h.insights.len(), response_10d.insights.len());
+        for (short, long) in response_24h.insights.iter().zip(&response_10d.insights) {
+            assert_eq!(short.insight_type, long.insight_type);
+            assert_eq!(short.message, long.message);
+            assert_eq!(short.device_key, long.device_key);
+        }
+    }
+
+    #[test]
     fn plugin_identity_keeps_policy_approved_history_when_direct_alias_is_present() {
         let state = BatteryHistoryState::new();
         let now = Utc::now();
@@ -3383,7 +3450,7 @@ mod tests {
             latest_at: Some(now.to_rfc3339()),
             low_battery: Some(false),
         };
-        let insights = build_insights(&samples, &[device], 20, "10d", now, false, None);
+        let (insights, _) = build_insights(&samples, &[device], "10d", now, false, None, None);
         let remaining = insights
             .iter()
             .find(|i| i.insight_type == "estimatedRemaining");
