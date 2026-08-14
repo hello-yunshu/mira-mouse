@@ -30,7 +30,9 @@ describe('AboutPage', () => {
     expect(screen.getByRole('button', { name: '返回' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: '版本' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: '内置插件' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '隐私说明' })).toBeInTheDocument();
     expect(screen.getByLabelText('加载中…')).toHaveAttribute('aria-busy', 'true');
+    expect(document.querySelectorAll('.runtime-frame-card')).toHaveLength(9);
     expect(document.querySelectorAll('.runtime-skeleton').length).toBeGreaterThan(0);
   });
 
