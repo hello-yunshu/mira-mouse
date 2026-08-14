@@ -29,6 +29,7 @@ import { MOCK_DEVICE, MOCK_DEVICE_ENTRIES } from './mock';
 import { applyTheme, pastelDisplayColor } from './theme';
 import i18n, { applyLanguage, loadPluginLocales, resolveLabelKey } from './i18n';
 import type { SettingsTab } from './Settings';
+import { AboutPageSkeleton, LogPageSkeleton, SettingsPageSkeleton } from './RuntimePageSkeleton';
 import type { BatteryUsageConnectedTarget } from './BatteryUsage';
 import { BatteryLevelIcon } from './BatteryLevelIcon';
 import type { BatteryChargingEstimate, DeviceSnapshot, DeviceSnapshotEntry, DeviceState, DpiStage, PluginCapability, PluginCapabilityPlacement, PluginChargingEstimatePolicy, PluginField, PluginFieldFormat, PluginSummaryItem, PluginZone, RangeSpec, ReadStatus, ThemeMode } from './types';
@@ -4341,45 +4342,10 @@ function resolveNotificationBeam(notification: AppNotification, currentView: Vie
   }
 }
 
-function DeferredPageFallback({ view, onBack }: { view: View; onBack: () => void }) {
-  const { t } = useTranslation();
-  if (view === 'about') {
-    return (
-      <main className="about-page">
-        <header>
-          <div>
-            <p className="eyebrow">{t('about.eyebrow')}</p>
-            <h1>{t('about.title')}</h1>
-          </div>
-          <button className="secondary" onClick={onBack}>{t('common.back')}</button>
-        </header>
-        <div className="settings-scroll-area" aria-busy="true" aria-label={t('about.loading')}>
-          <div className="settings-scroll-content about-loading-content">
-            <section className="card about-section about-intro-card about-load-state">
-              <span className="runtime-skeleton runtime-skeleton-title" aria-hidden="true" />
-              <p className="setting-hint">{t('about.loading')}</p>
-            </section>
-            <section className="card about-section about-load-state">
-              <div className="runtime-skeleton-lines" aria-hidden="true">
-                <span className="runtime-skeleton" />
-                <span className="runtime-skeleton" />
-                <span className="runtime-skeleton runtime-skeleton-short" />
-              </div>
-            </section>
-          </div>
-        </div>
-      </main>
-    );
-  }
-  return (
-    <main className="deferred-page-loading" aria-busy="true" aria-label={t('about.loading')}>
-      <div className="runtime-skeleton-lines" aria-hidden="true">
-        <span className="runtime-skeleton runtime-skeleton-title" />
-        <span className="runtime-skeleton" />
-        <span className="runtime-skeleton runtime-skeleton-short" />
-      </div>
-    </main>
-  );
+function DeferredPageFallback({ view, onBack, settingsTab }: { view: View; onBack: () => void; settingsTab: SettingsTab }) {
+  if (view === 'about') return <AboutPageSkeleton onBack={onBack} />;
+  if (view === 'settings') return <SettingsPageSkeleton tab={settingsTab} />;
+  return <LogPageSkeleton onBack={onBack} />;
 }
 
 function DeferredBatteryUsageFallback({ onClose }: { onClose: () => void }) {
@@ -4401,11 +4367,37 @@ function DeferredBatteryUsageFallback({ onClose }: { onClose: () => void }) {
           </button>
         </div>
         <div className="battery-usage-scroll-region deferred-battery-loading" aria-busy="true">
-          <div className="runtime-skeleton-lines" aria-hidden="true">
-            <span className="runtime-skeleton" />
-            <span className="runtime-skeleton runtime-skeleton-short" />
-            <span className="runtime-skeleton" />
+          <div className="runtime-battery-frame" aria-hidden="true">
+            <section className="battery-status-strip runtime-battery-status">
+              <span className="runtime-skeleton runtime-battery-icon" />
+              <div className="runtime-skeleton-lines">
+                <span className="runtime-skeleton runtime-skeleton-short" />
+                <span className="runtime-skeleton" />
+              </div>
+            </section>
+            <section className="battery-summary runtime-battery-summary">
+              {Array.from({ length: 3 }, (_, index) => (
+                <div className="battery-summary-item" key={index}>
+                  <span className="runtime-skeleton runtime-skeleton-short" />
+                  <span className="runtime-skeleton" />
+                </div>
+              ))}
+            </section>
+            <section className="battery-chart-card runtime-battery-chart">
+              <span className="runtime-skeleton runtime-skeleton-short" />
+              <div className="runtime-battery-plot">
+                {Array.from({ length: 8 }, (_, index) => <span key={index} />)}
+              </div>
+            </section>
+            <section className="battery-insight-section runtime-battery-insights">
+              <span className="runtime-skeleton runtime-skeleton-short" />
+              <div className="battery-insight-cards">
+                <div className="battery-insight-card"><div className="runtime-skeleton-lines"><span className="runtime-skeleton" /><span className="runtime-skeleton runtime-skeleton-short" /></div></div>
+                <div className="battery-insight-card"><div className="runtime-skeleton-lines"><span className="runtime-skeleton" /><span className="runtime-skeleton runtime-skeleton-short" /></div></div>
+              </div>
+            </section>
           </div>
+          <span className="visually-hidden" role="status">{t('about.loading')}</span>
         </div>
       </div>
     </Modal>
@@ -4955,7 +4947,7 @@ export default function App() {
         <div key="leaving" className="page-layer page-layer-leaving" aria-hidden="true" dangerouslySetInnerHTML={{ __html: leavingHTML ?? '' }} />
       )}
       <div key="current" ref={currentPageRef} className="page-layer page-layer-current">
-        <Suspense fallback={<DeferredPageFallback view={view} onBack={() => navigateTo('settings')} />}>
+        <Suspense fallback={<DeferredPageFallback view={view} settingsTab={visibleSettingsTab} onBack={() => navigateTo('settings')} />}>
           {renderView(view)}
         </Suspense>
       </div>

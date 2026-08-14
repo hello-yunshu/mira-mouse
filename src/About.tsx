@@ -26,6 +26,7 @@ import {
   attentionSectionFocusKey,
   useAttentionFeedback,
 } from './attention';
+import { AboutPageSkeleton } from './RuntimePageSkeleton';
 
 export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0 }: { onBack: () => void; previewMode?: boolean; focusUpdateToken?: number }) {
   const { t } = useTranslation();
@@ -170,45 +171,7 @@ export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0 }:
   }
 
   if (!info) {
-    return (
-      <main className="about-page">
-        <header>
-          <div>
-            <p className="eyebrow">{t('about.eyebrow')}</p>
-            <h1>{t('about.title')}</h1>
-          </div>
-          <button className="secondary" onClick={onBack}>{t('common.back')}</button>
-        </header>
-        <div className="settings-scroll-area" aria-busy="true" aria-label={t('about.loading')}>
-          <div className="settings-scroll-content about-loading-content">
-            <section className="card about-section about-intro-card about-load-state">
-              <span className="about-logo-frame" aria-hidden="true">
-                <img className="about-logo about-logo-light" src="/app-icon.png" alt="" />
-                <img className="about-logo about-logo-dark" src="/app-icon-dark.png" alt="" />
-              </span>
-              <span className="runtime-skeleton runtime-skeleton-title" aria-hidden="true" />
-              <p className="setting-hint">{t('about.loading')}</p>
-            </section>
-            <section className="card about-section about-load-state">
-              <div className="card-title"><h2>{t('about.section.version')}</h2></div>
-              <div className="runtime-skeleton-lines" aria-hidden="true">
-                <span className="runtime-skeleton" />
-                <span className="runtime-skeleton" />
-                <span className="runtime-skeleton runtime-skeleton-short" />
-                <span className="runtime-skeleton" />
-              </div>
-            </section>
-            <section className="card about-section about-load-state">
-              <div className="card-title"><h2>{t('about.section.bundledPlugins')}</h2></div>
-              <div className="runtime-skeleton-lines" aria-hidden="true">
-                <span className="runtime-skeleton" />
-                <span className="runtime-skeleton runtime-skeleton-short" />
-              </div>
-            </section>
-          </div>
-        </div>
-      </main>
-    );
+    return <AboutPageSkeleton onBack={onBack} />;
   }
 
   const contact = info.contact;

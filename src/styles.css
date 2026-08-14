@@ -2933,8 +2933,8 @@ h2 { margin: 2px 0 0; letter-spacing: -.02em; font-size: 16px; }
   border: 0;
 }
 
-/* 原生 IPC 首帧占位：保持标题、返回入口和卡片几何稳定，同时不把
-   “尚未返回”误报成空数据。缓存命中时不会渲染。 */
+/* 原生 IPC 首帧占位：页面 chrome 与各分区标题立即可见；下面的每张卡片
+   直接占用最终内容的真实几何，数据返回时只补内容，不再整页重排。 */
 .runtime-skeleton-lines {
   display: grid;
   gap: 10px;
@@ -2957,28 +2957,139 @@ h2 { margin: 2px 0 0; letter-spacing: -.02em; font-size: 16px; }
 .runtime-skeleton-short { width: 62%; }
 .runtime-skeleton-title { width: 42%; height: 18px; margin: 8px auto 2px; }
 .runtime-skeleton-inline { width: 72px; height: 11px; margin-top: 5px; }
-.deferred-page-loading {
-  width: min(100%, 480px);
-  margin: 2vh auto 0;
-  padding: 16px;
-}
 .deferred-battery-loading {
-  min-height: 220px;
-  padding: 24px 2px;
+  min-height: 520px;
+  padding: 0 2px 24px;
 }
 .settings-scroll-content { position: relative; }
-.runtime-loading-card {
-  position: absolute;
-  inset: 0 0 auto;
-  z-index: 2;
-  width: 100%;
-  min-height: 150px;
-}
-.settings-scroll-content.is-runtime-pending > :not(.runtime-loading-card) {
-  opacity: 0;
+.settings-scroll-content.is-runtime-pending > :is(.card, section) {
+  position: relative;
+  overflow: hidden;
   pointer-events: none;
 }
-.about-load-state { min-height: 96px; }
+.settings-scroll-content.is-runtime-pending > :is(.card, section) > :not(.card-title) {
+  visibility: hidden;
+}
+.settings-scroll-content.is-runtime-pending .card-title > :not(h2),
+.settings-scroll-content.is-runtime-pending .card-title .settings-title-group > :not(h2) {
+  visibility: hidden;
+}
+.settings-scroll-content.is-runtime-pending > :is(.card, section)::after {
+  content: '';
+  position: absolute;
+  inset: 49px 16px 13px;
+  border-radius: 7px;
+  background:
+    linear-gradient(90deg,
+      color-mix(in oklch, var(--muted), transparent 88%) 20%,
+      color-mix(in oklch, var(--muted), transparent 78%) 45%,
+      color-mix(in oklch, var(--muted), transparent 88%) 70%) 0 0 / 220% 12px repeat-y;
+  mask-image: repeating-linear-gradient(to bottom, black 0 12px, transparent 12px 24px);
+  animation: runtime-skeleton-shimmer 1.35s ease-in-out infinite;
+}
+.runtime-frame-list {
+  display: flex;
+  flex-direction: column;
+}
+.runtime-frame-card {
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  overflow: hidden;
+}
+.runtime-frame-about-intro { height: 199px; }
+.runtime-frame-about-version { height: 312px; }
+.runtime-frame-about-donate { height: 129px; }
+.runtime-frame-about-plugins { height: 402px; }
+.runtime-frame-about-contact { height: 100px; }
+.runtime-frame-about-update { height: 95px; }
+.runtime-frame-about-license { height: 114px; }
+.runtime-frame-about-privacy { height: 77px; }
+.runtime-frame-about-issue { height: 98px; }
+.runtime-frame-settings-general-row { height: 118px; }
+.runtime-frame-settings-startup { height: 433px; }
+.runtime-frame-settings-update { height: 175px; }
+.runtime-frame-settings-device-row { height: 125px; }
+.runtime-frame-settings-history { height: 354px; }
+.runtime-frame-settings-config { height: 99px; }
+.runtime-frame-settings-local-ai { height: 392px; }
+.runtime-frame-settings-plugins { height: 203px; }
+.runtime-frame-settings-privacy { height: 232px; }
+.runtime-frame-settings-about { height: 104px; }
+.runtime-frame-settings-logs { height: 97px; }
+.runtime-frame-settings-donate { height: 123px; }
+.runtime-settings-frame .sub-nav-link { cursor: default; text-align: center; }
+.runtime-log-toolbar {
+  height: 74px;
+  padding: 7px 8px;
+  border: 1px solid var(--surface-group-border);
+  border-radius: var(--modal-radius-sm);
+  box-sizing: border-box;
+}
+.runtime-log-toolbar > .runtime-skeleton { height: 28px; }
+.runtime-log-controls {
+  display: grid;
+  grid-template-columns: 112px 1fr;
+  gap: 12px;
+}
+.runtime-log-list { padding-top: 8px; }
+.runtime-log-row {
+  display: grid;
+  grid-template-columns: 58px 42px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  height: 43px;
+  border-bottom: 1px solid color-mix(in srgb, var(--muted), transparent 90%);
+}
+.runtime-log-time,
+.runtime-log-level,
+.runtime-log-message { height: 10px; }
+.runtime-battery-frame {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.runtime-battery-status {
+  min-height: 72px;
+  display: grid;
+  grid-template-columns: 38px 1fr;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  box-sizing: border-box;
+}
+.runtime-battery-icon { width: 32px; height: 32px; border-radius: 10px; }
+.runtime-battery-summary {
+  min-height: 90px;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+.runtime-battery-summary .battery-summary-item {
+  display: grid;
+  align-content: center;
+  gap: 10px;
+}
+.runtime-battery-chart { height: 228px; box-sizing: border-box; }
+.runtime-battery-chart > .runtime-skeleton { margin-bottom: 18px; }
+.runtime-battery-plot {
+  height: 160px;
+  display: flex;
+  align-items: end;
+  justify-content: space-around;
+  gap: 7px;
+  border-bottom: 1px solid var(--surface-group-border);
+}
+.runtime-battery-plot span {
+  width: 9%;
+  height: var(--runtime-bar-height, 58%);
+  border-radius: 7px 7px 2px 2px;
+  background: color-mix(in oklch, var(--muted), transparent 83%);
+}
+.runtime-battery-plot span:nth-child(2n) { height: 76%; }
+.runtime-battery-plot span:nth-child(3n) { height: 42%; }
+.runtime-battery-insights { min-height: 142px; }
+.runtime-battery-insights > .runtime-skeleton { margin-bottom: 12px; }
+.runtime-battery-insights .battery-insight-card { min-height: 76px; }
 .about-loading-content { min-height: 100%; }
 
 @keyframes runtime-skeleton-shimmer {
@@ -3363,37 +3474,7 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
 .contact-links.align-end { justify-content: flex-end; }
 .logs-card .logs-card-actions { justify-content: flex-end; }
 
-/* Donate card — 保留原有的支付宝蓝 + 微信绿内部晕染。 */
-@property --donate-blue-x {
-  syntax: "<percentage>";
-  initial-value: 32%;
-  inherits: false;
-}
-@property --donate-blue-y {
-  syntax: "<percentage>";
-  initial-value: 32%;
-  inherits: false;
-}
-@property --donate-green-x {
-  syntax: "<percentage>";
-  initial-value: 70%;
-  inherits: false;
-}
-@property --donate-green-y {
-  syntax: "<percentage>";
-  initial-value: 68%;
-  inherits: false;
-}
-@property --donate-blue-radius {
-  syntax: "<percentage>";
-  initial-value: 55%;
-  inherits: false;
-}
-@property --donate-green-radius {
-  syntax: "<percentage>";
-  initial-value: 55%;
-  inherits: false;
-}
+/* Donate card — 支付宝蓝 + 微信绿固定在右侧的静态晕染。 */
 .donate-card {
   position: relative;
   /* 外层继续用 clip 管理整张卡片；蓝绿云团另有专用 hidden 裁剪层，避免滤镜合成层
@@ -3408,15 +3489,11 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   z-index: 0;
   overflow: hidden;
   border-radius: inherit;
+  -webkit-clip-path: inset(0 round 15px);
+  clip-path: inset(0 round 15px);
   pointer-events: none;
 }
 .donate-aura::before {
-  --donate-blue-x: 32%;
-  --donate-blue-y: 32%;
-  --donate-green-x: 70%;
-  --donate-green-y: 68%;
-  --donate-blue-radius: 55%;
-  --donate-green-radius: 55%;
   content: "";
   position: absolute;
   top: -45%;
@@ -3424,52 +3501,12 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   width: 72%;
   height: 190%;
   background:
-    radial-gradient(circle at var(--donate-blue-x) var(--donate-blue-y), rgb(22 119 255 / 20%), transparent var(--donate-blue-radius)),
-    radial-gradient(circle at var(--donate-green-x) var(--donate-green-y), rgb(7 193 96 / 19%), transparent var(--donate-green-radius));
-  filter: blur(22px);
+    radial-gradient(circle at 32% 32%, rgb(22 119 255 / 6%), transparent 73%),
+    radial-gradient(circle at 70% 68%, rgb(7 193 96 / 6%), transparent 73%),
+    radial-gradient(circle at 32% 32%, rgb(22 119 255 / 16%), transparent 55%),
+    radial-gradient(circle at 70% 68%, rgb(7 193 96 / 16%), transparent 55%);
   pointer-events: none;
   z-index: 0;
-  /* 动画常驻、默认暂停：hover 只切换 play-state，因此离开时会停在当前相位，
-     再次进入则从同一帧继续。位置漂移叠加轻微大小呼吸，仍低于主界面 Aura。 */
-  animation: donate-aura-drift 12s ease-in-out infinite;
-  animation-play-state: paused;
-}
-.donate-card:hover .donate-aura::before {
-  animation-play-state: running;
-}
-@keyframes donate-aura-drift {
-  0%, 100% {
-    --donate-blue-x: 32%;
-    --donate-blue-y: 32%;
-    --donate-green-x: 70%;
-    --donate-green-y: 68%;
-    --donate-blue-radius: 55%;
-    --donate-green-radius: 55%;
-  }
-  26% {
-    --donate-blue-x: 43%;
-    --donate-blue-y: 25%;
-    --donate-green-x: 62%;
-    --donate-green-y: 77%;
-    --donate-blue-radius: 63%;
-    --donate-green-radius: 50%;
-  }
-  54% {
-    --donate-blue-x: 23%;
-    --donate-blue-y: 42%;
-    --donate-green-x: 80%;
-    --donate-green-y: 58%;
-    --donate-blue-radius: 50%;
-    --donate-green-radius: 64%;
-  }
-  80% {
-    --donate-blue-x: 39%;
-    --donate-blue-y: 37%;
-    --donate-green-x: 65%;
-    --donate-green-y: 73%;
-    --donate-blue-radius: 60%;
-    --donate-green-radius: 53%;
-  }
 }
 .donate-card > :not(.donate-aura):not(.donate-border-beam) { position: relative; z-index: 1; }
 
@@ -3600,8 +3637,10 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
 .donate-card .contact-links { justify-content: flex-end; }
 :root[data-theme="dark"] .donate-aura::before {
   background:
-    radial-gradient(circle at var(--donate-blue-x) var(--donate-blue-y), rgb(22 119 255 / 28%), transparent var(--donate-blue-radius)),
-    radial-gradient(circle at var(--donate-green-x) var(--donate-green-y), rgb(7 193 96 / 27%), transparent var(--donate-green-radius));
+    radial-gradient(circle at 32% 32%, rgb(22 119 255 / 8%), transparent 73%),
+    radial-gradient(circle at 70% 68%, rgb(7 193 96 / 8%), transparent 73%),
+    radial-gradient(circle at 32% 32%, rgb(22 119 255 / 24%), transparent 55%),
+    radial-gradient(circle at 70% 68%, rgb(7 193 96 / 24%), transparent 55%);
 }
 :root[data-theme="dark"] .donate-border-beam {
   --donate-beam-stroke-opacity: .22;
