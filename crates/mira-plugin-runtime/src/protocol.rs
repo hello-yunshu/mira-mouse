@@ -720,9 +720,9 @@ fn maybe_merge_onboard_lighting(
         Ok(onboard) => onboard,
         // onboard 灯光读取是可选增强：失败不应让整次设备读取失败。
         // 缺失的 mouseLighting 由宿主快照合并保留旧值（capabilities 缺失键粘性）。
-        Err(error) => {
+        Err(_error) => {
             #[cfg(debug_assertions)]
-            eprintln!("[mira] onboard lighting read failed: {error}");
+            eprintln!("[mira] onboard lighting read failed: {_error}");
             return Ok(());
         }
     };
