@@ -81,7 +81,9 @@ describe('SettingsPage', () => {
     );
 
     expect(screen.getByRole('main')).toHaveAttribute('aria-busy', 'true');
-    expect(document.querySelector('.runtime-loading-card')).toBeInTheDocument();
+    expect(document.querySelector('.settings-scroll-content')).toHaveClass('is-runtime-pending');
+    expect(document.querySelectorAll('.settings-scroll-content > section')).toHaveLength(2);
+    expect(screen.getByRole('status')).toHaveTextContent('加载中…');
 
     await screen.findByRole('heading', { name: 'AI 引擎插件' });
     expect(screen.getByRole('main')).not.toHaveAttribute('aria-busy');

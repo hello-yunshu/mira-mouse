@@ -919,16 +919,7 @@ export function SettingsPage({ onNavigateAbout, onNavigateLogs = () => {}, onOpe
       <div ref={scrollRef} className={`settings-scroll-area${canScrollUp ? ' scroll-fade-top' : ''}${canScrollDown ? ' scroll-fade-bottom' : ''}`}>
       <div ref={contentRef} key={displayedTab} className={`settings-scroll-content${settingsPending ? ' is-runtime-pending' : ''}${internalTabEntry ? ' is-tab-entry' : ''}${exiting ? ' is-exiting' : ''}`}>
       {settingsPending && (
-        <section className="card settings-section runtime-loading-card" aria-label={t('about.loading')}>
-          <div className="card-title"><h2>{TABS.find((item) => item.id === displayedTab)?.label}</h2></div>
-          <div className="runtime-skeleton-lines" aria-hidden="true">
-            <span className="runtime-skeleton" />
-            <span className="runtime-skeleton" />
-            <span className="runtime-skeleton runtime-skeleton-short" />
-            <span className="runtime-skeleton" />
-          </div>
-          <span className="visually-hidden" role="status">{t('about.loading')}</span>
-        </section>
+        <span className="visually-hidden" role="status">{t('about.loading')}</span>
       )}
       {displayedTab === 'general' && (
         <>
