@@ -141,14 +141,16 @@ const matchers = new Map([
       'src-tauri/**',
       'crates/**',
       'Cargo.toml',
-      'Cargo.lock',
-      'package.json',
-      'package-lock.json',
       'index.html',
       'vite.config.*',
       'tsconfig*.json',
     ].map(globToRegExp),
   ],
+  // 纯锁文件/依赖清单变更（Cargo.lock、package-lock.json、package.json）不触发
+  // 版本递增要求——这些文件在 dependabot 批量更新或日常依赖调整时频繁变动，
+  // 不构成应用功能性变化。package.json 中脚本字段等非依赖变更极少发生且通常
+  // 伴随其他源文件改动，由上方 src/** / crates/** 等模式兜底。测试目录和
+  // 文档目录未列入，因为测试/文档变更不应要求版本递增。
 ]);
 
 const baseRef = resolveBase();
