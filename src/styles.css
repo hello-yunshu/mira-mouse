@@ -3474,7 +3474,7 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
 .contact-links.align-end { justify-content: flex-end; }
 .logs-card .logs-card-actions { justify-content: flex-end; }
 
-/* Donate card — 支付宝蓝 + 微信绿固定在右侧的静态晕染。 */
+/* Donate card — 支付宝蓝 + 微信绿沿「右下 → 左下」对角线弥散的柔焦晕染。 */
 .donate-card {
   position: relative;
   /* 外层继续用 clip 管理整张卡片；蓝绿云团另有专用 hidden 裁剪层，避免滤镜合成层
@@ -3501,10 +3501,21 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
   width: 72%;
   height: 190%;
   background:
-    radial-gradient(circle at 32% 32%, rgb(22 119 255 / 6%), transparent 73%),
-    radial-gradient(circle at 70% 68%, rgb(7 193 96 / 6%), transparent 73%),
-    radial-gradient(circle at 32% 32%, rgb(22 119 255 / 16%), transparent 55%),
-    radial-gradient(circle at 70% 68%, rgb(7 193 96 / 16%), transparent 55%);
+    radial-gradient(circle at 61% 62%, rgb(22 119 255 / 6%), transparent 73%),
+    radial-gradient(circle at 20% 80%, rgb(7 193 96 / 6%), transparent 78%),
+    radial-gradient(circle at 61% 62%, rgb(22 119 255 / 16%), transparent 55%),
+    radial-gradient(circle at 20% 80%, rgb(7 193 96 / 16%), transparent 58%);
+  /* 云团沿「右下 → 左下」对角线分布：蓝压右下角（卡片约 89%/73%）、
+     绿沉到卡片底缘以下（约 60%/107%）向上向左弥散，左上角保持干净；
+     绿色外层 stop 放宽（73→78、55→58）换取更长的弥散尾巴。
+     双保险防截断线：blur(22px) 负责主要柔化；mask 只兜盒子左缘
+     （落在卡片约 46% 处）的残余 alpha——即使 blur 在某些 WebView 上
+     渲染打折扣或未来被移除，边界也不会露出硬切；mask 渐变本身平滑，
+     不会产生新线条。裁剪层（.donate-aura 的 clip-path）防止滤镜
+     合成层越过圆角。 */
+  filter: blur(22px);
+  -webkit-mask-image: linear-gradient(to right, transparent, #fff 14%);
+  mask-image: linear-gradient(to right, transparent, #fff 14%);
   pointer-events: none;
   z-index: 0;
 }
@@ -3637,10 +3648,10 @@ input[type="time"] { border: 1px solid var(--control-secondary-border); border-r
 .donate-card .contact-links { justify-content: flex-end; }
 :root[data-theme="dark"] .donate-aura::before {
   background:
-    radial-gradient(circle at 32% 32%, rgb(22 119 255 / 8%), transparent 73%),
-    radial-gradient(circle at 70% 68%, rgb(7 193 96 / 8%), transparent 73%),
-    radial-gradient(circle at 32% 32%, rgb(22 119 255 / 24%), transparent 55%),
-    radial-gradient(circle at 70% 68%, rgb(7 193 96 / 24%), transparent 55%);
+    radial-gradient(circle at 61% 62%, rgb(22 119 255 / 8%), transparent 73%),
+    radial-gradient(circle at 20% 80%, rgb(7 193 96 / 8%), transparent 78%),
+    radial-gradient(circle at 61% 62%, rgb(22 119 255 / 24%), transparent 55%),
+    radial-gradient(circle at 20% 80%, rgb(7 193 96 / 24%), transparent 58%);
 }
 :root[data-theme="dark"] .donate-border-beam {
   --donate-beam-stroke-opacity: .22;

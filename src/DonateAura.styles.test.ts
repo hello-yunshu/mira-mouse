@@ -13,21 +13,24 @@ function rule(selector: string): string {
 }
 
 describe('donate aura static rounded clipping', () => {
-  it('keeps the original fixed cloud on a hard rounded clip', () => {
+  it('keeps the blurred diagonal cloud on a hard rounded clip', () => {
     const aura = rule('.donate-aura');
     expect(aura).toMatch(/overflow:\s*hidden/);
     expect(aura).toMatch(/border-radius:\s*inherit/);
     expect(aura).toMatch(/clip-path:\s*inset\(0 round 15px\)/);
 
     const cloud = rule('.donate-aura::before');
-    expect(cloud).not.toMatch(/filter\s*:/);
+    // 云团保持静态：blur + mask 双保险防截断线，绝无动画。
     expect(cloud).not.toMatch(/animation\s*:/);
     expect(cloud).toMatch(/radial-gradient/);
+    expect(cloud).toMatch(/filter:\s*blur\(22px\)/);
+    expect(cloud).toMatch(/mask-image:\s*linear-gradient\(to right, transparent, #fff 14%\)/);
     expect(cloud).toMatch(/top:\s*-45%/);
     expect(cloud).toMatch(/right:\s*-18%/);
     expect(cloud).toMatch(/width:\s*72%/);
     expect(cloud).toMatch(/height:\s*190%/);
-    expect(cloud).toMatch(/circle at 32% 32%/);
-    expect(cloud).toMatch(/circle at 70% 68%/);
+    // 蓝色先验峰压右下角、绿色向左下弥散：右下 → 左下对角线。
+    expect(cloud).toMatch(/circle at 61% 62%/);
+    expect(cloud).toMatch(/circle at 20% 80%/);
   });
 });
