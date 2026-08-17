@@ -21,7 +21,22 @@ const RETENTION_BUFFER_DAYS: i64 = 1;
 /// 携带采样时刻的 DPI/回报率/灯光模式等低频变动参数。
 /// v2 样本经 `migrate_schema` 填充 `context: None`，不丢历史。
 const SCHEMA_VERSION: u32 = 3;
-const SESSION_GAP_THRESHOLD_MINUTES: i64 = 10;
+/// 会话间隙判定阈值：相邻样本间隔超过该值视为设备休眠/断连。
+///
+/// 两个用途：
+/// - 会话分割（`is_session_gap`）：超过该值视为新会话。
+/// - 「累计使用时长」的自适应兜底（`aggregate_active_usage`）：窗口内样本
+///   过少、无法可靠推断采样节奏时回退到该固定值，并作为自适应阈值下限。
+///
+/// 宿主电池轮询是自适应的（lib.rs `adaptive_battery_interval`）：充电 3 分钟、
+/// 窗口可见 5 分钟、窗口隐藏 15 分钟，且会被 `sleep_aware_interval` 按设备
+/// 声明的休眠超时进一步拉长（`max(base, sleep_timeout + grace)`，grace 上限
+/// 5 分钟）。20 覆盖隐藏采样 15 分钟 + grace 上限 5 分钟，保证常规采样节奏
+/// 不会被误判为会话间隙。
+const SESSION_GAP_THRESHOLD_MINUTES: i64 = 20;
+/// 「累计使用时长」自适应采样节奏时最少需要的相邻间隔数（即至少 6 个样本）。
+/// 少于该数量时中位数不可靠，回退到固定阈值。
+const ADAPT_SAMPLING_MIN_GAPS: usize = 5;
 const MAX_SAMPLES: usize = 20000;
 const BOUNCE_THRESHOLD_PERCENT: f64 = 1.0;
 /// A level change this large may be an off-device charge, battery swap, or
@@ -1265,6 +1280,20 @@ struct ActiveSample<'a> {
     active_minutes: i64,
 }
 
+/// 就地排序并返回一组 i64 的中位数；空输入返回 None。
+fn median_i64(values: &mut [i64]) -> Option<i64> {
+    if values.is_empty() {
+        return None;
+    }
+    values.sort_unstable();
+    let mid = values.len() / 2;
+    if values.len() % 2 == 0 {
+        Some((values[mid - 1] + values[mid]) / 2)
+    } else {
+        Some(values[mid])
+    }
+}
+
 fn aggregate_active_usage(
     samples: &[&BatterySample],
     now: DateTime<Utc>,
@@ -1282,13 +1311,31 @@ fn aggregate_active_usage(
         return Vec::new();
     }
 
+    // 在线判定阈值按「实际采样间隔」自适应：宿主轮询节奏是自适应的
+    // （充电 3 分钟 / 可见 5 分钟 / 隐藏 15 分钟，且被 sleep_aware_interval
+    // 按设备休眠超时进一步拉长），固定阈值无法覆盖所有节奏。取相邻样本
+    // 间隔的中位数代表常规采样节奏，再放宽 2 倍作为在线判定上限：任何常规
+    // 节奏下的在线间隔都会被计入，而真正的休眠/断连（通常是小时级）仍被
+    // 压缩。样本过少时中位数不可靠，回退到固定阈值。
+    let mut gaps: Vec<i64> = sorted
+        .windows(2)
+        .map(|pair| (pair[1].at - pair[0].at).num_minutes())
+        .filter(|gap| *gap > 0)
+        .collect();
+    let online_gap_threshold = if gaps.len() >= ADAPT_SAMPLING_MIN_GAPS {
+        let regular_gap = median_i64(&mut gaps).unwrap_or(SESSION_GAP_THRESHOLD_MINUTES);
+        (regular_gap * 2).max(SESSION_GAP_THRESHOLD_MINUTES)
+    } else {
+        SESSION_GAP_THRESHOLD_MINUTES
+    };
+
     let mut active_samples = Vec::with_capacity(sorted.len());
     let mut active_minutes = 0i64;
     let mut prev: Option<&BatterySample> = None;
     for sample in sorted {
         if let Some(prev_sample) = prev {
             let gap = (sample.at - prev_sample.at).num_minutes();
-            if gap > 0 && gap <= SESSION_GAP_THRESHOLD_MINUTES {
+            if gap > 0 && gap <= online_gap_threshold {
                 active_minutes += gap;
             }
         }
@@ -2751,6 +2798,46 @@ mod tests {
                 "groups must stay balanced for sample_count={sample_count}"
             );
         }
+    }
+
+    #[test]
+    fn aggregate_active_usage_tracks_hidden_window_quarter_hour_sampling() {
+        // 窗口隐藏时宿主按 15 分钟一采样（BATTERY_HIDDEN_INTERVAL），
+        // 该间隔必须计入累计使用时长，否则 Windows 托盘常驻场景下
+        // 柱状图很满但累计使用时间恒为 0。
+        let now = Utc::now();
+        let samples: Vec<BatterySample> = vec![
+            make_sample(now - Duration::minutes(30), 90, false),
+            make_sample(now - Duration::minutes(15), 85, false),
+            make_sample(now, 80, false),
+        ];
+        let refs: Vec<&BatterySample> = samples.iter().collect();
+        let points = aggregate_active_usage(&refs, now, 20);
+
+        assert_eq!(points.len(), 3);
+        assert_eq!(points[0].usage_elapsed_minutes, Some(0));
+        assert_eq!(points[1].usage_elapsed_minutes, Some(15));
+        assert_eq!(points[2].usage_elapsed_minutes, Some(30));
+        assert_eq!(points[2].bucket_label, "30m");
+    }
+
+    #[test]
+    fn aggregate_active_usage_adapts_to_sleep_aware_longer_sampling() {
+        // sleep_aware_interval 会把隐藏态轮询进一步拉长（如声明 20 分钟
+        // 休眠超时的设备约 22 分钟一采样），超过固定阈值 20 分钟；此时必须
+        // 按样本实际间隔自适应累计，否则 Windows 托盘常驻场景累计使用时长
+        // 会再次恒为 0。
+        let now = Utc::now();
+        let samples: Vec<BatterySample> = (0..6)
+            .map(|i| make_sample(now - Duration::minutes(22 * i), 88 - i as u8, false))
+            .collect();
+        let refs: Vec<&BatterySample> = samples.iter().collect();
+        let points = aggregate_active_usage(&refs, now, 20);
+
+        assert_eq!(points.len(), 6);
+        assert_eq!(points[0].usage_elapsed_minutes, Some(0));
+        assert_eq!(points[1].usage_elapsed_minutes, Some(22));
+        assert_eq!(points[5].usage_elapsed_minutes, Some(110));
     }
 
     #[test]
