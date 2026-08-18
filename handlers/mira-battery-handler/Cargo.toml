@@ -15,7 +15,7 @@ path = "src/main.rs"
 # `serde` feature 仅用于 FeatureSchema / ModelDescriptor 身份序列化。
 mira-local-ai = { path = "../../crates/mira-local-ai" }
 mira-protocol = { path = "../../crates/mira-protocol" }
-rill-ml = { version = "1.1", default-features = false, features = ["serde"] }
+rill-ml = { version = "1.2", default-features = false, features = ["serde"] }
 serde_json = "1"
 wit-bindgen = "0.29"
 

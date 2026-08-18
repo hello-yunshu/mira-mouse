@@ -2,6 +2,10 @@
 import { createHash, createPublicKey, verify } from 'node:crypto';
 import { readFileSync, statSync, writeFileSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
+import {
+  MIRA_RUNTIME_TARGETS,
+  matchesTarget,
+} from './signed-release-index.mjs';
 
 const [assetsDirArg, runtimeVersion, modelVersion, handlerVersion, tag, outputArg, currentIndexArg] =
   process.argv.slice(2);
@@ -77,7 +81,13 @@ function compareVersions(left, right) {
 }
 
 const artifactIdentity = (artifact) =>
-  [artifact.kind, artifact.id, artifact.targetOs ?? '', artifact.targetArch ?? ''].join('|');
+  [
+    artifact.kind,
+    artifact.id,
+    artifact.targetOs ?? '',
+    artifact.targetArch ?? '',
+    artifact.targetLibc ?? '',
+  ].join('|');
 
 function preserveNewerPublishedArtifacts(candidates, currentIndexPath) {
   if (!currentIndexPath) return candidates;
@@ -88,8 +98,8 @@ function preserveNewerPublishedArtifacts(candidates, currentIndexPath) {
     MIRA_INDEX_PUBLIC_KEY_HEX,
     'current Mira local AI index',
   );
-  if (current.payload.schemaVersion !== 2 || !Array.isArray(current.payload.artifacts)) {
-    throw new Error('current Mira local AI index does not use schema version 2');
+  if (current.payload.schemaVersion < 2 || current.payload.schemaVersion > 3) {
+    throw new Error('current Mira local AI index has an unsupported schema version');
   }
   const published = new Map(current.payload.artifacts.map((artifact) => [artifactIdentity(artifact), artifact]));
   return candidates.map((candidate) => {
@@ -115,25 +125,20 @@ async function fetchRuntimeArtifacts() {
     'rill-ml stable-index.json',
   );
   const artifacts = index?.payload?.artifacts;
+  if (index?.payload?.schemaVersion !== 3) {
+    throw new Error('rill-ml stable-index.json does not use schema version 3');
+  }
   if (!Array.isArray(artifacts)) {
     throw new Error('rill-ml stable-index.json missing payload.artifacts array');
   }
-  const targets = [
-    ['macos', 'aarch64'],
-    ['linux', 'x86_64'],
-    ['windows', 'x86_64'],
-  ];
-  return targets.map(([targetOs, targetArch]) => {
+  return MIRA_RUNTIME_TARGETS.map((target) => {
+    // schema v3 的 Linux runtime 同时存在 gnu / musl，Mira 只消费 gnu。
     const artifact = artifacts.find(
-      (a) =>
-        a.kind === 'runtime' &&
-        a.id === 'rill-runtime' &&
-        a.targetOs === targetOs &&
-        a.targetArch === targetArch,
+      (a) => a.kind === 'runtime' && a.id === 'rill-runtime' && matchesTarget(a, target),
     );
     if (!artifact) {
       throw new Error(
-        `rill-ml stable-index.json has no runtime artifact for ${targetOs}-${targetArch}`,
+        `rill-ml stable-index.json has no runtime artifact for ${target.targetOs}-${target.targetArch}`,
       );
     }
     if (
@@ -143,15 +148,16 @@ async function fetchRuntimeArtifacts() {
         `https://github.com/hello-yunshu/rill-ml/releases/download/v${runtimeVersion}/`,
       )
     ) {
-      throw new Error(`rill-ml runtime artifact contract mismatch for ${targetOs}-${targetArch}`);
+      throw new Error(`rill-ml runtime artifact contract mismatch for ${target.targetOs}-${target.targetArch}`);
     }
     return {
       kind: 'runtime',
       id: 'rill-runtime',
       version: runtimeVersion,
       runtimeApiVersion: 2,
-      targetOs,
-      targetArch,
+      targetOs: target.targetOs,
+      targetArch: target.targetArch,
+      targetLibc: artifact.targetLibc,
       url: artifact.url,
       sha256: artifact.sha256,
       size: artifact.size,
@@ -184,7 +190,7 @@ const candidates = [
 const artifacts = preserveNewerPublishedArtifacts(candidates, currentIndexArg);
 
 writeFileSync(resolve(outputArg), `${JSON.stringify({
-  schemaVersion: 2,
+  schemaVersion: 3,
   channel: 'stable',
   generatedAt: new Date().toISOString(),
   publisherKeyId: MIRA_INDEX_PUBLISHER_KEY_ID,

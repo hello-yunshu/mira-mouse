@@ -67,8 +67,12 @@ function compareVersions(left, right) {
 
 const currentIndex = JSON.parse(readFileSync(resolve(currentIndexArg), 'utf8'));
 verifySignedIndex(currentIndex);
-if (currentIndex.payload.schemaVersion !== 2 || !Array.isArray(currentIndex.payload.artifacts)) {
-  throw new Error('current local AI index does not use schema version 2');
+if (
+  currentIndex.payload.schemaVersion < 2 ||
+  currentIndex.payload.schemaVersion > 3 ||
+  !Array.isArray(currentIndex.payload.artifacts)
+) {
+  throw new Error('current local AI index does not use schema version 2 or 3');
 }
 
 const handlerPath = resolve(handlerArg);

@@ -571,8 +571,9 @@ fn dist_sidecar(target: Option<&str>, version: Option<&str>, _release: bool) -> 
     let dest_dir = workspace_root.join("src-tauri/binaries");
     fs::create_dir_all(&dest_dir)?;
 
-    let (target_os, target_arch) = rill_ml_platform(&target_triple)?;
-    let (runtime_version, bytes) = download_runtime_binary(target_os, target_arch, version)?;
+    let (target_os, target_arch, target_libc) = rill_ml_platform(&target_triple)?;
+    let (runtime_version, bytes) =
+        download_runtime_binary(target_os, target_arch, target_libc, version)?;
     let dest = dest_dir.join(&binary_name);
     fs::write(&dest, &bytes).with_context(|| format!("write sidecar to {}", dest.display()))?;
     #[cfg(unix)]
@@ -601,12 +602,16 @@ fn dist_sidecar(target: Option<&str>, version: Option<&str>, _release: bool) -> 
     Ok(())
 }
 
-/// 将 Rust target triple 映射到 rill-ml release 资产的 (os, arch) 命名。
-fn rill_ml_platform(target_triple: &str) -> Result<(&'static str, &'static str)> {
+/// 将 Rust target triple 映射到 rill-ml release 资产的 (os, arch, libc) 命名。
+/// schema v3 的 Linux runtime 同时存在 gnu / musl，Mira 的 sidecar 走 GNU 工具链，
+/// 因此对 Linux 显式返回 `Some("gnu")`；macOS / Windows 不携带 libc。
+fn rill_ml_platform(
+    target_triple: &str,
+) -> Result<(&'static str, &'static str, Option<&'static str>)> {
     match target_triple {
-        "aarch64-apple-darwin" => Ok(("macos", "aarch64")),
-        "x86_64-unknown-linux-gnu" => Ok(("linux", "x86_64")),
-        "x86_64-pc-windows-msvc" => Ok(("windows", "x86_64")),
+        "aarch64-apple-darwin" => Ok(("macos", "aarch64", None)),
+        "x86_64-unknown-linux-gnu" => Ok(("linux", "x86_64", Some("gnu"))),
+        "x86_64-pc-windows-msvc" => Ok(("windows", "x86_64", None)),
         other => bail!("unsupported target triple for rill-runtime download: {other}"),
     }
 }
@@ -678,6 +683,7 @@ fn find_runtime_artifact(
     index: &SignedReleaseIndex,
     target_os: &str,
     target_arch: &str,
+    target_libc: Option<&str>,
     requested_version: Option<&str>,
 ) -> Result<RuntimeArtifactInfo> {
     let runtime_versions = index
@@ -700,10 +706,13 @@ fn find_runtime_artifact(
         bail!("requested Rill runtime version does not match its signed index");
     }
     for artifact in &index.payload.artifacts {
+        // schema v3 的 Linux runtime 同时存在 gnu / musl；Mira 只选择与目标 libc
+        // 一致的变体（Linux 恒为 gnu），失败时 fail closed 而不是误选。
         if artifact.kind == ReleaseArtifactKind::Runtime
             && artifact.id == RUNTIME_ARTIFACT_ID
             && artifact.target_os.as_deref() == Some(target_os)
             && artifact.target_arch.as_deref() == Some(target_arch)
+            && artifact.target_libc.as_deref() == target_libc
         {
             let expected_prefix = format!("{RILL_ML_RELEASE_BASE}/v{runtime_version}/");
             if artifact.version != runtime_version
@@ -735,10 +744,11 @@ fn parse_stable_semver(value: &str, label: &str) -> Result<semver::Version> {
 fn download_runtime_binary(
     target_os: &str,
     target_arch: &str,
+    target_libc: Option<&str>,
     version: Option<&str>,
 ) -> Result<(String, Vec<u8>)> {
     let index = fetch_rill_ml_index(version)?;
-    let artifact = find_runtime_artifact(&index, target_os, target_arch, version)?;
+    let artifact = find_runtime_artifact(&index, target_os, target_arch, target_libc, version)?;
     if artifact.size == 0 || artifact.size > MAX_RUNTIME_BYTES {
         bail!(
             "runtime binary size {} is invalid or exceeds the {} byte limit",

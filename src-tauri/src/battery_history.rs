@@ -1287,7 +1287,7 @@ fn median_i64(values: &mut [i64]) -> Option<i64> {
     }
     values.sort_unstable();
     let mid = values.len() / 2;
-    if values.len() % 2 == 0 {
+    if values.len().is_multiple_of(2) {
         Some((values[mid - 1] + values[mid]) / 2)
     } else {
         Some(values[mid])

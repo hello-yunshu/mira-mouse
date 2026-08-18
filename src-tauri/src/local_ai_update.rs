@@ -444,6 +444,7 @@ fn verify_index(index: &SignedReleaseIndex) -> Result<(), String> {
             artifact.id.clone(),
             artifact.target_os.clone(),
             artifact.target_arch.clone(),
+            artifact.target_libc.clone(),
         );
         if !identities.insert(identity) {
             return Err("local AI release index has duplicate artifacts".into());
@@ -471,14 +472,27 @@ fn canonical_json<T: Serialize>(value: &T) -> Result<Vec<u8>, String> {
         .map_err(|error| format!("canonicalize local AI release index: {error}"))
 }
 
+/// 判断 runtime artifact 是否为给定平台 + libc 的目标。schema v3 的 Linux runtime
+/// 同时存在 gnu / musl，Mira 只消费 gnu；非 Linux 平台必须不携带 libc。
+fn runtime_matches(artifact: &ReleaseArtifact, os: &str, arch: &str, libc: Option<&str>) -> bool {
+    artifact.kind == ReleaseArtifactKind::Runtime
+        && artifact.id == RUNTIME_ARTIFACT_ID
+        && artifact.target_os.as_deref() == Some(os)
+        && artifact.target_arch.as_deref() == Some(arch)
+        && artifact.target_libc.as_deref() == libc
+}
+
 fn select_artifacts(payload: &ReleaseIndexPayload) -> Result<SelectedArtifacts<'_>, String> {
+    let host_libc = (std::env::consts::OS == "linux").then_some("gnu");
     let runtime = select_unique(
         payload,
         |artifact| {
-            artifact.kind == ReleaseArtifactKind::Runtime
-                && artifact.id == RUNTIME_ARTIFACT_ID
-                && artifact.target_os.as_deref() == Some(std::env::consts::OS)
-                && artifact.target_arch.as_deref() == Some(std::env::consts::ARCH)
+            runtime_matches(
+                artifact,
+                std::env::consts::OS,
+                std::env::consts::ARCH,
+                host_libc,
+            )
         },
         "runtime",
     )?;
@@ -937,6 +951,7 @@ mod tests {
     use ed25519_dalek::{Signer, SigningKey};
     use rill_runtime_protocol::{
         ReleaseArtifact, ReleaseArtifactKind, RELEASE_INDEX_SCHEMA_VERSION, RUNTIME_API_VERSION,
+        RUNTIME_ARTIFACT_ID, RUNTIME_ARTIFACT_ID_MUSL,
     };
 
     use super::*;
@@ -949,8 +964,10 @@ mod tests {
             runtime_api_version: RUNTIME_API_VERSION,
             target_os: Some(std::env::consts::OS.into()),
             target_arch: Some(std::env::consts::ARCH.into()),
+            target_libc: (std::env::consts::OS == "linux").then(|| "gnu".to_string()),
             handler_api_version: None,
             min_runtime_version: None,
+            pm_adapter_protocol_version: None,
             url: format!(
                 "{}local-ai-v{version}/rill-runtime-{}-{}",
                 TRUSTED_RELEASE_PREFIXES[0],
@@ -970,8 +987,10 @@ mod tests {
             runtime_api_version: RUNTIME_API_VERSION,
             target_os: None,
             target_arch: None,
+            target_libc: None,
             handler_api_version: None,
             min_runtime_version: None,
+            pm_adapter_protocol_version: None,
             url: format!(
                 "{}local-ai-v{version}/model.rillpack",
                 TRUSTED_RELEASE_PREFIXES[0]
@@ -989,8 +1008,10 @@ mod tests {
             runtime_api_version: RUNTIME_API_VERSION,
             target_os: None,
             target_arch: None,
+            target_libc: None,
             handler_api_version: Some(HANDLER_API_VERSION),
             min_runtime_version: Some("0.7.1".into()),
+            pm_adapter_protocol_version: None,
             url: format!(
                 "{}local-ai-v{version}/handler.rillhandler",
                 TRUSTED_RELEASE_PREFIXES[0]
@@ -1097,6 +1118,74 @@ mod tests {
         let mut handler = handler_artifact("0.8.2");
         handler.min_runtime_version = Some("0.8.0".into());
         assert!(validate_handler_runtime_compatibility(&handler, "0.7.1").is_err());
+    }
+
+    fn linux_runtime(libc: &str) -> ReleaseArtifact {
+        let mut artifact = runtime_artifact("1.2.0");
+        artifact.target_os = Some("linux".into());
+        artifact.target_arch = Some("x86_64".into());
+        if libc == "musl" {
+            artifact.id = RUNTIME_ARTIFACT_ID_MUSL.into();
+        }
+        artifact.target_libc = Some(libc.to_string());
+        artifact
+    }
+
+    #[test]
+    fn linux_runtime_selection_prefers_gnu_over_musl() {
+        // schema v3 的 Linux runtime 同时存在 gnu / musl，Mira 只选择 gnu。
+        assert!(runtime_matches(
+            &linux_runtime("gnu"),
+            "linux",
+            "x86_64",
+            Some("gnu")
+        ));
+        assert!(!runtime_matches(
+            &linux_runtime("musl"),
+            "linux",
+            "x86_64",
+            Some("gnu")
+        ));
+        // 非 Linux 目标不能漏选带 libc 的 Linux 产物。
+        assert!(!runtime_matches(
+            &linux_runtime("gnu"),
+            "macos",
+            "aarch64",
+            None
+        ));
+    }
+
+    #[test]
+    fn linux_runtime_missing_gnu_fails_closed() {
+        // 缺 GNU 变体时不应误选 musl：musl 产物 id 为 rill-runtime-musl，且
+        // target_libc == "musl"，与 Mira 的 gnu 目标不匹配 → 上层 fail closed。
+        assert!(!runtime_matches(
+            &linux_runtime("musl"),
+            "linux",
+            "x86_64",
+            Some("gnu")
+        ));
+        // 即便把 musl 产物的 id 伪装成 gnu 的 id，显式的 target_libc 不一致仍拒绝。
+        let mut musl_with_gnu_id = linux_runtime("musl");
+        musl_with_gnu_id.id = RUNTIME_ARTIFACT_ID.into();
+        assert!(!runtime_matches(
+            &musl_with_gnu_id,
+            "linux",
+            "x86_64",
+            Some("gnu")
+        ));
+    }
+
+    #[test]
+    fn non_linux_runtime_must_not_carry_libc() {
+        // macOS / Windows 不携带 target_libc；携带 libc 的产物不匹配。
+        let mut macos = runtime_artifact("1.2.0");
+        macos.target_os = Some("macos".into());
+        macos.target_arch = Some("aarch64".into());
+        macos.target_libc = None;
+        assert!(runtime_matches(&macos, "macos", "aarch64", None));
+        macos.target_libc = Some("gnu".into());
+        assert!(!runtime_matches(&macos, "macos", "aarch64", None));
     }
 
     #[test]

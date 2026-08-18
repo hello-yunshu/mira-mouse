@@ -58,3 +58,23 @@ export function compareVersions(left, right) {
   }
   return 0;
 }
+
+// Mira 支持的 Rill runtime 目标平台集合。
+// release-index schema v3 在 Linux 上同时发布 gnu / musl 变体（musl 的 id 为
+// ``rill-runtime-musl``），Mira 只消费 gnu 变体，因此对 Linux 显式声明 targetLibc。
+export const MIRA_RUNTIME_TARGETS = Object.freeze([
+  { targetOs: 'macos', targetArch: 'aarch64' },
+  { targetOs: 'linux', targetArch: 'x86_64', targetLibc: 'gnu' },
+  { targetOs: 'windows', targetArch: 'x86_64' },
+]);
+
+// 判断 runtime artifact 是否命中目标平台。带 targetLibc 的目标要求 artifact
+// 显式匹配该 libc；不带 targetLibc 的目标要求 artifact 不得携带 libc（macOS /
+// Windows / FreeBSD 等非 Linux 产物）。
+export function matchesTarget(artifact, target) {
+  if (artifact.targetOs !== target.targetOs || artifact.targetArch !== target.targetArch) {
+    return false;
+  }
+  if (target.targetLibc !== undefined) return artifact.targetLibc === target.targetLibc;
+  return artifact.targetLibc === undefined;
+}

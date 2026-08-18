@@ -561,7 +561,16 @@ pub(crate) fn tray_info_menu_rows(
             ),
         });
     }
-    rows.extend(state.batteries.iter().enumerate().map(|(index, battery)| {
+    // 电量行固定顺序：mouse 第一、receiver 第二、其余保持上报相对顺序。
+    // `index` 取自排序前的原始位置，点击时仍映射回正确的 battery。
+    let mut ordered: Vec<(usize, &tray::state::TrayBatteryState)> =
+        state.batteries.iter().enumerate().collect();
+    ordered.sort_by_key(|(_, battery)| match battery.id.as_str() {
+        "mouse" => 0,
+        "receiver" => 1,
+        _ => 2,
+    });
+    rows.extend(ordered.into_iter().map(|(index, battery)| {
         let label = tr_battery_label(lang, &battery.id, &battery.label);
         TrayInfoMenuRow::Battery {
             index,
@@ -13880,6 +13889,130 @@ mod tray_menu_tests {
             rows.get(1),
             Some(TrayInfoMenuRow::Battery { index: 1, .. })
         ));
+    }
+
+    fn battery(id: &str, percentage: u8) -> TrayBatteryState {
+        TrayBatteryState {
+            id: id.into(),
+            label: format!("mock.{id}Label"),
+            percentage,
+            charging: false,
+        }
+    }
+
+    fn state_with_batteries(batteries: Vec<TrayBatteryState>) -> TrayStatusState {
+        let mut state = connected_state(false);
+        state.batteries = batteries;
+        state
+    }
+
+    /// 按 `index` 映射回原始上报顺序，断言菜单展示的 battery 顺序。
+    fn displayed_battery_ids(state: &TrayStatusState, rows: &[TrayInfoMenuRow]) -> Vec<String> {
+        rows.iter()
+            .filter_map(|row| match row {
+                TrayInfoMenuRow::Battery { index, .. } => Some(state.batteries[*index].id.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn orders_mouse_before_receiver_when_receiver_reports_first() {
+        let state = state_with_batteries(vec![battery("receiver", 91), battery("mouse", 82)]);
+        let rows = tray_info_menu_rows(&state, "zh-CN");
+        assert_eq!(
+            displayed_battery_ids(&state, &rows),
+            vec!["mouse", "receiver"]
+        );
+        // index 仍映射回正确的原始 battery。
+        assert!(matches!(
+            rows.first(),
+            Some(TrayInfoMenuRow::Battery { index: 1, text })
+                if text == "鼠标电量：82%"
+        ));
+        assert!(matches!(
+            rows.get(1),
+            Some(TrayInfoMenuRow::Battery { index: 0, text })
+                if text == "接收器电量：91%"
+        ));
+    }
+
+    #[test]
+    fn keeps_mouse_first_receiver_second_and_others_in_reported_order() {
+        let state = state_with_batteries(vec![
+            battery("dock", 10),
+            battery("receiver", 91),
+            battery("extra", 55),
+            battery("mouse", 82),
+        ]);
+        let rows = tray_info_menu_rows(&state, "en");
+        assert_eq!(
+            displayed_battery_ids(&state, &rows),
+            vec!["mouse", "receiver", "dock", "extra"]
+        );
+    }
+
+    #[test]
+    fn handles_mouse_only() {
+        let state = state_with_batteries(vec![battery("mouse", 82)]);
+        let rows = tray_info_menu_rows(&state, "en");
+        assert_eq!(displayed_battery_ids(&state, &rows), vec!["mouse"]);
+    }
+
+    #[test]
+    fn handles_receiver_only() {
+        let state = state_with_batteries(vec![battery("receiver", 91)]);
+        let rows = tray_info_menu_rows(&state, "en");
+        assert_eq!(displayed_battery_ids(&state, &rows), vec!["receiver"]);
+    }
+
+    #[test]
+    fn unknown_batteries_are_not_lost_and_keep_relative_order() {
+        let state = state_with_batteries(vec![
+            battery("keypad", 40),
+            battery("mouse", 82),
+            battery("receiver", 91),
+            battery("unknown-1", 33),
+            battery("unknown-2", 22),
+        ]);
+        let rows = tray_info_menu_rows(&state, "en");
+        assert_eq!(
+            displayed_battery_ids(&state, &rows),
+            vec!["mouse", "receiver", "keypad", "unknown-1", "unknown-2"]
+        );
+        assert_eq!(rows.len(), 5);
+    }
+
+    #[test]
+    fn show_connection_does_not_change_battery_internal_order() {
+        let base = state_with_batteries(vec![
+            battery("dock", 10),
+            battery("receiver", 91),
+            battery("mouse", 82),
+        ]);
+        let with_conn = {
+            let mut state = base.clone();
+            state.show_connection = true;
+            state
+        };
+
+        assert_eq!(
+            displayed_battery_ids(&base, &tray_info_menu_rows(&base, "en")),
+            vec!["mouse", "receiver", "dock"]
+        );
+        let rows = tray_info_menu_rows(&with_conn, "en");
+        // 连接状态行在最前，电量内部顺序不变。
+        assert!(matches!(
+            rows.first(),
+            Some(TrayInfoMenuRow::Status {
+                id: "connection-status",
+                ..
+            })
+        ));
+        assert_eq!(
+            displayed_battery_ids(&with_conn, &rows),
+            vec!["mouse", "receiver", "dock"]
+        );
     }
 
     #[test]

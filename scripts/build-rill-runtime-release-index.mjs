@@ -4,9 +4,11 @@ import { resolve } from 'node:path';
 import {
   MIRA_INDEX_PUBLIC_KEY_HEX,
   MIRA_INDEX_PUBLISHER_KEY_ID,
+  MIRA_RUNTIME_TARGETS,
   RILL_INDEX_PUBLIC_KEY_HEX,
   RILL_INDEX_PUBLISHER_KEY_ID,
   compareVersions,
+  matchesTarget,
   parseStableVersion,
   verifySignedIndex,
 } from './signed-release-index.mjs';
@@ -33,11 +35,15 @@ verifySignedIndex(
   'latest Rill stable index',
 );
 if (
-  currentIndex.payload.schemaVersion !== 2 ||
+  currentIndex.payload.schemaVersion < 2 ||
+  currentIndex.payload.schemaVersion > 3 ||
   currentIndex.payload.channel !== 'stable' ||
   !Array.isArray(currentIndex.payload.artifacts)
 ) {
-  throw new Error('current Mira local AI index does not use the supported stable schema');
+  throw new Error('current Mira local AI index has an unsupported stable schema');
+}
+if (rillIndex.payload.schemaVersion !== 3) {
+  throw new Error('latest Rill index does not use schema version 3');
 }
 
 const currentRuntimes = currentIndex.payload.artifacts.filter(
@@ -59,17 +65,12 @@ if (compareVersions(latestVersion, currentVersion) < 0) {
   throw new Error('Rill latest release would downgrade the current Mira runtime');
 }
 
-const targets = [
-  ['macos', 'aarch64'],
-  ['linux', 'x86_64'],
-  ['windows', 'x86_64'],
-];
-const selectedRuntimes = targets.map(([targetOs, targetArch]) => {
-  const matches = latestRuntimes.filter(
-    (artifact) => artifact.targetOs === targetOs && artifact.targetArch === targetArch,
-  );
+const targets = MIRA_RUNTIME_TARGETS;
+const selectedRuntimes = targets.map((target) => {
+  // schema v3 的 Linux runtime 同时存在 gnu / musl，Mira 只消费 gnu。
+  const matches = latestRuntimes.filter((artifact) => matchesTarget(artifact, target));
   if (matches.length !== 1) {
-    throw new Error(`latest Rill index must contain one runtime for ${targetOs}-${targetArch}`);
+    throw new Error(`latest Rill index must contain one runtime for ${target.targetOs}-${target.targetArch}`);
   }
   const [artifact] = matches;
   if (
@@ -81,7 +82,7 @@ const selectedRuntimes = targets.map(([targetOs, targetArch]) => {
     !Number.isSafeInteger(artifact.size) ||
     artifact.size <= 0
   ) {
-    throw new Error(`latest Rill runtime contract is invalid for ${targetOs}-${targetArch}`);
+    throw new Error(`latest Rill runtime contract is invalid for ${target.targetOs}-${target.targetArch}`);
   }
   return artifact;
 });
@@ -104,6 +105,7 @@ if (compareVersions(latestVersion, minimumRuntimeVersion) < 0) {
 const updateAvailable = compareVersions(latestVersion, currentVersion) > 0;
 const payload = {
   ...currentIndex.payload,
+  schemaVersion: 3,
   generatedAt: new Date().toISOString(),
   publisherKeyId: MIRA_INDEX_PUBLISHER_KEY_ID,
   artifacts: [

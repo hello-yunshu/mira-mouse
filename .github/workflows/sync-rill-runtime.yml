@@ -106,6 +106,7 @@ jobs:
           - os: ubuntu-22.04
             target-os: linux
             target-arch: x86_64
+            target-libc: gnu
             executable: rill-runtime
           - os: windows-2022
             target-os: windows
@@ -127,14 +128,20 @@ jobs:
         env:
           TARGET_OS: ${{ matrix.target-os }}
           TARGET_ARCH: ${{ matrix.target-arch }}
+          TARGET_LIBC: ${{ matrix.target-libc }}
           EXECUTABLE: ${{ matrix.executable }}
         run: |
           set -euo pipefail
           rill_index=artifacts/rill-stable-index.json
           mira_index=artifacts/local-ai-stable-index.json
-          runtime_url=$(jq -r --arg os "$TARGET_OS" --arg arch "$TARGET_ARCH" '.payload.artifacts[] | select(.kind == "runtime" and .id == "rill-runtime" and .targetOs == $os and .targetArch == $arch) | .url' "$rill_index")
-          runtime_sha=$(jq -r --arg os "$TARGET_OS" --arg arch "$TARGET_ARCH" '.payload.artifacts[] | select(.kind == "runtime" and .id == "rill-runtime" and .targetOs == $os and .targetArch == $arch) | .sha256' "$rill_index")
-          runtime_size=$(jq -r --arg os "$TARGET_OS" --arg arch "$TARGET_ARCH" '.payload.artifacts[] | select(.kind == "runtime" and .id == "rill-runtime" and .targetOs == $os and .targetArch == $arch) | .size' "$rill_index")
+          # Linux runtime 同时存在 gnu / musl，Mira 只消费 gnu（matrix 只给 linux 行
+          # 设置 target-libc，其它平台不按 libc 过滤）。
+          libc_filter=""
+          if [ -n "${TARGET_LIBC:-}" ]; then libc_filter=" and .targetLibc == \"$TARGET_LIBC\""; fi
+          runtime_select='.kind == "runtime" and .id == "rill-runtime" and .targetOs == $os and .targetArch == $arch'"$libc_filter"
+          runtime_url=$(jq -r --arg os "$TARGET_OS" --arg arch "$TARGET_ARCH" '.payload.artifacts[] | select('"$runtime_select"') | .url' "$rill_index")
+          runtime_sha=$(jq -r --arg os "$TARGET_OS" --arg arch "$TARGET_ARCH" '.payload.artifacts[] | select('"$runtime_select"') | .sha256' "$rill_index")
+          runtime_size=$(jq -r --arg os "$TARGET_OS" --arg arch "$TARGET_ARCH" '.payload.artifacts[] | select('"$runtime_select"') | .size' "$rill_index")
           model_url=$(jq -r '.payload.artifacts[] | select(.kind == "model" and .id == "mira-battery-model") | .url' "$mira_index")
           model_sha=$(jq -r '.payload.artifacts[] | select(.kind == "model" and .id == "mira-battery-model") | .sha256' "$mira_index")
           model_size=$(jq -r '.payload.artifacts[] | select(.kind == "model" and .id == "mira-battery-model") | .size' "$mira_index")
