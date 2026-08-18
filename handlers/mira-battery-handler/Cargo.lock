@@ -183,7 +183,7 @@ dependencies = [
 
 [[package]]
 name = "mira-local-ai"
-version = "1.2.3"
+version = "1.2.4"
 dependencies = [
  "chrono",
  "mira-protocol",
@@ -196,7 +196,7 @@ dependencies = [
 
 [[package]]
 name = "mira-protocol"
-version = "1.2.3"
+version = "1.2.4"
 dependencies = [
  "serde",
  "serde_json",
@@ -247,9 +247,9 @@ dependencies = [
 
 [[package]]
 name = "rill-ml"
-version = "1.1.0"
+version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e5513497aeb61fdd8c4ee9ba24ada83de2a69a3c077ae58a4b9fbf347f7fdcb8"
+checksum = "b2ce22ec4556bade8deb6e8cc2f7f934d191c39886e1f3e0fce6df0b3a09ef68"
 dependencies = [
  "serde",
  "serde_json",

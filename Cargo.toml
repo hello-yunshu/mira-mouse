@@ -17,7 +17,7 @@ exclude = [
 ]
 
 [workspace.package]
-version = "1.2.3"
+version = "1.2.4"
 edition = "2021"
 license = "AGPL-3.0-or-later"
 rust-version = "1.94"
@@ -37,8 +37,10 @@ reqwest = { version = "0.13", default-features = false, features = ["blocking", 
 # release 构建中运行无约束 `cargo update`。
 # `serde` feature 仅用于 rill-ml 的 FeatureSchema / ModelDescriptor 身份
 # 序列化，不打开任何 Preview 能力。
-rill-runtime-protocol = "1.1"
-rill-ml = { version = "1.1", default-features = false, features = ["serde"] }
+# rill 1.2 采用 release-index schema v3（Linux runtime 增加 target_libc），
+# 但 IPC API 仍为 v2、handler ABI 仍为 v1，Mira 继续使用这些稳定接口。
+rill-runtime-protocol = "1.2"
+rill-ml = { version = "1.2", default-features = false, features = ["serde"] }
 tempfile = "3.14.0"
 thiserror = "2.0.9"
 toml = "1.1"

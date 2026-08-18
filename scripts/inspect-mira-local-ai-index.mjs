@@ -4,7 +4,9 @@ import { resolve } from 'node:path';
 import {
   MIRA_INDEX_PUBLIC_KEY_HEX,
   MIRA_INDEX_PUBLISHER_KEY_ID,
+  MIRA_RUNTIME_TARGETS,
   compareVersions,
+  matchesTarget,
   parseStableVersion,
   verifySignedIndex,
 } from './signed-release-index.mjs';
@@ -20,7 +22,7 @@ verifySignedIndex(
   'Mira local AI index',
 );
 const { payload } = signedIndex;
-if (payload.schemaVersion !== 2 || payload.channel !== 'stable' || !Array.isArray(payload.artifacts)) {
+if (payload.schemaVersion < 2 || payload.schemaVersion > 3 || payload.channel !== 'stable' || !Array.isArray(payload.artifacts)) {
   throw new Error('Mira local AI index does not use the supported stable schema');
 }
 const runtimes = payload.artifacts.filter(
@@ -39,16 +41,11 @@ const versions = new Set(runtimes.map((artifact) => artifact.version));
 if (versions.size !== 1) throw new Error('Mira local AI index mixes runtime versions');
 const [runtimeVersion] = versions;
 parseStableVersion(runtimeVersion, 'Mira runtime version');
-for (const [targetOs, targetArch] of [
-  ['macos', 'aarch64'],
-  ['linux', 'x86_64'],
-  ['windows', 'x86_64'],
-]) {
-  const matches = runtimes.filter(
-    (runtime) => runtime.targetOs === targetOs && runtime.targetArch === targetArch,
-  );
+for (const target of MIRA_RUNTIME_TARGETS) {
+  // schema v3 的 Linux runtime 同时存在 gnu / musl，Mira 只消费 gnu。
+  const matches = runtimes.filter((runtime) => matchesTarget(runtime, target));
   if (matches.length !== 1) {
-    throw new Error(`Mira local AI index must contain one runtime for ${targetOs}-${targetArch}`);
+    throw new Error(`Mira local AI index must contain one runtime for ${target.targetOs}-${target.targetArch}`);
   }
   const [runtime] = matches;
   if (

@@ -500,11 +500,18 @@ jobs:
               --repo "$GITHUB_REPOSITORY" \
               --pattern local-ai-stable-index.json \
               --dir current-local-ai-index
-            RUSTUP_TOOLCHAIN=stable cargo run --release --manifest-path RillML/crates/rill-runtime/Cargo.toml \
-              --bin rill-pack -- verify-index \
-              --index current-local-ai-index/local-ai-stable-index.json \
-              --key-id mira-rill-2026-002 \
-              --public-key-hex ae4633988fd9e02a824bb9072f1dcf470a0b1d74bbc7905aaea00a62139e1479
+            # 首次 v2 → v3 迁移：旧 index 是 schema v2，rill 1.2 的 verify-index 按
+            # v3 严格校验会拒绝它。用 jq 探测 schemaVersion，仅在 v3 时执行
+            # verify-index；v2 迁移场景由 build-local-ai-release-index.mjs 内的
+            # 签名校验守卫（对 v2/v3 同等的 canonical 校验）。
+            if jq -e '.payload.schemaVersion == 3' \
+              current-local-ai-index/local-ai-stable-index.json >/dev/null 2>&1; then
+              RUSTUP_TOOLCHAIN=stable cargo run --release --manifest-path RillML/crates/rill-runtime/Cargo.toml \
+                --bin rill-pack -- verify-index \
+                --index current-local-ai-index/local-ai-stable-index.json \
+                --key-id mira-rill-2026-002 \
+                --public-key-hex ae4633988fd9e02a824bb9072f1dcf470a0b1d74bbc7905aaea00a62139e1479
+            fi
             current_index+=(current-local-ai-index/local-ai-stable-index.json)
           elif ! grep -q 'HTTP 404' current-local-ai-index/release-query.err; then
             cat current-local-ai-index/release-query.err >&2

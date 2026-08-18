@@ -171,10 +171,11 @@ jobs:
         run: |
           set -euo pipefail
           index=artifacts/current/local-ai-stable-index.json
-          runtime_url=$(jq -r '.payload.artifacts[] | select(.kind == "runtime" and .id == "rill-runtime" and .targetOs == "linux" and .targetArch == "x86_64") | .url' "$index")
-          runtime_version=$(jq -r '.payload.artifacts[] | select(.kind == "runtime" and .id == "rill-runtime" and .targetOs == "linux" and .targetArch == "x86_64") | .version' "$index")
-          runtime_sha=$(jq -r '.payload.artifacts[] | select(.kind == "runtime" and .id == "rill-runtime" and .targetOs == "linux" and .targetArch == "x86_64") | .sha256' "$index")
-          runtime_size=$(jq -r '.payload.artifacts[] | select(.kind == "runtime" and .id == "rill-runtime" and .targetOs == "linux" and .targetArch == "x86_64") | .size' "$index")
+          runtime_select='.kind == "runtime" and .id == "rill-runtime" and .targetOs == "linux" and .targetArch == "x86_64" and .targetLibc == "gnu"'
+          runtime_url=$(jq -r '.payload.artifacts[] | select('"$runtime_select"') | .url' "$index")
+          runtime_version=$(jq -r '.payload.artifacts[] | select('"$runtime_select"') | .version' "$index")
+          runtime_sha=$(jq -r '.payload.artifacts[] | select('"$runtime_select"') | .sha256' "$index")
+          runtime_size=$(jq -r '.payload.artifacts[] | select('"$runtime_select"') | .size' "$index")
           model_url=$(jq -r '.payload.artifacts[] | select(.kind == "model" and .id == "mira-battery-model") | .url' "$index")
           model_sha=$(jq -r '.payload.artifacts[] | select(.kind == "model" and .id == "mira-battery-model") | .sha256' "$index")
           model_size=$(jq -r '.payload.artifacts[] | select(.kind == "model" and .id == "mira-battery-model") | .size' "$index")

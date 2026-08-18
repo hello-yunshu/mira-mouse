@@ -40,9 +40,9 @@
 
 | 平台 | 推荐下载 |
 |---|---|
-| macOS（Apple Silicon） | [下载 DMG](https://github.com/hello-yunshu/mira-mouse/releases/latest/download/Mira_macOS_1.2.3_aarch64.dmg) |
-| Windows（x64） | [下载安装程序](https://github.com/hello-yunshu/mira-mouse/releases/latest/download/Mira_Windows_1.2.3_x64-setup.exe) |
-| Linux（x86_64） | [下载 AppImage](https://github.com/hello-yunshu/mira-mouse/releases/latest/download/Mira_Linux_1.2.3_amd64.AppImage) |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/hello-yunshu/mira-mouse/releases/latest/download/Mira_macOS_1.2.4_aarch64.dmg) |
+| Windows（x64） | [下载安装程序](https://github.com/hello-yunshu/mira-mouse/releases/latest/download/Mira_Windows_1.2.4_x64-setup.exe) |
+| Linux（x86_64） | [下载 AppImage](https://github.com/hello-yunshu/mira-mouse/releases/latest/download/Mira_Linux_1.2.4_amd64.AppImage) |
 
 普通用户只需下载上表对应的平台文件。查看版本说明或其他资产，请打开 [最新版发布页](https://github.com/hello-yunshu/mira-mouse/releases/latest)。
 

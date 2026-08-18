@@ -2,19 +2,16 @@
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import {
+  MIRA_RUNTIME_TARGETS,
   RILL_INDEX_PUBLIC_KEY_HEX,
   RILL_INDEX_PUBLISHER_KEY_ID,
+  matchesTarget,
   parseStableVersion,
   verifySignedIndex,
 } from './signed-release-index.mjs';
 
 const RELEASE_BASE = 'https://github.com/hello-yunshu/rill-ml/releases';
 const LATEST_INDEX_URL = `${RELEASE_BASE}/latest/download/stable-index.json`;
-const TARGETS = [
-  ['macos', 'aarch64'],
-  ['linux', 'x86_64'],
-  ['windows', 'x86_64'],
-];
 
 const args = process.argv.slice(2);
 let indexPath;
@@ -44,7 +41,7 @@ verifySignedIndex(
 );
 
 const payload = signedIndex.payload;
-if (payload.schemaVersion !== 2 || payload.channel !== 'stable' || !Array.isArray(payload.artifacts)) {
+if (payload.schemaVersion !== 3 || payload.channel !== 'stable' || !Array.isArray(payload.artifacts)) {
   throw new Error('Rill latest index does not use the supported stable schema');
 }
 const runtimeArtifacts = payload.artifacts.filter(
@@ -58,12 +55,11 @@ if (requestedVersion && version !== requestedVersion) {
   throw new Error('requested Rill version does not match its signed stable index');
 }
 const expectedPrefix = `${RELEASE_BASE}/download/v${version}/`;
-for (const [targetOs, targetArch] of TARGETS) {
-  const matches = runtimeArtifacts.filter(
-    (artifact) => artifact.targetOs === targetOs && artifact.targetArch === targetArch,
-  );
+for (const target of MIRA_RUNTIME_TARGETS) {
+  // schema v3 的 Linux runtime 同时存在 gnu / musl，Mira 只选择 gnu。
+  const matches = runtimeArtifacts.filter((artifact) => matchesTarget(artifact, target));
   if (matches.length !== 1) {
-    throw new Error(`Rill latest index must contain one runtime for ${targetOs}-${targetArch}`);
+    throw new Error(`Rill latest index must contain one runtime for ${target.targetOs}-${target.targetArch}`);
   }
   const [artifact] = matches;
   if (
@@ -73,7 +69,7 @@ for (const [targetOs, targetArch] of TARGETS) {
     !Number.isSafeInteger(artifact.size) ||
     artifact.size <= 0
   ) {
-    throw new Error(`Rill runtime contract is invalid for ${targetOs}-${targetArch}`);
+    throw new Error(`Rill runtime contract is invalid for ${target.targetOs}-${target.targetArch}`);
   }
 }
 
