@@ -910,11 +910,29 @@ body:has(.platform-fallback:not(.web-preview)) {
   background: rgb(127 120 140 / 16%);
 }
 .battery-learning-trigger svg { width: 10px; height: 10px; }
+/* 电量学习说明弹窗：与 edit-modal 等小型玻璃弹窗保持一致的外观，
+   含边框、毛玻璃、圆角、内边距与投影；内部 header/footer/button 同样对齐。 */
+.battery-learning-modal {
+  width: fit-content;
+  max-width: min(380px, calc(100vw - 32px));
+  max-height: 100%;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--floating-glass-border);
+  border-radius: var(--modal-radius-md);
+  padding: var(--modal-padding);
+  background: var(--floating-glass-bg);
+  -webkit-backdrop-filter: var(--floating-glass-blur);
+  backdrop-filter: var(--floating-glass-blur);
+  box-shadow: var(--floating-glass-shadow);
+}
 .battery-learning-modal > section {
   display: grid;
   gap: 14px;
 }
-.battery-learning-modal header h3 { margin: 0; }
+.battery-learning-modal header { margin-bottom: 9px; padding: 0 2px; }
+.battery-learning-modal header h3 { margin: 0; font-size: 13px; font-weight: 680; letter-spacing: -.01em; }
 .battery-learning-modal p {
   margin: 0;
   color: var(--muted);
@@ -924,6 +942,25 @@ body:has(.platform-fallback:not(.web-preview)) {
 .battery-learning-modal footer {
   display: flex;
   justify-content: flex-end;
+  gap: 6px;
+  margin-top: 10px;
+}
+.battery-learning-modal footer button {
+  min-width: 62px;
+  padding: 6px 13px;
+  font-size: 11px;
+  color: #fff;
+  border: 0;
+  border-radius: 8px;
+  background: linear-gradient(115deg, color-mix(in oklch, var(--accent), #8fa8e4 36%), color-mix(in oklch, var(--accent), #d67fb2 28%));
+  box-shadow: 0 6px 18px color-mix(in oklch, var(--accent), transparent 72%);
+  transition: opacity var(--motion-base) ease, filter var(--motion-base) ease;
+}
+.battery-learning-modal footer button:hover {
+  filter: brightness(1.05);
+}
+.battery-learning-modal footer button:active {
+  filter: brightness(.95);
 }
 .battery-device.low .battery-level-icon,
 .battery-device.charging .battery-level-icon { color: var(--muted); }
@@ -2957,10 +2994,6 @@ h2 { margin: 2px 0 0; letter-spacing: -.02em; font-size: 16px; }
 .runtime-skeleton-short { width: 62%; }
 .runtime-skeleton-title { width: 42%; height: 18px; margin: 8px auto 2px; }
 .runtime-skeleton-inline { width: 72px; height: 11px; margin-top: 5px; }
-.deferred-battery-loading {
-  min-height: 520px;
-  padding: 0 2px 24px;
-}
 .settings-scroll-content { position: relative; }
 .settings-scroll-content.is-runtime-pending > :is(.card, section) {
   position: relative;
@@ -3043,53 +3076,6 @@ h2 { margin: 2px 0 0; letter-spacing: -.02em; font-size: 16px; }
 .runtime-log-time,
 .runtime-log-level,
 .runtime-log-message { height: 10px; }
-.runtime-battery-frame {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-.runtime-battery-status {
-  min-height: 72px;
-  display: grid;
-  grid-template-columns: 38px 1fr;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 16px;
-  box-sizing: border-box;
-}
-.runtime-battery-icon { width: 32px; height: 32px; border-radius: 10px; }
-.runtime-battery-summary {
-  min-height: 90px;
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 8px;
-}
-.runtime-battery-summary .battery-summary-item {
-  display: grid;
-  align-content: center;
-  gap: 10px;
-}
-.runtime-battery-chart { height: 228px; box-sizing: border-box; }
-.runtime-battery-chart > .runtime-skeleton { margin-bottom: 18px; }
-.runtime-battery-plot {
-  height: 160px;
-  display: flex;
-  align-items: end;
-  justify-content: space-around;
-  gap: 7px;
-  border-bottom: 1px solid var(--surface-group-border);
-}
-.runtime-battery-plot span {
-  width: 9%;
-  height: var(--runtime-bar-height, 58%);
-  border-radius: 7px 7px 2px 2px;
-  background: color-mix(in oklch, var(--muted), transparent 83%);
-}
-.runtime-battery-plot span:nth-child(2n) { height: 76%; }
-.runtime-battery-plot span:nth-child(3n) { height: 42%; }
-.runtime-battery-insights { min-height: 142px; }
-.runtime-battery-insights > .runtime-skeleton { margin-bottom: 12px; }
-.runtime-battery-insights .battery-insight-card { min-height: 76px; }
 .about-loading-content { min-height: 100%; }
 
 @keyframes runtime-skeleton-shimmer {
@@ -5547,7 +5533,8 @@ input[type="color"] {
 .device-details,
 .edit-modal,
 .advanced-settings-modal,
-.battery-usage-modal {
+.battery-usage-modal,
+.battery-learning-modal {
   animation: mira-modal-enter var(--motion-slow) var(--motion-ease-out) backwards;
   transform-origin: 50% 42%;
 }
@@ -5685,6 +5672,7 @@ input[type="color"] {
   .edit-modal,
   .advanced-settings-modal,
   .battery-usage-modal,
+  .battery-learning-modal,
   .app-notification,
   .battery-chart-card,
   .battery-status-strip,

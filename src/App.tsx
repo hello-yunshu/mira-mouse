@@ -31,6 +31,7 @@ import i18n, { applyLanguage, loadPluginLocales, resolveLabelKey } from './i18n'
 import type { SettingsTab } from './Settings';
 import { AboutPageSkeleton, LogPageSkeleton, SettingsPageSkeleton } from './RuntimePageSkeleton';
 import type { BatteryUsageConnectedTarget } from './BatteryUsage';
+import { BatteryUsageModal } from './BatteryUsage';
 import { BatteryLevelIcon } from './BatteryLevelIcon';
 import type { BatteryChargingEstimate, DeviceSnapshot, DeviceSnapshotEntry, DeviceState, DpiStage, PluginCapability, PluginCapabilityPlacement, PluginChargingEstimatePolicy, PluginField, PluginFieldFormat, PluginSummaryItem, PluginZone, RangeSpec, ReadStatus, ThemeMode } from './types';
 import { DetailValue } from './DetailValue';
@@ -117,7 +118,6 @@ import './styles.css';
 const SettingsPage = lazy(() => import('./Settings').then((module) => ({ default: module.SettingsPage })));
 const AboutPage = lazy(() => import('./About').then((module) => ({ default: module.AboutPage })));
 const LogPage = lazy(() => import('./logs/LogPage').then((module) => ({ default: module.LogPage })));
-const BatteryUsageModal = lazy(() => import('./BatteryUsage').then((module) => ({ default: module.BatteryUsageModal })));
 
 type View = 'dashboard' | 'settings' | 'about' | 'logs';
 type TitledView = Exclude<View, 'dashboard'>;
@@ -3319,6 +3319,16 @@ function Dashboard({
     : '';
   const visiblePreviewMessage = previewMessage || forcedPreviewMessage;
 
+  // 演示预览：`?preview=battery-learning` 强制弹出「接收器电量学习中」弹窗，
+  // 与 `?preview=writing` 的预览机制一致，便于在 Web 预览样式（该状态下
+  // mock 数据不含 chargingEstimate，正常入口按钮不会渲染）。
+  useEffect(() => {
+    if (!demoMode) return;
+    if (new URLSearchParams(window.location.search).get('preview') !== 'battery-learning') return;
+    const frame = requestAnimationFrame(() => setShowBatteryLearningInfo(true));
+    return () => cancelAnimationFrame(frame);
+  }, [demoMode]);
+
   const chargingEstimatePolicy = useMemo<PluginChargingEstimatePolicy | undefined>(() => {
     const policy = device.pluginCapabilities
       .find((capability) => capability.id === 'battery' && capability.available !== false)
@@ -4348,62 +4358,6 @@ function DeferredPageFallback({ view, onBack, settingsTab }: { view: View; onBac
   return <LogPageSkeleton onBack={onBack} />;
 }
 
-function DeferredBatteryUsageFallback({ onClose }: { onClose: () => void }) {
-  const { t } = useTranslation();
-  return (
-    <Modal
-      open
-      title={t('batteryUsage.title')}
-      size="large"
-      className="battery-usage-modal"
-      backdropClassName="battery-usage-modal-overlay"
-      onClose={onClose}
-    >
-      <div className="battery-usage-modal-layout">
-        <div className="battery-usage-header">
-          <div className="battery-usage-title-wrap"><h2>{t('batteryUsage.title')}</h2></div>
-          <button className="battery-usage-close-icon" onClick={onClose} aria-label={t('batteryUsage.close')}>
-            <X weight="regular" />
-          </button>
-        </div>
-        <div className="battery-usage-scroll-region deferred-battery-loading" aria-busy="true">
-          <div className="runtime-battery-frame" aria-hidden="true">
-            <section className="battery-status-strip runtime-battery-status">
-              <span className="runtime-skeleton runtime-battery-icon" />
-              <div className="runtime-skeleton-lines">
-                <span className="runtime-skeleton runtime-skeleton-short" />
-                <span className="runtime-skeleton" />
-              </div>
-            </section>
-            <section className="battery-summary runtime-battery-summary">
-              {Array.from({ length: 3 }, (_, index) => (
-                <div className="battery-summary-item" key={index}>
-                  <span className="runtime-skeleton runtime-skeleton-short" />
-                  <span className="runtime-skeleton" />
-                </div>
-              ))}
-            </section>
-            <section className="battery-chart-card runtime-battery-chart">
-              <span className="runtime-skeleton runtime-skeleton-short" />
-              <div className="runtime-battery-plot">
-                {Array.from({ length: 8 }, (_, index) => <span key={index} />)}
-              </div>
-            </section>
-            <section className="battery-insight-section runtime-battery-insights">
-              <span className="runtime-skeleton runtime-skeleton-short" />
-              <div className="battery-insight-cards">
-                <div className="battery-insight-card"><div className="runtime-skeleton-lines"><span className="runtime-skeleton" /><span className="runtime-skeleton runtime-skeleton-short" /></div></div>
-                <div className="battery-insight-card"><div className="runtime-skeleton-lines"><span className="runtime-skeleton" /><span className="runtime-skeleton runtime-skeleton-short" /></div></div>
-              </div>
-            </section>
-          </div>
-          <span className="visually-hidden" role="status">{t('about.loading')}</span>
-        </div>
-      </div>
-    </Modal>
-  );
-}
-
 export default function App() {
   const { t } = useTranslation();
   const pureWeb = isPureWebPreview();
@@ -4959,7 +4913,6 @@ export default function App() {
       </div>
     </div>
     {showBatteryUsage && (
-      <Suspense fallback={<DeferredBatteryUsageFallback onClose={() => setShowBatteryUsage(false)} />}>
         <BatteryUsageModal
           key={batteryUsageSession}
           open
@@ -4972,7 +4925,6 @@ export default function App() {
           preferredComponentId={selectedBatteryUsageTarget?.componentId}
           demoMode={demoMode}
         />
-      </Suspense>
     )}
     {appNotification && (
       <OverlayPortal>
