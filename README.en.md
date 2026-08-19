@@ -246,7 +246,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full contribution guide.
 | [Plugin security](docs/plugin-security.md) | Signing, trust roots, permission boundary |
 | [Plugin testing](docs/plugin-testing.md) | Fixture evidence and testing conventions |
 | [Threat model](docs/threat-model.md) | Assets, untrusted inputs, and controls |
-| [Local AI Runtime](docs/local-ai-analysis-plan.md) | Rill runtime, model, and WASM handler boundaries and release chain |
+| [Local AI Runtime](docs/local-ai-analysis-plan.md) | RillML (Rill) runtime, model, and WASM handler boundaries and release chain |
 | [macOS install](docs/install-macos.md) | DMG and Gatekeeper notes |
 | [Homebrew install](docs/install-homebrew.md) | Tap variables and upgrade flow |
 | [Linux permissions](docs/linux-permissions.md) | udev rules and hot-plug |

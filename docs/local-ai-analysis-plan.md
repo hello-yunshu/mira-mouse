@@ -26,7 +26,7 @@
 - [x] `rill-ml` 仅链接进 Mira handler 的 WASM component；Mira 主应用只依赖协议 crate，Rill runtime 保持业务无关。
 - [x] 模型/索引与 handler 使用相互独立的 Ed25519 信任根；Rill 通用仓库不持有任何 Mira 私钥。
 - [x] RillML 发布带签名 `stable-index.json` 的稳定 release；CI 每次构建只解析一次最新稳定版本并从 rill-ml releases 下载预编译 runtime，避免多平台构建期间版本漂移。
-- [x] `Sync Latest Rill Runtime` 每 6 小时检查最新 Rill 稳定索引，只有在签名、版本、Runtime API、当前模型/handler 兼容性和 macOS ARM64/Linux/Windows 真实握手全部通过后，才复签并移动 Mira 的 `local-ai-stable` 指针。
+- [x] `Sync Latest RillML Runtime` 每 6 小时检查最新 Rill 稳定索引，只有在签名、版本、Runtime API、当前模型/handler 兼容性和 macOS ARM64/Linux/Windows 真实握手全部通过后，才复签并移动 Mira 的 `local-ai-stable` 指针。
 - [x] handler 可通过 `Publish Local AI Handler` workflow 单独构建、签名和发布；不重建 Mira App、模型或 Rill runtime。客户端从专用的 `local-ai-stable` 预发布读取签名索引，避免 handler 更新占用 GitHub 的 App `latest` 指针。
 - [ ] 用真实设备的长期历史校准模型参数与质量门槛。
 
@@ -54,7 +54,7 @@ cargo tauri dev
 
 ## 独立发布 Mira handler
 
-首次启用新链路时，运行一次 `Sync Latest Rill Runtime`（或完成一次正常 App release）；workflow 会从最新 App release 的已签名索引安全引导并创建固定的 `local-ai-stable` 预发布。后续只改 Mira 预测逻辑时：
+首次启用新链路时，运行一次 `Sync Latest RillML Runtime`（或完成一次正常 App release）；workflow 会从最新 App release 的已签名索引安全引导并创建固定的 `local-ai-stable` 预发布。后续只改 Mira 预测逻辑时：
 
 1. 同步提高 `handlers/mira-battery-handler/Cargo.toml` 与 `manifest.template.json` 的版本；App 版本同步脚本不会改动这两个独立版本源，也不修改或重编译 Rill runtime。
 2. 手动运行 `Publish Local AI Handler`，输入一个严格递增的稳定 semver。
