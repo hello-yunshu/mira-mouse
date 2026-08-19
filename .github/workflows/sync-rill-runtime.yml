@@ -1,4 +1,4 @@
-name: Sync Latest Rill Runtime
+name: Sync Latest RillML Runtime
 
 on:
   schedule:
@@ -84,7 +84,7 @@ jobs:
       - name: Job summary
         run: |
           {
-            echo "## Rill Runtime sync plan"
+            echo "## RillML Runtime sync plan"
             echo ""
             echo "- Current: ${{ steps.plan.outputs.current-version }}"
             echo "- Latest signed stable: ${{ steps.plan.outputs.latest-version }}"
@@ -285,7 +285,7 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
             --prerelease \
-            --title "Mira adopts Rill Runtime $VERSION" \
+            --title "Mira adopts RillML Runtime $VERSION" \
             --notes "Verified cross-platform adoption of the signed Rill $VERSION Runtime release. Runtime binaries remain hosted by rill-ml."
 
       - name: Move dedicated stable pointer
@@ -310,7 +310,7 @@ jobs:
       - name: Job summary
         run: |
           {
-            echo "## Rill Runtime sync"
+            echo "## RillML Runtime sync"
             echo ""
             echo "- Runtime: ${{ needs.prepare.outputs.latest-version }}"
             echo "- Updated: ${{ needs.prepare.outputs.update-available }}"
