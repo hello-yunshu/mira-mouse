@@ -221,7 +221,7 @@ git clone https://github.com/hello-yunshu/mira-mouse.git
 cd mira-mouse
 npm install
 npm run dev              # frontend preview (Vite)
-npm run sidecar:build    # build the host mira-runtime sidecar before first desktop run
+npm run sidecar:build    # verify the latest signed RillML (Rill) stable index and download the rill-runtime sidecar for the current platform
 npm exec tauri dev       # desktop preview (full Tauri runtime)
 ```
 
