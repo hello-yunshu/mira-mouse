@@ -38,7 +38,7 @@ function SkeletonCard({
 export function AboutPageSkeleton({ onBack, showLogo = true }: { onBack: () => void; showLogo?: boolean }) {
   const { t } = useTranslation();
   return (
-    <main className="about-page">
+    <main className="about-page runtime-about-frame">
       <header>
         <div>
           <p className="eyebrow">{t('about.eyebrow')}</p>

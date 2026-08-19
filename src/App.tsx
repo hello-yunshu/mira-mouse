@@ -4933,14 +4933,20 @@ export default function App() {
       data-page-view={view}
       data-page-transition={pageTransitionKind ?? undefined}
     >
-      {titledView && pageTitle && (
-        // 设置 / 关于 / 日志共用固定眉题与标题槽，不参与 current / leaving
-        // 页面层的整层交叉淡化；标题自身原地交叉，并由轮廓过渡到实心。
-        <div className="page-persistent-copy">
-          <p className="eyebrow page-persistent-eyebrow">{t('about.eyebrow')}</p>
-          <PersistentPageTitle view={titledView} title={pageTitle} />
-        </div>
-      )}
+      {/*
+        设置 / 关于 / 日志共用固定眉题与标题槽，不参与 current / leaving
+        页面层的整层交叉淡化；标题自身原地交叉，并由轮廓过渡到实心。
+        始终渲染并给稳定 key，避免条件挂载导致 .page-layer-current 兄弟重排、
+        被卸载重建而重启入场动画（首进设置页闪烁）。
+      */}
+      <div key="persistent-copy" className={`page-persistent-copy${titledView && pageTitle ? '' : ' is-hidden'}`}>
+        {titledView && pageTitle && (
+          <>
+            <p className="eyebrow page-persistent-eyebrow">{t('about.eyebrow')}</p>
+            <PersistentPageTitle view={titledView} title={pageTitle} />
+          </>
+        )}
+      </div>
       {leavingView && (
         // leaving 层渲染旧页的静态快照（非活组件），退场期间冻结内容，
         // 避免 SettingsPage 等内部 IPC/effect 持续重渲染导致动画被重置。
