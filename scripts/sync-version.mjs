@@ -7,18 +7,24 @@
 //   2. ROADMAP.md（文档中的「当前版本」标注）
 //   3. mira-local-ai 对 mira-protocol 的显式 path 依赖版本
 //   4. handlers/mira-battery-handler/Cargo.lock（独立 workspace 的 path 依赖锁）
-//   5. README.md / README.en.md（最新版三平台直链）
+//   5. 根 Cargo.lock（workspace 成员自身的版本条目）
+//   6. README.md / README.en.md（最新版三平台直链）
 //
 // Mira 本地 AI handler 与模型有独立发布周期，不能在 App 版本同步时改动
 // handler 自身的版本号；但 handler 通过 path 依赖 workspace crate，升 workspace
 // 版本后必须同步 handler 的 Cargo.lock，否则 CI 的 xtask handler check-lock 会
 // 失败。本脚本在 handler 目录跑 `cargo update -p <path deps>` 自动同步。
 //
+// 同理，根 Cargo.lock 里 8 个 workspace 成员的版本条目也跟随 workspace.package
+// 版本。纯 UI 改动不触发 cargo 构建时，根 Cargo.lock 会残留旧版本，导致 CI 的
+// `cargo run --locked --package xtask -- handler check-lock` 在编译 xtask 阶段
+// 被 --locked 拦截。本脚本在仓库根目录跑 `cargo update -p <members>` 自动同步。
+//
 // 用法：
 //   node scripts/sync-version.mjs          本地普通模式：写入并同步
 //   node scripts/sync-version.mjs --check  CI 检查模式：只校验不写入，不同步则退出码 1
 // 普通模式若所有文件已是最新则不做任何写入，退出码 0。
-// 检查模式（CI 专用）绝不修改任何文件（含 handler Cargo.lock），版本或锁不同步
+// 检查模式（CI 专用）绝不修改任何文件（含 handler 与根 Cargo.lock），版本或锁不同步
 // 时直接失败，提示开发者先在本地 `node scripts/sync-version.mjs` 更新后提交。
 
 import { readFile, writeFile } from 'node:fs/promises';
@@ -26,6 +32,21 @@ import { existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 
 const semver = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
+
+/**
+ * 根 Cargo.lock 中跟随 [workspace.package].version 的 workspace 成员。
+ * mira-plugin-cli 与 handlers/mira-battery-handler 有独立版本，不在其列。
+ */
+const WORKSPACE_LOCK_MEMBERS = [
+  'mira-app',
+  'mira-core',
+  'mira-local-ai',
+  'mira-plugin-api',
+  'mira-plugin-runtime',
+  'mira-protocol',
+  'mira-testkit',
+  'xtask',
+];
 
 async function readAppVersion() {
   const cargoToml = await readFile('Cargo.toml', 'utf8');
@@ -122,7 +143,12 @@ async function syncHandlerLock(version) {
   const result = spawnSync(
     'cargo',
     ['update', '-p', 'mira-local-ai', '-p', 'mira-protocol'],
-    { cwd: handlerDir, encoding: 'utf8' },
+    {
+      cwd: handlerDir,
+      encoding: 'utf8',
+      // 禁用 cargo 的 ANSI 颜色输出，否则 "Updating …" 检测与日志会带转义码。
+      env: { ...process.env, CARGO_TERM_COLOR: 'never' },
+    },
   );
   if (result.status !== 0) {
     throw new Error(
@@ -130,8 +156,9 @@ async function syncHandlerLock(version) {
     );
   }
   const output = (result.stdout + result.stderr).trim();
-  // cargo update 输出 "Updating <pkg> v<x> -> v<y>" 表示发生了版本变化。
-  const changed = /Updating\s+\S+\s+v\d+\.\d+\.\d+\s+->\s+v\d/.test(output);
+  // cargo update 输出 "Updating <pkg> v<x> (/path) -> v<y>" 表示发生了版本变化，
+  // 中间路径为可选部分，用非贪婪 .*? 覆盖。
+  const changed = /Updating\s+\S+\s+v\d+\.\d+\.\d+.*?->\s+v\d/.test(output);
   if (changed) {
     console.log(`  handler lock: ${handlerDir}  →  ${version}`);
     if (output) {
@@ -141,6 +168,78 @@ async function syncHandlerLock(version) {
     }
   } else {
     console.log(`  handler lock: ${handlerDir}  (already ${version})`);
+  }
+  return changed;
+}
+
+/**
+ * 检查模式下校验根 Cargo.lock 中各 workspace 成员的版本条目是否等于当前
+ * workspace 版本。绝不运行 `cargo update`，避免 CI 修改锁文件。
+ */
+async function checkWorkspaceLock(version) {
+  const lockPath = 'Cargo.lock';
+  if (!existsSync(lockPath)) {
+    console.log(`  workspace lock: ${lockPath} not found, skipped`);
+    return false;
+  }
+  const text = await readFile(lockPath, 'utf8');
+  let out = false;
+  for (const name of WORKSPACE_LOCK_MEMBERS) {
+    const m = text.match(new RegExp(`name = "${name}"\\r?\\nversion = "([^"]+)"`));
+    if (!m) {
+      console.error(`  workspace lock: ${name} missing from Cargo.lock`);
+      out = true;
+    } else if (m[1] !== version) {
+      console.error(`  workspace lock: ${name} pinned ${m[1]}, workspace is ${version}`);
+      out = true;
+    } else {
+      console.log(`  workspace lock: ${name} ${m[1]}  (already ${version})`);
+    }
+  }
+  return out;
+}
+
+/**
+ * 在仓库根目录跑 `cargo update -p <workspace 成员>`，把根 Cargo.lock 中各成员
+ * 自身的版本条目同步到当前 workspace 版本。纯 UI 改动不触发 cargo 构建时，
+ * 根 Cargo.lock 会残留上次版本的成员版本，导致 CI 的 `cargo run --locked` 在
+ * 编译阶段被拦截。只更新这 8 个成员，不执行无约束的 `cargo update`，避免依赖
+ * 漂移破坏可复现性。cargo 不可用时跳过（不阻塞纯文档同步场景）。
+ */
+async function syncWorkspaceLock(version) {
+  if (!existsSync('Cargo.lock')) {
+    console.log(`  workspace lock: Cargo.lock not found, skipped`);
+    return false;
+  }
+
+  const cargoCheck = spawnSync('cargo', ['--version'], { encoding: 'utf8' });
+  if (cargoCheck.status !== 0) {
+    console.log(`  workspace lock: cargo not on PATH, skipped`);
+    return false;
+  }
+
+  const args = ['update', ...WORKSPACE_LOCK_MEMBERS.flatMap((name) => ['-p', name])];
+  const result = spawnSync('cargo', args, {
+    encoding: 'utf8',
+    // 禁用 cargo 的 ANSI 颜色输出，否则 "Updating …" 检测与日志会带转义码。
+    env: { ...process.env, CARGO_TERM_COLOR: 'never' },
+  });
+  if (result.status !== 0) {
+    throw new Error(
+      `workspace lock: cargo update failed:\n${(result.stderr || '').trim()}`,
+    );
+  }
+  const output = (result.stdout + result.stderr).trim();
+  const changed = /Updating\s+\S+\s+v\d+\.\d+\.\d+.*?->\s+v\d/.test(output);
+  if (changed) {
+    console.log(`  workspace lock: Cargo.lock  →  ${version}`);
+    if (output) {
+      for (const line of output.split('\n')) {
+        console.log(`    ${line}`);
+      }
+    }
+  } else {
+    console.log(`  workspace lock: Cargo.lock  (already ${version})`);
   }
   return changed;
 }
@@ -190,7 +289,14 @@ if (checkMode) {
   changed |= await syncHandlerLock(version);
 }
 
-// 5. README 直链 —— `releases/latest` 保持标签动态，文件名中的版本号仍需
+// 5. 根 Cargo.lock —— 普通模式同步 workspace 成员版本条目；检查模式只校验
+if (checkMode) {
+  changed |= await checkWorkspaceLock(version);
+} else {
+  changed |= await syncWorkspaceLock(version);
+}
+
+// 6. README 直链 —— `releases/latest` 保持标签动态，文件名中的版本号仍需
 // 与构建产物一致。中英文各同步三种平台资产。
 for (const path of ['README.md', 'README.en.md']) {
   for (const [label, prefix, suffix] of [
@@ -211,7 +317,7 @@ for (const path of ['README.md', 'README.en.md']) {
 if (checkMode) {
   if (changed) {
     console.error(
-      '\nsync check FAILED: version or handler lock is out of sync.\n' +
+      '\nsync check FAILED: version, handler lock, or workspace lock is out of sync.\n' +
         'Run `node scripts/sync-version.mjs` locally, review the diff, and commit.',
     );
     process.exit(1);
