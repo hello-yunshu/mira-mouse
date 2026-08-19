@@ -20,17 +20,14 @@ describe('donate aura static rounded clipping', () => {
     expect(aura).toMatch(/clip-path:\s*inset\(0 round 15px\)/);
 
     const cloud = rule('.donate-aura::before');
-    // 云团保持静态：blur + mask 双保险防截断线，绝无动画。
+    // 云团保持静态：blur + clip-path 双保险防截断线，绝无动画。
     expect(cloud).not.toMatch(/animation\s*:/);
     expect(cloud).toMatch(/radial-gradient/);
-    expect(cloud).toMatch(/filter:\s*blur\(22px\)/);
-    expect(cloud).toMatch(/mask-image:\s*linear-gradient\(to right, transparent, #fff 14%\)/);
-    expect(cloud).toMatch(/top:\s*-45%/);
-    expect(cloud).toMatch(/right:\s*-18%/);
-    expect(cloud).toMatch(/width:\s*72%/);
-    expect(cloud).toMatch(/height:\s*190%/);
-    // 蓝色先验峰压右下角、绿色向左下弥散：右下 → 左下对角线。
-    expect(cloud).toMatch(/circle at 61% 62%/);
-    expect(cloud).toMatch(/circle at 20% 80%/);
+    expect(cloud).toMatch(/filter:\s*blur\(20px\)/);
+    expect(cloud).toMatch(/inset:\s*-8% -6%/);
+    expect(cloud).toMatch(/z-index:\s*0/);
+    // 蓝核压右上、绿核走中偏右下：右上一左下斜向三色分区。
+    expect(cloud).toMatch(/circle at 90% 58%/);
+    expect(cloud).toMatch(/circle at 58% 80%/);
   });
 });
