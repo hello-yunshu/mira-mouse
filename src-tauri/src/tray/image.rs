@@ -1634,7 +1634,7 @@ mod tests {
         let style = make_style();
         let bytes = render_battery_digit_rgba(&make_state(None, false), &style);
         assert!(
-            bytes.chunks_exact(4).any(|c| c[3] > 0),
+            bytes.as_chunks::<4>().0.iter().any(|c| c[3] > 0),
             "unknown battery dashes should have visible pixels"
         );
     }
