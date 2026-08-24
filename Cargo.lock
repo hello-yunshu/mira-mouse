@@ -3617,9 +3617,9 @@ dependencies = [
 
 [[package]]
 name = "rill-ml"
-version = "1.5.0"
+version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7476cf85b6c1bf211fd6298cd1dc5344ef3bf6df6811f9a91c69280bac83d6b1"
+checksum = "f65094e64dca67001497a58a1d9b02d634df9e9b17f47cca6a7cb77b4fad884f"
 dependencies = [
  "serde",
  "serde_json",
@@ -3629,9 +3629,9 @@ dependencies = [
 
 [[package]]
 name = "rill-runtime-protocol"
-version = "1.5.0"
+version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "59a60218fe920798f3b378e6800fa8fede748dcffd94475ddc4e1adcf9b7ca6a"
+checksum = "3143607663e4e69ed2503e5a88f287f54ab5ee076185b61f77c62aa8b10d2242"
 dependencies = [
  "serde",
  "serde_json",
