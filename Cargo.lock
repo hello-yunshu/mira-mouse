@@ -2460,7 +2460,7 @@ dependencies = [
 
 [[package]]
 name = "mira-app"
-version = "1.2.6"
+version = "1.2.7"
 dependencies = [
  "auto-launch",
  "chrono",
@@ -2503,7 +2503,7 @@ dependencies = [
 
 [[package]]
 name = "mira-core"
-version = "1.2.6"
+version = "1.2.7"
 dependencies = [
  "serde",
  "serde_json",
@@ -2512,7 +2512,7 @@ dependencies = [
 
 [[package]]
 name = "mira-local-ai"
-version = "1.2.6"
+version = "1.2.7"
 dependencies = [
  "chrono",
  "mira-protocol",
@@ -2525,7 +2525,7 @@ dependencies = [
 
 [[package]]
 name = "mira-plugin-api"
-version = "1.2.6"
+version = "1.2.7"
 dependencies = [
  "semver",
  "serde",
@@ -2555,7 +2555,7 @@ dependencies = [
 
 [[package]]
 name = "mira-plugin-runtime"
-version = "1.2.6"
+version = "1.2.7"
 dependencies = [
  "ed25519-dalek",
  "hex",
@@ -2573,7 +2573,7 @@ dependencies = [
 
 [[package]]
 name = "mira-protocol"
-version = "1.2.6"
+version = "1.2.7"
 dependencies = [
  "serde",
  "serde_json",
@@ -2581,7 +2581,7 @@ dependencies = [
 
 [[package]]
 name = "mira-testkit"
-version = "1.2.6"
+version = "1.2.7"
 dependencies = [
  "mira-plugin-runtime",
 ]
@@ -3617,9 +3617,9 @@ dependencies = [
 
 [[package]]
 name = "rill-ml"
-version = "1.2.0"
+version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b2ce22ec4556bade8deb6e8cc2f7f934d191c39886e1f3e0fce6df0b3a09ef68"
+checksum = "f65094e64dca67001497a58a1d9b02d634df9e9b17f47cca6a7cb77b4fad884f"
 dependencies = [
  "serde",
  "serde_json",
@@ -3629,9 +3629,9 @@ dependencies = [
 
 [[package]]
 name = "rill-runtime-protocol"
-version = "1.2.0"
+version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09bd733bd20c6d3c94d90ffb7efd123f7e28a3a61dee39f8bfc57676bbff5aa5"
+checksum = "3143607663e4e69ed2503e5a88f287f54ab5ee076185b61f77c62aa8b10d2242"
 dependencies = [
  "serde",
  "serde_json",
@@ -6176,7 +6176,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "1.2.6"
+version = "1.2.7"
 dependencies = [
  "anyhow",
  "clap",

@@ -8,28 +8,37 @@
 //   host  rill-runtime-protocol major.minor
 //        = handler rill-ml major.minor
 //        = rill runtime release major.minor（当提供 --runtime-version 时）
-// 同时允许（rill 1.1.0 保持这些稳定接口兼容）：
+// Stable contract remains:
 //   runtime IPC API = 2
 //   handler ABI    = 1
 //
 // 用法：
 //   node scripts/check-rill-compatibility.mjs
-//   node scripts/check-rill-compatibility.mjs --runtime-version 1.1.0
+//   node scripts/check-rill-compatibility.mjs --expected-rill-version 1.5.1
+//   node scripts/check-rill-compatibility.mjs --expected-rill-version 1.5.1 --runtime-version 1.5.1
 // 任一不一致时退出码非 0。
 
 import { readFile } from 'node:fs/promises';
 
 const args = process.argv.slice(2);
 let runtimeVersion;
+let expectedRillVersion;
 for (let index = 0; index < args.length; index += 1) {
   if (args[index] === '--runtime-version') runtimeVersion = args[++index];
+  else if (args[index] === '--expected-rill-version') expectedRillVersion = args[++index];
   else throw new Error(`unknown argument: ${args[index]}`);
 }
 
 function majorMinor(version) {
-  const match = /^(\d+)\.(\d+)\.\d+/.exec(version);
+  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
   if (!match) throw new Error(`invalid semver: ${version}`);
   return `${match[1]}.${match[2]}`;
+}
+
+function stableVersion(version, label) {
+  majorMinor(version);
+  if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error(`invalid ${label}: ${version}`);
+  return version;
 }
 
 function packageVersion(lockText, packageName) {
@@ -61,6 +70,8 @@ const modelManifest = JSON.parse(
 const handlerManifest = JSON.parse(
   await readFile('handlers/mira-battery-handler/manifest.template.json', 'utf8'),
 );
+if (expectedRillVersion) stableVersion(expectedRillVersion, 'expected Rill version');
+if (runtimeVersion) stableVersion(runtimeVersion, 'runtime version');
 
 const failures = [];
 
@@ -78,6 +89,12 @@ if (runtimeVersion) {
     majorMinor(runtimeVersion),
     majorMinor(rootProtocol),
   );
+}
+if (expectedRillVersion) {
+  requireEqual('host rill-ml exact version', rootRillMl, expectedRillVersion);
+  requireEqual('host rill-runtime-protocol exact version', rootProtocol, expectedRillVersion);
+  requireEqual('handler rill-ml exact version', handlerRillMl, expectedRillVersion);
+  if (runtimeVersion) requireEqual('rill runtime exact version', runtimeVersion, expectedRillVersion);
 }
 if (modelManifest.runtimeApiVersion !== 2) {
   failures.push(
@@ -98,6 +115,7 @@ const summary = {
   rillMl: rootRillMl,
   rillRuntimeProtocol: rootProtocol,
   handlerRillMl,
+  expectedRillVersion: expectedRillVersion ?? 'not-pinned',
   runtimeRelease: runtimeVersion ?? 'resolved-at-CI-time',
   runtimeApiVersion: modelManifest.runtimeApiVersion,
   handlerApiVersion: handlerManifest.handlerApiVersion,
