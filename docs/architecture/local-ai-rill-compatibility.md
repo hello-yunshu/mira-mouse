@@ -1,10 +1,9 @@
-# Mira Local AI × rill-ml 1.1.0 兼容性架构文档
+# Mira Local AI × Rill 1.5 Stable 兼容性架构文档
 
 > 状态：已实现（阶段 0–6）
-> 分支：`work/rill-ml-1.1-integration`
-> 对应实施提示词：`Mira_RillML_1.1.0_Detailed_Implementation_Prompt.md`
+本文档说明 Mira 当前如何**可复现、可回退、可审计**地消费 Rill 1.5 Stable，以及各实验能力所处的路径与开关。
 
-本文档说明 Mira 如何**可复现、可回退、可审计**地吸收 rill-ml 1.1.0 的稳定能力，以及各实验能力所处的路径与开关。
+当前生产契约：签名 Stable release、release-index schema v3、Runtime API 2、Handler API 1；Preview IPC v3 不进入生产。当前 Local AI 发布目标为 macOS ARM64。
 
 ---
 
@@ -15,18 +14,18 @@
 依赖声明不做永久精确锁死，允许后续兼容升级：
 
 ```toml
-rill-ml = { version = "1.1", default-features = false }
-rill-runtime-protocol = "1.1"
+rill-ml = { version = "1.5", default-features = false }
+rill-runtime-protocol = "1.5"
 ```
 
-实际可复现版本由**已提交的锁文件**保证，而不是 `cargo update` 或 `=1.1.0`。
+实际可复现版本由**已提交的锁文件**保证；当前 committed lock 为 `1.5.1`，而不是永久 `=1.5.1` pin。
 
 ### 1.2 锁文件
 
 | 位置 | 作用 |
 |---|---|
-| 根 `Cargo.lock` | workspace（含 `mira-local-ai`）解析到 `rill-ml 1.1.0` |
-| `handlers/mira-battery-handler/Cargo.lock` | 独立 workspace 的 handler 解析到 `rill-ml 1.1.0` |
+| 根 `Cargo.lock` | workspace（含 `mira-local-ai`）解析到 `rill-ml 1.5.1` |
+| `handlers/mira-battery-handler/Cargo.lock` | 独立 workspace 的 handler 解析到 `rill-ml 1.5.1` |
 
 ### 1.3 CI 可复现
 
@@ -50,7 +49,7 @@ host rill-runtime-protocol major.minor == runtime release major.minor
 handler rill-ml major.minor          == runtime release major.minor
 ```
 
-同时允许（rill 1.1.0 保持稳定接口兼容）：
+当前 Stable 接口契约：
 
 ```text
 IPC API = 2
@@ -59,7 +58,7 @@ handler API = 1
 
 脚本失败时以非零状态退出，作为 CI 门禁。
 
-> 说明：`rill-runtime-protocol 1.1.0` 保持 `RUNTIME_API_VERSION = 2`、`HANDLER_API_VERSION = 1`，因此 1.0.0 → 1.1.0 不改变 IPC V2 或 WIT handler ABI v1。
+> 说明：Rill 1.5.1 保持 `RUNTIME_API_VERSION = 2`、`HANDLER_API_VERSION = 1`；Mira 不把兼容策略改成永久 patch pin。
 
 ---
 
@@ -90,7 +89,7 @@ IPC V2  +  WIT Handler API v1  +  确定性 fallback
 
 ### 3.1 唯一权威定义
 
-特征定义收敛到单一模块：[`crates/mira-local-ai/src/battery_features.rs`](file:///Users/yunshu/Documents/GitHub/mira-mouse/crates/mira-local-ai/src/battery_features.rs)。
+特征定义收敛到单一模块：[`crates/mira-local-ai/src/battery_features.rs`](../../crates/mira-local-ai/src/battery_features.rs)。
 
 - `BATTERY_SCHEMA_ID = "mira-battery-feature-schema-v1"`
 - `BATTERY_SCHEMA_VERSION = 1`
@@ -141,7 +140,7 @@ weight = max(exp(-age_hours / tau), MIN_RECENCY_WEIGHT)
 
 ### 4.2 训练与评价
 
-- 开启时调用 rill-ml 1.1.0 的 `learn_weighted(features, target, weight)`。
+- 开启时调用 Rill 1.5.1 的 `learn_weighted(features, target, weight)`。
 - 评价指标同步维护 `weighted_mae`、`recent_mae`（最近 `quality_window` 小时验证窗口）、`effective_sample_weight`，同时保留普通 `candidate_mae` 便于比较长期稳定性。
 - 加权模式下质量门使用 `weighted_mae` 作为候选质量指标。
 
@@ -153,7 +152,7 @@ weight = max(exp(-age_hours / tau), MIN_RECENCY_WEIGHT)
 
 ### 4.4 回放结论（重要）
 
-`docs/audits/rill-1.1-battery-replay-report.md` 在 10 个固定 fixture 上对比 plain / weighted / robust：
+历史阶段结论（非当前依赖状态）：`docs/audits/rill-1.1-battery-replay-report.md` 在 10 个固定 fixture 上对比 plain / weighted / robust：
 
 - 加权模型在**全部 10 个场景**的 `recent MAE` 均不优于普通模型（0 提升、10 退化、0 相当）。
 - 因此 `weighted_learning_enabled` 保持**默认关闭**，符合阶段 3 验收标准（未满足“适应速度明显快于旧模型”时不擅自默认启用）。
@@ -225,7 +224,7 @@ pub stateful_handler_enabled: bool  // 默认 false
 
 ### 6.3 原语
 
-[`crates/mira-local-ai/src/stateful/mod.rs`](file:///Users/yunshu/Documents/GitHub/mira-mouse/crates/mira-local-ai/src/stateful/mod.rs) 提供实验骨架：
+[`crates/mira-local-ai/src/stateful/mod.rs`](../../crates/mira-local-ai/src/stateful/mod.rs) 提供实验骨架：
 
 ```text
 observe(sample) / decide(context) / snapshot() / restore(snapshot) / reset(reason)
@@ -274,6 +273,6 @@ hash 只输出短前缀；fallback reason 使用结构化枚举。
 | 回放测试 | `crates/mira-local-ai/tests/replay_fixtures.rs` |
 | 回放 fixtures | `crates/mira-local-ai/tests/fixtures/replay/` |
 | schema golden | `crates/mira-local-ai/tests/fixtures/battery_schema_v1.json` |
-| 回放对比报告 | `docs/audits/rill-1.1-battery-replay-report.md` |
-| 基线审计 | `docs/audits/rill-1.1-baseline.md` |
+| 回放对比报告（历史阶段） | `docs/audits/rill-1.1-battery-replay-report.md` |
+| 基线审计（历史阶段） | `docs/audits/rill-1.1-baseline.md` |
 | 回退操作 | `docs/operations/local-ai-rollback.md` |
