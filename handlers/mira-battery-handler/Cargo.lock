@@ -172,7 +172,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "mira-battery-handler"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "mira-local-ai",
  "mira-protocol",
@@ -183,7 +183,7 @@ dependencies = [
 
 [[package]]
 name = "mira-local-ai"
-version = "1.2.6"
+version = "1.2.7"
 dependencies = [
  "chrono",
  "mira-protocol",
@@ -196,7 +196,7 @@ dependencies = [
 
 [[package]]
 name = "mira-protocol"
-version = "1.2.6"
+version = "1.2.7"
 dependencies = [
  "serde",
  "serde_json",
@@ -247,9 +247,9 @@ dependencies = [
 
 [[package]]
 name = "rill-ml"
-version = "1.2.0"
+version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b2ce22ec4556bade8deb6e8cc2f7f934d191c39886e1f3e0fce6df0b3a09ef68"
+checksum = "f65094e64dca67001497a58a1d9b02d634df9e9b17f47cca6a7cb77b4fad884f"
 dependencies = [
  "serde",
  "serde_json",

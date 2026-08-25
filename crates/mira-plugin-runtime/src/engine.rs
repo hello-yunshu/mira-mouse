@@ -4783,7 +4783,9 @@ fn parse_field(field: &FieldDefinition, response: &[u8]) -> Result<Value, String
                 .ok_or_else(|| "parser array offset out of range".to_string())?;
             Ok(Value::Array(
                 bytes
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|pair| Value::from(u16::from_le_bytes([pair[0], pair[1]])))
                     .collect(),
             ))
@@ -4797,7 +4799,9 @@ fn parse_field(field: &FieldDefinition, response: &[u8]) -> Result<Value, String
                 .ok_or_else(|| "parser array offset out of range".to_string())?;
             Ok(Value::Array(
                 bytes
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|pair| Value::from(u16::from_be_bytes([pair[0], pair[1]])))
                     .collect(),
             ))
@@ -4849,7 +4853,9 @@ fn parse_field(field: &FieldDefinition, response: &[u8]) -> Result<Value, String
                 .ok_or_else(|| "parser RGB array offset out of range".to_string())?;
             Ok(Value::Array(
                 bytes
-                    .chunks_exact(3)
+                    .as_chunks::<3>()
+                    .0
+                    .iter()
                     .map(|rgb| {
                         Value::String(format!("#{:02X}{:02X}{:02X}", rgb[0], rgb[1], rgb[2]))
                     })
