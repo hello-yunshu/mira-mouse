@@ -10,6 +10,8 @@ export interface MiraActivityButtonProps
   children: ReactNode;
   leading?: ReactNode;
   announce?: boolean;
+  /** Override the shared anti-flash delay for interactions that need instant feedback. */
+  activityDelayMs?: number;
 }
 
 /**
@@ -29,6 +31,7 @@ export function MiraActivityButton({
   children,
   leading,
   announce = false,
+  activityDelayMs,
   className,
   disabled,
   ...buttonProps
@@ -44,6 +47,7 @@ export function MiraActivityButton({
       <MiraInlineActivity
         active={active}
         activity={activity}
+        delayMs={activityDelayMs}
         announce={announce}
         layout="overlay"
         label={(

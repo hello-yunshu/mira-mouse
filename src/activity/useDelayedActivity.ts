@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   MIRA_ACTIVITY_MIN_VISIBLE_MS,
   MIRA_ACTIVITY_SHOW_DELAY_MS,
@@ -27,6 +27,18 @@ export function useDelayedActivity(
   const visibleSinceRef = useRef(0);
   const lastExitHintRef = useRef(0);
   const suppressedRef = useRef(false);
+
+  // A delay of zero is an explicit request for same-commit feedback. When a
+  // mounted activity changes from idle to active, the lazy initializer cannot
+  // help because it only ran during the first mount. Promote the state in a
+  // layout effect so React commits the Orb before the browser can paint the
+  // old label for one frame; refs are only consulted from effects, never while
+  // rendering.
+  useLayoutEffect(() => {
+    if (active && delayMs <= 0 && !visible && !suppressedRef.current) {
+      setVisible(true);
+    }
+  }, [active, delayMs, visible]);
 
   useEffect(() => {
     let timer = 0;

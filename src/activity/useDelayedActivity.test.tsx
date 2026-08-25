@@ -28,6 +28,17 @@ describe('useDelayedActivity', () => {
     expect(result.current).toBe(false);
   });
 
+  it('shows immediately when a zero-delay activity starts after mount', () => {
+    const { result, rerender } = renderHook(
+      ({ active }) => useDelayedActivity(active, 0, 420),
+      { initialProps: { active: false } },
+    );
+
+    expect(result.current).toBe(false);
+    rerender({ active: true });
+    expect(result.current).toBe(true);
+  });
+
   it('keeps a shown operation visible for its minimum duration', () => {
     const now = vi.mocked(performance.now);
     const { result, rerender } = renderHook(

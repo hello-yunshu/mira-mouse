@@ -470,6 +470,31 @@ describe('MiraActivityOverlay 生命周期仲裁（P0-3）', () => {
     expect(screen.getByRole('button', { name: label })).not.toHaveAttribute('data-mira-processing');
   });
 
+  it('22b. 更新检查按钮关闭通用延迟后，active 首帧直接显示 Orb', () => {
+    const { rerender } = render(
+      <MiraActivityButton
+        active={false}
+        activity="checking-app-update"
+        activityDelayMs={0}
+      >
+        检查更新
+      </MiraActivityButton>,
+    );
+
+    rerender(
+      <MiraActivityButton
+        active
+        activity="checking-app-update"
+        activityDelayMs={0}
+      >
+        检查更新
+      </MiraActivityButton>,
+    );
+
+    expect(screen.getByTestId('thinking-orb')).toHaveAttribute('data-state', 'searching');
+    expect(screen.getByText('检查更新')).toHaveClass('is-concealed');
+  });
+
   it('22a. 关于页检查完成仲裁时，Orb 退出到 busy 结束之间不跳回“检查更新”', async () => {
     const announce = vi.fn(() => true);
     const { rerender } = render(
