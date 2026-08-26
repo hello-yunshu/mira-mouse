@@ -18,14 +18,14 @@ rill-ml = { version = "1.5", default-features = false }
 rill-runtime-protocol = "1.5"
 ```
 
-实际可复现版本由**已提交的锁文件**保证；当前 committed lock 为 `1.5.1`，而不是永久 `=1.5.1` pin。
+实际可复现版本由**已提交的锁文件**保证；当前 committed lock 为 `1.5.3`，而不是永久 `=1.5.3` pin。
 
 ### 1.2 锁文件
 
 | 位置 | 作用 |
 |---|---|
-| 根 `Cargo.lock` | workspace（含 `mira-local-ai`）解析到 `rill-ml 1.5.1` |
-| `handlers/mira-battery-handler/Cargo.lock` | 独立 workspace 的 handler 解析到 `rill-ml 1.5.1` |
+| 根 `Cargo.lock` | workspace（含 `mira-local-ai`）解析到 `rill-ml 1.5.3` |
+| `handlers/mira-battery-handler/Cargo.lock` | 独立 workspace 的 handler 解析到 `rill-ml 1.5.3` |
 
 ### 1.3 CI 可复现
 
@@ -58,7 +58,7 @@ handler API = 1
 
 脚本失败时以非零状态退出，作为 CI 门禁。
 
-> 说明：Rill 1.5.1 保持 `RUNTIME_API_VERSION = 2`、`HANDLER_API_VERSION = 1`；Mira 不把兼容策略改成永久 patch pin。
+> 说明：Rill 1.5.3 保持 `RUNTIME_API_VERSION = 2`、`HANDLER_API_VERSION = 1`；Mira 不把兼容策略改成永久 patch pin。
 
 ---
 
@@ -140,7 +140,7 @@ weight = max(exp(-age_hours / tau), MIN_RECENCY_WEIGHT)
 
 ### 4.2 训练与评价
 
-- 开启时调用 Rill 1.5.1 的 `learn_weighted(features, target, weight)`。
+- 开启时调用 Rill 1.5.3 的 `learn_weighted(features, target, weight)`。
 - 评价指标同步维护 `weighted_mae`、`recent_mae`（最近 `quality_window` 小时验证窗口）、`effective_sample_weight`，同时保留普通 `candidate_mae` 便于比较长期稳定性。
 - 加权模式下质量门使用 `weighted_mae` 作为候选质量指标。
 

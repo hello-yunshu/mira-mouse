@@ -18,8 +18,8 @@ const MAX_PLUGIN_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_INDEX_BYTES: u64 = 1024 * 1024;
 const MAX_RUNTIME_BYTES: u64 = 64 * 1024 * 1024;
 const RILL_ML_RELEASE_BASE: &str = "https://github.com/hello-yunshu/rill-ml/releases/download";
-const RILL_ML_LATEST_INDEX_URL: &str =
-    "https://github.com/hello-yunshu/rill-ml/releases/latest/download/stable-index.json";
+const RILL_ML_STABLE_INDEX_URL: &str =
+    "https://github.com/hello-yunshu/rill-ml/releases/download/local-ai-stable/stable-index.json";
 const RILL_INDEX_PUBLISHER_KEY_ID: &str = "rillml-examples-2026-001";
 const RILL_INDEX_PUBLIC_KEY_HEX: &str =
     "29fd1fc2f22bd7e405aec167ff0a0d8de791f011c415075d4c5f9f64fd93fc2e";
@@ -623,7 +623,7 @@ fn fetch_rill_ml_index(version: Option<&str>) -> Result<SignedReleaseIndex> {
     }
     let url = version
         .map(|version| format!("{RILL_ML_RELEASE_BASE}/v{version}/stable-index.json"))
-        .unwrap_or_else(|| RILL_ML_LATEST_INDEX_URL.to_string());
+        .unwrap_or_else(|| RILL_ML_STABLE_INDEX_URL.to_string());
     let bytes = download_bounded(&url, MAX_INDEX_BYTES)?;
     let index: SignedReleaseIndex =
         serde_json::from_slice(&bytes).context("parse rill-ml stable-index.json")?;

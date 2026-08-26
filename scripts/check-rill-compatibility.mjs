@@ -14,8 +14,8 @@
 //
 // 用法：
 //   node scripts/check-rill-compatibility.mjs
-//   node scripts/check-rill-compatibility.mjs --expected-rill-version 1.5.1
-//   node scripts/check-rill-compatibility.mjs --expected-rill-version 1.5.1 --runtime-version 1.5.1
+//   node scripts/check-rill-compatibility.mjs --expected-rill-version 1.5.3
+//   node scripts/check-rill-compatibility.mjs --expected-rill-version 1.5.3 --runtime-version 1.5.3
 // 任一不一致时退出码非 0。
 
 import { readFile } from 'node:fs/promises';
