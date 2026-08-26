@@ -108,8 +108,11 @@ if (!workflow.includes('resolve-latest-rill-release.mjs')) {
   throw new Error('.github/workflows/pipeline.yml must resolve the latest signed Rill release');
 }
 const xtask = await readFile('xtask/src/main.rs', 'utf8');
-if (!xtask.includes('/releases/latest/download/stable-index.json')) {
-  throw new Error('xtask dist-sidecar must default to the latest signed Rill stable index');
+if (!xtask.includes('/releases/download/local-ai-stable/stable-index.json')) {
+  throw new Error('xtask dist-sidecar must default to the promoted local-ai-stable index');
+}
+if (xtask.includes('/releases/latest/download/stable-index.json')) {
+  throw new Error('xtask dist-sidecar must not use the GitHub latest Release as Stable');
 }
 for (const forbidden of [
   'macos-15-intel',
