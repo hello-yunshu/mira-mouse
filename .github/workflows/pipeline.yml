@@ -568,6 +568,22 @@ jobs:
               --notes-file release-notes.md \
               "${release_flags[@]}"
           fi
+      - name: Verify published local AI assets before moving Stable pointer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p published-local-ai
+          gh release download "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern local-ai-stable-index.json \
+            --pattern model.rillpack \
+            --pattern handler.rillhandler \
+            --dir published-local-ai
+          node scripts/verify-published-local-ai-assets.mjs \
+            published-local-ai/local-ai-stable-index.json \
+            published-local-ai
       - name: Move dedicated local AI stable pointer
         if: ${{ steps.meta.outputs.prerelease != 'true' }}
         env:
