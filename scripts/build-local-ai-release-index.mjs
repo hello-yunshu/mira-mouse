@@ -6,6 +6,7 @@ import {
   MIRA_RUNTIME_TARGETS,
   matchesTarget,
 } from './signed-release-index.mjs';
+import { selectPublishedArtifact } from './local-ai-release-artifact-policy.mjs';
 
 const [assetsDirArg, runtimeVersion, modelVersion, handlerVersion, tag, outputArg, currentIndexArg] =
   process.argv.slice(2);
@@ -67,19 +68,6 @@ function verifySignedIndex(index, publisherKeyId, publicKeyHex, label) {
   }
 }
 
-function parseStableVersion(value, label) {
-  const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(value);
-  if (!match) throw new Error(`${label} must be a stable semantic version`);
-  return match.slice(1).map(Number);
-}
-
-function compareVersions(left, right) {
-  for (let index = 0; index < 3; index += 1) {
-    if (left[index] !== right[index]) return left[index] - right[index];
-  }
-  return 0;
-}
-
 const artifactIdentity = (artifact) =>
   [
     artifact.kind,
@@ -104,11 +92,7 @@ function preserveNewerPublishedArtifacts(candidates, currentIndexPath) {
   const published = new Map(current.payload.artifacts.map((artifact) => [artifactIdentity(artifact), artifact]));
   return candidates.map((candidate) => {
     const previous = published.get(artifactIdentity(candidate));
-    if (!previous) return candidate;
-    const previousVersion = parseStableVersion(previous.version, 'published artifact version');
-    const candidateVersion = parseStableVersion(candidate.version, 'candidate artifact version');
-    // Equal versions are immutable too: preserve the already published URL and digest.
-    return compareVersions(previousVersion, candidateVersion) >= 0 ? previous : candidate;
+    return selectPublishedArtifact(candidate, previous);
   });
 }
 
