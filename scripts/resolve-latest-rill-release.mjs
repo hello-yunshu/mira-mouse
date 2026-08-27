@@ -11,7 +11,9 @@ import {
 } from './signed-release-index.mjs';
 
 const RELEASE_BASE = 'https://github.com/hello-yunshu/rill-ml/releases';
-const LATEST_INDEX_URL = `${RELEASE_BASE}/latest/download/stable-index.json`;
+// The GitHub "latest" Release is Mira's application release, not Rill's
+// promoted Stable pointer. Keep normal updates on the dedicated signed pointer.
+const STABLE_INDEX_URL = `${RELEASE_BASE}/download/local-ai-stable/stable-index.json`;
 
 const args = process.argv.slice(2);
 let indexPath;
@@ -27,7 +29,7 @@ for (let index = 0; index < args.length; index += 1) {
 if (requestedVersion) parseStableVersion(requestedVersion, 'requested Rill version');
 const indexUrl = requestedVersion
   ? `${RELEASE_BASE}/download/v${requestedVersion}/stable-index.json`
-  : LATEST_INDEX_URL;
+  : STABLE_INDEX_URL;
 
 const raw = indexPath
   ? readFileSync(resolve(indexPath))
