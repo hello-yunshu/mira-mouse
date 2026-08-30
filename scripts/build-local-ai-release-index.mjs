@@ -6,7 +6,10 @@ import {
   MIRA_RUNTIME_TARGETS,
   matchesTarget,
 } from './signed-release-index.mjs';
-import { selectPublishedArtifact } from './local-ai-release-artifact-policy.mjs';
+import {
+  materializePublishedArtifact,
+  selectPublishedArtifact,
+} from './local-ai-release-artifact-policy.mjs';
 
 const [assetsDirArg, runtimeVersion, modelVersion, handlerVersion, tag, outputArg, currentIndexArg] =
   process.argv.slice(2);
@@ -77,7 +80,7 @@ const artifactIdentity = (artifact) =>
     artifact.targetLibc ?? '',
   ].join('|');
 
-function preserveNewerPublishedArtifacts(candidates, currentIndexPath) {
+async function preserveNewerPublishedArtifacts(candidates, currentIndexPath) {
   if (!currentIndexPath) return candidates;
   const current = JSON.parse(readFileSync(resolve(currentIndexPath), 'utf8'));
   verifySignedIndex(
@@ -90,10 +93,26 @@ function preserveNewerPublishedArtifacts(candidates, currentIndexPath) {
     throw new Error('current Mira local AI index has an unsupported schema version');
   }
   const published = new Map(current.payload.artifacts.map((artifact) => [artifactIdentity(artifact), artifact]));
-  return candidates.map((candidate) => {
+  const localAssetPath = (candidate) => {
+    if (candidate.kind === 'model' && candidate.id === 'mira-battery-model') return modelPath;
+    if (candidate.kind === 'handler' && candidate.id === 'mira.battery.handler') return handlerPath;
+    return null;
+  };
+
+  const selected = [];
+  for (const candidate of candidates) {
     const previous = published.get(artifactIdentity(candidate));
-    return selectPublishedArtifact(candidate, previous);
-  });
+    const artifact = selectPublishedArtifact(candidate, previous);
+    const path = localAssetPath(candidate);
+    if (path && (await materializePublishedArtifact(path, candidate, artifact))) {
+      console.log(
+        `Materialized ${candidate.kind} ${candidate.id} from the selected published artifact ` +
+          `${artifact.version} before signing the new index`,
+      );
+    }
+    selected.push(artifact);
+  }
+  return selected;
 }
 
 async function fetchRuntimeArtifacts() {
@@ -171,7 +190,7 @@ const candidates = [
     ...describeLocal(handlerPath),
   },
 ];
-const artifacts = preserveNewerPublishedArtifacts(candidates, currentIndexArg);
+const artifacts = await preserveNewerPublishedArtifacts(candidates, currentIndexArg);
 
 writeFileSync(resolve(outputArg), `${JSON.stringify({
   schemaVersion: 3,
