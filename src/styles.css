@@ -334,14 +334,26 @@ option {
   z-index: 11;
 }
 
-/* Windows 下「设备/设置」导航用下划线指示：去掉激活态胶囊背景与外框，
- * 仅保留 ::after 短横线作为指示；「关于」图标按钮保留原激活样式。 */
+/* Windows 下「设备/设置」导航用下划线指示：保持透明边框占位，避免激活切换
+ * 时按钮几何变化造成文字横移/外框闪烁；仅保留 ::after 短横线作为指示。 */
 .platform-windows .nav-link.active:not(.nav-about) {
   background: transparent;
-  border: none;
+  border: 1px solid transparent;
 }
 .platform-windows .nav-link.active:not(.nav-about)::after {
   opacity: 1;
+}
+/* Windows 关于页只突出图标本身：取消激活胶囊填充，用主题色表示选中。 */
+.platform-windows .nav-link.nav-about.active {
+  color: var(--accent);
+  background: transparent;
+  border: 1px solid transparent;
+  outline: none;
+  box-shadow: none;
+}
+/* Windows 关于图标 hover 时也保持纯图标，不出现胶囊填充。 */
+.platform-windows .nav-link.nav-about:hover {
+  background: transparent;
 }
 /* Windows 下「设备/设置」hover 也不出现背景轮廓，仅保留文字颜色变化 */
 .platform-windows .nav-link:hover:not(.nav-about) {
