@@ -3,15 +3,21 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AboutPage } from './About';
 
-const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
+const { invokeMock, checkForAppUpdateMock } = vi.hoisted(() => ({
+  invokeMock: vi.fn(),
+  checkForAppUpdateMock: vi.fn(),
+}));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }));
+vi.mock('thinking-orbs', () => ({
+  ThinkingOrb: ({ state }: { state: string }) => <span data-testid="thinking-orb" data-state={state} />,
+}));
 vi.mock('./updater', () => ({
   appUpdateState: () => ({ phase: 'available', version: '0.2.0', notes: '更新说明', downloadedBytes: 0 }),
   onAppUpdateState: (listener: (state: unknown) => void) => {
     listener({ phase: 'available', version: '0.2.0', notes: '更新说明', downloadedBytes: 0 });
     return () => undefined;
   },
-  checkForAppUpdate: vi.fn(),
+  checkForAppUpdate: checkForAppUpdateMock,
   installAppUpdate: vi.fn(),
   relaunchAfterUpdate: vi.fn(),
 }));
@@ -19,6 +25,7 @@ vi.mock('./updater', () => ({
 describe('AboutPage', () => {
   beforeEach(() => {
     invokeMock.mockReset();
+    checkForAppUpdateMock.mockReset();
   });
 
   it('keeps a complete, stable shell while native about info is pending', () => {
@@ -66,6 +73,21 @@ describe('AboutPage', () => {
     expect(screen.getByRole('button', { name: '检查更新' }).closest('.contact-links')).toHaveClass('align-end');
     expect(screen.getByText('更新说明')).toBeInTheDocument();
     expect(screen.queryByText('Bundle Identifier')).not.toBeInTheDocument();
+  });
+
+  it('shows the checking Orb immediately on the About page', async () => {
+    invokeMock.mockResolvedValue({
+      name: 'Mira', version: '0.1.0', identifier: 'run.hey.mira', platform: 'macos', architecture: 'aarch64',
+      rustVersion: '1.82', buildDate: '2026-06-23', gitCommit: 'test', bundledPlugins: [], contact: {}, updaterActive: true,
+    });
+    checkForAppUpdateMock.mockReturnValue(new Promise(() => {}));
+    render(<AboutPage onBack={vi.fn()} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '检查更新' }));
+
+    expect(screen.getByTestId('thinking-orb')).toHaveAttribute('data-state', 'searching');
+    expect(screen.getByRole('button', { name: '检查更新' }).querySelector('.mira-activity-label'))
+      .toHaveClass('is-concealed');
   });
 
   it('explains when the current build is not release-ready for automatic updates', async () => {
