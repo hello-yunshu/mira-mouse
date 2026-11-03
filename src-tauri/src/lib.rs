@@ -9464,7 +9464,39 @@ fn ordered_snapshot_entries(
 /// 返回所有已连接设备的快照列表，供多设备 UI 使用。
 #[tauri::command]
 fn device_snapshots(state: tauri::State<'_, SessionState>) -> Vec<DeviceSnapshotEntry> {
-    device_snapshot_entries(&state)
+    let entries = device_snapshot_entries(&state);
+    #[cfg(debug_assertions)]
+    eprintln!(
+        "[mira-diag] device_snapshots response entries={} names={:?} mouse_ready={:?}",
+        entries.len(),
+        entries
+            .iter()
+            .map(|entry| entry.snapshot.display_name.as_str())
+            .collect::<Vec<_>>(),
+        entries
+            .iter()
+            .map(|entry| entry.snapshot.mouse_ready)
+            .collect::<Vec<_>>()
+    );
+    #[cfg(debug_assertions)]
+    diag_delay("MIRA_DIAG_SNAPSHOT_DELAY_MS");
+    entries
+}
+
+/// 仅调试构建可用的延迟注入，用于在真实设备事件流中复现请求/响应乱序。
+#[cfg(debug_assertions)]
+fn diag_delay(env_key: &str) {
+    if let Ok(value) = std::env::var(env_key) {
+        if let Ok(millis) = value.parse::<u64>() {
+            std::thread::sleep(Duration::from_millis(millis));
+        }
+    }
+}
+
+/// 前端启动/异常信标：用于确认 WebView 内的 React 是否真正开始运行。
+#[tauri::command]
+fn frontend_diag(event: String, detail: Option<String>) {
+    eprintln!("[mira-diag] frontend event={event} detail={detail:?}");
 }
 
 #[tauri::command]
@@ -9487,6 +9519,9 @@ fn device_select(
         .lock()
         .map_err(|_| "selected device state unavailable".to_string())?;
     *selected = Some(device_key);
+    drop(selected);
+    #[cfg(debug_assertions)]
+    diag_delay("MIRA_DIAG_SELECT_DELAY_MS");
     Ok(snapshot)
 }
 
@@ -11215,6 +11250,25 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
     })()
     .unwrap_or(DeviceReadOutcome::Skip);
 
+    #[cfg(debug_assertions)]
+    match &outcome {
+        DeviceReadOutcome::Skip => eprintln!("[mira-diag] outcome=skip"),
+        DeviceReadOutcome::Clear => eprintln!("[mira-diag] outcome=clear"),
+        DeviceReadOutcome::PreserveLast => eprintln!("[mira-diag] outcome=preserve-last"),
+        DeviceReadOutcome::Ready {
+            entries,
+            fresh_paths,
+        } => eprintln!(
+            "[mira-diag] outcome=ready entries={} fresh={} names={:?}",
+            entries.len(),
+            fresh_paths.len(),
+            entries
+                .iter()
+                .map(|(_, snapshot)| snapshot.display_name.as_str())
+                .collect::<Vec<_>>()
+        ),
+    }
+
     // 日志投递放在 device_io / plugins 锁之外，避免诊断路径延长 HID 临界区。
     for input in session_log_events {
         state.log_input(input);
@@ -11275,6 +11329,12 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
                 .collect();
             let snapshots_changed = store_snapshots(&state, &new_map);
             if snapshots_changed {
+                #[cfg(debug_assertions)]
+                eprintln!(
+                    "[mira-diag] emit device-snapshots-updated entries={} selected={:?}",
+                    snapshot_entries.len(),
+                    selected_path
+                );
                 let _ = app.emit("device-snapshots-updated", &snapshot_entries);
             }
             // 参数不可用记录：检查新连接设备是否有 probe 检测为不可用的能力，
@@ -11363,6 +11423,11 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
                     return;
                 };
                 // 通知前端有新数据，前端通过事件监听更新，无需轮询
+                #[cfg(debug_assertions)]
+                eprintln!(
+                    "[mira-diag] emit device-updated name={} mouse_ready={:?}",
+                    snapshot.display_name, snapshot.mouse_ready
+                );
                 let _ = app.emit("device-updated", &snapshot);
                 let settings = cached_settings(app);
                 let _ = update_tray(app, Some(&snapshot), &settings);
@@ -11415,188 +11480,233 @@ fn spawn_device_reader(app: AppHandle) {
         .lock()
         .unwrap_or_else(|e| e.into_inner()) = Some(tx);
 
+    #[cfg(debug_assertions)]
+    if let Ok(value) = std::env::var("MIRA_DIAG_AUTO_OFFLINE_REFRESH_MS") {
+        if let Ok(millis) = value.parse::<u64>() {
+            let app_handle = app.clone();
+            std::thread::spawn(move || {
+                let mut last_probe = Instant::now();
+                loop {
+                    std::thread::sleep(Duration::from_millis(millis));
+                    let state = app_handle.state::<SessionState>();
+                    let mouse_ready =
+                        selected_snapshot(&state).and_then(|snapshot| snapshot.mouse_ready);
+                    let probe_due = last_probe.elapsed() >= Duration::from_secs(90);
+                    let plan = if mouse_ready == Some(false) {
+                        Some(ReadPlan::Full)
+                    } else if probe_due {
+                        Some(ReadPlan::BatteryOnly)
+                    } else {
+                        None
+                    };
+                    let Some(plan) = plan else {
+                        continue;
+                    };
+                    last_probe = Instant::now();
+                    reset_all_backoff(&state);
+                    request_refresh_with_plan(&state, plan);
+                    eprintln!("[mira-diag] injected {plan:?} (mouse_ready={mouse_ready:?})");
+                    let sender = state.refresh_tx.lock().ok().and_then(|guard| guard.clone());
+                    if let Some(sender) = sender {
+                        let _ = sender.send(());
+                    }
+                }
+            });
+        }
+    }
+
     let mut last_battery_read_at: Option<Instant> = None;
     let mut last_battery_signature: Vec<(String, u8, bool)> = Vec::new();
     let mut battery_stable_since: Option<Instant> = None;
-    std::thread::spawn(move || loop {
-        // Determine state before reading to choose the appropriate ReadPlan.
-        let state = app.state::<SessionState>();
-        let forced_plan = state
-            .forced_read_plan
-            .lock()
-            .ok()
-            .and_then(|mut pending| pending.take());
-        let visible = app
-            .get_webview_window("main")
-            .and_then(|window| window.is_visible().ok())
-            .unwrap_or(false);
-        let (connected_before, next_initial_plan, sleep_timeout) = {
-            let snapshots = state
-                .last_snapshot
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            let connected = !snapshots.is_empty();
-            // BatteryOnly currently reads all matched devices in one pass. Use
-            // the longest declared timeout so a short-timeout peer cannot make
-            // the shared pass repeatedly touch a longer-sleeping device.
-            let sleep_timeout = longest_declared_sleep_timeout(&snapshots);
-            let next_initial_plan = state
-                .snapshot_readiness
+    std::thread::spawn(move || {
+        #[cfg(debug_assertions)]
+        diag_delay("MIRA_DIAG_READER_START_DELAY_MS");
+        loop {
+            // Determine state before reading to choose the appropriate ReadPlan.
+            let state = app.state::<SessionState>();
+            let forced_plan = state
+                .forced_read_plan
                 .lock()
                 .ok()
-                .and_then(|readiness| next_initial_read_plan(&readiness));
-            (connected, next_initial_plan, sleep_timeout)
-        };
+                .and_then(|mut pending| pending.take());
+            let visible = app
+                .get_webview_window("main")
+                .and_then(|window| window.is_visible().ok())
+                .unwrap_or(false);
+            let (connected_before, next_initial_plan, sleep_timeout) = {
+                let snapshots = state
+                    .last_snapshot
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                let connected = !snapshots.is_empty();
+                // BatteryOnly currently reads all matched devices in one pass. Use
+                // the longest declared timeout so a short-timeout peer cannot make
+                // the shared pass repeatedly touch a longer-sleeping device.
+                let sleep_timeout = longest_declared_sleep_timeout(&snapshots);
+                let next_initial_plan = state
+                    .snapshot_readiness
+                    .lock()
+                    .ok()
+                    .and_then(|readiness| next_initial_read_plan(&readiness));
+                (connected, next_initial_plan, sleep_timeout)
+            };
 
-        let now = Instant::now();
-        let snapshot_before = selected_snapshot(&state);
-        let mouse_ready_before = snapshot_before.as_ref().and_then(|s| s.mouse_ready);
-        // 接收器在位但鼠标未就位：进入高频检测窗口（前 5 秒 1s 间隔）。
-        // 窗口内强制 Quick 读取 receiverIdle.mouseOnline；窗口外回退到 5s 间隔的 BatteryOnly。
-        let mouse_pending_burst = update_mouse_pending(&state, mouse_ready_before, now);
-        let mouse_pending = mouse_ready_before == Some(false);
-        let charging = snapshot_before.as_ref().is_some_and(|snapshot| {
-            snapshot.charging || snapshot.batteries.iter().any(|battery| battery.charging)
-        });
-        let unchanged_for = battery_stable_since.map(|since| now.saturating_duration_since(since));
-        let battery_interval =
-            adaptive_battery_interval(visible, charging, unchanged_for, sleep_timeout);
-        let battery_due = connected_before
-            && last_battery_read_at.is_none_or(|last| now.duration_since(last) >= battery_interval);
-        let observing_quick = quick_observation_active(&state, visible, now);
-        let wake_probe_due = wake_recovery_probe_due(&state, now);
-        if wake_probe_due {
-            // A real pointer-activity hint is explicit evidence that an armed
-            // target may have woken. Clear only those devices' old backoff.
-            reset_wake_recovery_backoff(&state);
-        }
+            let now = Instant::now();
+            let snapshot_before = selected_snapshot(&state);
+            let mouse_ready_before = snapshot_before.as_ref().and_then(|s| s.mouse_ready);
+            // 接收器在位但鼠标未就位：进入高频检测窗口（前 5 秒 1s 间隔）。
+            // 窗口内强制 Quick 读取 receiverIdle.mouseOnline；窗口外回退到 5s 间隔的 BatteryOnly。
+            let mouse_pending_burst = update_mouse_pending(&state, mouse_ready_before, now);
+            let mouse_pending = mouse_ready_before == Some(false);
+            let charging = snapshot_before.as_ref().is_some_and(|snapshot| {
+                snapshot.charging || snapshot.batteries.iter().any(|battery| battery.charging)
+            });
+            let unchanged_for =
+                battery_stable_since.map(|since| now.saturating_duration_since(since));
+            let battery_interval =
+                adaptive_battery_interval(visible, charging, unchanged_for, sleep_timeout);
+            let battery_due = connected_before
+                && last_battery_read_at
+                    .is_none_or(|last| now.duration_since(last) >= battery_interval);
+            let observing_quick = quick_observation_active(&state, visible, now);
+            let wake_probe_due = wake_recovery_probe_due(&state, now);
+            if wake_probe_due {
+                // A real pointer-activity hint is explicit evidence that an armed
+                // target may have woken. Clear only those devices' old backoff.
+                reset_wake_recovery_backoff(&state);
+            }
 
-        // Choose ReadPlan:
-        // - Connected but no Full snapshot yet → Full (首次读取需要获取能力)
-        // - Explicit editor/mutation requests → Quick
-        // - mouse_pending_burst → 强制 Quick（高频检测 mouseOnline），但不吞掉更强的显式请求
-        // - mouse_pending（非 burst）→ 升级 PresenceOnly 为 BatteryOnly（读取 mouseOnline）
-        // - Battery due → BatteryOnly
-        // - Otherwise → PresenceOnly (enumeration only, no protocol reports)
-        let plan = choose_read_plan(
-            connected_before,
-            next_initial_plan,
-            forced_plan,
-            observing_quick || wake_probe_due,
-            battery_due,
-            mouse_pending_burst,
-            mouse_pending,
+            // Choose ReadPlan:
+            // - Connected but no Full snapshot yet → Full (首次读取需要获取能力)
+            // - Explicit editor/mutation requests → Quick
+            // - mouse_pending_burst → 强制 Quick（高频检测 mouseOnline），但不吞掉更强的显式请求
+            // - mouse_pending（非 burst）→ 升级 PresenceOnly 为 BatteryOnly（读取 mouseOnline）
+            // - Battery due → BatteryOnly
+            // - Otherwise → PresenceOnly (enumeration only, no protocol reports)
+            let plan = choose_read_plan(
+                connected_before,
+                next_initial_plan,
+                forced_plan,
+                observing_quick || wake_probe_due,
+                battery_due,
+                mouse_pending_burst,
+                mouse_pending,
+            );
+            #[cfg(debug_assertions)]
+            eprintln!(
+            "[mira-diag] plan={plan:?} connected={connected_before} burst={mouse_pending_burst} mouse_pending={mouse_pending} forced={forced_plan:?} initial={next_initial_plan:?} visible={visible}"
         );
 
-        read_device_once(&app, plan);
-        if wake_probe_due {
-            finish_wake_recovery_probe(&state, Instant::now());
-        }
-        if matches!(
-            plan,
-            ReadPlan::BatteryOnly | ReadPlan::Quick | ReadPlan::Full
-        ) {
-            let now = Instant::now();
-            let signature = battery_signature(selected_snapshot(&state).as_ref());
-            if signature != last_battery_signature {
-                last_battery_signature = signature;
-                battery_stable_since = Some(now);
-            } else if battery_stable_since.is_none() {
-                battery_stable_since = Some(now);
+            read_device_once(&app, plan);
+            if wake_probe_due {
+                finish_wake_recovery_probe(&state, Instant::now());
             }
-            last_battery_read_at = Some(now);
-        }
-
-        // Initial Presence → Full progresses as one coherent data arrival; once
-        // initialized, a connected device returns to lightweight presence checks.
-        let (connected, initializing) = {
-            let connected = !state
-                .last_snapshot
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .is_empty();
-            let initializing = state
-                .snapshot_readiness
-                .lock()
-                .ok()
-                .is_some_and(|readiness| readiness.values().copied().any(needs_initial_full));
-            (connected, initializing)
-        };
-        let observing_quick = quick_observation_active(&state, visible, Instant::now());
-        let base_wait = if initializing && plan == ReadPlan::PresenceOnly {
-            INITIAL_FULL_START_DELAY
-        } else if initializing {
-            // A failed or externally interrupted Full read still respects the
-            // existing retry/backoff cadence instead of forming a tight loop.
-            std::time::Duration::from_millis(500)
-        } else if observing_quick {
-            QUICK_OBSERVE_INTERVAL
-        } else if mouse_pending_burst {
-            // 高频检测窗口：1s 间隔快速探测 mouseOnline。
-            MOUSE_PENDING_BURST_INTERVAL
-        } else if mouse_pending {
-            // 超过 5s 窗口仍未就位：回退到 5s 间隔，节能但仍比 15s PresenceOnly 频繁。
-            MOUSE_PENDING_FALLBACK_INTERVAL
-        } else if connected {
-            // Connected devices are only enumerated; protocol reads are on-demand.
-            CONNECTED_PRESENCE_INTERVAL
-        } else if visible {
-            // No device connected: poll faster while visible so plug-in is noticed quickly.
-            std::time::Duration::from_secs(1)
-        } else {
-            std::time::Duration::from_secs(15)
-        };
-        let wait = wake_recovery_wait(&state, Instant::now())
-            .map(|recovery_wait| base_wait.min(recovery_wait))
-            .unwrap_or(base_wait);
-
-        // 将等待分成最多 10s 的块，检测系统睡眠/唤醒。
-        // Instant（单调时钟）在系统睡眠期间暂停，recv_timeout 不会在唤醒后立即超时；
-        // 用 SystemTime（墙上时钟）检测跳跃，唤醒后触发一次 Quick 重新枚举设备。
-        // 分块保证最多 SLEEP_DETECT_CHUNK 延迟即可检测到唤醒。
-        const SLEEP_DETECT_CHUNK: std::time::Duration = std::time::Duration::from_secs(10);
-        let mut remaining = wait;
-        let mut woke_from_sleep = false;
-        let mut channel_disconnected = false;
-        while !remaining.is_zero() {
-            let chunk = remaining.min(SLEEP_DETECT_CHUNK);
-            let chunk_start = std::time::SystemTime::now();
-            match rx.recv_timeout(chunk) {
-                Ok(()) => {
-                    // Drain any additional pending signals so a burst of focus
-                    // events doesn't trigger a burst of redundant reads.
-                    while rx.try_recv().is_ok() {}
-                    break;
+            if matches!(
+                plan,
+                ReadPlan::BatteryOnly | ReadPlan::Quick | ReadPlan::Full
+            ) {
+                let now = Instant::now();
+                let signature = battery_signature(selected_snapshot(&state).as_ref());
+                if signature != last_battery_signature {
+                    last_battery_signature = signature;
+                    battery_stable_since = Some(now);
+                } else if battery_stable_since.is_none() {
+                    battery_stable_since = Some(now);
                 }
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    // 正常情况下 elapsed ≈ chunk；系统睡眠后 elapsed 远大于 chunk。
-                    if let Ok(elapsed) = chunk_start.elapsed() {
-                        if elapsed > chunk + std::time::Duration::from_secs(2) {
-                            woke_from_sleep = true;
-                            break;
-                        }
+                last_battery_read_at = Some(now);
+            }
+
+            // Initial Presence → Full progresses as one coherent data arrival; once
+            // initialized, a connected device returns to lightweight presence checks.
+            let (connected, initializing) = {
+                let connected = !state
+                    .last_snapshot
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .is_empty();
+                let initializing = state
+                    .snapshot_readiness
+                    .lock()
+                    .ok()
+                    .is_some_and(|readiness| readiness.values().copied().any(needs_initial_full));
+                (connected, initializing)
+            };
+            let observing_quick = quick_observation_active(&state, visible, Instant::now());
+            let base_wait = if initializing && plan == ReadPlan::PresenceOnly {
+                INITIAL_FULL_START_DELAY
+            } else if initializing {
+                // A failed or externally interrupted Full read still respects the
+                // existing retry/backoff cadence instead of forming a tight loop.
+                std::time::Duration::from_millis(500)
+            } else if observing_quick {
+                QUICK_OBSERVE_INTERVAL
+            } else if mouse_pending_burst {
+                // 高频检测窗口：1s 间隔快速探测 mouseOnline。
+                MOUSE_PENDING_BURST_INTERVAL
+            } else if mouse_pending {
+                // 超过 5s 窗口仍未就位：回退到 5s 间隔，节能但仍比 15s PresenceOnly 频繁。
+                MOUSE_PENDING_FALLBACK_INTERVAL
+            } else if connected {
+                // Connected devices are only enumerated; protocol reads are on-demand.
+                CONNECTED_PRESENCE_INTERVAL
+            } else if visible {
+                // No device connected: poll faster while visible so plug-in is noticed quickly.
+                std::time::Duration::from_secs(1)
+            } else {
+                std::time::Duration::from_secs(15)
+            };
+            let wait = wake_recovery_wait(&state, Instant::now())
+                .map(|recovery_wait| base_wait.min(recovery_wait))
+                .unwrap_or(base_wait);
+
+            // 将等待分成最多 10s 的块，检测系统睡眠/唤醒。
+            // Instant（单调时钟）在系统睡眠期间暂停，recv_timeout 不会在唤醒后立即超时；
+            // 用 SystemTime（墙上时钟）检测跳跃，唤醒后触发一次 Quick 重新枚举设备。
+            // 分块保证最多 SLEEP_DETECT_CHUNK 延迟即可检测到唤醒。
+            const SLEEP_DETECT_CHUNK: std::time::Duration = std::time::Duration::from_secs(10);
+            let mut remaining = wait;
+            let mut woke_from_sleep = false;
+            let mut channel_disconnected = false;
+            while !remaining.is_zero() {
+                let chunk = remaining.min(SLEEP_DETECT_CHUNK);
+                let chunk_start = std::time::SystemTime::now();
+                match rx.recv_timeout(chunk) {
+                    Ok(()) => {
+                        // Drain any additional pending signals so a burst of focus
+                        // events doesn't trigger a burst of redundant reads.
+                        while rx.try_recv().is_ok() {}
+                        break;
                     }
-                    remaining = remaining.saturating_sub(chunk);
-                }
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                    channel_disconnected = true;
-                    break;
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        // 正常情况下 elapsed ≈ chunk；系统睡眠后 elapsed 远大于 chunk。
+                        if let Ok(elapsed) = chunk_start.elapsed() {
+                            if elapsed > chunk + std::time::Duration::from_secs(2) {
+                                woke_from_sleep = true;
+                                break;
+                            }
+                        }
+                        remaining = remaining.saturating_sub(chunk);
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                        channel_disconnected = true;
+                        break;
+                    }
                 }
             }
-        }
-        if channel_disconnected {
-            break;
-        }
-        if woke_from_sleep {
-            if let Some(state) = app.try_state::<SessionState>() {
-                // 启发式时间跳跃检测作为 fallback：原生电源事件（spawn_power_watcher）
-                // 漏报时兜底。两者共享 handle_system_wake_state 处理逻辑：
-                // 清空 HID 缓存 + 重置退避 + PresenceOnly（不直接 Quick，避免设备
-                // 未就绪时失败触发退避重试，节能优先）。
-                handle_system_wake_state(&state);
+            if channel_disconnected {
+                break;
             }
+            if woke_from_sleep {
+                if let Some(state) = app.try_state::<SessionState>() {
+                    // 启发式时间跳跃检测作为 fallback：原生电源事件（spawn_power_watcher）
+                    // 漏报时兜底。两者共享 handle_system_wake_state 处理逻辑：
+                    // 清空 HID 缓存 + 重置退避 + PresenceOnly（不直接 Quick，避免设备
+                    // 未就绪时失败触发退避重试，节能优先）。
+                    handle_system_wake_state(&state);
+                }
+            }
+            continue;
         }
-        continue;
     });
 }
 
@@ -15376,6 +15486,13 @@ pub fn run() {
             // a hidden launch never flashes a frame (§P0-C).
             #[cfg(target_os = "macos")]
             if let Some(window) = app.get_webview_window("main") {
+                #[cfg(debug_assertions)]
+                {
+                    if std::env::var_os("MIRA_DIAG_DISABLE_VIBRANCY").is_none() {
+                        apply_macos_vibrancy(&window);
+                    }
+                }
+                #[cfg(not(debug_assertions))]
                 apply_macos_vibrancy(&window);
             }
 
@@ -15638,6 +15755,7 @@ pub fn run() {
             device_snapshot,
             device_snapshots,
             device_select,
+            frontend_diag,
             device_refresh,
             device_refresh_quick,
             device_refresh_battery,
