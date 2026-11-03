@@ -9713,6 +9713,38 @@ fn select_read_plan(
     }
 }
 
+/// 组合本轮读取计划：显式请求/初始补全优先，接收器等待鼠标时只提升到 Quick。
+fn choose_read_plan(
+    connected: bool,
+    initial_plan: Option<ReadPlan>,
+    forced_plan: Option<ReadPlan>,
+    quick_observation: bool,
+    battery_due: bool,
+    mouse_pending_burst: bool,
+    mouse_pending: bool,
+) -> ReadPlan {
+    if mouse_pending_burst {
+        // 高频检测窗口仍以 Quick 为主，但不能吞掉用户手动刷新或恢复流程
+        // 已排队的更强请求（Full/Inventory）。否则 Full 会被消费后静默丢失。
+        forced_plan
+            .filter(|plan| *plan > ReadPlan::Quick)
+            .unwrap_or(ReadPlan::Quick)
+    } else {
+        let requested = select_read_plan(
+            connected,
+            initial_plan,
+            forced_plan,
+            quick_observation,
+            battery_due,
+        );
+        if mouse_pending && requested == ReadPlan::PresenceOnly {
+            ReadPlan::BatteryOnly
+        } else {
+            requested
+        }
+    }
+}
+
 const BATTERY_CHARGING_INTERVAL: Duration = Duration::from_secs(3 * 60);
 const BATTERY_VISIBLE_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const BATTERY_HIDDEN_INTERVAL: Duration = Duration::from_secs(15 * 60);
@@ -10449,6 +10481,25 @@ fn retain_last_snapshot_for_failed_device(
     }
 }
 
+/// 将一次 HID 枚举的结果映射为后台读取结果。
+/// `refresh_failed` 表示 `HidApi::refresh_devices()` 返回错误；此时 `matched`
+/// 为空只能说明枚举失败，不能据此判定设备真实断开。
+fn enumeration_read_outcome(
+    refresh_failed: bool,
+    matched_is_empty: bool,
+) -> Option<DeviceReadOutcome> {
+    if matched_is_empty {
+        // 枚举失败时列表为空不能证明设备已拔出；保留上次快照，下一轮重试。
+        if refresh_failed {
+            Some(DeviceReadOutcome::PreserveLast)
+        } else {
+            Some(DeviceReadOutcome::Clear)
+        }
+    } else {
+        None
+    }
+}
+
 /// Read the device once, update the cached snapshot, and emit `device-updated`.
 /// Called by the background reader thread on every loop iteration (whether
 /// triggered by a signal or the fallback timeout).
@@ -10474,7 +10525,13 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
             *hidapi_guard = Some(HidApi::new().ok()?);
         }
         let cached_api = hidapi_guard.as_mut().unwrap();
-        let _ = cached_api.refresh_devices();
+        let refresh_failed = match cached_api.refresh_devices() {
+            Ok(()) => false,
+            Err(error) => {
+                eprintln!("[mira] background: HID enumeration failed: {error}");
+                true
+            }
+        };
         let api: &HidApi = cached_api;
         let matched = hid::enumerate_matched_devices(api, plugins);
         #[cfg(debug_assertions)]
@@ -10489,8 +10546,8 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
         }
 
         // 修复 #10：遍历所有 matched 设备，逐个读取并收集快照。
-        if matched.is_empty() {
-            return Some(DeviceReadOutcome::Clear);
+        if let Some(outcome) = enumeration_read_outcome(refresh_failed, matched.is_empty()) {
+            return Some(outcome);
         }
         let mut entries: Vec<(String, DeviceSnapshot)> = Vec::new();
         let mut fresh_paths = BTreeSet::new();
@@ -11417,32 +11474,19 @@ fn spawn_device_reader(app: AppHandle) {
         // Choose ReadPlan:
         // - Connected but no Full snapshot yet → Full (首次读取需要获取能力)
         // - Explicit editor/mutation requests → Quick
-        // - mouse_pending_burst → 强制 Quick（高频检测 mouseOnline）
+        // - mouse_pending_burst → 强制 Quick（高频检测 mouseOnline），但不吞掉更强的显式请求
         // - mouse_pending（非 burst）→ 升级 PresenceOnly 为 BatteryOnly（读取 mouseOnline）
         // - Battery due → BatteryOnly
         // - Otherwise → PresenceOnly (enumeration only, no protocol reports)
-        let plan = if mouse_pending_burst {
-            // 高频检测窗口内强制 Quick：读取 receiverIdle.mouseOnline 并刷新电量。
-            // Quick 不受 skip_already_complete_initial_read 影响（该函数只跳过 Full）。
-            ReadPlan::Quick
-        } else {
-            let requested = select_read_plan(
-                connected_before,
-                next_initial_plan,
-                forced_plan,
-                observing_quick || wake_probe_due,
-                battery_due,
-            );
-            if mouse_pending && requested == ReadPlan::PresenceOnly {
-                // 超过 5s 窗口仍未就位：避免 PresenceOnly（不读协议），
-                // 升级为 BatteryOnly 以读取 receiverIdle.mouseOnline。
-                // BatteryOnly 比 Quick 节能（不读 DPI/polling/lighting），
-                // 但仍能获取 receiverIdle（属于 ReceiverBatteryPercent 语义字段）。
-                ReadPlan::BatteryOnly
-            } else {
-                requested
-            }
-        };
+        let plan = choose_read_plan(
+            connected_before,
+            next_initial_plan,
+            forced_plan,
+            observing_quick || wake_probe_due,
+            battery_due,
+            mouse_pending_burst,
+            mouse_pending,
+        );
 
         read_device_once(&app, plan);
         if wake_probe_due {
@@ -16056,6 +16100,60 @@ mod read_plan_tests {
             ),
             ReadPlan::Full
         );
+    }
+
+    #[test]
+    fn manual_full_survives_mouse_pending_burst() {
+        assert_eq!(
+            choose_read_plan(true, None, Some(ReadPlan::Full), false, false, true, true,),
+            ReadPlan::Full,
+            "手动刷新请求的 Full 不能在 mouse_pending_burst 中被 Quick 覆盖"
+        );
+    }
+
+    #[test]
+    fn mouse_pending_burst_without_stronger_request_uses_quick() {
+        assert_eq!(
+            choose_read_plan(true, None, None, false, false, true, true),
+            ReadPlan::Quick
+        );
+        assert_eq!(
+            choose_read_plan(
+                true,
+                None,
+                Some(ReadPlan::PresenceOnly),
+                false,
+                false,
+                true,
+                true
+            ),
+            ReadPlan::Quick
+        );
+    }
+
+    #[test]
+    fn mouse_pending_upgrades_presence_to_battery_outside_burst() {
+        assert_eq!(
+            choose_read_plan(true, None, None, false, false, false, true),
+            ReadPlan::BatteryOnly
+        );
+    }
+
+    #[test]
+    fn transient_enumeration_failure_preserves_last_snapshot() {
+        assert!(matches!(
+            enumeration_read_outcome(true, true),
+            Some(DeviceReadOutcome::PreserveLast)
+        ));
+    }
+
+    #[test]
+    fn confirmed_empty_enumeration_clears_snapshot_cache() {
+        assert!(matches!(
+            enumeration_read_outcome(false, true),
+            Some(DeviceReadOutcome::Clear)
+        ));
+        assert!(enumeration_read_outcome(false, false).is_none());
     }
 
     #[test]
