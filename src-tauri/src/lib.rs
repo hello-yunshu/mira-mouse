@@ -706,11 +706,12 @@ enum DegradedFullRetryState {
 
 impl DeviceBackoff {
     /// 根据连续失败次数计算退避时间。
-    /// 首次失败 60s，第二次 5min，第三次 15min，后续 30min 上限。
+    /// 首次失败 10s（接收器刚插回、鼠标尚在休眠时快速重试），第二次 5min，
+    /// 第三次 15min，后续 30min 上限。
     fn backoff_duration(failures: u32) -> Duration {
         match failures {
             0 => Duration::ZERO,
-            1 => Duration::from_secs(60),
+            1 => Duration::from_secs(10),
             2 => Duration::from_secs(300),
             3 => Duration::from_secs(900),
             _ => Duration::from_secs(1800),
@@ -15942,7 +15943,7 @@ mod backoff_tests {
     #[test]
     fn backoff_schedule_matches_spec() {
         assert_eq!(DeviceBackoff::backoff_duration(0), Duration::ZERO);
-        assert_eq!(DeviceBackoff::backoff_duration(1), Duration::from_secs(60));
+        assert_eq!(DeviceBackoff::backoff_duration(1), Duration::from_secs(10));
         assert_eq!(DeviceBackoff::backoff_duration(2), Duration::from_secs(300));
         assert_eq!(DeviceBackoff::backoff_duration(3), Duration::from_secs(900));
         assert_eq!(
