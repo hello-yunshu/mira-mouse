@@ -50,5 +50,5 @@ zip = { version = "2.2.2", default-features = false, features = ["deflate"] }
 [profile.release]
 lto = true
 codegen-units = 1
-strip = true
+strip = false
 panic = "abort"
