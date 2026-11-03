@@ -177,7 +177,7 @@ UI 进入空态，无旧设备残留：[physical-unplugged.png](evidence/mira-de
 
 插回后先显示“正在识别并读取鼠标…”占位，没有旧数据残留：[physical-replugged-loading.png](evidence/mira-device-stability/physical-replugged-loading.png)；退避重试完成后恢复完整 Dashboard：[physical-replugged-recovered.png](evidence/mira-device-stability/physical-replugged-recovered.png)。完整日志：[physical-replug.log](evidence/mira-device-stability/physical-replug.log)。
 
-残余体验风险：接收器插回时若鼠标仍休眠，首次 Full 可能因鼠标电池超时失败并进入退避，界面会保持加载占位约 20 秒后才恢复；未崩溃、无旧数据。
+残余体验风险：接收器插回时若鼠标仍休眠，首次 Full 可能因鼠标电池超时失败并进入退避。首轮退避已由 60 秒缩短为 10 秒，且鼠标组件从缺失恢复到存在时会清除该路径的旧退避并补发 Full，避免唤醒后仍被旧退避拦截。退避常量与唤醒补 Full 分别由 `backoff_schedule_matches_spec`、`wake_recovery_full_request_clears_stale_device_backoff` 覆盖；本轮真机拔插复测因未完成物理操作，未取得新的插回耗时数据。
 
 ### 5.3 可控枚举失败
 
