@@ -20,7 +20,7 @@ exclude = [
 version = "1.2.9"
 edition = "2021"
 license = "AGPL-3.0-or-later"
-rust-version = "1.94"
+rust-version = "1.95"
 
 [workspace.dependencies]
 anyhow = "1.0.95"
@@ -45,7 +45,7 @@ tempfile = "3.14.0"
 thiserror = "2.0.9"
 toml = "1.1"
 walkdir = "2.5.0"
-zip = { version = "2.2.2", default-features = false, features = ["deflate"] }
+zip = { version = "9.2.2", default-features = false, features = ["deflate"] }
 
 [profile.release]
 lto = true
