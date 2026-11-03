@@ -9,6 +9,9 @@
 - 首次读取失败退避由 60 秒缩短为 10 秒，改善接收器插回后的恢复速度；鼠标唤醒时会清除旧退避并补发 Full。
 - 修复 macOS release 构建：符号剥离会产生不可加载的 proc-macro dylib，改为保留符号（`strip = false`）。
 - 更新本地 AI handler 包至 `0.8.7`，修复标准 Tauri 构建的 `check-local-ai-assets` 阻塞。
+- 修复最新 stable 工具链上的 clippy 红灯：`fetch_update` 等价改用 `try_update`，MSRV 由 1.94 升至 1.95。
+- 升级安全依赖：`rustls 0.23.46`、`rustls-webpki 0.103.16`、`quinn-proto 0.11.19`、`webpki-root-certs 1.0.11`、`zip 9.3.0`、`event-listener 5.4.2`、`tokio 1.54.1`、`async-executor 1.14.1`、`chacha20 0.10.2`；同步升级 `tauri 2.12.5` / `tauri-plugin-updater 2.14.1`，移除 Windows 侧 `zip 4` 漏洞链。
+- 新增 `docs/security/audit-exceptions.md`：CI 逐条打印并引用审计例外；移除已由 `quick-xml 0.41.0` 修复的旧忽略项。
 - 增加设备唤醒、快照乱序、拔插与枚举失败的回归测试及真机验证记录。
 
 ## 1.0.0 - 2026-07-29
