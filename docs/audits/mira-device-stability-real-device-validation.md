@@ -104,38 +104,131 @@ M@tauri://localhost/assets/runtime-data-cache-ClcH_MJQ.js:1:15424 ...")
 - 启动日志只有 `frontend event=mounted`，无 `window-error`：[mira-green.log](evidence/mira-device-stability/mira-green.log)。
 - 界面正常渲染“等待鼠标就位”页：[awaiting-mouse-fixed.png](evidence/mira-device-stability/awaiting-mouse-fixed.png)。
 
-## 4. 剩余风险推进状态
+## 4. 唤醒后只有灯光（本轮根因与修复）
+
+### 4.1 Red
+
+真机：鼠标物理唤醒后，页面只有灯光，DPI/回报率/配置等能力缺失。
+旧数据链路日志（[wake-only-lighting-red.log](evidence/mira-device-stability/wake-only-lighting-red.log)）：
+
+```text
+[mira-diag] reading plan=BatteryOnly mouse_ready=Some(true) caps=["battery", "receiver", "receiverIdle"]
+[mira-diag] wake-recovery requests Full after mouse component returned
+[mira-diag] snapshot plan=BatteryOnly mouse_ready=Some(true) readiness=Quick
+[mira-diag] plan=Full connected=true burst=false forced=Some(Full)
+[mira-diag] outcome=ready entries=1 fresh=0
+```
+
+`fresh=0` 表示这次 Full 被 500ms `READ_DEBOUNCE_TTL` 缓存跳过：强制 Full 被取出后直接复用旧快照，没有再执行 HID 工作流。旧 UI 截图：[only-lighting-red.png](evidence/mira-device-stability/only-lighting-red.png)。
+
+### 4.2 根因
+
+1. `mark_wake_recovery_observation` 在 BatteryOnly/Quick 读到鼠标组件返回后请求 Full。
+2. 下一轮 `spawn_device_reader` 取到 `forced=Some(Full)`，但 `read_device_once` 先命中 500ms `cache_hit`，直接复用旧快照并 `continue`。
+3. 请求被消费掉，没有第二次 Full；`mouse_ready` 已由 BatteryOnly 快照发布为 true，UI 从等待页切到 Dashboard，但静态能力仍是旧的接收器快照 → 只剩灯光。
+4. UI 侧不是灯光 section 条件渲染单独错误，而是数据面没有完成 Full 补全。
+
+### 4.3 修复
+
+- [lib.rs](../../src-tauri/src/lib.rs)：`should_use_cached_read` 让 Full/Inventory 穿透 500ms 防抖缓存。
+- [lib.rs](../../src-tauri/src/lib.rs)：`should_withhold_mouse_ready_until_full` 在 `false → true` 时先保持等待页，等 Full 完成后才发布 `mouse_ready=true`，避免用户看到半快照。
+- 新增单测：`full_and_inventory_bypass_read_debounce`、`mouse_ready_transition_waits_for_full`。
+
+### 4.4 Green
+
+真机唤醒后日志（[wake-recovery-green.log](evidence/mira-device-stability/wake-recovery-green.log)）：
+
+```text
+[mira-diag] reading plan=BatteryOnly mouse_ready=Some(true) caps=["battery", "receiver", "receiverIdle"]
+[mira-diag] wake-recovery requests Full after mouse component returned
+[mira-diag] withholding mouse_ready=true until Full completes
+[mira-diag] plan=Full connected=true burst=false forced=Some(Full)
+[mira-diag] reading plan=Full mouse_ready=Some(true) caps=[battery, ..., settings] (15 输出)
+[mira-diag] snapshot plan=Full ... readiness=Full
+[mira-diag] emit device-updated ... mouse_ready=Some(true)
+```
+
+唤醒后完整 Dashboard：[wake-recovery-green.png](evidence/mira-device-stability/wake-recovery-green.png)。
+
+`mouse_ready` 旧值滞留与本次“只有灯光”是同一根因链：BatteryOnly 先发布 true，但 Full 被缓存吞掉；已一并修复。
+
+## 5. 物理拔插验证
+
+用户已实际拔掉/插回接收器。
+
+### 5.1 拔掉
+
+```text
+[mira] background: matched 0 device(s)
+[mira-diag] outcome=clear
+```
+
+UI 进入空态，无旧设备残留：[physical-unplugged.png](evidence/mira-device-stability/physical-unplugged.png)。进程未崩溃。
+
+### 5.2 插回
+
+```text
+[mira] background: matched 1 device(s)
+[mira] background read failed ... battery: condition at offset 0 timed out
+...
+[mira-diag] reading plan=Full mouse_ready=Some(true) caps=[15 输出]
+[mira-diag] snapshot plan=Full ... readiness=Full
+```
+
+插回后先显示“正在识别并读取鼠标…”占位，没有旧数据残留：[physical-replugged-loading.png](evidence/mira-device-stability/physical-replugged-loading.png)；退避重试完成后恢复完整 Dashboard：[physical-replugged-recovered.png](evidence/mira-device-stability/physical-replugged-recovered.png)。完整日志：[physical-replug.log](evidence/mira-device-stability/physical-replug.log)。
+
+残余体验风险：接收器插回时若鼠标仍休眠，首次 Full 可能因鼠标电池超时失败并进入退避，界面会保持加载占位约 20 秒后才恢复；未崩溃、无旧数据。
+
+### 5.3 可控枚举失败
+
+调试构建通过 `MIRA_DIAG_ENUM_FAIL_FILE`（debug-only）在运行中制造一次“枚举失败 + 空 matched”：
+
+```text
+[mira] background: matched 0 device(s)
+[mira-diag] outcome=preserve-last
+```
+
+UI 保留设备、未清空：[enumeration-failure-preserve.png](evidence/mira-device-stability/enumeration-failure-preserve.png)。移除文件后恢复 `matched 1`、`outcome=ready`。日志：[enumeration-failure.log](evidence/mira-device-stability/enumeration-failure.log)。
+
+说明：这是对 `refresh_devices()` 失败分支的可控故障注入，不是真实 OS 枚举失败；发布构建不包含该钩子。
+
+## 6. 剩余风险状态
 
 | 风险 | 状态 | 证据 / 说明 |
 |---|---|---|
-| 首屏空白/只剩背景 | **已修复** | 双 React 运行时；真机 red→green |
-| 等待页遮蔽接收器功能 | **已确认真机存在，未修复** | [installed-awaiting.png](evidence/mira-device-stability/installed-awaiting.png)；鼠标离线时接收器灯光/电量不可操作，需要产品决定是否改为“接收器可见 + 鼠标控制只读” |
-| `mouse_ready` 旧值滞留 | 观察到的风险，未修复 | 已安装旧版在鼠标被唤醒后仍停留在等待页；新版 Full 读取能看到 `mouse_ready=true`。未做受控唤醒复测 |
-| 多 HID/多设备污染 | 部分验证 | 3 个 HID 接口，仅 1 个匹配；未测试“直连 + 接收器同时在线” |
-| 插件仓库 | 通过，无需改动 | `mira-mouse-plugins` 的 `npm test`：64 passed；AMaster 真机在线读取 14 outputs，离线读取 5 outputs |
-| 完整 CI | 部分执行 | `check:quick`、`cargo test`、clippy、boundaries、structured、plugin-contract 均通过；`local-ci.sh` 未执行（含 `xtask plugins sync --locked` 下载与完整 workspace 构建） |
-| 真实拔插 | BLOCKED | 需要物理拔掉接收器 |
+| 唤醒后只有灯光 / Full 被缓存吞掉 | **已修复，真机 PASS** | red/green 日志与截图 |
+| 首屏空白 / 只剩背景 | **已修复，真机 PASS** | React 双运行时 dedupe |
+| 真实拔插 `Clear` / 插回恢复 | **真机 PASS** | 空态、占位、完整恢复；无崩溃 |
+| 枚举失败 `PreserveLast` | **可控验证 PASS** | debug fault injection；真实 OS 失败未制造 |
 | 设备切换乱序 | BLOCKED | 只有一个匹配设备 |
+| 等待页遮蔽接收器功能 | 已确认，未修复 | 需产品决定；接收器灯光/电量在鼠标离线时不可操作 |
+| 多 HID / 直连+接收器 | 部分验证 | 3 接口仅 1 匹配；直连+接收器并列未测 |
+| 插件仓库 | 通过，未改动 | 64 tests passed；真机在线 14 outputs、离线 5 outputs |
+| 完整 CI | 部分执行 | quick-check、cargo 576、clippy、boundaries、structured、plugin-contract 通过；`local-ci.sh` 未执行 |
+| 标准发布构建 precheck | **BLOCKED** | `check-local-ai-assets.mjs` 仍报 Local AI handler pack 无效；使用 config override 仅用于 debug 真机验证 |
 
-## 5. 仍未验证项与原因
-
-1. 鼠标物理唤醒后的 14 输出补全：鼠标当前处于休眠，软件无法唤醒；需要用户移动/按键唤醒。
-2. 真实拔插：需要用户物理拔掉/插回接收器；当前无法执行。
-3. `refresh_devices()` 失败分支：无法安全制造 macOS HID 枚举失败；仅单元测试。
-4. 设备切换：需要第二个真实匹配设备（或直连 + 接收器同时在线）。
-5. 等待页遮蔽修复：需要产品确认接收器功能可见性与鼠标写入只读边界。
-6. 完整 `local-ci.sh`：`xtask plugins sync --locked` 需要下载已发布插件资产；本阶段未触发网络下载。
-7. 标准 `tauri build` 的 `beforeBuildCommand` 在本工作区失败：`check-local-ai-assets.mjs` 报 “Local AI handler pack identity, API, minimum runtime or publisher is invalid.”。本次 debug 真机验证使用 `--config` 覆盖 `beforeBuildCommand` 跳过该预检，**不代表发布构建通过**；该本地 AI 资源问题未修复。
-
-## 6. 分支与测试
+## 7. 分支与测试
 
 - 分支：`fix/device-stability-stage1`
 - 阶段一提交：`e2e58874`
-- 真机验证/修复提交：见 `git log`（本报告与证据同提交）
+- 首屏空白修复：`406b2381`
+- 真机诊断：`eebaee67`
+- 真机报告/证据：`e1122ac1`、`b981fffd`
+- 本轮唤醒修复与拔插证据：见 `git log`
 - 前端：`npm run check:quick` → lint/typecheck/**574 tests passed**/fmt/diff-check 通过
-- Rust：`cargo test -p mira-app --lib` → **574 passed; 0 failed**
+- Rust：`cargo test -p mira-app --lib` → **576 passed; 0 failed**
 - Rust lint：`cargo clippy -p mira-app --lib --locked -- -D warnings` → 通过
-- 架构/结构/插件契约：`check:boundaries`、`check:structured`、`check:plugin-contract` → 通过
+- 架构/结构/插件契约：通过
 - 插件仓库：`npm test` → **64 passed**
-- 前端构建：`npm run build` → 通过，产物只含单一 React 运行时
-- 未 push、未合并 `main`、未触发远程 Action
+- 前端构建：`npm run build` 通过
+- 未 push、未合并 `main`、未改写历史
+- 所有诊断 env/延迟/强制枚举失败钩子均在 `#[cfg(debug_assertions)]`；前端调试信标已移除，不进入发布产物
+
+## 8. 给非工程用户的物理拔插操作卡
+
+1. 保持当前 Mira 窗口可见。
+2. 拔掉接收器，等待 3 秒。页面应变成“还没找到支持的鼠标呢”。
+3. 等 5 秒，确认 Mira 仍在前台、没有闪退。
+4. 插回接收器，等待 5 秒。页面应先出现“正在识别并读取鼠标…”，随后恢复设备页。
+5. 若插回后 30 秒仍显示“正在识别并读取鼠标…”，点击“刷新”一次；仍不恢复则保持接收器插着并记录时间。
+6. 不要在此期间关闭 Mira 或移除接收器。
