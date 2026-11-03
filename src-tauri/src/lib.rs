@@ -1268,6 +1268,10 @@ fn mark_wake_recovery_observation(
     if armed {
         try_schedule_wake_recovery(state);
     }
+    #[cfg(debug_assertions)]
+    eprintln!(
+        "[mira-diag] wake-recovery path={path} plan={plan:?} present={present} armed={armed} recovered={recovered}"
+    );
     // A Quick/BatteryOnly probe only proves that the plugin-declared target
     // component is awake again. It does not rebuild the complete capability
     // snapshot (DPI stages, supported polling rates, lighting fields, writable
@@ -1277,6 +1281,8 @@ fn mark_wake_recovery_observation(
     // If this observation already came from Full, it is complete and needs no
     // redundant follow-up.
     if recovered && plan != ReadPlan::Full {
+        #[cfg(debug_assertions)]
+        eprintln!("[mira-diag] wake-recovery requests Full after mouse component returned");
         request_refresh_with_plan(state, ReadPlan::Full);
     }
 }
@@ -9493,12 +9499,6 @@ fn diag_delay(env_key: &str) {
     }
 }
 
-/// 前端启动/异常信标：用于确认 WebView 内的 React 是否真正开始运行。
-#[tauri::command]
-fn frontend_diag(event: String, detail: Option<String>) {
-    eprintln!("[mira-diag] frontend event={event} detail={detail:?}");
-}
-
 #[tauri::command]
 fn device_select(
     state: tauri::State<'_, SessionState>,
@@ -9778,6 +9778,21 @@ fn choose_read_plan(
             requested
         }
     }
+}
+
+/// Full/Inventory 是显式补全请求，不能被 500ms 防抖缓存吞掉。
+fn should_use_cached_read(plan: ReadPlan, cache_hit: bool, degraded_retry_pending: bool) -> bool {
+    cache_hit && !degraded_retry_pending && !matches!(plan, ReadPlan::Full | ReadPlan::Inventory)
+}
+
+/// 鼠标从离线变为在线时，先保持等待页，直到 Full 补全静态能力后再发布
+/// `mouse_ready=true`，避免用户看到“只剩灯光”的半快照。
+fn should_withhold_mouse_ready_until_full(
+    plan: ReadPlan,
+    previous: Option<bool>,
+    next: Option<bool>,
+) -> bool {
+    plan != ReadPlan::Full && previous == Some(false) && next == Some(true)
 }
 
 const BATTERY_CHARGING_INTERVAL: Duration = Duration::from_secs(3 * 60);
@@ -10560,15 +10575,24 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
             *hidapi_guard = Some(HidApi::new().ok()?);
         }
         let cached_api = hidapi_guard.as_mut().unwrap();
+        #[cfg(debug_assertions)]
+        let force_enum_fail = std::env::var_os("MIRA_DIAG_ENUM_FAIL_FILE")
+            .is_some_and(|path| std::path::Path::new(&path).exists());
+        #[cfg(not(debug_assertions))]
+        let force_enum_fail = false;
         let refresh_failed = match cached_api.refresh_devices() {
-            Ok(()) => false,
+            Ok(()) => force_enum_fail,
             Err(error) => {
                 eprintln!("[mira] background: HID enumeration failed: {error}");
                 true
             }
         };
         let api: &HidApi = cached_api;
-        let matched = hid::enumerate_matched_devices(api, plugins);
+        let matched = if force_enum_fail {
+            Vec::new()
+        } else {
+            hid::enumerate_matched_devices(api, plugins)
+        };
         #[cfg(debug_assertions)]
         {
             let count = matched.len();
@@ -10599,6 +10623,11 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
             };
 
             let (connection, kind) = connection_kind(&device.connection);
+            let previous_mouse_ready = state
+                .last_snapshot
+                .lock()
+                .ok()
+                .and_then(|map| map.get(&device.path).and_then(|snapshot| snapshot.mouse_ready));
 
             // PresenceOnly：不执行协议工作流，只更新设备存在信息。首次识别时从
             // 已验证插件的静态声明构建稳定 UI 布局；数值和写入能力仍等待 Quick/Full。
@@ -10683,12 +10712,13 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
             };
 
             // #9 防抖式 TTL 缓存：500ms 内复用快照跳过 HID 往返。
+            // Full/Inventory 是显式补全请求，必须穿透缓存。
             let cache_hit = state.last_read_at.lock().ok().is_some_and(|cache| {
                 cache
                     .get(&device.path)
                     .is_some_and(|t| t.elapsed() < READ_DEBOUNCE_TTL)
             });
-            if cache_hit && !degraded_retry_pending {
+            if should_use_cached_read(plan, cache_hit, degraded_retry_pending) {
                 if let Some(snapshot) = state
                     .last_snapshot
                     .lock()
@@ -10809,6 +10839,18 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
 
             match read_result {
                 Ok((mut reading, projection_valid, projection_fallback_reason)) => {
+                    #[cfg(debug_assertions)]
+                    eprintln!(
+                        "[mira-diag] reading plan={plan:?} mouse_ready={:?} caps={:?} batteries={:?} statuses={:?}",
+                        reading.mouse_ready,
+                        reading.capabilities.keys().collect::<Vec<_>>(),
+                        reading
+                            .batteries
+                            .iter()
+                            .map(|battery| battery.id.as_str())
+                            .collect::<Vec<_>>(),
+                        reading.read_statuses
+                    );
                     // 发射 plugin-read-completed 协议事件。
                     let elapsed_ms = read_start.elapsed().as_millis() as u64;
                     if let Some(ref proto_ctx) = proto_ctx {
@@ -10965,7 +11007,7 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
                         });
                         continue;
                     }
-                    let snapshot = if projection_valid {
+                    let mut snapshot = if projection_valid {
                         // Quick/BatteryOnly 投影成功：用 SnapshotPatch 合并，保留旧快照的静态字段。
                         let existing = state
                             .last_snapshot
@@ -11104,6 +11146,35 @@ fn read_device_once(app: &AppHandle, plan: ReadPlan) {
                             connection,
                         )
                     };
+                    if should_withhold_mouse_ready_until_full(
+                        plan,
+                        previous_mouse_ready,
+                        snapshot.mouse_ready,
+                    ) {
+                        #[cfg(debug_assertions)]
+                        eprintln!(
+                            "[mira-diag] withholding mouse_ready=true until Full completes"
+                        );
+                        snapshot.mouse_ready = Some(false);
+                        request_refresh_with_plan(&state, ReadPlan::Full);
+                    }
+                    #[cfg(debug_assertions)]
+                    eprintln!(
+                        "[mira-diag] snapshot plan={plan:?} name={} mouse_ready={:?} caps={:?} plugin_caps={:?} batteries={:?} readiness={next_readiness:?}",
+                        snapshot.display_name,
+                        snapshot.mouse_ready,
+                        snapshot.capabilities.keys().collect::<Vec<_>>(),
+                        snapshot
+                            .plugin_capabilities
+                            .iter()
+                            .map(|cap| cap.id.as_str())
+                            .collect::<Vec<_>>(),
+                        snapshot
+                            .batteries
+                            .iter()
+                            .map(|battery| battery.id.as_str())
+                            .collect::<Vec<_>>()
+                    );
                     // A degraded Full is useful enough to publish, but it must
                     // not close a pending session as "ready/recovered". The
                     // later bounded/manual complete Full owns that transition.
@@ -11479,6 +11550,35 @@ fn spawn_device_reader(app: AppHandle) {
         .refresh_tx
         .lock()
         .unwrap_or_else(|e| e.into_inner()) = Some(tx);
+
+    #[cfg(debug_assertions)]
+    if let Ok(value) = std::env::var("MIRA_DIAG_AUTO_OFFLINE_PROBE_MS") {
+        if let Ok(millis) = value.parse::<u64>() {
+            let app_handle = app.clone();
+            std::thread::spawn(move || {
+                let mut last_probe = Instant::now();
+                loop {
+                    std::thread::sleep(Duration::from_millis(millis));
+                    let state = app_handle.state::<SessionState>();
+                    let mouse_ready =
+                        selected_snapshot(&state).and_then(|snapshot| snapshot.mouse_ready);
+                    let probe_due = last_probe.elapsed() >= Duration::from_secs(90);
+                    if mouse_ready != Some(false) && !probe_due {
+                        continue;
+                    }
+                    last_probe = Instant::now();
+                    request_refresh_with_plan(&state, ReadPlan::BatteryOnly);
+                    eprintln!(
+                        "[mira-diag] injected BatteryOnly probe (mouse_ready={mouse_ready:?})"
+                    );
+                    let sender = state.refresh_tx.lock().ok().and_then(|guard| guard.clone());
+                    if let Some(sender) = sender {
+                        let _ = sender.send(());
+                    }
+                }
+            });
+        }
+    }
 
     #[cfg(debug_assertions)]
     if let Ok(value) = std::env::var("MIRA_DIAG_AUTO_OFFLINE_REFRESH_MS") {
@@ -15755,7 +15855,6 @@ pub fn run() {
             device_snapshot,
             device_snapshots,
             device_select,
-            frontend_diag,
             device_refresh,
             device_refresh_quick,
             device_refresh_battery,
@@ -16272,6 +16371,39 @@ mod read_plan_tests {
             Some(DeviceReadOutcome::Clear)
         ));
         assert!(enumeration_read_outcome(false, false).is_none());
+    }
+
+    #[test]
+    fn full_and_inventory_bypass_read_debounce() {
+        assert!(!should_use_cached_read(ReadPlan::Full, true, false));
+        assert!(!should_use_cached_read(ReadPlan::Inventory, true, false));
+        assert!(should_use_cached_read(ReadPlan::Quick, true, false));
+        assert!(should_use_cached_read(ReadPlan::BatteryOnly, true, false));
+        assert!(!should_use_cached_read(ReadPlan::Quick, true, true));
+    }
+
+    #[test]
+    fn mouse_ready_transition_waits_for_full() {
+        assert!(should_withhold_mouse_ready_until_full(
+            ReadPlan::BatteryOnly,
+            Some(false),
+            Some(true)
+        ));
+        assert!(should_withhold_mouse_ready_until_full(
+            ReadPlan::Quick,
+            Some(false),
+            Some(true)
+        ));
+        assert!(!should_withhold_mouse_ready_until_full(
+            ReadPlan::Full,
+            Some(false),
+            Some(true)
+        ));
+        assert!(!should_withhold_mouse_ready_until_full(
+            ReadPlan::BatteryOnly,
+            Some(true),
+            Some(true)
+        ));
     }
 
     #[test]
