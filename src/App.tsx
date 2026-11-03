@@ -4408,28 +4408,6 @@ export default function App() {
   // device-updated 可能由初始化或用户按需读取连续触发；用 startTransition
   // 将 Dashboard 渲染标记为低优先级。writeBusy 等用户交互状态保持同步。
   const [, startTransition] = useTransition();
-  // 调试信标：确认 WebView 内的 React 已启动，并捕获渲染期未处理异常。
-  useEffect(() => {
-    void invoke('frontend_diag', { event: 'mounted' }).catch(() => {});
-    const onError = (event: ErrorEvent) => {
-      const detail = event.error instanceof Error
-        ? `${event.error.message}\n${event.error.stack ?? ''}`
-        : `${event.message} @ ${event.filename}:${event.lineno}`;
-      void invoke('frontend_diag', { event: 'window-error', detail }).catch(() => {});
-    };
-    const onRejection = (event: PromiseRejectionEvent) => {
-      void invoke('frontend_diag', {
-        event: 'unhandled-rejection',
-        detail: String(event.reason),
-      }).catch(() => {});
-    };
-    window.addEventListener('error', onError);
-    window.addEventListener('unhandledrejection', onRejection);
-    return () => {
-      window.removeEventListener('error', onError);
-      window.removeEventListener('unhandledrejection', onRejection);
-    };
-  }, []);
   const [theme, setTheme] = useState<ThemeMode>('system');
   const [themeLoaded, setThemeLoaded] = useState(pureWeb);
   const [view, setViewState] = useState<View>('dashboard');
