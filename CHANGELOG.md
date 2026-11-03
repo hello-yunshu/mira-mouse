@@ -6,7 +6,8 @@
 - 修复鼠标唤醒后只显示灯光：Full 补全不再被 500ms 读缓存吞掉，并在 Full 完成前保持等待占位。
 - 修复首屏空白：强制去重 `thinking-orbs` 携带的 React 18 与宿主 React 19，避免 hooks dispatcher 为 null。
 - 修复接收器重连/枚举抖动：`refresh_devices()` 失败时保留上次快照；真实断开仍进入空态。
-- 首次读取失败退避由 60 秒缩短为 10 秒，改善接收器插回后的恢复速度。
+- 首次读取失败退避由 60 秒缩短为 10 秒，改善接收器插回后的恢复速度；鼠标唤醒时会清除旧退避并补发 Full。
+- 修复 macOS release 构建：符号剥离会产生不可加载的 proc-macro dylib，改为保留符号（`strip = false`）。
 - 更新本地 AI handler 包至 `0.8.7`，修复标准 Tauri 构建的 `check-local-ai-assets` 阻塞。
 - 增加设备唤醒、快照乱序、拔插与枚举失败的回归测试及真机验证记录。
 
