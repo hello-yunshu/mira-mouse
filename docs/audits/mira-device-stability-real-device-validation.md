@@ -125,6 +125,7 @@ M@tauri://localhost/assets/runtime-data-cache-ClcH_MJQ.js:1:15424 ...")
 4. 设备切换：需要第二个真实匹配设备（或直连 + 接收器同时在线）。
 5. 等待页遮蔽修复：需要产品确认接收器功能可见性与鼠标写入只读边界。
 6. 完整 `local-ci.sh`：`xtask plugins sync --locked` 需要下载已发布插件资产；本阶段未触发网络下载。
+7. 标准 `tauri build` 的 `beforeBuildCommand` 在本工作区失败：`check-local-ai-assets.mjs` 报 “Local AI handler pack identity, API, minimum runtime or publisher is invalid.”。本次 debug 真机验证使用 `--config` 覆盖 `beforeBuildCommand` 跳过该预检，**不代表发布构建通过**；该本地 AI 资源问题未修复。
 
 ## 6. 分支与测试
 
