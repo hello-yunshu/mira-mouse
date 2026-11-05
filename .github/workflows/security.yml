@@ -10,17 +10,17 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4
+      - uses: actions/checkout@v7
+      - uses: github/codeql-action/init@v4
         with: { languages: 'javascript-typescript,actions' }
-      - uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4
+      - uses: github/codeql-action/analyze@v4
   rust-and-workflows:
     runs-on: ubuntu-22.04
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@v7
       - name: Install cargo-audit
-        uses: taiki-e/install-action@11159df2d5c1d751f9a9f8834551c03af0f42a20 # cargo-audit @ 2026-11-05
+        uses: taiki-e/install-action@cargo-audit
       - name: Run cargo audit
         run: |
           set -euo pipefail
