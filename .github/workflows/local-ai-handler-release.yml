@@ -28,10 +28,10 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@v7
 
       - name: Install Rust, Node and WASM tooling
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        uses: actions/setup-node@v7
         with:
           node-version: 22
       - run: |
@@ -96,14 +96,14 @@ jobs:
         run: node scripts/check-rill-compatibility.mjs --runtime-version "${{ steps.deployment.outputs.runtime-version }}"
 
       - name: Checkout Rill source matching the active Runtime
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        uses: actions/checkout@v7
         with:
           repository: hello-yunshu/rill-ml
           ref: ${{ steps.deployment.outputs.runtime-tag }}
           path: RillML
 
       - name: Cache cargo
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -272,7 +272,7 @@ jobs:
             --key-id "$MIRA_INDEX_KEY_ID" \
             --public-key-hex "$MIRA_INDEX_PUBLIC_KEY_HEX"
 
-      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
+      - uses: actions/attest-build-provenance@v4
         with:
           subject-path: |
             artifacts/${{ steps.meta.outputs.asset }}
