@@ -4,6 +4,11 @@ on:
     inputs:
       dry_run: { description: 'List candidates without deleting', required: true, default: true, type: boolean }
 permissions: { actions: write, contents: read }
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   completed-runs:
     runs-on: ubuntu-22.04

@@ -33,8 +33,8 @@ jobs:
       latest-tag: ${{ steps.plan.outputs.latest-tag }}
       update-available: ${{ steps.plan.outputs.update-available }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with: { node-version: 22 }
 
       - name: Resolve and verify latest signed Rill release
@@ -74,7 +74,7 @@ jobs:
             artifacts/rill-stable-index.json \
             artifacts/local-ai-index-payload.json
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: rill-runtime-sync-metadata
           path: artifacts
@@ -115,10 +115,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with: { node-version: 22 }
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: rill-runtime-sync-metadata
           path: artifacts
@@ -234,14 +234,14 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v8
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: rill-runtime-sync-metadata
           path: artifacts
 
       - name: Checkout the verified Rill release tools
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: hello-yunshu/rill-ml
           ref: ${{ needs.prepare.outputs.latest-tag }}
@@ -264,7 +264,7 @@ jobs:
             --key-id "$MIRA_INDEX_KEY_ID" \
             --public-key-hex "$MIRA_INDEX_PUBLIC_KEY_HEX"
 
-      - uses: actions/attest-build-provenance@v4
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
         with:
           subject-path: artifacts/next-local-ai-stable-index.json
 
