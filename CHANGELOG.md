@@ -1,6 +1,20 @@
 <!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
 # 更新日志
 
+## 1.2.9 - 2026-11-03
+
+- 修复鼠标唤醒后只显示灯光：Full 补全不再被 500ms 读缓存吞掉，并在 Full 完成前保持等待占位。
+- 修复首屏空白：强制去重 `thinking-orbs` 携带的 React 18 与宿主 React 19，避免 hooks dispatcher 为 null。
+- 修复接收器重连/枚举抖动：`refresh_devices()` 失败时保留上次快照；真实断开仍进入空态。
+- 首次读取失败退避由 60 秒缩短为 10 秒，改善接收器插回后的恢复速度；鼠标唤醒时会清除旧退避并补发 Full。
+- 修复 macOS release 构建：符号剥离会产生不可加载的 proc-macro dylib，改为保留符号（`strip = false`）。
+- 更新本地 AI handler 包至 `0.8.7`，修复标准 Tauri 构建的 `check-local-ai-assets` 阻塞。
+- 修复最新 stable 工具链上的 clippy 红灯：`fetch_update` 等价改用 `try_update`，MSRV 由 1.94 升至 1.95。
+- 升级安全依赖：`rustls 0.23.46`、`rustls-webpki 0.103.16`、`quinn-proto 0.11.19`、`webpki-root-certs 1.0.11`、`zip 9.3.0`、`event-listener 5.4.2`、`tokio 1.54.1`、`async-executor 1.14.1`、`chacha20 0.10.2`；同步升级 `tauri 2.12.5` / `tauri-plugin-updater 2.14.1`，移除 Windows 侧 `zip 4` 漏洞链。
+- 同步升级 npm Tauri 包：`@tauri-apps/api 2.12.4`、`@tauri-apps/plugin-updater 2.14.1`、`@tauri-apps/cli 2.12.4`，与 Rust crate 的 2.12 系列对齐。
+- 新增 `docs/security/audit-exceptions.md`：CI 逐条打印并引用审计例外；移除已由 `quick-xml 0.41.0` 修复的旧忽略项。
+- 增加设备唤醒、快照乱序、拔插与枚举失败的回归测试及真机验证记录。
+
 ## 1.0.0 - 2026-07-29
 
 - 修复宿主生产插件信任库中的密钥编号与公钥映射，并保留 `001`、`002` 两代签名插件的兼容性。
