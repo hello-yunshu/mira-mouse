@@ -294,6 +294,7 @@ export function AboutPage({ onBack, previewMode = false, focusUpdateToken = 0 }:
                 className="secondary"
                 active={manualCheckBusy}
                 activity="checking-app-update"
+                delayMs={0}
                 onClick={checkForUpdates}
                 disabled={update.phase === 'checking' || update.phase === 'downloading'}
               >

@@ -10,6 +10,7 @@ export interface MiraActivityButtonProps
   children: ReactNode;
   leading?: ReactNode;
   announce?: boolean;
+  delayMs?: number;
 }
 
 /**
@@ -29,6 +30,7 @@ export function MiraActivityButton({
   children,
   leading,
   announce = false,
+  delayMs,
   className,
   disabled,
   ...buttonProps
@@ -44,6 +46,7 @@ export function MiraActivityButton({
       <MiraInlineActivity
         active={active}
         activity={activity}
+        delayMs={delayMs}
         announce={announce}
         layout="overlay"
         label={(

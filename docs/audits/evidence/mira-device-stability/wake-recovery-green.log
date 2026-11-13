@@ -1,0 +1,274 @@
+[mira-diag] plan=PresenceOnly connected=false burst=false mouse_pending=false forced=None initial=None visible=true
+[mira] background: matched 1 device(s)
+[mira-diag] outcome=ready entries=1 fresh=0 names=["AM INFINITY MOUSE .100"]
+[mira-diag] emit device-snapshots-updated entries=1 selected=Some("DevSrvsID:4295882197")
+[mira-diag] emit device-updated name=AM INFINITY MOUSE .100 mouse_ready=None
+[mira-diag] plan=Full connected=true burst=false mouse_pending=false forced=Some(PresenceOnly) initial=Some(Full) visible=true
+[mira] raw receiver-status: [00, 00, 17, 01, 01, 01, 02, 00, 00, 01, 64, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] raw firmware: [f0, 08, 00, 68, 05, 52, 30, 0f, 00, 01, 64, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] raw receiver-firmware-soc: [23, c5, a4, f0, 05, 52, 30, 0f, 00, 01, 64, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] raw firmware: [ae, 09, 01, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira-diag] frontend event=mounted detail=None
+[mira] raw lighting: [88, 00, 03, 01, 07, 4b, bf, b1, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira-diag] device_snapshots response entries=1 names=["AM INFINITY MOUSE .100"] mouse_ready=[None]
+[mira] plugin workflow protocol-a-receiver-read: 5 outputs: [receiverFirmwareLed, receiverFirmwareSoc, receiverFirmwareUsb, receiverIdle, receiverLighting]
+[mira-diag] reading plan=Full mouse_ready=Some(false) caps=["receiverFirmwareLed", "receiverFirmwareSoc", "receiverFirmwareUsb", "receiverIdle", "receiverLighting"] batteries=["receiver"] statuses={"battery": Skipped, "buttonMappings": Skipped, "dpi": Skipped, "dpiButton": Skipped, "firmwareSoc": Skipped, "firmwareUsb": Skipped, "fps": Skipped, "receiverFirmwareLed": Ok, "receiverFirmwareSoc": Ok, "receiverFirmwareUsb": Ok, "receiverIdle": Ok, "receiverLighting": Ok, "settings": Skipped}
+[mira-diag] wake-recovery path=DevSrvsID:4295882197 plan=Full present=false armed=true recovered=false
+[mira-diag] snapshot plan=Full name=AM INFINITY MOUSE .100 mouse_ready=Some(false) caps=["receiverFirmwareLed", "receiverFirmwareSoc", "receiverFirmwareUsb", "receiverIdle", "receiverLighting"] plugin_caps=["battery", "dpi", "polling-rate", "sleep-time", "profile", "lighting", "firmware", "serial", "dpi-colors", "fps", "dpi-button", "rotation", "debounce", "lod", "motion-sync", "angle-snapping", "ripple-control", "device-settings", "receiver-status", "button-mappings"] batteries=["receiver"] readiness=DegradedFull
+[mira-diag] outcome=ready entries=1 fresh=1 names=["AM INFINITY MOUSE .100"]
+[mira-diag] emit device-snapshots-updated entries=1 selected=Some("DevSrvsID:4295882197")
+[mira-diag] emit device-updated name=AM INFINITY MOUSE .100 mouse_ready=Some(false)
+[mira-diag] injected BatteryOnly probe (mouse_ready=Some(false))
+[mira-diag] plan=Quick connected=true burst=true mouse_pending=true forced=Some(BatteryOnly) initial=None visible=true
+[mira] raw receiver-status: [00, 00, 17, 01, 01, 01, 02, 00, 00, 01, 64, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] raw lighting: [88, 00, 03, 01, 07, 4b, bf, b1, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] projected workflow protocol-a-receiver-read: 5/13 steps, outputs: [receiverIdle, receiverLighting]
+[mira-diag] reading plan=Quick mouse_ready=Some(false) caps=["receiverIdle", "receiverLighting"] batteries=["receiver"] statuses={"battery": Skipped, "dpi": Skipped, "receiverIdle": Ok, "receiverLighting": Ok, "settings": Skipped}
+[mira-diag] wake-recovery path=DevSrvsID:4295882197 plan=Quick present=false armed=true recovered=false
+[mira-diag] snapshot plan=Quick name=AM INFINITY MOUSE .100 mouse_ready=Some(false) caps=["receiverFirmwareLed", "receiverFirmwareSoc", "receiverFirmwareUsb", "receiverIdle", "receiverLighting"] plugin_caps=["battery", "dpi", "polling-rate", "sleep-time", "profile", "lighting", "firmware", "serial", "dpi-colors", "fps", "dpi-button", "rotation", "debounce", "lod", "motion-sync", "angle-snapping", "ripple-control", "device-settings", "receiver-status", "button-mappings"] batteries=["receiver"] readiness=Quick
+[mira-diag] outcome=ready entries=1 fresh=1 names=["AM INFINITY MOUSE .100"]
+[mira-diag] plan=Quick connected=true burst=true mouse_pending=true forced=None initial=None visible=true
+[mira-diag] outcome=ready entries=1 fresh=0 names=["AM INFINITY MOUSE .100"]
+[mira-diag] plan=Quick connected=true burst=true mouse_pending=true forced=None initial=None visible=true
+[mira] raw receiver-status: [00, 00, 17, 01, 01, 01, 02, 00, 00, 01, 64, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] raw lighting: [88, 00, 03, 01, 07, 4b, bf, b1, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] projected workflow protocol-a-receiver-read: 5/13 steps, outputs: [receiverIdle, receiverLighting]
+[mira-diag] reading plan=Quick mouse_ready=Some(false) caps=["receiverIdle", "receiverLighting"] batteries=["receiver"] statuses={"battery": Skipped, "dpi": Skipped, "receiverIdle": Ok, "receiverLighting": Ok, "settings": Skipped}
+[mira-diag] wake-recovery path=DevSrvsID:4295882197 plan=Quick present=false armed=true recovered=false
+[mira-diag] snapshot plan=Quick name=AM INFINITY MOUSE .100 mouse_ready=Some(false) caps=["receiverFirmwareLed", "receiverFirmwareSoc", "receiverFirmwareUsb", "receiverIdle", "receiverLighting"] plugin_caps=["battery", "dpi", "polling-rate", "sleep-time", "profile", "lighting", "firmware", "serial", "dpi-colors", "fps", "dpi-button", "rotation", "debounce", "lod", "motion-sync", "angle-snapping", "ripple-control", "device-settings", "receiver-status", "button-mappings"] batteries=["receiver"] readiness=Quick
+[mira-diag] outcome=ready entries=1 fresh=1 names=["AM INFINITY MOUSE .100"]
+[mira-diag] injected BatteryOnly probe (mouse_ready=Some(false))
+[mira-diag] plan=Quick connected=true burst=true mouse_pending=true forced=Some(BatteryOnly) initial=None visible=true
+[mira] raw receiver-status: [00, 00, 17, 01, 01, 01, 02, 00, 00, 01, 64, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] raw lighting: [88, 00, 03, 01, 07, 4b, bf, b1, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] projected workflow protocol-a-receiver-read: 5/13 steps, outputs: [receiverIdle, receiverLighting]
+[mira-diag] reading plan=Quick mouse_ready=Some(false) caps=["receiverIdle", "receiverLighting"] batteries=["receiver"] statuses={"battery": Skipped, "dpi": Skipped, "receiverIdle": Ok, "receiverLighting": Ok, "settings": Skipped}
+[mira-diag] wake-recovery path=DevSrvsID:4295882197 plan=Quick present=false armed=true recovered=false
+[mira-diag] snapshot plan=Quick name=AM INFINITY MOUSE .100 mouse_ready=Some(false) caps=["receiverFirmwareLed", "receiverFirmwareSoc", "receiverFirmwareUsb", "receiverIdle", "receiverLighting"] plugin_caps=["battery", "dpi", "polling-rate", "sleep-time", "profile", "lighting", "firmware", "serial", "dpi-colors", "fps", "dpi-button", "rotation", "debounce", "lod", "motion-sync", "angle-snapping", "ripple-control", "device-settings", "receiver-status", "button-mappings"] batteries=["receiver"] readiness=Quick
+[mira-diag] outcome=ready entries=1 fresh=1 names=["AM INFINITY MOUSE .100"]
+[mira-diag] plan=Quick connected=true burst=true mouse_pending=true forced=None initial=None visible=true
+[mira-diag] outcome=ready entries=1 fresh=0 names=["AM INFINITY MOUSE .100"]
+[mira-diag] plan=Quick connected=true burst=true mouse_pending=true forced=None initial=None visible=true
+[mira] raw receiver-status: [00, 00, 17, 01, 01, 01, 02, 00, 00, 01, 64, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] raw lighting: [88, 00, 03, 01, 07, 4b, bf, b1, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] projected workflow protocol-a-receiver-read: 5/13 steps, outputs: [receiverIdle, receiverLighting]
+[mira-diag] reading plan=Quick mouse_ready=Some(false) caps=["receiverIdle", "receiverLighting"] batteries=["receiver"] statuses={"battery": Skipped, "dpi": Skipped, "receiverIdle": Ok, "receiverLighting": Ok, "settings": Skipped}
+[mira-diag] wake-recovery path=DevSrvsID:4295882197 plan=Quick present=false armed=true recovered=false
+[mira-diag] snapshot plan=Quick name=AM INFINITY MOUSE .100 mouse_ready=Some(false) caps=["receiverFirmwareLed", "receiverFirmwareSoc", "receiverFirmwareUsb", "receiverIdle", "receiverLighting"] plugin_caps=["battery", "dpi", "polling-rate", "sleep-time", "profile", "lighting", "firmware", "serial", "dpi-colors", "fps", "dpi-button", "rotation", "debounce", "lod", "motion-sync", "angle-snapping", "ripple-control", "device-settings", "receiver-status", "button-mappings"] batteries=["receiver"] readiness=Quick
+[mira-diag] outcome=ready entries=1 fresh=1 names=["AM INFINITY MOUSE .100"]
+[mira-diag] injected BatteryOnly probe (mouse_ready=Some(false))
+[mira-diag] plan=Quick connected=true burst=true mouse_pending=true forced=Some(BatteryOnly) initial=None visible=true
+[mira] raw receiver-status: [00, 00, 17, 01, 01, 01, 02, 00, 00, 01, 64, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] raw lighting: [88, 00, 03, 01, 07, 4b, bf, b1, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] projected workflow protocol-a-receiver-read: 5/13 steps, outputs: [receiverIdle, receiverLighting]
+[mira-diag] reading plan=Quick mouse_ready=Some(false) caps=["receiverIdle", "receiverLighting"] batteries=["receiver"] statuses={"battery": Skipped, "dpi": Skipped, "receiverIdle": Ok, "receiverLighting": Ok, "settings": Skipped}
+[mira-diag] wake-recovery path=DevSrvsID:4295882197 plan=Quick present=false armed=true recovered=false
+[mira-diag] snapshot plan=Quick name=AM INFINITY MOUSE .100 mouse_ready=Some(false) caps=["receiverFirmwareLed", "receiverFirmwareSoc", "receiverFirmwareUsb", "receiverIdle", "receiverLighting"] plugin_caps=["battery", "dpi", "polling-rate", "sleep-time", "profile", "lighting", "firmware", "serial", "dpi-colors", "fps", "dpi-button", "rotation", "debounce", "lod", "motion-sync", "angle-snapping", "ripple-control", "device-settings", "receiver-status", "button-mappings"] batteries=["receiver"] readiness=Quick
+[mira-diag] outcome=ready entries=1 fresh=1 names=["AM INFINITY MOUSE .100"]
+[mira-diag] plan=BatteryOnly connected=true burst=false mouse_pending=true forced=None initial=None visible=true
+[mira] raw receiver-status: [00, 00, 17, 01, 01, 01, 02, 00, 00, 01, 64, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] projected workflow protocol-a-receiver-read: 2/13 steps, outputs: [receiverIdle]
+[mira-diag] reading plan=BatteryOnly mouse_ready=Some(false) caps=["receiverIdle"] batteries=["receiver"] statuses={"battery": Skipped, "receiverIdle": Ok}
+[mira-diag] wake-recovery path=DevSrvsID:4295882197 plan=BatteryOnly present=false armed=true recovered=false
+[mira-diag] snapshot plan=BatteryOnly name=AM INFINITY MOUSE .100 mouse_ready=Some(false) caps=["receiverFirmwareLed", "receiverFirmwareSoc", "receiverFirmwareUsb", "receiverIdle", "receiverLighting"] plugin_caps=["battery", "dpi", "polling-rate", "sleep-time", "profile", "lighting", "firmware", "serial", "dpi-colors", "fps", "dpi-button", "rotation", "debounce", "lod", "motion-sync", "angle-snapping", "ripple-control", "device-settings", "receiver-status", "button-mappings"] batteries=["receiver"] readiness=Quick
+[mira-diag] outcome=ready entries=1 fresh=1 names=["AM INFINITY MOUSE .100"]
+[mira-diag] injected BatteryOnly probe (mouse_ready=Some(false))
+[mira-diag] plan=BatteryOnly connected=true burst=false mouse_pending=true forced=Some(BatteryOnly) initial=None visible=true
+[mira] raw receiver-status: [00, 00, 17, 01, 01, 01, 02, 00, 00, 01, 64, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] projected workflow protocol-a-receiver-read: 2/13 steps, outputs: [receiverIdle]
+[mira-diag] reading plan=BatteryOnly mouse_ready=Some(false) caps=["receiverIdle"] batteries=["receiver"] statuses={"battery": Skipped, "receiverIdle": Ok}
+[mira-diag] wake-recovery path=DevSrvsID:4295882197 plan=BatteryOnly present=false armed=true recovered=false
+[mira-diag] snapshot plan=BatteryOnly name=AM INFINITY MOUSE .100 mouse_ready=Some(false) caps=["receiverFirmwareLed", "receiverFirmwareSoc", "receiverFirmwareUsb", "receiverIdle", "receiverLighting"] plugin_caps=["battery", "dpi", "polling-rate", "sleep-time", "profile", "lighting", "firmware", "serial", "dpi-colors", "fps", "dpi-button", "rotation", "debounce", "lod", "motion-sync", "angle-snapping", "ripple-control", "device-settings", "receiver-status", "button-mappings"] batteries=["receiver"] readiness=Quick
+[mira-diag] outcome=ready entries=1 fresh=1 names=["AM INFINITY MOUSE .100"]
+[mira-diag] plan=BatteryOnly connected=true burst=false mouse_pending=true forced=None initial=None visible=true
+[mira-diag] outcome=ready entries=1 fresh=0 names=["AM INFINITY MOUSE .100"]
+[mira-diag] injected BatteryOnly probe (mouse_ready=Some(false))
+[mira-diag] plan=BatteryOnly connected=true burst=false mouse_pending=true forced=Some(BatteryOnly) initial=None visible=true
+[mira] raw receiver-status: [00, 00, 17, 01, 01, 01, 02, 00, 00, 01, 64, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] projected workflow protocol-a-receiver-read: 2/13 steps, outputs: [receiverIdle]
+[mira-diag] reading plan=BatteryOnly mouse_ready=Some(false) caps=["receiverIdle"] batteries=["receiver"] statuses={"battery": Skipped, "receiverIdle": Ok}
+[mira-diag] wake-recovery path=DevSrvsID:4295882197 plan=BatteryOnly present=false armed=true recovered=false
+[mira-diag] snapshot plan=BatteryOnly name=AM INFINITY MOUSE .100 mouse_ready=Some(false) caps=["receiverFirmwareLed", "receiverFirmwareSoc", "receiverFirmwareUsb", "receiverIdle", "receiverLighting"] plugin_caps=["battery", "dpi", "polling-rate", "sleep-time", "profile", "lighting", "firmware", "serial", "dpi-colors", "fps", "dpi-button", "rotation", "debounce", "lod", "motion-sync", "angle-snapping", "ripple-control", "device-settings", "receiver-status", "button-mappings"] batteries=["receiver"] readiness=Quick
+[mira-diag] outcome=ready entries=1 fresh=1 names=["AM INFINITY MOUSE .100"]
+[mira-diag] plan=BatteryOnly connected=true burst=false mouse_pending=true forced=None initial=None visible=true
+[mira-diag] outcome=ready entries=1 fresh=0 names=["AM INFINITY MOUSE .100"]
+[mira-diag] injected BatteryOnly probe (mouse_ready=Some(false))
+[mira-diag] plan=BatteryOnly connected=true burst=false mouse_pending=true forced=Some(BatteryOnly) initial=None visible=true
+[mira] raw receiver-status: [00, 00, 17, 01, 01, 01, 02, 00, 00, 01, 64, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] projected workflow protocol-a-receiver-read: 2/13 steps, outputs: [receiverIdle]
+[mira-diag] reading plan=BatteryOnly mouse_ready=Some(false) caps=["receiverIdle"] batteries=["receiver"] statuses={"battery": Skipped, "receiverIdle": Ok}
+[mira-diag] wake-recovery path=DevSrvsID:4295882197 plan=BatteryOnly present=false armed=true recovered=false
+[mira-diag] snapshot plan=BatteryOnly name=AM INFINITY MOUSE .100 mouse_ready=Some(false) caps=["receiverFirmwareLed", "receiverFirmwareSoc", "receiverFirmwareUsb", "receiverIdle", "receiverLighting"] plugin_caps=["battery", "dpi", "polling-rate", "sleep-time", "profile", "lighting", "firmware", "serial", "dpi-colors", "fps", "dpi-button", "rotation", "debounce", "lod", "motion-sync", "angle-snapping", "ripple-control", "device-settings", "receiver-status", "button-mappings"] batteries=["receiver"] readiness=Quick
+[mira-diag] outcome=ready entries=1 fresh=1 names=["AM INFINITY MOUSE .100"]
+[mira-diag] plan=BatteryOnly connected=true burst=false mouse_pending=true forced=None initial=None visible=true
+[mira-diag] outcome=ready entries=1 fresh=0 names=["AM INFINITY MOUSE .100"]
+[mira-diag] injected BatteryOnly probe (mouse_ready=Some(false))
+[mira-diag] plan=BatteryOnly connected=true burst=false mouse_pending=true forced=Some(BatteryOnly) initial=None visible=true
+[mira] raw receiver-status: [00, 00, 17, 01, 01, 01, 02, 00, 00, 01, 64, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] projected workflow protocol-a-receiver-read: 2/13 steps, outputs: [receiverIdle]
+[mira-diag] reading plan=BatteryOnly mouse_ready=Some(false) caps=["receiverIdle"] batteries=["receiver"] statuses={"battery": Skipped, "receiverIdle": Ok}
+[mira-diag] wake-recovery path=DevSrvsID:4295882197 plan=BatteryOnly present=false armed=true recovered=false
+[mira-diag] snapshot plan=BatteryOnly name=AM INFINITY MOUSE .100 mouse_ready=Some(false) caps=["receiverFirmwareLed", "receiverFirmwareSoc", "receiverFirmwareUsb", "receiverIdle", "receiverLighting"] plugin_caps=["battery", "dpi", "polling-rate", "sleep-time", "profile", "lighting", "firmware", "serial", "dpi-colors", "fps", "dpi-button", "rotation", "debounce", "lod", "motion-sync", "angle-snapping", "ripple-control", "device-settings", "receiver-status", "button-mappings"] batteries=["receiver"] readiness=Quick
+[mira-diag] outcome=ready entries=1 fresh=1 names=["AM INFINITY MOUSE .100"]
+[mira-diag] plan=BatteryOnly connected=true burst=false mouse_pending=true forced=None initial=None visible=true
+[mira-diag] outcome=ready entries=1 fresh=0 names=["AM INFINITY MOUSE .100"]
+[mira-diag] injected BatteryOnly probe (mouse_ready=Some(false))
+[mira-diag] plan=BatteryOnly connected=true burst=false mouse_pending=true forced=Some(BatteryOnly) initial=None visible=true
+[mira] raw receiver-status: [00, 00, 17, 01, 01, 01, 02, 00, 00, 01, 64, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] projected workflow protocol-a-receiver-read: 2/13 steps, outputs: [receiverIdle]
+[mira-diag] reading plan=BatteryOnly mouse_ready=Some(false) caps=["receiverIdle"] batteries=["receiver"] statuses={"battery": Skipped, "receiverIdle": Ok}
+[mira-diag] wake-recovery path=DevSrvsID:4295882197 plan=BatteryOnly present=false armed=true recovered=false
+[mira-diag] snapshot plan=BatteryOnly name=AM INFINITY MOUSE .100 mouse_ready=Some(false) caps=["receiverFirmwareLed", "receiverFirmwareSoc", "receiverFirmwareUsb", "receiverIdle", "receiverLighting"] plugin_caps=["battery", "dpi", "polling-rate", "sleep-time", "profile", "lighting", "firmware", "serial", "dpi-colors", "fps", "dpi-button", "rotation", "debounce", "lod", "motion-sync", "angle-snapping", "ripple-control", "device-settings", "receiver-status", "button-mappings"] batteries=["receiver"] readiness=Quick
+[mira-diag] outcome=ready entries=1 fresh=1 names=["AM INFINITY MOUSE .100"]
+[mira-diag] plan=BatteryOnly connected=true burst=false mouse_pending=true forced=None initial=None visible=true
+[mira-diag] outcome=ready entries=1 fresh=0 names=["AM INFINITY MOUSE .100"]
+[mira-diag] injected BatteryOnly probe (mouse_ready=Some(false))
+[mira-diag] plan=BatteryOnly connected=true burst=false mouse_pending=true forced=Some(BatteryOnly) initial=None visible=true
+[mira] raw receiver-status: [00, 00, 17, 01, 01, 01, 02, 00, 00, 01, 64, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] projected workflow protocol-a-receiver-read: 2/13 steps, outputs: [receiverIdle]
+[mira-diag] reading plan=BatteryOnly mouse_ready=Some(false) caps=["receiverIdle"] batteries=["receiver"] statuses={"battery": Skipped, "receiverIdle": Ok}
+[mira-diag] wake-recovery path=DevSrvsID:4295882197 plan=BatteryOnly present=false armed=true recovered=false
+[mira-diag] snapshot plan=BatteryOnly name=AM INFINITY MOUSE .100 mouse_ready=Some(false) caps=["receiverFirmwareLed", "receiverFirmwareSoc", "receiverFirmwareUsb", "receiverIdle", "receiverLighting"] plugin_caps=["battery", "dpi", "polling-rate", "sleep-time", "profile", "lighting", "firmware", "serial", "dpi-colors", "fps", "dpi-button", "rotation", "debounce", "lod", "motion-sync", "angle-snapping", "ripple-control", "device-settings", "receiver-status", "button-mappings"] batteries=["receiver"] readiness=Quick
+[mira-diag] outcome=ready entries=1 fresh=1 names=["AM INFINITY MOUSE .100"]
+[mira-diag] plan=BatteryOnly connected=true burst=false mouse_pending=true forced=None initial=None visible=true
+[mira-diag] outcome=ready entries=1 fresh=0 names=["AM INFINITY MOUSE .100"]
+[mira-diag] injected BatteryOnly probe (mouse_ready=Some(false))
+[mira-diag] plan=BatteryOnly connected=true burst=false mouse_pending=true forced=Some(BatteryOnly) initial=None visible=true
+[mira] raw receiver-status: [00, 00, 17, 01, 01, 01, 02, 00, 00, 01, 64, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] projected workflow protocol-a-receiver-read: 2/13 steps, outputs: [receiverIdle]
+[mira-diag] reading plan=BatteryOnly mouse_ready=Some(false) caps=["receiverIdle"] batteries=["receiver"] statuses={"battery": Skipped, "receiverIdle": Ok}
+[mira-diag] wake-recovery path=DevSrvsID:4295882197 plan=BatteryOnly present=false armed=true recovered=false
+[mira-diag] snapshot plan=BatteryOnly name=AM INFINITY MOUSE .100 mouse_ready=Some(false) caps=["receiverFirmwareLed", "receiverFirmwareSoc", "receiverFirmwareUsb", "receiverIdle", "receiverLighting"] plugin_caps=["battery", "dpi", "polling-rate", "sleep-time", "profile", "lighting", "firmware", "serial", "dpi-colors", "fps", "dpi-button", "rotation", "debounce", "lod", "motion-sync", "angle-snapping", "ripple-control", "device-settings", "receiver-status", "button-mappings"] batteries=["receiver"] readiness=Quick
+[mira-diag] outcome=ready entries=1 fresh=1 names=["AM INFINITY MOUSE .100"]
+[mira-diag] plan=BatteryOnly connected=true burst=false mouse_pending=true forced=None initial=None visible=true
+[mira-diag] outcome=ready entries=1 fresh=0 names=["AM INFINITY MOUSE .100"]
+[mira-diag] injected BatteryOnly probe (mouse_ready=Some(false))
+[mira-diag] plan=BatteryOnly connected=true burst=false mouse_pending=true forced=Some(BatteryOnly) initial=None visible=true
+[mira] raw receiver-status: [00, 00, 17, 01, 01, 01, 02, 00, 00, 01, 64, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] projected workflow protocol-a-receiver-read: 2/13 steps, outputs: [receiverIdle]
+[mira-diag] reading plan=BatteryOnly mouse_ready=Some(false) caps=["receiverIdle"] batteries=["receiver"] statuses={"battery": Skipped, "receiverIdle": Ok}
+[mira-diag] wake-recovery path=DevSrvsID:4295882197 plan=BatteryOnly present=false armed=true recovered=false
+[mira-diag] snapshot plan=BatteryOnly name=AM INFINITY MOUSE .100 mouse_ready=Some(false) caps=["receiverFirmwareLed", "receiverFirmwareSoc", "receiverFirmwareUsb", "receiverIdle", "receiverLighting"] plugin_caps=["battery", "dpi", "polling-rate", "sleep-time", "profile", "lighting", "firmware", "serial", "dpi-colors", "fps", "dpi-button", "rotation", "debounce", "lod", "motion-sync", "angle-snapping", "ripple-control", "device-settings", "receiver-status", "button-mappings"] batteries=["receiver"] readiness=Quick
+[mira-diag] outcome=ready entries=1 fresh=1 names=["AM INFINITY MOUSE .100"]
+[mira-diag] plan=BatteryOnly connected=true burst=false mouse_pending=true forced=None initial=None visible=true
+[mira-diag] outcome=ready entries=1 fresh=0 names=["AM INFINITY MOUSE .100"]
+[mira-diag] injected BatteryOnly probe (mouse_ready=Some(false))
+[mira-diag] plan=BatteryOnly connected=true burst=false mouse_pending=true forced=Some(BatteryOnly) initial=None visible=true
+[mira] raw receiver-status: [00, 00, 17, 01, 01, 01, 02, 00, 00, 01, 64, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] projected workflow protocol-a-receiver-read: 2/13 steps, outputs: [receiverIdle]
+[mira-diag] reading plan=BatteryOnly mouse_ready=Some(false) caps=["receiverIdle"] batteries=["receiver"] statuses={"battery": Skipped, "receiverIdle": Ok}
+[mira-diag] wake-recovery path=DevSrvsID:4295882197 plan=BatteryOnly present=false armed=true recovered=false
+[mira-diag] snapshot plan=BatteryOnly name=AM INFINITY MOUSE .100 mouse_ready=Some(false) caps=["receiverFirmwareLed", "receiverFirmwareSoc", "receiverFirmwareUsb", "receiverIdle", "receiverLighting"] plugin_caps=["battery", "dpi", "polling-rate", "sleep-time", "profile", "lighting", "firmware", "serial", "dpi-colors", "fps", "dpi-button", "rotation", "debounce", "lod", "motion-sync", "angle-snapping", "ripple-control", "device-settings", "receiver-status", "button-mappings"] batteries=["receiver"] readiness=Quick
+[mira-diag] outcome=ready entries=1 fresh=1 names=["AM INFINITY MOUSE .100"]
+[mira-diag] plan=BatteryOnly connected=true burst=false mouse_pending=true forced=None initial=None visible=true
+[mira-diag] outcome=ready entries=1 fresh=0 names=["AM INFINITY MOUSE .100"]
+[mira-diag] injected BatteryOnly probe (mouse_ready=Some(false))
+[mira-diag] plan=BatteryOnly connected=true burst=false mouse_pending=true forced=Some(BatteryOnly) initial=None visible=true
+[mira] raw receiver-status: [00, 00, 17, 01, 01, 01, 02, 00, 00, 01, 64, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] projected workflow protocol-a-receiver-read: 2/13 steps, outputs: [receiverIdle]
+[mira-diag] reading plan=BatteryOnly mouse_ready=Some(false) caps=["receiverIdle"] batteries=["receiver"] statuses={"battery": Skipped, "receiverIdle": Ok}
+[mira-diag] wake-recovery path=DevSrvsID:4295882197 plan=BatteryOnly present=false armed=true recovered=false
+[mira-diag] snapshot plan=BatteryOnly name=AM INFINITY MOUSE .100 mouse_ready=Some(false) caps=["receiverFirmwareLed", "receiverFirmwareSoc", "receiverFirmwareUsb", "receiverIdle", "receiverLighting"] plugin_caps=["battery", "dpi", "polling-rate", "sleep-time", "profile", "lighting", "firmware", "serial", "dpi-colors", "fps", "dpi-button", "rotation", "debounce", "lod", "motion-sync", "angle-snapping", "ripple-control", "device-settings", "receiver-status", "button-mappings"] batteries=["receiver"] readiness=Quick
+[mira-diag] outcome=ready entries=1 fresh=1 names=["AM INFINITY MOUSE .100"]
+[mira-diag] plan=BatteryOnly connected=true burst=false mouse_pending=true forced=None initial=None visible=true
+[mira-diag] outcome=ready entries=1 fresh=0 names=["AM INFINITY MOUSE .100"]
+[mira-diag] injected BatteryOnly probe (mouse_ready=Some(false))
+[mira-diag] plan=BatteryOnly connected=true burst=false mouse_pending=true forced=Some(BatteryOnly) initial=None visible=true
+[mira] raw receiver-status: [00, 00, 17, 01, 00, 01, 02, 00, 00, 01, 64, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] raw receiver-status: [00, 00, 17, 01, 00, 01, 02, 00, 00, 01, 64, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] raw battery: [d6, 00, 01, 17, 00, 00, 00, 29, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] projected workflow protocol-a-receiver-read: 2/13 steps, outputs: [battery, receiver, receiverIdle]
+[mira-diag] reading plan=BatteryOnly mouse_ready=Some(true) caps=["battery", "receiver", "receiverIdle"] batteries=["mouse", "receiver"] statuses={"battery": Ok, "receiverIdle": Ok}
+[mira-diag] wake-recovery path=DevSrvsID:4295882197 plan=BatteryOnly present=true armed=false recovered=true
+[mira-diag] wake-recovery requests Full after mouse component returned
+[mira-diag] withholding mouse_ready=true until Full completes
+[mira-diag] snapshot plan=BatteryOnly name=AM INFINITY MOUSE .100 mouse_ready=Some(false) caps=["receiverFirmwareLed", "receiverFirmwareSoc", "receiverFirmwareUsb", "receiverIdle", "receiverLighting"] plugin_caps=["battery", "dpi", "polling-rate", "sleep-time", "profile", "lighting", "firmware", "serial", "dpi-colors", "fps", "dpi-button", "rotation", "debounce", "lod", "motion-sync", "angle-snapping", "ripple-control", "device-settings", "receiver-status", "button-mappings"] batteries=["receiver", "mouse"] readiness=Quick
+[mira-diag] outcome=ready entries=1 fresh=1 names=["AM INFINITY MOUSE .100"]
+[mira-diag] emit device-snapshots-updated entries=1 selected=Some("DevSrvsID:4295882197")
+[mira-diag] emit device-updated name=AM INFINITY MOUSE .100 mouse_ready=Some(false)
+[mira-diag] plan=Full connected=true burst=false mouse_pending=true forced=Some(Full) initial=None visible=true
+[mira] raw receiver-status: [00, 00, 17, 01, 00, 01, 02, 00, 00, 01, 64, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] raw firmware: [f0, 08, 00, 68, 05, 52, 30, 0f, 00, 01, 64, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] raw receiver-firmware-soc: [23, c5, a4, f0, 05, 52, 30, 0f, 00, 01, 64, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] raw firmware: [ae, 09, 01, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] raw receiver-status: [00, 00, 17, 01, 00, 01, 02, 00, 00, 01, 64, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] raw battery: [d6, 00, 01, 17, 00, 00, 00, 29, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] raw receiver-status: [00, 00, 17, 01, 00, 01, 02, 00, 00, 01, 64, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] raw dpi: [d4, 00, 01, 08, 00, 00, 00, 2b, 4c, 04, 3a, 07, 60, 09, 80, 0c, 88, 13, 10, 27, 20, 4e, 90, 65, 4c, 04, 3a, 07, 60, 09, 80, 0c]
+[mira] raw receiver-status: [00, 00, 17, 01, 00, 01, 02, 00, 00, 01, 64, 07, 60, 09, 80, 0c, 88, 13, 10, 27, 20, 4e, 90, 65, 4c, 04, 3a, 07, 60, 09, 80, 0c]
+[mira] raw settings: [d3, 00, 00, 00, 00, 00, 00, 2c, 00, 01, 03, 00, 00, 00, 0c, 01, 01, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] raw lighting: [88, 00, 03, 01, 07, 4b, bf, b1, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] raw receiver-status: [00, 00, 17, 01, 00, 01, 02, 00, 00, 01, 64, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] raw fps: [e2, 00, 00, 00, 00, 00, 00, 1d, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] raw receiver-status: [00, 00, 17, 01, 00, 01, 02, 00, 00, 01, 64, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] raw dpi-button: [e3, 01, 00, 00, 00, 00, 00, 1c, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] raw receiver-status: [00, 00, 17, 01, 00, 01, 02, 00, 00, 01, 64, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] raw firmware: [ad, 00, 00, 00, 00, 00, 00, 52, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] raw receiver-status: [00, 00, 17, 01, 00, 01, 02, 00, 00, 01, 64, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] raw firmware: [80, 20, 03, 00, 00, 00, 00, 7f, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] raw receiver-status: [00, 00, 17, 01, 00, 01, 02, 00, 00, 01, 64, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] raw button-mappings: [01, 00, f0, 00, 01, 00, f1, 00, 01, 00, f2, 00, 01, 00, f4, 00, 01, 00, f3, 00, 14, 00, 00, 00, 0a, 05, 00, 00, 00, 00, 00, 00]
+[mira] plugin workflow protocol-a-receiver-read: 14 outputs: [battery, buttonMappings, dpi, dpiButton, firmwareSoc, firmwareUsb, fps, receiver, receiverFirmwareLed, receiverFirmwareSoc, receiverFirmwareUsb, receiverIdle, receiverLighting, settings]
+[mira-diag] reading plan=Full mouse_ready=Some(true) caps=["battery", "buttonMappings", "dpi", "dpiButton", "firmwareSoc", "firmwareUsb", "fps", "mouseLighting", "receiver", "receiverFirmwareLed", "receiverFirmwareSoc", "receiverFirmwareUsb", "receiverIdle", "receiverLighting", "settings"] batteries=["mouse", "receiver"] statuses={"battery": Ok, "buttonMappings": Ok, "dpi": Ok, "dpiButton": Ok, "firmwareSoc": Ok, "firmwareUsb": Ok, "fps": Ok, "receiverFirmwareLed": Ok, "receiverFirmwareSoc": Ok, "receiverFirmwareUsb": Ok, "receiverIdle": Ok, "receiverLighting": Ok, "settings": Ok}
+[mira-diag] wake-recovery path=DevSrvsID:4295882197 plan=Full present=true armed=false recovered=false
+[mira-diag] snapshot plan=Full name=AM INFINITY MOUSE .100 mouse_ready=Some(true) caps=["battery", "buttonMappings", "dpi", "dpiButton", "firmwareSoc", "firmwareUsb", "fps", "mouseLighting", "receiver", "receiverFirmwareLed", "receiverFirmwareSoc", "receiverFirmwareUsb", "receiverIdle", "receiverLighting", "settings"] plugin_caps=["battery", "dpi", "polling-rate", "sleep-time", "profile", "lighting", "firmware", "serial", "dpi-colors", "fps", "dpi-button", "rotation", "debounce", "lod", "motion-sync", "angle-snapping", "ripple-control", "device-settings", "receiver-status", "button-mappings"] batteries=["mouse", "receiver"] readiness=Full
+[mira-diag] outcome=ready entries=1 fresh=1 names=["AM INFINITY MOUSE .100"]
+[mira-diag] emit device-snapshots-updated entries=1 selected=Some("DevSrvsID:4295882197")
+[mira-diag] emit device-updated name=AM INFINITY MOUSE .100 mouse_ready=Some(true)
+[mira-diag] plan=PresenceOnly connected=true burst=false mouse_pending=false forced=None initial=None visible=true
+[mira-diag] outcome=ready entries=1 fresh=0 names=["AM INFINITY MOUSE .100"]
+[mira-diag] plan=PresenceOnly connected=true burst=false mouse_pending=false forced=None initial=None visible=true
+[mira-diag] outcome=ready entries=1 fresh=0 names=["AM INFINITY MOUSE .100"]
+[mira-diag] plan=PresenceOnly connected=true burst=false mouse_pending=false forced=None initial=None visible=true
+[mira-diag] outcome=ready entries=1 fresh=0 names=["AM INFINITY MOUSE .100"]
+[mira-diag] plan=PresenceOnly connected=true burst=false mouse_pending=false forced=None initial=None visible=true
+[mira-diag] outcome=ready entries=1 fresh=0 names=["AM INFINITY MOUSE .100"]
+[mira-diag] plan=PresenceOnly connected=true burst=false mouse_pending=false forced=None initial=None visible=true
+[mira-diag] outcome=ready entries=1 fresh=0 names=["AM INFINITY MOUSE .100"]
+[mira-diag] plan=PresenceOnly connected=true burst=false mouse_pending=false forced=None initial=None visible=true
+[mira-diag] outcome=ready entries=1 fresh=0 names=["AM INFINITY MOUSE .100"]
+[mira-diag] injected BatteryOnly probe (mouse_ready=Some(true))
+[mira-diag] plan=BatteryOnly connected=true burst=false mouse_pending=false forced=Some(BatteryOnly) initial=None visible=true
+[mira] raw receiver-status: [00, 00, 17, 01, 00, 01, 02, 00, 00, 01, 64, 00, 01, 00, f4, 00, 01, 00, f3, 00, 14, 00, 00, 00, 0a, 05, 00, 00, 00, 00, 00, 00]
+[mira] raw receiver-status: [00, 00, 17, 01, 00, 01, 02, 00, 00, 01, 64, 00, 01, 00, f4, 00, 01, 00, f3, 00, 14, 00, 00, 00, 0a, 05, 00, 00, 00, 00, 00, 00]
+[mira] raw battery: [d6, 00, 01, 17, 00, 00, 00, 29, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] projected workflow protocol-a-receiver-read: 2/13 steps, outputs: [battery, receiver, receiverIdle]
+[mira-diag] reading plan=BatteryOnly mouse_ready=Some(true) caps=["battery", "receiver", "receiverIdle"] batteries=["mouse", "receiver"] statuses={"battery": Ok, "receiverIdle": Ok}
+[mira-diag] wake-recovery path=DevSrvsID:4295882197 plan=BatteryOnly present=true armed=false recovered=false
+[mira-diag] snapshot plan=BatteryOnly name=AM INFINITY MOUSE .100 mouse_ready=Some(true) caps=["battery", "buttonMappings", "dpi", "dpiButton", "firmwareSoc", "firmwareUsb", "fps", "mouseLighting", "receiver", "receiverFirmwareLed", "receiverFirmwareSoc", "receiverFirmwareUsb", "receiverIdle", "receiverLighting", "settings"] plugin_caps=["battery", "dpi", "polling-rate", "sleep-time", "profile", "lighting", "firmware", "serial", "dpi-colors", "fps", "dpi-button", "rotation", "debounce", "lod", "motion-sync", "angle-snapping", "ripple-control", "device-settings", "receiver-status", "button-mappings"] batteries=["mouse", "receiver"] readiness=Quick
+[mira-diag] outcome=ready entries=1 fresh=1 names=["AM INFINITY MOUSE .100"]
+[mira-diag] plan=PresenceOnly connected=true burst=false mouse_pending=false forced=None initial=None visible=true
+[mira-diag] outcome=ready entries=1 fresh=0 names=["AM INFINITY MOUSE .100"]
+[mira-diag] plan=PresenceOnly connected=true burst=false mouse_pending=false forced=Some(PresenceOnly) initial=None visible=true
+[mira-diag] outcome=ready entries=1 fresh=0 names=["AM INFINITY MOUSE .100"]
+[mira-diag] plan=PresenceOnly connected=true burst=false mouse_pending=false forced=Some(PresenceOnly) initial=None visible=true
+[mira-diag] outcome=ready entries=1 fresh=0 names=["AM INFINITY MOUSE .100"]
+[mira-diag] plan=PresenceOnly connected=true burst=false mouse_pending=false forced=None initial=None visible=true
+[mira-diag] outcome=ready entries=1 fresh=0 names=["AM INFINITY MOUSE .100"]
+[mira-diag] plan=PresenceOnly connected=true burst=false mouse_pending=false forced=Some(PresenceOnly) initial=None visible=true
+[mira-diag] outcome=ready entries=1 fresh=0 names=["AM INFINITY MOUSE .100"]
+[mira-diag] plan=PresenceOnly connected=true burst=false mouse_pending=false forced=Some(PresenceOnly) initial=None visible=true
+[mira-diag] outcome=ready entries=1 fresh=0 names=["AM INFINITY MOUSE .100"]
+[mira] raw receiver-status: [00, 00, 17, 01, 00, 01, 02, 00, 00, 01, 64, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] raw dpi: [d4, 00, 01, 08, 00, 00, 00, 2b, 4c, 04, 3a, 07, 60, 09, 80, 0c, 88, 13, 10, 27, 20, 4e, 90, 65, 4c, 04, 3a, 07, 60, 09, 80, 0c]
+[mira] raw receiver-status: [00, 00, 17, 01, 00, 01, 02, 00, 00, 01, 64, 07, 60, 09, 80, 0c, 88, 13, 10, 27, 20, 4e, 90, 65, 4c, 04, 3a, 07, 60, 09, 80, 0c]
+[mira] raw receiver-status: [00, 00, 17, 01, 00, 01, 02, 00, 00, 01, 64, 07, 60, 09, 80, 0c, 88, 13, 10, 27, 20, 4e, 90, 65, 4c, 04, 3a, 07, 60, 09, 80, 0c]
+[mira] raw dpi: [d4, 00, 02, 08, 00, 00, 00, 2b, 4c, 04, 3a, 07, 60, 09, 80, 0c, 88, 13, 10, 27, 20, 4e, 90, 65, 4c, 04, 3a, 07, 60, 09, 80, 0c]
+[mira-diag] plan=Quick connected=true burst=false mouse_pending=false forced=Some(Quick) initial=None visible=true
+[mira] raw receiver-status: [00, 00, 17, 01, 00, 01, 02, 00, 00, 01, 64, 07, 60, 09, 80, 0c, 88, 13, 10, 27, 20, 4e, 90, 65, 4c, 04, 3a, 07, 60, 09, 80, 0c]
+[mira] raw receiver-status: [00, 00, 17, 01, 00, 01, 02, 00, 00, 01, 64, 07, 60, 09, 80, 0c, 88, 13, 10, 27, 20, 4e, 90, 65, 4c, 04, 3a, 07, 60, 09, 80, 0c]
+[mira] raw battery: [d6, 00, 01, 17, 00, 00, 00, 29, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] raw receiver-status: [00, 00, 17, 01, 00, 01, 02, 00, 00, 01, 64, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] raw dpi: [d4, 00, 02, 08, 00, 00, 00, 2b, 4c, 04, 3a, 07, 60, 09, 80, 0c, 88, 13, 10, 27, 20, 4e, 90, 65, 4c, 04, 3a, 07, 60, 09, 80, 0c]
+[mira] raw receiver-status: [00, 00, 17, 01, 00, 01, 02, 00, 00, 01, 64, 07, 60, 09, 80, 0c, 88, 13, 10, 27, 20, 4e, 90, 65, 4c, 04, 3a, 07, 60, 09, 80, 0c]
+[mira] raw settings: [d3, 00, 00, 00, 00, 00, 00, 2c, 00, 01, 03, 00, 00, 00, 0c, 01, 01, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] raw lighting: [88, 00, 03, 01, 07, 4b, bf, b1, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] projected workflow protocol-a-receiver-read: 5/13 steps, outputs: [battery, dpi, receiver, receiverIdle, receiverLighting, settings]
+[mira-diag] reading plan=Quick mouse_ready=Some(true) caps=["battery", "dpi", "mouseLighting", "receiver", "receiverIdle", "receiverLighting", "settings"] batteries=["mouse", "receiver"] statuses={"battery": Ok, "dpi": Ok, "receiverIdle": Ok, "receiverLighting": Ok, "settings": Ok}
+[mira-diag] wake-recovery path=DevSrvsID:4295882197 plan=Quick present=true armed=false recovered=false
+[mira-diag] snapshot plan=Quick name=AM INFINITY MOUSE .100 mouse_ready=Some(true) caps=["battery", "buttonMappings", "dpi", "dpiButton", "firmwareSoc", "firmwareUsb", "fps", "mouseLighting", "receiver", "receiverFirmwareLed", "receiverFirmwareSoc", "receiverFirmwareUsb", "receiverIdle", "receiverLighting", "settings"] plugin_caps=["battery", "dpi", "polling-rate", "sleep-time", "profile", "lighting", "firmware", "serial", "dpi-colors", "fps", "dpi-button", "rotation", "debounce", "lod", "motion-sync", "angle-snapping", "ripple-control", "device-settings", "receiver-status", "button-mappings"] batteries=["mouse", "receiver"] readiness=Quick
+[mira-diag] outcome=ready entries=1 fresh=1 names=["AM INFINITY MOUSE .100"]
+[mira-diag] emit device-snapshots-updated entries=1 selected=Some("DevSrvsID:4295882197")
+[mira-diag] emit device-updated name=AM INFINITY MOUSE .100 mouse_ready=Some(true)
+[mira-diag] plan=PresenceOnly connected=true burst=false mouse_pending=false forced=None initial=None visible=true
+[mira-diag] outcome=ready entries=1 fresh=0 names=["AM INFINITY MOUSE .100"]
