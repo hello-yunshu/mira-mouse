@@ -747,6 +747,16 @@ fn reset_all_backoff(state: &SessionState) {
     }
 }
 
+/// 清除单个设备的退避状态。只在确认该设备恢复活动后调用，
+/// 例如鼠标组件从缺失回到存在时——否则 Full 重试仍会被旧退避拦截。
+fn reset_device_backoff(state: &SessionState, path: &str) {
+    if let Ok(mut backoff) = state.backoff_state.lock() {
+        if let Some(b) = backoff.get_mut(path) {
+            b.reset();
+        }
+    }
+}
+
 /// 记录或更新设备诊断指标。
 /// 用脱敏 device key 索引，首次访问时初始化设备身份字段。
 fn record_device_metric<F>(state: &SessionState, device: &hid::MatchedDevice, update: F)
@@ -1284,6 +1294,9 @@ fn mark_wake_recovery_observation(
     if recovered && plan != ReadPlan::Full {
         #[cfg(debug_assertions)]
         eprintln!("[mira-diag] wake-recovery requests Full after mouse component returned");
+        // 鼠标组件恢复是明确的设备活动证据。若不清除旧退避，
+        // 读取循环会把这次 Full 当作退避中的请求而跳过，导致界面停留在旧快照。
+        reset_device_backoff(state, path);
         request_refresh_with_plan(state, ReadPlan::Full);
     }
 }
@@ -17351,6 +17364,61 @@ mod snapshot_patch_tests {
             Some(ReadPlan::Full),
             "Quick recovery must schedule one Full read to restore the complete mouse capability snapshot"
         );
+    }
+
+    #[test]
+    fn wake_recovery_full_request_clears_stale_device_backoff() {
+        let state = SessionState::default();
+        let inspection = mock_wake_inspection();
+        let sleeping = DeviceReading {
+            batteries: vec![battery("receiver", 100, false)],
+            ..DeviceReading::default()
+        };
+        mark_wake_recovery_observation(
+            &state,
+            "mock-path",
+            &inspection,
+            Connection::Wireless,
+            &sleeping,
+            ReadPlan::Full,
+        );
+        {
+            let mut backoff = state.backoff_state.lock().unwrap();
+            let entry = backoff.entry("mock-path".into()).or_default();
+            entry.record_failure();
+            entry.record_failure();
+            assert!(
+                entry.is_backing_off(),
+                "two failures must leave the path in the long backoff step"
+            );
+        }
+
+        let awake = DeviceReading {
+            battery_percent: Some(62),
+            batteries: vec![battery("mouse", 62, false), battery("receiver", 100, false)],
+            ..DeviceReading::default()
+        };
+        mark_wake_recovery_observation(
+            &state,
+            "mock-path",
+            &inspection,
+            Connection::Wireless,
+            &awake,
+            ReadPlan::Quick,
+        );
+
+        assert_eq!(
+            *state.forced_read_plan.lock().unwrap(),
+            Some(ReadPlan::Full),
+            "mouse recovery must still schedule a Full read"
+        );
+        let backoff = state.backoff_state.lock().unwrap();
+        let entry = backoff.get("mock-path").expect("backoff entry exists");
+        assert!(
+            !entry.is_backing_off(),
+            "wake recovery must clear the stale backoff so the Full request is not skipped"
+        );
+        assert_eq!(entry.consecutive_failures, 0);
     }
 
     #[test]
