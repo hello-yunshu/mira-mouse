@@ -86,7 +86,7 @@ jobs:
       - name: Check rill dependency compatibility
         # host rill-runtime-protocol / handler rill-ml / runtime release major.minor
         # 必须一致；IPC API=2、handler ABI=1。任一不一致即失败。
-        run: node scripts/check-rill-compatibility.mjs --expected-rill-version 1.5.3
+        run: node scripts/check-rill-compatibility.mjs --expected-rill-version 1.5.6
       - name: Build battery handler with the committed lockfile
         run: cargo build --manifest-path handlers/mira-battery-handler/Cargo.toml --locked
       - name: Create placeholder sidecar for lint/test

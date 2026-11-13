@@ -247,9 +247,9 @@ dependencies = [
 
 [[package]]
 name = "rill-ml"
-version = "1.5.3"
+version = "1.5.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "318d4d069c1e76d795846d432a529341a0347874f1898e696102cbde069fed44"
+checksum = "a77b2003338e37f786761d563766653c00b1fe1e468e65b0316f1e41bcab6524"
 dependencies = [
  "serde",
  "serde_json",
