@@ -25,3 +25,11 @@
 2. 每条忽略必须能在此表中找到同名条目，并填写复查日期。
 3. 复查时先升级依赖；若上游仍无修复版本，更新原因与下一次复查日期。
 4. `cargo audit` 的漏洞（vulnerabilities）与 yanked 检查不允许忽略。
+
+## npm 依赖 override（非 cargo audit 例外）
+
+- `minimatch` 通过 `package.json` 的 `overrides` 固定为 `^11.0.1`（实际解析 `11.0.8`）。
+- 原因：`eslint 10.14.0`、`@eslint/config-array 0.23.5`、`@typescript-eslint/typescript-estree 8.72.1` 仍声明 `minimatch ^10.2.x`，而该漏洞的修复版本是 `>=11.0.1`；上游父包尚未支持 11。
+- 验证：`npm ci`、`npm run lint`、`npm run test`、`npm run build`、`cargo build --workspace --locked` 均通过；`npm audit` 为 0。
+- 复查：当上述父包声明 `minimatch ^11` 时移除 override；复查日期同 2027-02-03。
+
