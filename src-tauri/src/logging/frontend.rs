@@ -94,7 +94,7 @@ impl FrontendEmitter {
     pub fn unsubscribe(&self) {
         let _ = self
             .subscriber_count
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
                 count.checked_sub(1)
             });
     }
@@ -204,24 +204,27 @@ mod tests {
     #[test]
     fn saturating_decrement_prevents_underflow() {
         let counter = Arc::new(AtomicU32::new(0));
-        let prev = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |x| {
+        // `fetch_update` 已在最新 Rust 中更名为 `try_update`，返回语义不变：
+        // Ok(旧值) 表示更新成功，Err(当前值) 表示闭包返回 None、计数未变。
+        let prev = counter.try_update(Ordering::Relaxed, Ordering::Relaxed, |x| {
             if x > 0 {
                 Some(x - 1)
             } else {
                 None
             }
         });
-        assert!(prev.is_err(), "should refuse to decrement zero");
+        assert_eq!(prev, Err(0), "should refuse to decrement zero");
         assert_eq!(counter.load(Ordering::Relaxed), 0);
 
         counter.store(2, Ordering::Relaxed);
-        let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |x| {
+        let prev = counter.try_update(Ordering::Relaxed, Ordering::Relaxed, |x| {
             if x > 0 {
                 Some(x - 1)
             } else {
                 None
             }
         });
+        assert_eq!(prev, Ok(2), "successful update returns the previous value");
         assert_eq!(counter.load(Ordering::Relaxed), 1);
     }
 
