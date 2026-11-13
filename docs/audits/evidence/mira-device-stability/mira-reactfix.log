@@ -1,0 +1,83 @@
+[mira-diag] plan=PresenceOnly connected=false burst=false mouse_pending=false forced=None initial=None visible=true
+[mira] background: matched 1 device(s)
+[mira-diag] outcome=ready entries=1 fresh=0 names=["AM INFINITY MOUSE .100"]
+[mira-diag] emit device-snapshots-updated entries=1 selected=Some("DevSrvsID:4295882197")
+[mira-diag] emit device-updated name=AM INFINITY MOUSE .100 mouse_ready=None
+[mira-diag] plan=Full connected=true burst=false mouse_pending=false forced=Some(PresenceOnly) initial=Some(Full) visible=true
+[mira] raw receiver-status: [00, 00, 18, 01, 01, 01, 02, 00, 00, 01, 64, 00, 01, 00, f4, 00, 01, 00, f3, 00, 14, 00, 00, 00, 0a, 05, 00, 00, 00, 00, 00, 00]
+[mira] raw firmware: [f0, 08, 00, 68, 05, 52, 30, 0f, 00, 01, 64, 00, 01, 00, f4, 00, 01, 00, f3, 00, 14, 00, 00, 00, 0a, 05, 00, 00, 00, 00, 00, 00]
+[mira] raw receiver-firmware-soc: [23, c5, a4, f0, 05, 52, 30, 0f, 00, 01, 64, 00, 01, 00, f4, 00, 01, 00, f3, 00, 14, 00, 00, 00, 0a, 05, 00, 00, 00, 00, 00, 00]
+[mira] raw firmware: [ae, 09, 01, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] raw lighting: [88, 00, 03, 01, 07, 4b, bf, b1, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] plugin workflow protocol-a-receiver-read: 5 outputs: [receiverFirmwareLed, receiverFirmwareSoc, receiverFirmwareUsb, receiverIdle, receiverLighting]
+[mira-diag] frontend event=mounted detail=None
+[mira-diag] device_snapshots response entries=1 names=["AM INFINITY MOUSE .100"] mouse_ready=[None]
+[mira-diag] outcome=ready entries=1 fresh=1 names=["AM INFINITY MOUSE .100"]
+[mira-diag] emit device-snapshots-updated entries=1 selected=Some("DevSrvsID:4295882197")
+[mira-diag] emit device-updated name=AM INFINITY MOUSE .100 mouse_ready=Some(false)
+[mira-diag] frontend event=window-error detail=Some("null is not an object (evaluating 'T.current.useRef')\n@tauri://localhost/assets/react-vendor-CCosFbUU.js:9:43095\nM@tauri://localhost/assets/runtime-data-cache-ClcH_MJQ.js:1:15424\nOo@tauri://localhost/assets/react-vendor-CCosFbUU.js:8:47519\nyc@tauri://localhost/assets/react-vendor-CCosFbUU.js:8:69954\nMu@tauri://localhost/assets/react-vendor-CCosFbUU.js:8:115510\nku@tauri://localhost/assets/react-vendor-CCosFbUU.js:8:114593\nOu@tauri://localhost/assets/react-vendor-CCosFbUU.js:8:114432\ngu@tauri://localhost/assets/react-vendor-CCosFbUU.js:8:111302\ncd@tauri://localhost/assets/react-vendor-CCosFbUU.js:8:122790\nre@tauri://localhost/assets/react-vendor-CCosFbUU.js:1:9085")
+[mira-diag] plan=Quick connected=true burst=true mouse_pending=true forced=None initial=None visible=true
+[mira] raw receiver-status: [00, 00, 18, 01, 01, 01, 02, 00, 00, 01, 64, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] raw lighting: [88, 00, 03, 01, 07, 4b, bf, b1, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] projected workflow protocol-a-receiver-read: 5/13 steps, outputs: [receiverIdle, receiverLighting]
+[mira-diag] outcome=ready entries=1 fresh=1 names=["AM INFINITY MOUSE .100"]
+[mira-diag] plan=Quick connected=true burst=true mouse_pending=true forced=None initial=None visible=true
+[mira] raw receiver-status: [00, 00, 18, 01, 01, 01, 02, 00, 00, 01, 64, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] raw lighting: [88, 00, 03, 01, 07, 4b, bf, b1, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] projected workflow protocol-a-receiver-read: 5/13 steps, outputs: [receiverIdle, receiverLighting]
+[mira-diag] outcome=ready entries=1 fresh=1 names=["AM INFINITY MOUSE .100"]
+[mira-diag] plan=Quick connected=true burst=true mouse_pending=true forced=None initial=None visible=true
+[mira] raw receiver-status: [00, 00, 18, 01, 01, 01, 02, 00, 00, 01, 64, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] raw lighting: [88, 00, 03, 01, 07, 4b, bf, b1, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] projected workflow protocol-a-receiver-read: 5/13 steps, outputs: [receiverIdle, receiverLighting]
+[mira-diag] outcome=ready entries=1 fresh=1 names=["AM INFINITY MOUSE .100"]
+[mira-diag] plan=Quick connected=true burst=true mouse_pending=true forced=None initial=None visible=true
+[mira] raw receiver-status: [00, 00, 18, 01, 01, 01, 02, 00, 00, 01, 64, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] raw lighting: [88, 00, 03, 01, 07, 4b, bf, b1, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] projected workflow protocol-a-receiver-read: 5/13 steps, outputs: [receiverIdle, receiverLighting]
+[mira-diag] outcome=ready entries=1 fresh=1 names=["AM INFINITY MOUSE .100"]
+[mira-diag] plan=Quick connected=true burst=true mouse_pending=true forced=None initial=None visible=true
+[mira] raw receiver-status: [00, 00, 18, 01, 01, 01, 02, 00, 00, 01, 64, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] raw lighting: [88, 00, 03, 01, 07, 4b, bf, b1, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] projected workflow protocol-a-receiver-read: 5/13 steps, outputs: [receiverIdle, receiverLighting]
+[mira-diag] outcome=ready entries=1 fresh=1 names=["AM INFINITY MOUSE .100"]
+[mira-diag] plan=BatteryOnly connected=true burst=false mouse_pending=true forced=None initial=None visible=true
+[mira] raw receiver-status: [00, 00, 18, 01, 01, 01, 02, 00, 00, 01, 64, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] projected workflow protocol-a-receiver-read: 2/13 steps, outputs: [receiverIdle]
+[mira-diag] outcome=ready entries=1 fresh=1 names=["AM INFINITY MOUSE .100"]
+[mira-diag] plan=BatteryOnly connected=true burst=false mouse_pending=true forced=None initial=None visible=true
+[mira] raw receiver-status: [00, 00, 18, 01, 01, 01, 02, 00, 00, 01, 64, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] projected workflow protocol-a-receiver-read: 2/13 steps, outputs: [receiverIdle]
+[mira-diag] outcome=ready entries=1 fresh=1 names=["AM INFINITY MOUSE .100"]
+[mira-diag] plan=BatteryOnly connected=true burst=false mouse_pending=true forced=None initial=None visible=true
+[mira] raw receiver-status: [00, 00, 18, 01, 01, 01, 02, 00, 00, 01, 64, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] projected workflow protocol-a-receiver-read: 2/13 steps, outputs: [receiverIdle]
+[mira-diag] outcome=ready entries=1 fresh=1 names=["AM INFINITY MOUSE .100"]
+[mira-diag] plan=BatteryOnly connected=true burst=false mouse_pending=true forced=None initial=None visible=true
+[mira] raw receiver-status: [00, 00, 18, 01, 01, 01, 02, 00, 00, 01, 64, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] projected workflow protocol-a-receiver-read: 2/13 steps, outputs: [receiverIdle]
+[mira-diag] outcome=ready entries=1 fresh=1 names=["AM INFINITY MOUSE .100"]
+[mira-diag] plan=BatteryOnly connected=true burst=false mouse_pending=true forced=None initial=None visible=true
+[mira] raw receiver-status: [00, 00, 18, 01, 01, 01, 02, 00, 00, 01, 64, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] projected workflow protocol-a-receiver-read: 2/13 steps, outputs: [receiverIdle]
+[mira-diag] outcome=ready entries=1 fresh=1 names=["AM INFINITY MOUSE .100"]
+[mira-diag] plan=BatteryOnly connected=true burst=false mouse_pending=true forced=None initial=None visible=true
+[mira] raw receiver-status: [00, 00, 18, 01, 01, 01, 02, 00, 00, 01, 64, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] projected workflow protocol-a-receiver-read: 2/13 steps, outputs: [receiverIdle]
+[mira-diag] outcome=ready entries=1 fresh=1 names=["AM INFINITY MOUSE .100"]
+[mira-diag] plan=BatteryOnly connected=true burst=false mouse_pending=true forced=None initial=None visible=true
+[mira] raw receiver-status: [00, 00, 18, 01, 01, 01, 02, 00, 00, 01, 64, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] projected workflow protocol-a-receiver-read: 2/13 steps, outputs: [receiverIdle]
+[mira-diag] outcome=ready entries=1 fresh=1 names=["AM INFINITY MOUSE .100"]
+[mira-diag] plan=BatteryOnly connected=true burst=false mouse_pending=true forced=None initial=None visible=true
+[mira] raw receiver-status: [00, 00, 18, 01, 00, 01, 02, 00, 00, 01, 64, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] raw receiver-status: [00, 00, 18, 01, 00, 01, 02, 00, 00, 01, 64, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] raw battery: [d6, 00, 01, 18, 00, 00, 00, 29, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[mira] projected workflow protocol-a-receiver-read: 2/13 steps, outputs: [battery, receiver, receiverIdle]
+[mira-diag] outcome=ready entries=1 fresh=1 names=["AM INFINITY MOUSE .100"]
+[mira-diag] emit device-snapshots-updated entries=1 selected=Some("DevSrvsID:4295882197")
+[mira-diag] emit device-updated name=AM INFINITY MOUSE .100 mouse_ready=Some(true)
+[mira-diag] plan=Full connected=true burst=false mouse_pending=false forced=Some(Full) initial=None visible=true
+[mira-diag] outcome=ready entries=1 fresh=0 names=["AM INFINITY MOUSE .100"]
+[mira-diag] plan=PresenceOnly connected=true burst=false mouse_pending=false forced=None initial=None visible=true
+[mira-diag] outcome=ready entries=1 fresh=0 names=["AM INFINITY MOUSE .100"]
