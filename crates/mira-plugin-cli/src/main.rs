@@ -275,7 +275,7 @@ fn sign_package(package: &Path, signing_key: &SigningKey) -> Result<Vec<u8>> {
     let mut files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index)?;
-        let name = entry.name().to_string();
+        let name = entry.name()?.to_string();
         if entry.is_dir() {
             continue;
         }

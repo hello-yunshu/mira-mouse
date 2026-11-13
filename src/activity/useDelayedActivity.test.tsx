@@ -51,4 +51,20 @@ describe('useDelayedActivity', () => {
     act(() => vi.advanceTimersByTime(2));
     expect(result.current).toBe(false);
   });
+
+  it('shows an explicitly immediate operation without committing the idle label first', () => {
+    const { result, rerender } = renderHook(
+      ({ active }) => useDelayedActivity(active, 0, 420),
+      { initialProps: { active: false } },
+    );
+
+    rerender({ active: true });
+    expect(result.current).toBe(true);
+
+    rerender({ active: false });
+    act(() => vi.advanceTimersByTime(419));
+    expect(result.current).toBe(true);
+    act(() => vi.advanceTimersByTime(1));
+    expect(result.current).toBe(false);
+  });
 });
