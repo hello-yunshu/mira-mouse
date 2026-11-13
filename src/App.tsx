@@ -4401,6 +4401,10 @@ export default function App() {
   }, [previewDevice, startupPreview, startupPreviewMode]);
   const [deviceEntries, setDeviceEntries] = useState<DeviceSnapshotEntry[]>(pureWeb ? MOCK_DEVICE_ENTRIES : []);
   const deviceEntriesRef = useRef<DeviceSnapshotEntry[]>(pureWeb ? MOCK_DEVICE_ENTRIES : []);
+  // 设备事件单调递增版本号：初始化/选择请求返回时若版本已变化，
+  // 说明事件携带的状态更新，旧响应不得覆盖它。
+  const snapshotRevisionRef = useRef(0);
+  const deviceSelectRequestRef = useRef(0);
   // device-updated 可能由初始化或用户按需读取连续触发；用 startTransition
   // 将 Dashboard 渲染标记为低优先级。writeBusy 等用户交互状态保持同步。
   const [, startTransition] = useTransition();
@@ -4656,17 +4660,20 @@ export default function App() {
     let unlisten: (() => void) | undefined;
     let unlistenEntries: (() => void) | undefined;
 
-    // 启动时预读缓存，避免首次渲染空白
+    // 启动时预读缓存，避免首次渲染空白。
+    // 记录请求发出时的数据版本：若期间已有事件到达，事件比这次预读更新，
+    // 旧响应必须丢弃，避免把界面覆盖回更早的快照。
+    const revisionAtRequest = snapshotRevisionRef.current;
     invoke<DeviceSnapshotEntry[]>('device_snapshots')
       .then((entries) => {
-        if (!cancelled) {
+        if (!cancelled && snapshotRevisionRef.current === revisionAtRequest) {
           deviceEntriesRef.current = entries;
           setDeviceEntries(entries);
           setDevice(entryToState(selectedDeviceEntry(entries)));
         }
       })
       .catch(() => {
-        if (!cancelled) {
+        if (!cancelled && snapshotRevisionRef.current === revisionAtRequest) {
           setDeviceEntries([]);
           setDevice(undefined);
         }
@@ -4675,6 +4682,7 @@ export default function App() {
     // 监听后台线程发出的 device-updated 事件，无需轮询
     listen<DeviceSnapshot | null>('device-updated', (event) => {
       if (cancelled) return;
+      snapshotRevisionRef.current += 1;
       const snapshot = event.payload;
       // F11: 高频 device-updated 事件用 startTransition 降低渲染优先级，
       // 让用户交互（如点击按钮）能优先响应。
@@ -4693,6 +4701,7 @@ export default function App() {
 
     listen<DeviceSnapshotEntry[]>('device-snapshots-updated', (event) => {
       if (cancelled) return;
+      snapshotRevisionRef.current += 1;
       const entries = event.payload;
       deviceEntriesRef.current = entries;
       startTransition(() => {
@@ -4723,14 +4732,28 @@ export default function App() {
       setDevice(entryToState(selectedDeviceEntry(nextEntries)));
       return;
     }
+    // 递增的选择序号丢弃旧的选择响应；版本号用于判断响应返回前
+    // 是否已有更新的快照事件到达。
+    const requestId = deviceSelectRequestRef.current + 1;
+    deviceSelectRequestRef.current = requestId;
+    const revisionAtRequest = snapshotRevisionRef.current;
     void invoke<DeviceSnapshot>('device_select', { deviceKey })
       .then((snapshot) => {
-        setDevice(snapshotToState(snapshot));
-        setDeviceEntries((entries) => {
-          const nextEntries = entries.map((entry) => ({ ...entry, selected: entry.deviceKey === deviceKey }));
-          deviceEntriesRef.current = nextEntries;
-          return nextEntries;
-        });
+        if (requestId !== deviceSelectRequestRef.current) return;
+        // 选择意图立即反映到本地 entries（device_select 只持久化后端选择，
+        // entries 中已包含同一份最新快照）。
+        const nextEntries = deviceEntriesRef.current.map((entry) => ({
+          ...entry,
+          selected: entry.deviceKey === deviceKey,
+        }));
+        deviceEntriesRef.current = nextEntries;
+        setDeviceEntries(nextEntries);
+        if (snapshotRevisionRef.current === revisionAtRequest) {
+          setDevice(snapshotToState(snapshot));
+        } else {
+          // 期间已有更新事件：以事件后的 entries 为准，避免旧响应覆盖新数据。
+          setDevice(entryToState(selectedDeviceEntry(nextEntries)));
+        }
       })
       .catch((error) => notifyError(i18n.t('notification.selectDeviceFailed'), String(error)));
   }, [demoMode]);
