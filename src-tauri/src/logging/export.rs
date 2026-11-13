@@ -320,7 +320,12 @@ mod tests {
         let file = File::open(&path).unwrap();
         let mut archive = zip::ZipArchive::new(file).unwrap();
         let names: Vec<String> = (0..archive.len())
-            .filter_map(|i| archive.by_index(i).ok().map(|f| f.name().to_string()))
+            .filter_map(|i| {
+                archive
+                    .by_index(i)
+                    .ok()
+                    .and_then(|f| f.name().ok().map(|name| name.to_string()))
+            })
             .collect();
         assert!(names.contains(&"summary.json".to_string()));
         assert!(names.contains(&"logs.jsonl".to_string()));
