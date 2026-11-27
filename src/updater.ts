@@ -143,12 +143,12 @@ export async function installAppUpdate(): Promise<void> {
     // 新的安装周期：重置提醒的关闭/忽视计数。
     remindDismissedCount = 0;
     remindIgnoredCount = 0;
-    // 安装完成后发送重启通知：应用内 Toast（点击直接重启）+ 原生系统通知（点击跳转到关于页）。
+    // 安装完成后发送重启通知：应用内 Toast 和原生系统通知点击后都直接重启。
     // 无论手动还是自动安装都发送，覆盖用户在下载过程中切走、应用在后台等场景。
     const title = i18n.t('notification.updateInstalled.title');
     const body = i18n.t('notification.updateInstalled.body');
     notifyInfo(title, body, 'relaunch');
-    void invoke('show_update_notification', { title, body, action: 'about-update' }).catch(() => {});
+    void invoke('show_update_notification', { title, body, action: 'relaunch' }).catch(() => {});
   } catch (error) {
     publish({ ...state, phase: 'error', downloadedBytes, totalBytes, error: friendlyUpdateError(error) });
     throw error;

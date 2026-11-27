@@ -50,27 +50,20 @@ key = capabilityId : zoneId-or-root : fieldId
 |------------------------------|---------------------------------------------------|-------------------|
 | `settings-plugin-update`     | 切换到 Settings → 聚焦插件更新区域                | All               |
 | `settings-local-ai-update`   | 切换到 Settings → 聚焦 Local AI 更新区域          | All               |
-| `about-app-update`           | 切换到 About → 聚焦应用更新区域                   | All               |
+| `about-update`               | 切换到 About → 聚焦应用更新区域                   | All               |
 | `battery-usage`              | 打开 Battery Usage modal                          | All               |
-| `relaunch`                   | 重启应用                                          | All               |
+| `relaunch`                   | 直接重启应用以完成更新                            | All               |
 | `close`                      | 仅关闭 Toast / 通知，不触发跳转                   | All               |
 
-### macOS 系统通知行为（方案 B）
+### 系统通知行为
 
-macOS 系统通知**仅显示 title/body**，不存储 pending action，不在下次窗口
-focus 时自动跳转。应用内 Toast 保留可点击入口。
-
-理由：现有依赖无法可靠区分"用户点击通知"与"用户任意打开 Mira"，伪点击
-机制会把任意打开误判为点击通知。方案 B 牺牲 macOS 系统通知的跳转能力，
-换取语义正确性。
-
-### Windows/Linux 系统通知行为
-
-Windows/Linux 系统通知支持 native action：
+桌面系统通知支持 native action：
 
 - 点击通知 → focus 主窗口 → emit 对应事件 → 路由到 action 行为；
 - `notification_action_to_event` 纯函数统一 action 到事件的映射；
 - 关闭通知或超时不触发 action。
+- macOS 使用 `notify-rust` 的通知响应回调；不监听窗口 focus，避免把用户主动
+  打开 Mira 误判为通知点击。
 
 ### Modal 打开时禁用跳转
 

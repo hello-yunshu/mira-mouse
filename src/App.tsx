@@ -4527,6 +4527,11 @@ export default function App() {
         dismissTransientSurfaces();
         openBatteryUsage();
         break;
+      case 'relaunch-after-update':
+        void relaunchAfterUpdate().catch((err) => {
+          notifyError(t('notification.relaunchFailed'), String(err));
+        });
+        break;
       case 'plugin-locales-updated':
         invalidateAboutInfo();
         reloadPluginLocales();
@@ -4585,6 +4590,7 @@ export default function App() {
       'navigate-plugin-update',
       'navigate-local-ai-update',
       'open-battery-usage',
+      'relaunch-after-update',
       'plugin-locales-updated',
       'window-resumed',
     ];
@@ -4596,9 +4602,8 @@ export default function App() {
         })
         .catch(() => {});
     }
-    // macOS native 通知只提醒。
-    // 不监听窗口聚焦事件，避免误把用户主动打开当作通知点击。Windows/Linux 由 navigate-* / open-battery-usage
-    // 事件直接处理；macOS 系统通知仅显示 title/body，应用内 Toast 保留可点击入口。
+    // 系统通知仅在收到原生点击回调时发出 navigate-* / open-battery-usage；
+    // 不监听窗口聚焦事件，避免把用户主动打开误判为通知点击。
     return () => {
       disposed = true;
       for (const unlisten of unlisteners) unlisten();

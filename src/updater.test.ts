@@ -119,7 +119,7 @@ describe('application updater', () => {
     });
     await startAutomaticAppUpdateCheck(true, true);
     expect(mocks.invoke).not.toHaveBeenCalledWith('show_update_notification', expect.objectContaining({ title: '发现新版本' }));
-    expect(mocks.invoke).toHaveBeenCalledWith('show_update_notification', expect.objectContaining({ title: '更新就绪', action: 'about-update' }));
+    expect(mocks.invoke).toHaveBeenCalledWith('show_update_notification', expect.objectContaining({ title: '更新就绪', action: 'relaunch' }));
     expect(appUpdateState()).toMatchObject({ phase: 'installed' });
   });
 

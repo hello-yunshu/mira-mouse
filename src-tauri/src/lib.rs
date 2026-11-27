@@ -13709,6 +13709,7 @@ fn notification_action_to_event(action: &str) -> Option<&'static str> {
         "settings-plugin-update" => Some("navigate-plugin-update"),
         "settings-local-ai-update" => Some("navigate-local-ai-update"),
         "battery-usage" => Some("open-battery-usage"),
+        "relaunch" => Some("relaunch-after-update"),
         _ => None,
     }
 }
@@ -13768,11 +13769,8 @@ mod notification_action_tests {
 }
 
 /// 发送原生系统通知，可选地携带点击跳转动作。
-/// `action` 目前支持 `"about-update"`、`"settings-plugin-update"`、`"settings-local-ai-update"` 与 `"battery-usage"`。
-/// - macOS（ITERATION-009 §4.2 方案 B）：`tauri-plugin-notification` 不暴露可靠点击回调，
-///   系统通知仅显示 title/body；不存 pending action；不在下次窗口 focus 自动跳转。
-///   应用内 Toast 保留可点击入口。
-/// - Windows/Linux：`notify-rust` 的 `wait_for_action` 直接处理点击并 emit 事件。
+/// `action` 支持更新页跳转、设置区跳转、电量详情和 `"relaunch"` 重启动作。
+/// - 所有桌面平台：`notify-rust` 的 `wait_for_action` 处理系统通知点击并 emit 事件。
 #[tauri::command]
 fn show_update_notification(
     app: tauri::AppHandle,
@@ -13781,22 +13779,14 @@ fn show_update_notification(
     body: String,
     action: Option<String>,
 ) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        let _ = state;
-        let _ = action;
-        app.notification()
-            .builder()
-            .title(title)
-            .body(body)
-            .show()
-            .map_err(|err| format!("failed to show update notification: {err}"))?;
-        Ok(())
-    }
-
-    #[cfg(any(target_os = "windows", all(unix, not(target_os = "macos"))))]
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "windows",
+        all(unix, not(target_os = "macos"))
+    ))]
     {
         let _ = &state;
+        #[cfg(any(target_os = "windows", all(unix, not(target_os = "macos"))))]
         let identifier = app.config().identifier.clone();
         let navigate = action.clone();
         std::thread::spawn(move || {
