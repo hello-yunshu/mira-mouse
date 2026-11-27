@@ -145,7 +145,7 @@ jobs:
     # to pull requests opened by dependabot[bot], causing rill-pack to fail with
     # "RILL_SIGNING_KEY_HEX must contain exactly one 32-byte hexadecimal signing
     # seed". Skipping here avoids a false-positive CI failure on dependency bumps.
-    if: ${{ always() && needs.rust.result != 'failure' && needs.rill-release.result == 'success' && github.actor != 'dependabot[bot]' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    if: ${{ always() && needs.rust.result != 'failure' && needs.rill-release.result == 'success' && (github.event_name != 'pull_request' || github.event.pull_request.user.login != 'dependabot[bot]') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     needs: [rust, rill-release]
     uses: ./.github/workflows/model-pack.yml
     with:
