@@ -63,12 +63,13 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     "std", "NSApplication", "NSImage",
     "NSStatusBar", "NSStatusItem", "NSStatusBarButton",
     "NSButton", "NSControl", "NSResponder", "NSView",
-    "NSMenu", "NSMenuItem", "NSAppearance", "NSEvent",
+    "NSMenu", "NSMenuItem", "NSAppearance", "NSEvent", "NSAccessibility", "NSWorkspace",
     "objc2-core-foundation",
 ] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSData", "NSString", "NSGeometry"] }
 objc2-core-graphics = { version = "0.3", default-features = false, features = ["CGEventSource", "CGEventTypes"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
 udev = "0.9"
 x11-dl = "2.21"

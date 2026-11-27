@@ -938,6 +938,7 @@ struct SessionState {
     /// 托盘图标控制器：内部维护动态图标缓存和 diff 逻辑。
     /// 替换旧的 tray_icon_level / tray_is_charging / tray_uses_dark 三个缓存字段。
     tray_renderer: Mutex<tray::renderer::PlatformTrayController>,
+    tray_battery_alert: Mutex<tray::alert::BatteryAlert>,
     /// Windows 数字电量图标渲染器（仅 Windows 使用，其他平台保留以保持结构统一）。
     #[allow(dead_code)]
     battery_renderer: Mutex<tray::dynamic_icon::BatteryDigitRenderer>,
@@ -15108,23 +15109,25 @@ fn update_tray(
     snapshot: Option<&DeviceSnapshot>,
     settings: &AppSettings,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    #[cfg(target_os = "macos")]
-    if objc2::MainThreadMarker::new().is_none() {
-        let app = app.clone();
-        let snapshot = snapshot.cloned();
-        let settings = settings.clone();
-        let app_for_update = app.clone();
-        app.run_on_main_thread(move || {
-            if let Err(error) = update_tray(&app_for_update, snapshot.as_ref(), &settings) {
-                app_for_update.state::<SessionState>().log_error(
-                    "tray::update",
-                    format!("tray update on main thread failed: {error}"),
-                );
-            }
-        })?;
-        return Ok(());
-    }
+    let app_handle = app.clone();
+    let snapshot = snapshot.cloned();
+    let settings = settings.clone();
+    app.run_on_main_thread(move || {
+        if let Err(error) = update_tray_on_main_thread(&app_handle, snapshot.as_ref(), &settings) {
+            app_handle.state::<SessionState>().log_error(
+                "tray::update",
+                format!("tray update on main thread failed: {error}"),
+            );
+        }
+    })?;
+    Ok(())
+}
 
+fn update_tray_on_main_thread(
+    app: &AppHandle,
+    snapshot: Option<&DeviceSnapshot>,
+    settings: &AppSettings,
+) -> Result<(), Box<dyn std::error::Error>> {
     let Some(tray) = app.tray_by_id(TRAY_ID) else {
         return Ok(());
     };
@@ -15144,43 +15147,27 @@ fn update_tray(
     let system_dark = tray_theme_is_dark(app);
     // 保留未经托盘颜色设置覆盖的系统主题，供未连接时的彩色应用图标使用。
     let theme = tray::style::TrayTheme::from_system_dark(system_dark);
-    let style = tray::style::TrayVisualStyle::from_settings(&tray_settings, theme);
-
-    // 图标更新委托给平台控制器（内部做 diff，未变化时跳过 set_icon）
-    let session = app.state::<SessionState>();
-    if let Ok(mut controller) = session.tray_renderer.lock() {
-        if let Err(err) = tray::renderer::TrayController::update_icon(
-            &mut *controller,
-            &tray,
-            &tray_state,
-            &style,
-        ) {
-            app.state::<SessionState>().log_warn(
-                "tray::update",
-                format!("tray icon update failed, falling back: {err}"),
-            );
-            // fallback 到静态图标：不 panic，不影响菜单和 tooltip 更新
-            let icon_bytes = if tray_state.connected {
-                let percentage = tray_state.mouse_battery.unwrap_or(0);
-                let level = ((percentage.saturating_add(5)) / 10).min(10) * 10;
-                tray::static_icon::static_tray_icon_bytes(
-                    level,
-                    style.theme.is_dark(),
-                    tray_state.mouse_charging,
-                )
-            } else {
-                tray::static_icon::static_tray_app_icon_bytes_for_theme(
-                    style.system_theme.is_dark(),
-                )
-            };
-            if let Ok(image) = tauri::image::Image::from_bytes(icon_bytes) {
-                let _ = tray.set_icon(Some(image));
-                let _ = tray.set_icon_as_template(false);
-            }
-        }
-    }
-
     let state = app.state::<SessionState>();
+    let mut frame = tray::alert::TrayIconFrame {
+        state: tray_state,
+        style: tray::style::TrayVisualStyle::from_settings(&tray_settings, theme),
+        #[cfg(target_os = "windows")]
+        show_battery_icon: settings.tray_show_battery_icon,
+    };
+    let device_path = selected_device_path(&state);
+    let device = device_path
+        .as_deref()
+        .or_else(|| snapshot.map(|snapshot| snapshot.display_name.as_str()))
+        .unwrap_or_default();
+    let started =
+        state.tray_battery_alert.lock().ok().and_then(|mut alert| {
+            alert.observe(device, &mut frame, tray::alert::animations_enabled())
+        });
+    if let Some(started) = started {
+        schedule_tray_highlight_end(app, started);
+    }
+    render_main_tray_icon(app, &tray, &frame);
+    let tray_state = &frame.state;
     let menu = Menu::new(app)?;
 
     let lang = effective_language(&settings.language);
@@ -15225,7 +15212,7 @@ fn update_tray(
         .unwrap_or(true);
 
     if menu_changed {
-        for row in tray_info_menu_rows(&tray_state, lang) {
+        for row in tray_info_menu_rows(tray_state, lang) {
             match row {
                 TrayInfoMenuRow::Status { id, text } => {
                     let item = MenuItem::with_id(app, id, text, false, None::<&str>)?;
@@ -15300,9 +15287,58 @@ fn update_tray(
 
     // Windows: 更新独立数字电量图标托盘
     #[cfg(target_os = "windows")]
-    update_battery_tray(app, &tray_state, &style, settings, snapshot, lang)?;
+    update_battery_tray(app, &frame, snapshot, lang)?;
 
     Ok(())
+}
+
+fn render_main_tray_icon(
+    app: &AppHandle,
+    icon: &tauri::tray::TrayIcon,
+    frame: &tray::alert::TrayIconFrame,
+) {
+    use tray::renderer::TrayController;
+
+    let session = app.state::<SessionState>();
+    let Ok(mut controller) = session.tray_renderer.lock() else {
+        return;
+    };
+    if let Err(error) = controller.update_icon(icon, &frame.state, &frame.style) {
+        session.log_warn(
+            "tray::update",
+            format!("tray icon update failed, falling back: {error}"),
+        );
+        if let Ok(image) = tray::static_icon::render_static_tray_icon(&frame.state, &frame.style) {
+            let _ = icon.set_icon(Some(image));
+            let _ = icon.set_icon_as_template(false);
+        }
+    }
+}
+
+fn schedule_tray_highlight_end(app: &AppHandle, started: std::time::Instant) {
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        std::thread::sleep(tray::alert::HIGHLIGHT_DURATION.saturating_sub(started.elapsed()));
+        let app_handle = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            let session = app_handle.state::<SessionState>();
+            let frame = session
+                .tray_battery_alert
+                .lock()
+                .ok()
+                .and_then(|mut alert| alert.finish(started));
+            let Some(frame) = frame else { return };
+            if let Some(icon) = app_handle.tray_by_id(TRAY_ID) {
+                render_main_tray_icon(&app_handle, &icon, &frame);
+            }
+            #[cfg(target_os = "windows")]
+            if frame.show_battery_icon && frame.state.connected {
+                if let Some(icon) = app_handle.tray_by_id(BATTERY_TRAY_ID) {
+                    let _ = render_battery_tray_icon(&app_handle, &icon, &frame);
+                }
+            }
+        });
+    });
 }
 
 /// Windows 独立数字电量图标更新逻辑。
@@ -15314,9 +15350,7 @@ fn update_tray(
 #[cfg(target_os = "windows")]
 fn update_battery_tray(
     app: &AppHandle,
-    state: &tray::state::TrayStatusState,
-    style: &tray::style::TrayVisualStyle,
-    settings: &AppSettings,
+    frame: &tray::alert::TrayIconFrame,
     snapshot: Option<&DeviceSnapshot>,
     lang: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -15325,8 +15359,8 @@ fn update_battery_tray(
     };
 
     let should_show = tray::dynamic_icon::battery_tray_should_show(
-        settings.tray_show_battery_icon,
-        state.connected,
+        frame.show_battery_icon,
+        frame.state.connected,
     );
 
     if !should_show {
@@ -15337,15 +15371,7 @@ fn update_battery_tray(
         return Ok(());
     }
 
-    let session = app.state::<SessionState>();
-    if let Ok(mut renderer) = session.battery_renderer.lock() {
-        if renderer.needs_update(state, style) {
-            if let Some(image) = renderer.render_image(state, style) {
-                battery_tray.set_icon(Some(image))?;
-                battery_tray.set_icon_as_template(false)?;
-            }
-        }
-    }
+    render_battery_tray_icon(app, &battery_tray, frame)?;
     // 先刷新图像再显示，避免重新启用时短暂露出隐藏前的旧数字。
     battery_tray.set_visible(true)?;
 
@@ -15354,11 +15380,29 @@ fn update_battery_tray(
             lang,
             connection_label(snapshot.connection, lang),
             &snapshot.display_name,
-            state.mouse_battery,
-            state.mouse_charging,
+            frame.state.mouse_battery,
+            frame.state.mouse_charging,
         )))?;
     }
 
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn render_battery_tray_icon(
+    app: &AppHandle,
+    icon: &tauri::tray::TrayIcon,
+    frame: &tray::alert::TrayIconFrame,
+) -> tauri::Result<()> {
+    let session = app.state::<SessionState>();
+    if let Ok(mut renderer) = session.battery_renderer.lock() {
+        if renderer.needs_update(&frame.state, &frame.style) {
+            if let Some(image) = renderer.render_image(&frame.state, &frame.style) {
+                icon.set_icon(Some(image))?;
+                icon.set_icon_as_template(false)?;
+            }
+        }
+    }
     Ok(())
 }
 
@@ -15466,7 +15510,7 @@ fn build_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let settings = cached_settings(app.handle());
     let state = app.state::<SessionState>();
     let snapshot = selected_snapshot(&state);
-    update_tray(app.handle(), snapshot.as_ref(), &settings)?;
+    update_tray_on_main_thread(app.handle(), snapshot.as_ref(), &settings)?;
     Ok(())
 }
 

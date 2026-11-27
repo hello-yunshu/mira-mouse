@@ -8,7 +8,7 @@
 
 use crate::tray::dynamic_icon::DynamicImageTrayRenderer;
 use crate::tray::state::{TrayRenderMode, TrayStatusState};
-use crate::tray::static_icon::static_tray_app_icon_bytes_for_theme;
+use crate::tray::static_icon::{render_static_tray_icon, static_tray_app_icon_bytes_for_theme};
 use crate::tray::style::TrayVisualStyle;
 
 /// 托盘图标控制器：负责把状态和样式渲染为系统托盘图标。
@@ -32,7 +32,7 @@ pub trait TrayController: Send {
 /// 主路径：`DynamicImageTrayRenderer` 生成 64×64 RGBA 动态图标。
 /// Fallback 路径：
 /// - 未连接：`static_tray_app_icon_bytes_for_theme`（应用图标）
-/// - 动态生成失败：`static_tray_icon_bytes`（静态 PNG 分档图标）
+/// - 动态生成失败：`render_static_tray_icon`（静态 PNG 分档图标）
 /// - `tray_render_mode == "static"`：直接使用静态 PNG
 pub struct TauriTrayController {
     renderer: DynamicImageTrayRenderer,
@@ -57,18 +57,7 @@ impl TauriTrayController {
         state: &TrayStatusState,
         style: &TrayVisualStyle,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let icon_bytes = if state.connected {
-            let percentage = state.mouse_battery.unwrap_or(0);
-            let level = ((percentage.saturating_add(5)) / 10).min(10) * 10;
-            crate::tray::static_icon::static_tray_icon_bytes(
-                level,
-                style.theme.is_dark(),
-                state.mouse_charging,
-            )
-        } else {
-            static_tray_app_icon_bytes_for_theme(style.system_theme.is_dark())
-        };
-        let image = tauri::image::Image::from_bytes(icon_bytes)?;
+        let image = render_static_tray_icon(state, style)?;
         tray.set_icon(Some(image))?;
         tray.set_icon_as_template(false)?;
         Ok(())
@@ -83,8 +72,10 @@ impl TrayController for TauriTrayController {
         style: &TrayVisualStyle,
     ) -> Result<(), Box<dyn std::error::Error>> {
         if state.render_mode == TrayRenderMode::Static {
-            Self::set_static_icon(tray, state, style)?;
-            self.renderer.mark_current(state, style);
+            if self.renderer.needs_update(state, style) {
+                Self::set_static_icon(tray, state, style)?;
+                self.renderer.mark_current(state, style);
+            }
             return Ok(());
         }
 
