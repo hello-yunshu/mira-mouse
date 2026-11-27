@@ -24,6 +24,7 @@ pub struct TrayIconCacheKey {
     pub show_receiver: bool,
     pub theme: TrayTheme,
     pub icon_color_mode: TrayIconColorMode,
+    pub alert_highlight: bool,
     pub low_battery_threshold: u8,
     pub render_mode: TrayRenderMode,
 }
@@ -38,8 +39,13 @@ impl TrayIconCacheKey {
             receiver_battery: state.receiver_battery,
             receiver_charging: state.receiver_charging,
             show_receiver: state.show_receiver,
-            theme: style.theme,
+            theme: if state.connected {
+                style.theme
+            } else {
+                style.system_theme
+            },
             icon_color_mode: style.icon_color_mode,
+            alert_highlight: style.alert_highlight,
             low_battery_threshold: state.low_battery_threshold,
             render_mode: state.render_mode,
         }
@@ -129,6 +135,7 @@ pub struct BatteryIconCacheKey {
     pub low_battery_threshold: u8,
     pub theme: TrayTheme,
     pub icon_color_mode: TrayIconColorMode,
+    pub alert_highlight: bool,
 }
 
 impl BatteryIconCacheKey {
@@ -141,6 +148,7 @@ impl BatteryIconCacheKey {
             low_battery_threshold: state.low_battery_threshold,
             theme: style.theme,
             icon_color_mode: style.icon_color_mode,
+            alert_highlight: style.alert_highlight,
         }
     }
 }

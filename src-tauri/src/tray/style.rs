@@ -5,6 +5,27 @@
 
 use crate::tray::state::TraySettings;
 
+pub(super) const CRITICAL_BATTERY_PERCENT: u8 = 10;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum BatterySeverity {
+    Normal,
+    Warning,
+    Critical,
+}
+
+impl BatterySeverity {
+    pub(super) fn for_percentage(percentage: u8, threshold: u8) -> Self {
+        if percentage <= CRITICAL_BATTERY_PERCENT {
+            Self::Critical
+        } else if percentage <= threshold {
+            Self::Warning
+        } else {
+            Self::Normal
+        }
+    }
+}
+
 /// 菜单栏 / 任务栏主题（深色或浅色）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TrayTheme {
@@ -75,19 +96,20 @@ pub struct TrayVisualStyle {
     pub system_theme: TrayTheme,
     pub theme: TrayTheme,
     pub icon_color_mode: TrayIconColorMode,
+    pub alert_highlight: bool,
 
     /// 鼠标外轮廓颜色。
     pub outline: RgbaColor,
     /// 鼠标中键 / 充电闪电颜色（比 outline 更实）。
     pub outline_secondary: RgbaColor,
 
-    /// 正常电量填充色（> 50%）。
+    /// 正常电量填充色。
     pub normal_fill: RgbaColor,
     /// 充电填充色（充电时）。
     pub charging_fill: RgbaColor,
-    /// 低电量填充色（≤ 阈值）。
+    /// 紧急电量填充色（≤ 10%）。
     pub low_fill: RgbaColor,
-    /// 中间档填充色（阈值 < 电量 ≤ 50%）。与现有静态图标保持一致的黄档。
+    /// 预警填充色（10% < 电量 ≤ 用户设定的阈值）。
     pub mid_fill: RgbaColor,
     /// 未连接 / 未知电量的弱化填充色。
     pub unknown_fill: RgbaColor,
@@ -103,12 +125,11 @@ pub struct TrayVisualStyle {
 impl TrayVisualStyle {
     /// 从设置和主题生成视觉样式。
     ///
-    /// 颜色规则与现有静态 PNG 图标（`scripts/generate-tray-mouse-icons.py`）保持一致，
-    /// 确保动态图标和静态 fallback 在视觉上无缝切换：
+    /// 电量填充色与静态 PNG 图标（`scripts/generate-tray-mouse-icons.py`）共用同一套配色：
     /// - 外轮廓：白色（深色主题）/ 黑色（浅色主题），alpha 118
     /// - 中键 / 闪电：白色 / 黑色，alpha 210
-    /// - 电量填充：绿（>50%）/ 黄（≤50%）/ 红（≤阈值）
-    /// - 充电：填充色保持电量分级，闪电叠加指示充电
+    /// - 电量填充：绿（正常）/ 黄（≤提醒阈值）/ 红（≤10%）
+    /// - 动态图标充电时使用绿色填充，并叠加闪电
     pub fn from_settings(settings: &TraySettings<'_>, theme: TrayTheme) -> Self {
         let icon_color_mode = TrayIconColorMode::from_setting(settings.tray_icon_color);
 
@@ -142,7 +163,7 @@ impl TrayVisualStyle {
         };
 
         // 电量填充色与现有静态图标脚本一致：
-        //   green #34C759 (>50%) / yellow #FFCC00 (≤50%) / red #FF3B30 (≤阈值)
+        //   green #34C759 / yellow #FFCC00 / red #FF3B30
         let normal_fill = RgbaColor::rgb(52, 199, 89);
         let mid_fill = RgbaColor::rgb(255, 204, 0);
         let low_fill = RgbaColor::rgb(255, 59, 48);
@@ -160,6 +181,7 @@ impl TrayVisualStyle {
             system_theme: theme,
             theme: effective_theme,
             icon_color_mode,
+            alert_highlight: false,
             outline,
             outline_secondary: secondary,
             normal_fill,
@@ -178,6 +200,7 @@ impl TrayVisualStyle {
         if self.icon_color_mode == TrayIconColorMode::Auto {
             let mut style = Self::from_color_mode(TrayIconColorMode::Auto, theme);
             style.system_theme = self.system_theme;
+            style.alert_highlight = self.alert_highlight;
             style
         } else {
             self
@@ -186,21 +209,34 @@ impl TrayVisualStyle {
 
     /// 根据电量百分比选择填充色。
     ///
-    /// 优先级与现有静态图标一致：
-    /// - 充电 → charging_fill（绿）
-    /// - ≤ 阈值 → low_fill（红）
-    /// - ≤ 50% → mid_fill（黄）
-    /// - > 50% → normal_fill（绿）
     pub fn fill_for_battery(&self, percentage: u8, charging: bool, threshold: u8) -> RgbaColor {
         if charging {
-            self.charging_fill
-        } else if percentage <= threshold {
-            self.low_fill
-        } else if percentage <= 50 {
-            self.mid_fill
-        } else {
-            self.normal_fill
+            return self.charging_fill;
         }
+        self.alert_fill(Some(percentage), false, threshold)
+            .unwrap_or(self.normal_fill)
+    }
+
+    pub(super) fn alert_fill(
+        &self,
+        percentage: Option<u8>,
+        charging: bool,
+        threshold: u8,
+    ) -> Option<RgbaColor> {
+        if charging {
+            return None;
+        }
+        let color = match BatterySeverity::for_percentage(percentage?, threshold) {
+            BatterySeverity::Critical => self.low_fill,
+            BatterySeverity::Warning => self.mid_fill,
+            BatterySeverity::Normal => return None,
+        };
+        if self.alert_highlight {
+            // Blend toward white without hiding or changing the alert's hue family.
+            let lift = |channel: u8| channel + (255 - channel) / 3;
+            return Some(RgbaColor::rgb(lift(color.r), lift(color.g), lift(color.b)));
+        }
+        Some(color)
     }
 
     pub fn fill_for_receiver(
@@ -308,23 +344,27 @@ mod tests {
     }
 
     #[test]
-    fn fill_for_battery_uses_threshold_and_mid_tier() {
+    fn fill_for_battery_uses_configured_warning_and_fixed_critical_threshold() {
         let settings = settings_with_color("auto");
-        let style = TrayVisualStyle::from_settings(&settings, TrayTheme::Dark);
+        let mut style = TrayVisualStyle::from_settings(&settings, TrayTheme::Dark);
 
-        // 充电 → 绿色
-        assert_eq!(style.fill_for_battery(15, true, 20), style.charging_fill);
+        assert_eq!(style.fill_for_battery(5, true, 20), style.charging_fill);
+        assert_eq!(style.fill_for_battery(10, false, 5), style.low_fill);
+        assert_eq!(style.fill_for_battery(10, false, 10), style.low_fill);
+        assert_eq!(style.fill_for_battery(11, false, 10), style.normal_fill);
+        assert_eq!(style.fill_for_battery(11, false, 20), style.mid_fill);
+        assert_eq!(style.fill_for_battery(20, false, 20), style.mid_fill);
+        assert_eq!(style.fill_for_battery(21, false, 20), style.normal_fill);
+        assert_eq!(style.fill_for_battery(35, false, 35), style.mid_fill);
 
-        // ≤ 阈值（未充电）→ 红色
-        assert_eq!(style.fill_for_battery(20, false, 20), style.low_fill);
-
-        // 阈值 < 电量 ≤ 50% → 黄色
-        assert_eq!(style.fill_for_battery(50, false, 20), style.mid_fill);
-        assert_eq!(style.fill_for_battery(30, false, 20), style.mid_fill);
-
-        // > 50% → 绿色
-        assert_eq!(style.fill_for_battery(51, false, 20), style.normal_fill);
-        assert_eq!(style.fill_for_battery(100, false, 20), style.normal_fill);
+        style.alert_highlight = true;
+        let light_style = style.with_auto_theme(TrayTheme::Light);
+        assert_ne!(light_style.fill_for_battery(10, false, 20), style.low_fill);
+        assert_ne!(light_style.fill_for_battery(20, false, 20), style.mid_fill);
+        assert_eq!(
+            light_style.fill_for_battery(21, false, 20),
+            style.normal_fill
+        );
     }
 
     #[test]

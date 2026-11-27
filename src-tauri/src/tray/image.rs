@@ -444,8 +444,11 @@ pub fn draw_mouse_icon(
             }
         } else {
             // 默认路径（其他平台 / PNG fallback）：100% 直接填满，无补偿
-            let fill_height =
+            let mut fill_height =
                 inner_height.min((inner_height as u32 * percentage.min(100) as u32 / 100) as i32);
+            if !state.mouse_charging && percentage <= super::style::CRITICAL_BATTERY_PERCENT {
+                fill_height = fill_height.max(3);
+            }
             if fill_height > 0 {
                 let fill_y0 = fill_area.3 - fill_height;
                 canvas.fill_rounded_rect(
@@ -718,11 +721,12 @@ pub fn draw_battery_digit_icon(
         }
     }
 
-    if state
-        .mouse_battery
-        .is_some_and(|percentage| percentage <= state.low_battery_threshold)
-    {
-        canvas.fill_circle(8, 8, 4, style.low_fill);
+    if let Some(color) = style.alert_fill(
+        state.mouse_battery,
+        state.mouse_charging,
+        state.low_battery_threshold,
+    ) {
+        canvas.fill_circle(8, 8, 4, color);
     }
     if state.mouse_charging {
         canvas.fill_rounded_rect(51, 5, 61, 9, 1, style.charging_fill);
@@ -1176,21 +1180,18 @@ mod tests {
     }
 
     #[test]
-    fn render_normal_battery_uses_green_fill() {
+    fn render_battery_fill_switches_to_green_above_warning_boundary() {
         let style = make_style();
-        let state = make_state(Some(80), false); // 80% > 50% → 绿色
-        let bytes = render_mouse_icon_rgba(&state, &style);
-
-        // 在电量填充主体区域应能找到绿色像素。选中心偏下位置避开中键透明区域。
-        let fill_y = 40;
-        let fill_x = 32;
-        let idx = ((fill_y * 64 + fill_x) * 4) as usize;
-        let r = bytes[idx];
-        let g = bytes[idx + 1];
-        let b = bytes[idx + 2];
-        let a = bytes[idx + 3];
-        assert!(a > 0, "pixel should be non-transparent");
-        assert!(g > r && g > b, "green should dominate at normal battery");
+        for (percentage, color) in [
+            (0, style.low_fill),
+            (10, style.low_fill),
+            (20, style.mid_fill),
+            (21, style.normal_fill),
+        ] {
+            let state = make_state(Some(percentage), false);
+            let bytes = render_mouse_icon_rgba_macos(&state, &style);
+            assert_eq!(rgba_pixel(&bytes, 32, 53), color.channels());
+        }
     }
 
     #[test]
@@ -1652,12 +1653,25 @@ mod tests {
     }
 
     #[test]
-    fn battery_digit_low_battery_differs_from_normal() {
-        let style = make_style();
-        let low = render_battery_digit_rgba(&make_state(Some(10), false), &style);
-        let normal = render_battery_digit_rgba(&make_state(Some(80), false), &style);
-        assert_ne!(low, normal);
-        assert_eq!(rgba_pixel(&low, 8, 8), style.low_fill.channels());
+    fn battery_digit_shows_steady_and_highlighted_alert_colors() {
+        let mut style = make_style();
+        let warning_state = make_state(Some(20), false);
+        let critical_state = make_state(Some(10), false);
+        let normal = render_battery_digit_rgba(&make_state(Some(21), false), &style);
+        let warning = render_battery_digit_rgba(&warning_state, &style);
+        let critical = render_battery_digit_rgba(&critical_state, &style);
+        let charging = render_battery_digit_rgba(&make_state(Some(10), true), &style);
+        assert_eq!(rgba_pixel(&normal, 8, 8)[3], 0);
+        assert_eq!(rgba_pixel(&warning, 8, 8), style.mid_fill.channels());
+        assert_eq!(rgba_pixel(&critical, 8, 8), style.low_fill.channels());
+        assert_eq!(rgba_pixel(&charging, 8, 8)[3], 0);
+
+        style.alert_highlight = true;
+        for (state, steady) in [(warning_state, warning), (critical_state, critical)] {
+            let highlighted = render_battery_digit_rgba(&state, &style);
+            assert_ne!(rgba_pixel(&highlighted, 8, 8), rgba_pixel(&steady, 8, 8));
+            assert_eq!(rgba_pixel(&highlighted, 8, 8)[3], 255);
+        }
     }
 
     #[test]

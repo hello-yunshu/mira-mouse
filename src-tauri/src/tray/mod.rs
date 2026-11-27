@@ -9,6 +9,7 @@
 //!
 //! 静态 PNG fallback 见 `static_icon`，共享绘图原语见 `image`。
 
+pub mod alert;
 pub mod dynamic_icon;
 pub mod image;
 pub mod renderer;
