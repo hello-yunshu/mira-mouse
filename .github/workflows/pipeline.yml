@@ -99,7 +99,7 @@ jobs:
       - run: cargo test --workspace --locked
   configuration:
     if: github.event_name != 'workflow_dispatch'
-    strategy: { fail-fast: false, matrix: { os: [macos-14, windows-2022, ubuntu-22.04] } }
+    strategy: { fail-fast: false, matrix: { os: [macos-15, windows-2022, ubuntu-22.04] } }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
@@ -163,7 +163,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          - os: macos-15
             target: aarch64-apple-darwin
             target_os: macos
             target_arch: aarch64
