@@ -53,9 +53,9 @@ Open the [latest release](https://github.com/hello-yunshu/mira-mouse/releases/la
 
 | System | Package |
 |---|---|
-| macOS (Apple Silicon) | DMG |
-| Windows (x64) | Installer (`.exe`) |
-| Linux (x86_64) | AppImage |
+| macOS (Apple Silicon) | [Download DMG](https://github.com/hello-yunshu/mira-mouse/releases/latest/download/Mira_macOS_1.2.11_aarch64.dmg) |
+| Windows (x64) | [Download installer](https://github.com/hello-yunshu/mira-mouse/releases/latest/download/Mira_Windows_1.2.11_x64-setup.exe) |
+| Linux (x86_64) | [Download AppImage](https://github.com/hello-yunshu/mira-mouse/releases/latest/download/Mira_Linux_1.2.11_amd64.AppImage) |
 
 On macOS, you can also install with Homebrew:
 

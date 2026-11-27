@@ -53,9 +53,9 @@
 
 | 系统 | 安装包 |
 |---|---|
-| macOS（Apple Silicon） | DMG |
-| Windows（x64） | 安装程序（`.exe`） |
-| Linux（x86_64） | AppImage |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/hello-yunshu/mira-mouse/releases/latest/download/Mira_macOS_1.2.11_aarch64.dmg) |
+| Windows（x64） | [下载安装程序](https://github.com/hello-yunshu/mira-mouse/releases/latest/download/Mira_Windows_1.2.11_x64-setup.exe) |
+| Linux（x86_64） | [下载 AppImage](https://github.com/hello-yunshu/mira-mouse/releases/latest/download/Mira_Linux_1.2.11_amd64.AppImage) |
 
 macOS 也可通过 Homebrew 安装：
 
